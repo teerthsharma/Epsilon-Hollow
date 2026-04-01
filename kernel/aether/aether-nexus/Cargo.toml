@@ -1,0 +1,17 @@
+[package]
+name = "aether-nexus"
+version = "0.1.0"
+edition = "2021"
+authors = ["Seal <seal@openclaw.ai>"]
+description = "Aether-Epsilon Orchestrator bridging Aether-Lang, Epsilon, and Aether-Link."
+
+[dependencies]
+aether-link = { path = "../aether-link" }
+aegis-core = { path = "../Aether-Lang/crates/aegis-core" }
+epsilon = { path = "../epsilon/crates/epsilon" }
+sanctuary-dsp = { path = "../apeiron-runtime-master/rust-dsp" }
+
+tokio = { version = "1.0", features = ["full", "rt-multi-thread", "macros"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"

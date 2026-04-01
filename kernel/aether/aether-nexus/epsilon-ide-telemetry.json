@@ -1,0 +1,861 @@
+[
+  {
+    "cycle_id": 0,
+    "lbas": [
+      15545,
+      19980,
+      23801,
+      28335,
+      32014,
+      36397,
+      40571,
+      44304
+    ],
+    "prefetch_triggered": true,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": [
+      2,
+      0
+    ],
+    "teleport_status": "Teleport Failed or Pending | Unified at slot 0"
+  },
+  {
+    "cycle_id": 1,
+    "lbas": [
+      6138,
+      10028,
+      14346,
+      18403,
+      22661,
+      26564,
+      30681,
+      34582
+    ],
+    "prefetch_triggered": true,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": [
+      2,
+      0
+    ],
+    "teleport_status": "Teleport Failed or Pending | Unified at slot 0"
+  },
+  {
+    "cycle_id": 2,
+    "lbas": [
+      19542,
+      23592,
+      27924,
+      32065,
+      36022,
+      39909,
+      43921,
+      48480
+    ],
+    "prefetch_triggered": true,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": [
+      2,
+      0
+    ],
+    "teleport_status": "Teleport Failed or Pending | Unified at slot 0"
+  },
+  {
+    "cycle_id": 3,
+    "lbas": [
+      36922,
+      41006,
+      45277,
+      49096,
+      53367,
+      57269,
+      61231,
+      65435
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 4,
+    "lbas": [
+      20393,
+      24343,
+      28519,
+      32635,
+      36857,
+      40493,
+      44960,
+      48893
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 5,
+    "lbas": [
+      14457,
+      18145,
+      22265,
+      26404,
+      30529,
+      34594,
+      38950,
+      42991
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 6,
+    "lbas": [
+      4588,
+      8790,
+      12925,
+      16985,
+      21107,
+      25376,
+      29494,
+      33527
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 7,
+    "lbas": [
+      40459,
+      44269,
+      48437,
+      52568,
+      56455,
+      60681,
+      64758,
+      68814
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 8,
+    "lbas": [
+      28740,
+      32745,
+      36800,
+      40942,
+      44746,
+      48755,
+      52918,
+      57299
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 9,
+    "lbas": [
+      8211,
+      12018,
+      16168,
+      20233,
+      24635,
+      28545,
+      32720,
+      36569
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 10,
+    "lbas": [
+      38539,
+      42737,
+      46865,
+      50674,
+      55091,
+      58973,
+      63092,
+      67331
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 11,
+    "lbas": [
+      50166,
+      54159,
+      58300,
+      62333,
+      66531,
+      70491,
+      74938,
+      78648
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 12,
+    "lbas": [
+      15849,
+      20066,
+      24224,
+      28307,
+      32178,
+      36512,
+      40657,
+      44666
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 13,
+    "lbas": [
+      34465,
+      38260,
+      42391,
+      46574,
+      50506,
+      54722,
+      58693,
+      63036
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 14,
+    "lbas": [
+      22798,
+      27128,
+      30938,
+      35344,
+      39468,
+      43566,
+      47432,
+      51700
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 15,
+    "lbas": [
+      47545,
+      52100,
+      56081,
+      60041,
+      64317,
+      68317,
+      72247,
+      76233
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 16,
+    "lbas": [
+      32921,
+      36867,
+      41250,
+      45161,
+      49127,
+      53566,
+      57414,
+      61774
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 17,
+    "lbas": [
+      49779,
+      53843,
+      58009,
+      61884,
+      66101,
+      70058,
+      74522,
+      78415
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 18,
+    "lbas": [
+      42344,
+      46642,
+      50729,
+      54748,
+      58885,
+      62860,
+      67227,
+      71151
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 19,
+    "lbas": [
+      33866,
+      38115,
+      42044,
+      46219,
+      50218,
+      54177,
+      58107,
+      62548
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 20,
+    "lbas": [
+      24810,
+      28619,
+      32762,
+      36962,
+      41203,
+      45303,
+      49263,
+      53344
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 21,
+    "lbas": [
+      43323,
+      47399,
+      51089,
+      55164,
+      59338,
+      63592,
+      67755,
+      71819
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 22,
+    "lbas": [
+      34069,
+      38369,
+      41979,
+      46328,
+      50590,
+      54567,
+      58686,
+      62493
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 23,
+    "lbas": [
+      1275,
+      5473,
+      9618,
+      13794,
+      17878,
+      21804,
+      25755,
+      30171
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 24,
+    "lbas": [
+      28705,
+      32465,
+      36714,
+      40556,
+      45033,
+      48802,
+      53039,
+      57430
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 25,
+    "lbas": [
+      8703,
+      12604,
+      16846,
+      21150,
+      25085,
+      29118,
+      33038,
+      37188
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 26,
+    "lbas": [
+      20965,
+      25067,
+      29594,
+      33498,
+      37825,
+      41650,
+      45744,
+      50086
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 27,
+    "lbas": [
+      29878,
+      33711,
+      37738,
+      42032,
+      46087,
+      50093,
+      54391,
+      58563
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 28,
+    "lbas": [
+      47708,
+      51672,
+      55815,
+      59790,
+      63917,
+      68231,
+      72215,
+      76214
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 29,
+    "lbas": [
+      42163,
+      46263,
+      50163,
+      54170,
+      58108,
+      62617,
+      66713,
+      70670
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 30,
+    "lbas": [
+      26181,
+      30201,
+      34319,
+      38451,
+      42666,
+      46633,
+      50406,
+      54654
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 31,
+    "lbas": [
+      15319,
+      19477,
+      23247,
+      27274,
+      31342,
+      35696,
+      39632,
+      44030
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 32,
+    "lbas": [
+      49394,
+      53305,
+      57524,
+      61680,
+      65787,
+      70049,
+      74044,
+      78096
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 33,
+    "lbas": [
+      24341,
+      28307,
+      32339,
+      36662,
+      40386,
+      44572,
+      48898,
+      52909
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 34,
+    "lbas": [
+      5422,
+      9666,
+      13727,
+      17974,
+      22023,
+      26085,
+      30278,
+      33989
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 35,
+    "lbas": [
+      45370,
+      49646,
+      53492,
+      57604,
+      61919,
+      65808,
+      69668,
+      73971
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 36,
+    "lbas": [
+      27651,
+      31463,
+      35758,
+      39969,
+      44166,
+      48014,
+      52287,
+      56071
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 37,
+    "lbas": [
+      44932,
+      49231,
+      53111,
+      57403,
+      61303,
+      65772,
+      69880,
+      74037
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 38,
+    "lbas": [
+      20358,
+      24089,
+      28066,
+      32553,
+      36479,
+      40722,
+      44814,
+      48724
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 39,
+    "lbas": [
+      8288,
+      12781,
+      16759,
+      20495,
+      25076,
+      28724,
+      32914,
+      36978
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 40,
+    "lbas": [
+      22341,
+      26406,
+      30279,
+      34369,
+      38490,
+      42743,
+      46750,
+      51050
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 41,
+    "lbas": [
+      19613,
+      23751,
+      27864,
+      31740,
+      35958,
+      40133,
+      44257,
+      47906
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 42,
+    "lbas": [
+      16277,
+      20614,
+      24396,
+      28590,
+      32641,
+      36714,
+      41009,
+      45297
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 43,
+    "lbas": [
+      42442,
+      46524,
+      50559,
+      54548,
+      58815,
+      62730,
+      66969,
+      71114
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 44,
+    "lbas": [
+      15177,
+      19498,
+      23355,
+      27540,
+      31509,
+      35759,
+      39689,
+      43925
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 45,
+    "lbas": [
+      17869,
+      21882,
+      26036,
+      29985,
+      34429,
+      38588,
+      42479,
+      46287
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 46,
+    "lbas": [
+      29732,
+      33630,
+      37881,
+      41850,
+      46004,
+      50312,
+      54103,
+      58513
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 100.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 47,
+    "lbas": [
+      17458,
+      21887,
+      25642,
+      30048,
+      34116,
+      38067,
+      42146,
+      46162
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 48,
+    "lbas": [
+      49072,
+      52913,
+      57288,
+      61287,
+      65242,
+      69300,
+      73346,
+      77685
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  },
+  {
+    "cycle_id": 49,
+    "lbas": [
+      19338,
+      23645,
+      27585,
+      31761,
+      35637,
+      40146,
+      43860,
+      48324
+    ],
+    "prefetch_triggered": false,
+    "quantum_latency_ns": 0.0,
+    "betti_numbers": null,
+    "teleport_status": "Skipped (Below Threshold)"
+  }
+]

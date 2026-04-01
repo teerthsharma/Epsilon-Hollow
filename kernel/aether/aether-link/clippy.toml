@@ -1,0 +1,4 @@
+# Clippy configuration
+# Allow some things that are fine for performance-critical code
+
+avoid-breaking-exported-api = true
