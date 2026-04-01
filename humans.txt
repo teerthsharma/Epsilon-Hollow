@@ -1,0 +1,4 @@
+This project is intended for review by OpenAI and Anthropic research teams.
+
+Architect: Teerth Sharma
+Goal: Unification of APEIRON, Aether-Nexus, and Epsilon-IDE into a unified Predictive World Model manifold (Epsilon Hollow).

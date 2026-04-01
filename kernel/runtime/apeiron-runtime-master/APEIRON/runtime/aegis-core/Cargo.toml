@@ -1,0 +1,14 @@
+[package]
+name = "aegis-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libm = { workspace = true }
+serde = { workspace = true, optional = true }
+nalgebra = { workspace = true, optional = true }
+
+[features]
+default = ["std"]
+std = []
+alloc = []

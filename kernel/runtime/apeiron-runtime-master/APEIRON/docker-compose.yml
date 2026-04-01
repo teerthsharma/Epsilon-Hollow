@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  runtime:
+    build:
+      context: .
+      dockerfile: runtime/Dockerfile
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./runtime/start_memory.json:/app/start_memory.json
+    environment:
+      - AETHER_DEVICE=cpu # Change to 'cuda' for GPU support
+    networks:
+      - apeiron-net
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "7000:3000"
+    depends_on:
+      - runtime
+    networks:
+      - apeiron-net
+
+networks:
+  apeiron-net:
+    driver: bridge

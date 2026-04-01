@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Epsilon IDE Engine v2 — Python dependencies
+# Install with: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core inference and ML
+tinygrad>=0.9.0
+
+# Vector search (code indexing)
+sqlite-vec>=0.1.0
+
+# Code parsing and syntax validation
+tree-sitter>=0.21.0
+tree-sitter-python>=0.21.0
+
+# HTTP client (async — used by TieredModelManager)
+httpx>=0.27.0
+
+# HTTP client (sync — used by ModelServer)
+requests>=2.31.0
+
+# Configuration
+pyyaml>=6.0.1
+
+# System monitoring
+psutil>=5.9.0
+
+# Model download from HuggingFace
+huggingface-hub>=0.23.0
+
+# Telegram bot
+python-telegram-bot>=21.0
+
+# Async HTTP server (for future web interface)
+aiohttp>=3.9.0
+
+# Word document creation
+python-docx>=1.1.0
+
+# Browser automation (for future web agent)
+# playwright>=1.44.0  # uncomment when needed, then run: playwright install chromium
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System packages (install separately with apt, not pip):
+#   sudo apt install -y git cmake build-essential clang lld
+#                       python3.11 python3.11-venv python3-pip pybind11-dev
+#
+# CUDA toolkit (install separately):
+#   sudo apt install -y cuda-toolkit-12-4
+# ─────────────────────────────────────────────────────────────────────────────

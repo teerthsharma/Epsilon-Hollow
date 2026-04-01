@@ -1,0 +1,93 @@
+# =============================================================================
+# Epsilon-Hollow Unified Ignore File
+# =============================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+ENV/
+epsilon-env/
+.pytest_cache/
+.coverage
+.tox/
+htmlcov/
+.mypy_cache/
+
+# --- Rust ---
+target/
+**/target/
+Cargo.lock
+**/*.rs.bk
+*.profraw
+*.profdata
+
+# --- Node.js / Frontend ---
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log
+yarn-error.log
+
+# --- ML Models & Data (Large Files) ---
+BitNet/
+models/
+**/models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.manifold
+*.akashic
+*.tpu_map
+
+# --- Databases ---
+*.db
+*.sqlite
+*.sqlite3
+clara.db
+vector_store.db
+
+# --- Logs & Runtime ---
+*.log
+logs/
+monitor.log
+debug.log
+error.log
+memory_journal.jsonl
+memory/
+state/
+cache/
+.cache/
+
+# --- IDE & OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# --- Temporary & Build ---
+build/
+dist/
+temp/
+tmp/
+*.tmp
+*.temp
+*.bak
+sdist/
+wheels/

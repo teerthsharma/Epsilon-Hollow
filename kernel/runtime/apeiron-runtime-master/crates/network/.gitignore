@@ -1,0 +1,31 @@
+# Build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmark results (regenerate with cargo bench)
+criterion/
+*.html
+
+# Coverage
+*.profraw
+*.profdata
+coverage/
+tarpaulin-report.html
+
+# Documentation build
+/doc/
+
+# Temporary files
+*.tmp
+*.bak

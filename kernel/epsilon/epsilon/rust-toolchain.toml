@@ -1,0 +1,13 @@
+[toolchain]
+channel = "stable"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Epsilon Toolchain Configuration
+#
+# The epsilon crate and aether-core math foundation use only stable Rust.
+# Nightly is NOT required — no #![feature(...)] gates are used.
+#
+# If you need nightly for experimental features, uncomment:
+#   channel = "nightly"
+#   components = ["rust-src", "llvm-tools-preview"]
+# ═══════════════════════════════════════════════════════════════════════════════

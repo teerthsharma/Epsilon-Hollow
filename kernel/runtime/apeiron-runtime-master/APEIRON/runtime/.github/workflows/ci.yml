@@ -1,0 +1,102 @@
+name: AEGIS CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Test & Lint (Matrix)
+  # ═══════════════════════════════════════════════════════════════════════════
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust Nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, llvm-tools-preview, clippy, rustfmt
+    
+    - name: Cache Cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check Formatting
+      run: cargo fmt -- --check
+      if: matrix.os == 'ubuntu-latest' # Only check fmt once
+    
+    - name: Clippy
+      run: cargo clippy --workspace -- -D warnings
+    
+    - name: Run Tests
+      run: cargo test --workspace
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # no_std Compatibility Check
+  # ═══════════════════════════════════════════════════════════════════════════
+  no_std_check:
+    name: no_std Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        targets: thumbv7m-none-eabi # An actual embedded target
+    
+    - name: Build Core (no_std)
+      run: cargo build -p aegis-core --no-default-features --target thumbv7m-none-eabi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Docker Build
+  # ═══════════════════════════════════════════════════════════════════════════
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: false
+        tags: aegis:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test Docker REPL
+      run: |
+        docker run --rm aegis:test --help
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Release
+  # ═══════════════════════════════════════════════════════════════════════════
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, no_std_check, docker]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

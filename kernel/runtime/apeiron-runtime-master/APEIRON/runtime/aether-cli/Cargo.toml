@@ -1,0 +1,56 @@
+[package]
+name = "aether-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AETHER Cross-Platform CLI - Run AETHER on Windows, Linux, macOS"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AETHER CLI (Cross-Platform Native Binary)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The primary user-facing tool for running AETHER programs.
+# Compiles natively on Windows, Linux, and macOS.
+#
+# Commands:
+#   aether repl              Interactive REPL
+#   aether run <file.aether>  Execute a script
+#   aether check <file.aether> Syntax validation
+#
+# Build:
+#   cargo build -p aether-cli --release
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[features]
+default = []
+
+[dependencies]
+aether-core = { path = "../aether-core" }
+aether-lang = { path = "../aether-lang" }
+clap = { workspace = true }
+rustyline = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+warp = "0.3"
+futures-util = "0.3"
+aether-link = { path = "../../network" }
+candle-core = { version = "0.8.2" } # Locked: Matches rand version
+candle-transformers = { version = "0.8.2" }
+candle-nn = { version = "0.8.2" }
+tokenizers = { version = "0.19.1" }
+sanctuary-dsp = { path = "../../../rust-dsp" }
+bytes = "1.0"
+tokio-stream = { version = "0.1", features = ["sync"] }
+hyper = { version = "0.14", features = ["full"] }
+
+anyhow = "1.0"
+rand = "0.8" # Explicitly locked to prevent dependency hell with candle-core
+aho-corasick = "1.1"
+# Note: if random errors occur, ensure 'rand' is not pulled in with conflicting versions by other crates.
+
+[[bin]]
+name = "aether"
+path = "src/main.rs"

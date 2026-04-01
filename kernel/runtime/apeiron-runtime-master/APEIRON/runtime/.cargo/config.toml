@@ -1,0 +1,24 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AEGIS Cargo Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This configuration applies to the entire workspace.
+# The aegis-kernel crate requires special build-std flags passed via command line.
+#
+# For kernel builds (bare-metal):
+#   cargo build -p aegis-kernel -Z build-std=core,alloc --target x86_64-unknown-none
+#
+# For CLI builds (native platform):
+#   cargo build -p aegis-cli --release
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# NOTE: build-std is NOT enabled globally - it breaks std-using crates like aegis-cli
+# Use the command-line flag for aegis-kernel only.
+
+[alias]
+# Convenience aliases for building
+kernel = "build -p aegis-kernel -Z build-std=core,alloc --target x86_64-unknown-none"
+cli = "build -p aegis-cli --release"
+lang = "build -p aegis-lang"
+core = "build -p aegis-core"

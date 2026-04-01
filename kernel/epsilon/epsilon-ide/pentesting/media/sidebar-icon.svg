@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <defs>
+    <linearGradient id="sealGrad" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#58a6ff"/>
+      <stop offset="50%" stop-color="#bc8cff"/>
+      <stop offset="100%" stop-color="#f778ba"/>
+    </linearGradient>
+  </defs>
+  <!-- Outer hex shape -->
+  <path d="M12 2L21 7V17L12 22L3 17V7L12 2Z" stroke="url(#sealGrad)" stroke-width="1.5" fill="none"/>
+  <!-- Inner brain/circuit pattern -->
+  <circle cx="12" cy="10" r="3" stroke="url(#sealGrad)" stroke-width="1.2" fill="none"/>
+  <path d="M12 13V18M8 8L5 6M16 8L19 6M9 12L6 14M15 12L18 14" stroke="url(#sealGrad)" stroke-width="1" stroke-linecap="round"/>
+  <!-- Center dot -->
+  <circle cx="12" cy="10" r="1" fill="url(#sealGrad)"/>
+</svg>

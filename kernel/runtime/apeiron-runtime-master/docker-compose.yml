@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  apeiron-kernel:
+    build:
+      context: ./APEIRON
+      dockerfile: runtime/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data # Persistence
+      - ./models:/app/models # LLM Storage
+    environment:
+      - RUST_LOG=info
+      - MODEL_PATH=/app/models/Phi-3-mini-4k-instruct.Q4_K_M.gguf
+      - AETHER_DEVICE=cpu # Change to 'cuda' or 'gpu' if using NVIDIA GPU
+    restart: unless-stopped
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [ gpu ]
+
+  apeiron-ui:
+    build:
+      context: ./APEIRON/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - apeiron-kernel
+    restart: unless-stopped

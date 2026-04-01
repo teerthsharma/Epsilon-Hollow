@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/aether-core",
+    "crates/epsilon",
+]
+resolver = "2"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Epsilon — Zero-Shot Context Teleportation via Topological Surgery
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Workspace Architecture:
+#   - aether-core:  Math foundation (topology, manifolds, PD control, memory)
+#   - epsilon:      Context Teleportation research implementation
+#
+# Build Commands:
+#   cargo check -p epsilon             # Type-check the research crate
+#   cargo test -p epsilon              # Run teleportation unit tests
+#   cargo test --workspace             # Run all tests
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+repository = "https://github.com/teerthsharma/epsilon"
+
+[workspace.dependencies]
+libm = "0.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
+heapless = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3

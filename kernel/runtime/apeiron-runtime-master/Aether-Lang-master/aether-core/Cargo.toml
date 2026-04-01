@@ -1,0 +1,32 @@
+[package]
+name = "aether-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AETHER Core: Platform-agnostic topology, manifold, and ML primitives"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AETHER Core Library
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[features]
+default = ["std"]
+serde = ["dep:serde"]
+std = ["alloc", "serde"]
+alloc = ["serde"]
+no_std = ["alloc"]
+
+[dependencies]
+libm = { workspace = true }
+serde = { version = "1.0", features = ["derive"], default-features = false, optional = true }
+cfg-if = "1.0"
+nalgebra = { workspace = true }
+heapless = { workspace = true }
+aether-link = { path = "../../aether-link-main" }
+
+[dev-dependencies]
+
+[lib]
+name = "aether_core"
+path = "src/lib.rs"

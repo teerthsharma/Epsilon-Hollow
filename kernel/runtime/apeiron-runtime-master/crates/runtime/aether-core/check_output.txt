@@ -1,0 +1,194 @@
+    Checking aether-core v0.1.0 (C:\Users\teert\OneDrive\Desktop\New folder (12)\Aether-Lang-master\aether-core)
+error[E0432]: unresolved import `super::tensor::Tensor`
+  --> aether-core\src\ml\linalg.rs:17:5
+   |
+17 | use super::tensor::Tensor;
+   |     ^^^^^^^^^^^^^^^^^^^^^ no `Tensor` in `ml::tensor`
+
+error[E0432]: unresolved import `crate::ml::tensor::Tensor`
+  --> aether-core\src\ml\autograd.rs:19:5
+   |
+19 | use crate::ml::tensor::Tensor;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ no `Tensor` in `ml::tensor`
+
+error[E0432]: unresolved import `super::tensor::Tensor`
+  --> aether-core\src\ml\neural.rs:24:5
+   |
+24 | use super::tensor::Tensor;
+   |     ^^^^^^^^^^^^^^^^^^^^^ no `Tensor` in `ml::tensor`
+
+error[E0432]: unresolved import `tensor::Tensor`
+  --> aether-core\src\ml\mod.rs:47:9
+   |
+47 | pub use tensor::Tensor;
+   |         ^^^^^^^^^^^^^^ no `Tensor` in `ml::tensor`
+
+warning: unused import: `std::sync::RwLockWriteGuard`
+   --> aether-core\src\ml\linalg.rs:202:13
+    |
+202 |         use std::sync::RwLockWriteGuard;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Neuroplasticity`
+ --> aether-core\src\ml\liquid_tensor.rs:1:36
+  |
+1 | use crate::ml::tensor::{BioTensor, Neuroplasticity};
+  |                                    ^^^^^^^^^^^^^^^
+
+warning: unused import: `alloc::vec`
+  --> aether-core\src\ml\neural.rs:13:5
+   |
+13 | use alloc::vec;
+   |     ^^^^^^^^^^
+
+warning: unused import: `alloc::boxed::Box`
+  --> aether-core\src\ml\neural.rs:17:5
+   |
+17 | use alloc::boxed::Box;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `KMeansResult` and `KMeans`
+  --> aether-core\src\ml\gossip.rs:22:29
+   |
+22 | use crate::ml::clustering::{KMeans, KMeansResult}; // Reuse existing clustering logic if needed
+   |                             ^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `std::boxed::Box`
+  --> aether-core\src\memory.rs:24:5
+   |
+24 | use std::boxed::Box;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `fabs`
+  --> aether-core\src\memory.rs:26:18
+   |
+26 | use libm::{sqrt, fabs};
+   |                  ^^^^
+
+error[E0282]: type annotations needed
+  --> aether-core\src\ml\linalg.rs:63:25
+   |
+63 |                 let n = true_data.len();
+   |                         ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+  --> aether-core\src\ml\linalg.rs:83:25
+   |
+83 |                 let n = true_data.len();
+   |                         ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:117:13
+    |
+117 |     let n = true_data.len().min(pred_data.len());
+    |             ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:117:33
+    |
+117 |     let n = true_data.len().min(pred_data.len());
+    |                                 ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:139:13
+    |
+139 |     let n = true_data.len().min(pred_data.len());
+    |             ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:139:33
+    |
+139 |     let n = true_data.len().min(pred_data.len());
+    |                                 ^^^^^^^^^ cannot infer type
+
+error[E0689]: can't call method `ln` on ambiguous numeric type `{float}`
+   --> aether-core\src\ml\linalg.rs:151:56
+    |
+151 |              sum -= y * p.ln() + (1.0 - y) * (1.0 - p).ln();
+    |                                                        ^^
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:166:13
+    |
+166 |     let n = true_data.len().min(pred_data.len());
+    |             ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\linalg.rs:166:33
+    |
+166 |     let n = true_data.len().min(pred_data.len());
+    |                                 ^^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\autograd.rs:192:37
+    |
+192 |                         let d_lhs = grad.mul(rhs_val);
+    |                                     ^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\autograd.rs:208:37
+    |
+208 |                         let d_lhs = grad.matmul(&rhs_val.transpose());
+    |                                     ^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\autograd.rs:222:39
+    |
+222 |                         let d_input = grad.mul(&mask);
+    |                                       ^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> aether-core\src\ml\autograd.rs:239:27
+    |
+239 |                 let new = existing.add(grad);
+    |                           ^^^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+  --> aether-core\src\ml\neural.rs:48:75
+   |
+48 |                 let max_val = data_borrow.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+   |                                                                           ^      - type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+48 |                 let max_val = data_borrow.iter().fold(f64::NEG_INFINITY, |a: /* Type */, &b| a.max(b));
+   |                                                                            ++++++++++++
+
+warning: unused variable: `target`
+   --> aether-core\src\manifold.rs:293:47
+    |
+293 |     pub fn geodesic_partition_centroid(&self, target: ManifoldPoint<D>) -> Option<ManifoldPoint<D>> {
+    |                                               ^^^^^^ help: if this is intentional, prefix it with an underscore: `_target`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `adjacency`
+   --> aether-core\src\manifold.rs:336:21
+    |
+336 |                 let adjacency = self.adjacency[u]; 
+    |                     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_adjacency`
+
+warning: variable does not need to be mutable
+   --> aether-core\src\ml\tensor.rs:118:13
+    |
+118 |         let mut result = BioTensor::zeros(&[m, n]);
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> aether-core\src\ml\tensor.rs:225:13
+    |
+225 |         let mut result = CivilTensor::zeros(&[m, n]);
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+Some errors have detailed explanations: E0282, E0432, E0689.
+For more information about an error, try `rustc --explain E0282`.
+warning: `aether-core` (lib) generated 11 warnings
+error: could not compile `aether-core` (lib) due to 18 previous errors; 11 warnings emitted

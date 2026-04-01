@@ -1,0 +1,320 @@
+    Checking aether-core v0.1.0 (C:\Users\teert\OneDrive\Desktop\New folder (12)\Aether-Lang-master\aether-core)
+warning: unused import: `Neuroplasticity`
+ --> aether-core\src\ml\liquid_tensor.rs:1:36
+  |
+1 | use crate::ml::tensor::{BioTensor, Neuroplasticity};
+  |                                    ^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `alloc::vec`
+  --> aether-core\src\ml\neural.rs:13:5
+   |
+13 | use alloc::vec;
+   |     ^^^^^^^^^^
+
+warning: unused import: `alloc::boxed::Box`
+  --> aether-core\src\ml\neural.rs:17:5
+   |
+17 | use alloc::boxed::Box;
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `KMeansResult` and `KMeans`
+  --> aether-core\src\ml\gossip.rs:22:29
+   |
+22 | use crate::ml::clustering::{KMeans, KMeansResult}; // Reuse existing clustering logic if needed
+   |                             ^^^^^^  ^^^^^^^^^^^^
+
+warning: unused import: `std::boxed::Box`
+  --> aether-core\src\memory.rs:24:5
+   |
+24 | use std::boxed::Box;
+   |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `fabs`
+  --> aether-core\src\memory.rs:26:18
+   |
+26 | use libm::{sqrt, fabs};
+   |                  ^^^^
+
+error[E0599]: `BioTensor` is not an iterator
+   --> aether-core\src\ml\linalg.rs:101:21
+    |
+101 |     diff.mul(&diff).sum() / y_true.shape.iter().product::<usize>() as f64
+    |                     ^^^ `BioTensor` is not an iterator
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `sum` not found for this struct because it doesn't satisfy `BioTensor: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `BioTensor: Iterator`
+            which is required by `&mut BioTensor: Iterator`
+note: the trait `Iterator` must be implemented
+   --> C:\Users\teert\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\iter\traits\iterator.rs:40:1
+    |
+ 40 | pub trait Iterator {
+    | ^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `sum`, perhaps you need to implement one of them:
+            candidate #1: `Iterator`
+            candidate #2: `Sum`
+
+error[E0599]: `BioTensor` is not an iterator
+   --> aether-core\src\ml\linalg.rs:215:26
+    |
+215 |     sqrt(diff.mul(&diff).sum())
+    |                          ^^^ `BioTensor` is not an iterator
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `sum` not found for this struct because it doesn't satisfy `BioTensor: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `BioTensor: Iterator`
+            which is required by `&mut BioTensor: Iterator`
+note: the trait `Iterator` must be implemented
+   --> C:\Users\teert\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\iter\traits\iterator.rs:40:1
+    |
+ 40 | pub trait Iterator {
+    | ^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `sum`, perhaps you need to implement one of them:
+            candidate #1: `Iterator`
+            candidate #2: `Sum`
+
+error[E0599]: `BioTensor` is not an iterator
+   --> aether-core\src\ml\linalg.rs:249:35
+    |
+249 |     let dist_sq = dist.mul(&dist).sum();
+    |                                   ^^^ `BioTensor` is not an iterator
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `sum` not found for this struct because it doesn't satisfy `BioTensor: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `BioTensor: Iterator`
+            which is required by `&mut BioTensor: Iterator`
+note: the trait `Iterator` must be implemented
+   --> C:\Users\teert\.rustup\toolchains\nightly-x86_64-pc-windows-msvc\lib/rustlib/src/rust\library\core\src\iter\traits\iterator.rs:40:1
+    |
+ 40 | pub trait Iterator {
+    | ^^^^^^^^^^^^^^^^^^
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following traits define an item `sum`, perhaps you need to implement one of them:
+            candidate #1: `Iterator`
+            candidate #2: `Sum`
+
+error[E0599]: no method named `add` found for reference `&BioTensor` in the current scope
+   --> aether-core\src\ml\autograd.rs:105:24
+    |
+105 |         let result = a.add(b);
+    |                        ^^^ method not found in `&BioTensor`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no function or associated item named `ones` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\autograd.rs:171:52
+    |
+171 |         grads[target.data.index] = Some(BioTensor::ones(&target_tensor.shape));
+    |                                                    ^^^^ function or associated item not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- function or associated item `ones` not found for this struct
+    |
+note: if you're trying to build a new `BioTensor` consider using one of the following associated functions:
+      BioTensor::new
+      BioTensor::zeros
+      BioTensor::kaiming_uniform
+   --> aether-core\src\ml\tensor.rs:71:5
+    |
+ 71 |     pub fn new(data: &[f64], shape: &[usize]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 80 |     pub fn zeros(shape: &[usize]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+ 86 |     pub fn kaiming_uniform(shape: &[usize]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `transpose` found for reference `&BioTensor` in the current scope
+   --> aether-core\src\ml\autograd.rs:208:58
+    |
+208 |                         let d_lhs = grad.matmul(&rhs_val.transpose());
+    |                                                          ^^^^^^^^^ method not found in `&BioTensor`
+
+error[E0599]: no method named `transpose` found for reference `&BioTensor` in the current scope
+   --> aether-core\src\ml\autograd.rs:212:53
+    |
+212 |                         let transform_lhs = lhs_val.transpose();
+    |                                                     ^^^^^^^^^ method not found in `&BioTensor`
+
+error[E0599]: no method named `add` found for mutable reference `&mut BioTensor` in the current scope
+   --> aether-core\src\ml\autograd.rs:240:36
+    |
+240 |                 let new = existing.add(grad);
+    |                                    ^^^ method not found in `&mut BioTensor`
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:212:20
+    |
+212 |         let z = wx.add(&self.biases);
+    |                    ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `transpose` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:244:32
+    |
+244 |         let w_t = self.weights.transpose();
+    |                                ^^^^^^^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `transpose` not found for this struct
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:259:49
+    |
+259 |                     self.weights = self.weights.add(velocity_w);
+    |                                                 ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:260:47
+    |
+260 |                     self.biases = self.biases.add(velocity_b);
+    |                                               ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:269:46
+    |
+269 |                     *m_w = m_w.scale(*beta1).add(&grad_w.scale(1.0 - beta1));
+    |                                              ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:270:46
+    |
+270 |                     *v_w = v_w.scale(*beta2).add(&grad_w.mul(grad_w).scale(1.0 - beta2));
+    |                                              ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:279:46
+    |
+279 |                     *m_b = m_b.scale(*beta1).add(&grad_b.scale(1.0 - beta1));
+    |                                              ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+error[E0599]: no method named `add` found for struct `BioTensor` in the current scope
+   --> aether-core\src\ml\neural.rs:280:46
+    |
+280 |                     *v_b = v_b.scale(*beta2).add(&grad_b.mul(grad_b).scale(1.0 - beta2));
+    |                                              ^^^ method not found in `BioTensor`
+    |
+   ::: aether-core\src\ml\tensor.rs:64:1
+    |
+ 64 | pub struct BioTensor {
+    | -------------------- method `add` not found for this struct
+    |
+    = help: items from traits can only be used if the trait is implemented and in scope
+    = note: the following trait defines an item `add`, perhaps you need to implement it:
+            candidate #1: `Add`
+
+warning: unused variable: `target`
+   --> aether-core\src\manifold.rs:293:47
+    |
+293 |     pub fn geodesic_partition_centroid(&self, target: ManifoldPoint<D>) -> Option<ManifoldPoint<D>> {
+    |                                               ^^^^^^ help: if this is intentional, prefix it with an underscore: `_target`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `adjacency`
+   --> aether-core\src\manifold.rs:336:21
+    |
+336 |                 let adjacency = self.adjacency[u]; 
+    |                     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_adjacency`
+
+warning: variable does not need to be mutable
+   --> aether-core\src\ml\tensor.rs:118:13
+    |
+118 |         let mut result = BioTensor::zeros(&[m, n]);
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> aether-core\src\ml\tensor.rs:225:13
+    |
+225 |         let mut result = CivilTensor::zeros(&[m, n]);
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `aether-core` (lib) generated 10 warnings
+error: could not compile `aether-core` (lib) due to 16 previous errors; 10 warnings emitted

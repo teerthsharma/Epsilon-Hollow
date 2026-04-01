@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: epsilon-orchestrator-node
+  labels:
+    component: meta-controller
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      component: meta-controller
+  template:
+    metadata:
+      labels:
+        component: meta-controller
+    spec:
+      containers:
+      - name: epsilon-core
+        image: epsilon_orchestrator:latest
+        resources:
+          limits:
+            nvidia.com/gpu: 8
+            memory: "512Gi"
+        command: ["python", "epsilon_core/main.py"]
