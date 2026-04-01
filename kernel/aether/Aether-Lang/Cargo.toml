@@ -1,0 +1,59 @@
+[workspace]
+members = [
+    "crates/aether-core",
+    "crates/aether-lang",
+    "crates/aether-kernel",
+    "crates/aether-cli",
+    "crates/aegis-core",
+    "crates/aegis-cli",
+]
+resolver = "2"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AEGIS Workspace
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Cross-Platform Architecture:
+#   - aegis-core:   Platform-agnostic math, topology, manifold, ML (no_std + std)
+#   - aegis-lang:   Language compiler/interpreter (lexer, parser, AST)
+#   - aegis-kernel: Bare-metal x86_64 microkernel
+#   - aegis-cli:    Cross-platform CLI (Windows/Linux/macOS)
+#
+# Build Commands:
+#   cargo build -p aegis-cli          # Native CLI for current platform
+#   cargo build -p aegis-kernel       # Bare-metal kernel (requires nightly)
+#   cargo test --workspace            # Run all tests
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AEGIS Research Team"]
+license = "MIT"
+repository = "https://github.com/teerthsharma/aether"
+
+[workspace.dependencies]
+# Shared dependencies across workspace
+libm = "0.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
+
+# CLI-specific
+clap = { version = "4.0", features = ["derive"] }
+rustyline = "14.0"
+
+# Kernel-specific
+bootloader = { version = "0.11", default-features = false }
+x86_64 = { version = "0.14", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "lazy", "spin_mutex"] }
+volatile = "0.5"
+heapless = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
