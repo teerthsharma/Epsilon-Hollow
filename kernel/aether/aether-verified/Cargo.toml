@@ -1,0 +1,14 @@
+[package]
+name = "aether_verified"
+version = "0.1.0"
+edition = "2021"
+description = "Lean 4 → C → Rust verified kernels for Epsilon-Hollow"
+license = "Apache-2.0"
+authors = ["Teerth Sharma"]
+
+[dependencies]
+libm = "0.2"
+
+[lib]
+name = "aether_verified"
+path = "src/lib.rs"

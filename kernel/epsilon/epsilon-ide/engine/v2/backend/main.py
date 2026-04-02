@@ -7,11 +7,13 @@ Fixes:
   - memory.flush() now exists (was crashing on shutdown)
   - llama_server_bin passed through config to model_manager
   - Cleaner boot sequence with error recovery
+  - Removed hardcoded /mnt/d/ paths — all paths relative to __file__
 """
 
 import asyncio
 import builtins
 import sys
+import os
 import argparse
 import yaml
 import psutil
@@ -24,7 +26,9 @@ def _stderr_print(*args, **kwargs):
     _real_print(*args, **kwargs)
 builtins.print = _stderr_print
 
-sys.path.insert(0, "/mnt/d/epsilon/v2")
+# Derive v2 root from this file's location instead of hardcoding /mnt/d/epsilon/v2
+V2_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, V2_ROOT)
 
 from backend.tiers.model_manager  import TieredModelManager
 from backend.memory.conversation  import ConversationMemory
@@ -39,7 +43,9 @@ def log(msg: str):
 def ram() -> float:
     return psutil.Process().memory_info().rss / (1024 ** 2)
 
-def load_config(path: str = "/mnt/d/epsilon/v2/config.yaml") -> dict:
+def load_config(path: str = None) -> dict:
+    if path is None:
+        path = os.path.join(V2_ROOT, "config.yaml")
     try:
         with open(path) as f:
             cfg = yaml.safe_load(f)
@@ -71,8 +77,9 @@ async def boot(config: dict):
 
     # ── 2. Conversation memory ────────────────────────────────────────────────
     log("\n[2/4] Loading conversation memory...")
+    default_memory_path = os.path.join(V2_ROOT, "conversation.json")
     memory = ConversationMemory(
-        memory_path=config.get("memory_path", "/mnt/d/epsilon/v2/conversation.json"),
+        memory_path=config.get("memory_path", default_memory_path),
         max_turns=config.get("memory_turns", 10),
     )
     s = memory.stats()
@@ -80,8 +87,9 @@ async def boot(config: dict):
 
     # ── 3. Clara code search ──────────────────────────────────────────────────
     log("\n[3/4] Starting Clara code search...")
+    default_db_path = os.path.join(V2_ROOT, "clara.db")
     try:
-        clara = ClaraOracle(config.get("db_path", "/mnt/d/epsilon/v2/clara.db"))
+        clara = ClaraOracle(config.get("db_path", default_db_path))
         if config.get("crawl_on_start") and config.get("project_dir"):
             clara.crawl(config["project_dir"])
     except Exception as e:
@@ -114,8 +122,8 @@ async def main_async():
                         help="Run both Telegram bot and stdin link")
     parser.add_argument("--oneshot", action="store_true",
                         help="Process one request and exit (for testing)")
-    parser.add_argument("--config", default="/mnt/d/epsilon/v2/config.yaml",
-                        help="Path to config.yaml")
+    parser.add_argument("--config", default=None,
+                        help="Path to config.yaml (default: <v2_root>/config.yaml)")
     args = parser.parse_args()
 
     config = load_config(args.config)

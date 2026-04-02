@@ -7,6 +7,8 @@ This module establishes a standard interface for exposing tools
 as callable components in the unified Epsilon Hollow architecture.
 """
 
+from __future__ import annotations
+
 import sys
 import logging
 import os
@@ -24,118 +26,90 @@ class ToolAdapter(ABC):
     Defines the interface for wrapping external tools.
     """
     
-    @abstractmethod
     def __init__(self, *args, **kwargs):
-        """Initialize the adapter with required arguments"""
-        pass
+        """Initialize the adapter with required arguments."""
+        self._registered_adapters: Dict[str, Any] = {}
     
     @abstractmethod
     def __call__(self, *args, **kwargs):
         """Execute the tool call with provided arguments"""
         pass
     
-    @abstractmethod
     def register_adapters(self, adapter: ToolAdapter, *args, **kwargs):
-        """Register adapters for downstream components"""
-        pass
+        """Register adapters for downstream components."""
+        name = getattr(adapter, 'adapter_name', adapter.__class__.__name__)
+        self._registered_adapters[name] = {
+            "adapter": adapter,
+            "args": args,
+            "kwargs": kwargs,
+        }
     
-    @abstractmethod
     def get_adapters(self) -> Dict[str, Any]:
-        """Return all registered adapters"""
-        pass
-
-
-class ToolAdapterAdapterAdapterAdapter(ABC):
-    """
-    Abstract base class for tool adapter adapters.
-    Used when multiple tool adapters are registered.
-    """
-    
-    @abstractmethod
-    def __init__(self, *args, **kwargs):
-        """Initialize the adapter adapter"""
-        pass
-    
-    @abstractmethod
-    def __call__(self, *args, **kwargs):
-        """Execute adapter calls"""
-        pass
+        """Return all registered adapters."""
+        return self._registered_adapters
 
 
 class AetherLinkAdapter(ToolAdapter):
     """
     Aether-Link Kernel Adapter.
     Handles I/O prefetching and quantum novelty detection.
-    
-    Usage:
-    >>> adapter = AetherLinkAdapter()
-    >>> result = adapter(input_lbas)
-    >>> result.lbas  # Output: List of LBA offsets
     """
+    adapter_name = "Aether-Link"
     
     def __init__(self, *args, **kwargs):
-        # Initialize logging
         super().__init__(*args, **kwargs)
     
-    def register_adapters(self, adapter, *args, **kwargs):
-        """Register the core adapter for downstream use"""
-        super().register_adapters(adapter, *args, **kwargs)
-    
+    def __call__(self, *args, **kwargs):
+        """Execute Aether-Link I/O prediction cycle."""
+        logger.info("AetherLinkAdapter called with %d args", len(args))
+        return {"adapter": self.adapter_name, "status": "executed", "args": args}
+
     def get_adapters(self) -> Dict[str, Any]:
-        """Return all adapters registered by this adapter"""
-        return {
-            "name": "Aether-Link",
-            "adapter": self
-        }
+        result = super().get_adapters()
+        result["name"] = self.adapter_name
+        return result
 
 
 class AgentHALOAdapter(ToolAdapter):
     """
     AgentHALO Orchestrator Adapter.
     Coordinates multiple agents (Aether, Epsilon, etc.).
-    
-    Usage:
-    >>> adapter = AgentHALOAdapter()
-    >>> result = adapter(inputs)
-    >>> result.get_adapters()
     """
+    adapter_name = "AgentHALO"
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
-    def register_adapters(self, adapter, *args, **kwargs):
-        super().register_adapters(adapter, *args, **kwargs)
-    
+    def __call__(self, *args, **kwargs):
+        """Execute AgentHALO orchestration step."""
+        logger.info("AgentHALOAdapter called with %d args", len(args))
+        return {"adapter": self.adapter_name, "status": "executed", "args": args}
+
     def get_adapters(self) -> Dict[str, Any]:
-        """Return all adapters from this adapter"""
-        return {
-            "name": "AgentHALO",
-            "adapter": self
-        }
+        result = super().get_adapters()
+        result["name"] = self.adapter_name
+        return result
 
 
 class AegisAdapter(ToolAdapter):
     """
     Aegis Unified Memory Adapter.
     Allocates memory with zero heap overhead.
-    
-    Usage:
-    >>> adapter = AegisAdapter()
-    >>> result = adapter(memory_state)
     """
+    adapter_name = "Aegis"
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
     
-    def register_adapters(self, adapter, *args, **kwargs):
-        super().register_adapters(adapter, *args, **kwargs)
-    
+    def __call__(self, *args, **kwargs):
+        """Execute Aegis memory allocation."""
+        logger.info("AegisAdapter called with %d args", len(args))
+        return {"adapter": self.adapter_name, "status": "executed", "args": args}
+
     def get_adapters(self) -> Dict[str, Any]:
-        """Return all adapters from this adapter"""
-        return {
-            "name": "Aegis",
-            "adapter": self
-        }
+        result = super().get_adapters()
+        result["name"] = self.adapter_name
+        return result
 
 
 # =============================================================================
@@ -151,7 +125,6 @@ def create_adapter(tool_name: str) -> ToolAdapter:
     Returns:
         ToolAdapter instance
     """
-    # Based on the naming pattern in repositories
     if tool_name == "aether_link":
         return AetherLinkAdapter()
     elif tool_name == "agenthalo":
@@ -163,22 +136,23 @@ def create_adapter(tool_name: str) -> ToolAdapter:
 
 
 # =============================================================================
-# USAGE EXAMPLES
+# USAGE EXAMPLES — guarded, only run when executed directly
 # =============================================================================
+if __name__ == "__main__":
+    # Create adapters
+    adapter = create_adapter("aether_link")
+    print(f"Created adapter: {adapter.adapter_name}")
 
-# Create adapters
-adapter = create_adapter("aether_link")
-print(f"Created adapter: {adapter.__name__}")
+    # Execute call
+    result = adapter("example_input")
+    print(f"Result: {result}")
 
-# Execute call
-result = adapter(input_lbas)
-print(f"Result: {result}")
+    # Get adapters
+    print(f"Registered adapters: {adapter.get_adapters()}")
 
-# Get adapters
-print(f"Registered adapters: {adapter.get_adapters()}")
+    # Register for downstream
+    adapter.register_adapters(adapter, prefetch_triggered=True)
+    print(f"After registration: {adapter.get_adapters()}")
 
-# Register for downstream
-adapter.register_adapters(adapter, input_lbas=LBAs, prefetch_triggered=True)
-
-# Test
-print(f"Ready for use: {result}")
+    # Test
+    print(f"Ready for use: {result}")

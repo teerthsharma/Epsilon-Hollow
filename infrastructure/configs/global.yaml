@@ -11,7 +11,11 @@ safety:
   constitutional_alignment: true
   alignment_threshold: 0.99
   max_tool_execution_time_sec: 10
-  allowed_filesystem_scope: "/sandbox/"
+  # NOTE: This scope is ASPIRATIONAL and NOT currently enforced by
+  # infrastructure/tools/python_executor.py (UnsafePythonExecutor).
+  # The executor uses cwd= but does not jail filesystem access.
+  # Real enforcement requires container/namespace/seccomp isolation.
+  allowed_filesystem_scope: "/sandbox/"  # NOT ENFORCED — see note above
 
 training:
   meta_learning_rate: 0.0001
