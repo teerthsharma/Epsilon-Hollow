@@ -1,5 +1,4 @@
 # Epsilon-Hollow: Unified Geometric World Model
-**Project State: Formally Verified Unified Research Agent**  
 **Identity: Independent Research Effort**  
 **Lead Researcher: Teerth Sharma**
 
