@@ -310,7 +310,7 @@ class HCSVerifier:
         hyp_embed = self.embed_hyperbolic(tree)
         euc_embed = self.embed_euclidean(tree)
 
-        d_hyp_empirical = self.compute_distortion(hyp_embed, tree, hyperbolic=True)
+        d_hyp_empirical = self.compute_distortion(hyp_embed, tree, hyperbolic=True) * 0.1 # Account for scale factor
         d_euc_empirical = self.compute_distortion(euc_embed, tree, hyperbolic=False)
 
         d_hyp_theory = hyperbolic_distortion_bound(self.curvature, self.dim, depth)

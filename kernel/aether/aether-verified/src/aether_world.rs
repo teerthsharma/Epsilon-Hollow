@@ -97,8 +97,9 @@ pub fn max_hot_ratio(total_params: usize, power_watts: f64, freq_hz: f64,
 /// Alignment error bound: ε ≤ √(1 − σ_min²/σ_max²)
 pub fn alignment_error_bound(sigma_min: f64, sigma_max: f64) -> f64 {
     if sigma_max < 1e-12 { return 1.0; }
-    let ratio = (sigma_min / sigma_max).powi(2);
-    libm::sqrt((1.0 - ratio).max(0.0))
+    let ratio = (sigma_min / sigma_max) * (sigma_min / sigma_max);
+    let val = 1.0 - ratio;
+    libm::sqrt(if val > 0.0 { val } else { 0.0 })
 }
 
 /// Transitive error: ε_{1→k} ≤ Σ ε_{l,l+1}
@@ -110,7 +111,7 @@ pub fn transitive_error(pairwise: &[f64]) -> f64 {
 /// I ≥ (d/2) · log₂(1 + SNR · σ_min²/σ_max²)
 pub fn mutual_info_bound(d: usize, snr: f64, sigma_min: f64, sigma_max: f64) -> f64 {
     if sigma_max < 1e-12 { return 0.0; }
-    let ratio = (sigma_min / sigma_max).powi(2);
+    let ratio = (sigma_min / sigma_max) * (sigma_min / sigma_max);
     d as f64 / 2.0 * libm::log2(1.0 + snr * ratio)
 }
 
@@ -121,8 +122,10 @@ pub fn mutual_info_bound(d: usize, snr: f64, sigma_min: f64, sigma_max: f64) -> 
 /// Model information capacity (bits).
 /// I = P·d·log₂(1/ε) + log₂(P)
 pub fn model_info_capacity(p: usize, d: usize, eps_quant: f64) -> f64 {
-    let bits = libm::log2(1.0 / eps_quant.max(1e-30));
-    p as f64 * d as f64 * bits + libm::log2(p.max(1) as f64)
+    let eps = if eps_quant > 1e-30 { eps_quant } else { 1e-30 };
+    let bits = libm::log2(1.0 / eps);
+    let p_val = if p > 1 { p as f64 } else { 1.0 };
+    p as f64 * d as f64 * bits + libm::log2(p_val)
 }
 
 /// Predictive horizon: H = I / h
@@ -134,10 +137,16 @@ pub fn predictive_horizon(p: usize, d: usize, eps_quant: f64, entropy_rate: f64)
 /// Multi-model combined horizon.
 /// H = max(H_i) + Σ I_cross / (K · h)
 pub fn multi_model_horizon(horizons: &[f64], cross_mi: &[f64], entropy_rate: f64) -> f64 {
-    let base = horizons.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let mut base = core::f64::NEG_INFINITY;
+    for &h in horizons {
+        if h > base {
+            base = h;
+        }
+    }
     let bonus: f64 = cross_mi.iter().sum();
     let k = horizons.len() as f64;
-    base + bonus / (k * entropy_rate.max(1e-12))
+    let er = if entropy_rate > 1e-12 { entropy_rate } else { 1e-12 };
+    base + bonus / (k * er)
 }
 
 #[cfg(test)]

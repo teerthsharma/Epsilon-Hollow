@@ -90,11 +90,18 @@ def main():
         default=8742,
         help="Port for IDE backend (default: 8742)",
     )
+    parser.add_argument(
+        "--dev-mode",
+        action="store_true",
+        help="Launch in developer mode",
+    )
     args = parser.parse_args()
 
     print("=" * 52)
     print("  EPSILON-HOLLOW ORCHESTRATOR")
     print(f"  Mode: {args.mode}")
+    if args.dev_mode:
+        print("  Developer Mode: Enabled")
     print("=" * 52)
 
     if args.mode in ("agent", "full"):
