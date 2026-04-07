@@ -21,9 +21,14 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from kernel.epsilon.epsilon_core.memory import TopologicalManifoldMemory
-from kernel.epsilon.epsilon_core.perception import MultimodalEncoder
-from kernel.epsilon.epsilon_core.meta_controller import MetaController
+try:
+    from kernel.epsilon.epsilon_core.memory import TopologicalManifoldMemory
+    from kernel.epsilon.epsilon_core.perception import MultimodalEncoder
+    from kernel.epsilon.epsilon_core.meta_controller import MetaController
+except ModuleNotFoundError:
+    from epsilon_core.memory import TopologicalManifoldMemory
+    from epsilon_core.perception import MultimodalEncoder
+    from epsilon_core.meta_controller import MetaController
 
 logger = logging.getLogger(__name__)
 

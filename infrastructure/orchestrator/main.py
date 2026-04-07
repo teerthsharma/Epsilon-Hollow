@@ -17,6 +17,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))  # infrastructure/orchestrator -> repo root
 KERNEL_DIR = os.path.join(REPO_ROOT, "kernel", "epsilon")
 
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 # Add kernel to path so epsilon_core imports work
 if KERNEL_DIR not in sys.path:
     sys.path.insert(0, KERNEL_DIR)
@@ -45,8 +48,8 @@ def launch_agent():
     return True
 
 
-def launch_ide_backend():
-    """Launch the sealMega IDE backend on port 8742."""
+def launch_ide_backend(port: int = 8742, dev_mode: bool = False):
+    """Launch the sealMega IDE backend."""
     ide_backend_dir = os.path.join(
         REPO_ROOT, "kernel", "epsilon", "epsilon-ide", "pentesting", "backend"
     )
@@ -61,11 +64,14 @@ def launch_ide_backend():
 
     try:
         import uvicorn
-        print("[Epsilon-Hollow] Starting IDE backend on http://127.0.0.1:8742")
+        os.environ.setdefault("EPSILON_WORKSPACE_ROOT", REPO_ROOT)
+        if dev_mode:
+            os.environ["EPSILON_DEV_MODE"] = "1"
+        print(f"[Epsilon-Hollow] Starting IDE backend on http://127.0.0.1:{port}")
         # Import the FastAPI app from the backend
         sys.path.insert(0, ide_backend_dir)
         from main import app
-        uvicorn.run(app, host="127.0.0.1", port=8742)
+        uvicorn.run(app, host="127.0.0.1", port=port)
     except ImportError as e:
         print(f"[Epsilon-Hollow] Cannot start IDE backend: {e}")
         print("[Epsilon-Hollow] Install dependencies: pip install fastapi uvicorn")
@@ -108,7 +114,7 @@ def main():
         launch_agent()
 
     if args.mode in ("ide", "full"):
-        launch_ide_backend()
+        launch_ide_backend(port=args.port, dev_mode=args.dev_mode)
 
 
 if __name__ == "__main__":
