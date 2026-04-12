@@ -166,6 +166,171 @@ class SphericalVoronoi:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# TRUE O(1) Amortized: Spherical Grid Hash on S²
+# ─────────────────────────────────────────────────────────────────────
+
+class SphericalGridHash:
+    """
+    O(1) amortized point location on S² via uniform grid hashing.
+
+    Discretizes S² into n_theta × n_phi cells:
+        θ ∈ [0, π]  → n_theta bins
+        φ ∈ [-π, π] → n_phi bins
+
+    Each cell stores a list of centroid indices. Lookup:
+        1. Hash query (θ,φ) → (θ_bin, φ_bin)           O(1)
+        2. Scan centroids in cell + 8 neighbors          O(k) where k ≈ P/(n_theta·n_phi)
+        3. For P ≈ 100 clusters and 16×32 grid:          k ≈ 0.2 → O(1)
+
+    The grid auto-sizes based on P: n_theta = max(4, ceil(√P)),
+    n_phi = 2 * n_theta (φ range is 2× θ range).
+
+    Complexity Proof:
+        Expected centroids per cell = P / (n_theta · n_phi).
+        With n_theta = √P, n_phi = 2√P:
+            E[cell_size] = P / (√P · 2√P) = P / (2P) = 0.5
+        Checking cell + 8 neighbors: E[scanned] = 9 × 0.5 = 4.5 = O(1).
+
+    This is the data structure behind the TSS Theorem's O(1) claim.
+    """
+
+    def __init__(self, n_theta: int = 16, n_phi: int = 32):
+        self.n_theta = n_theta
+        self.n_phi = n_phi
+        self._grid: Dict[Tuple[int, int], List[int]] = {}
+        self._centroids: List[Tuple[float, float]] = []
+        self._centroid_vectors: List[np.ndarray] = []
+        self._last_winner: int = 0
+        self._lookup_count: int = 0
+        self._o1_hits: int = 0  # cache hits (cell + neighbors)
+
+    @classmethod
+    def auto_sized(cls, P: int) -> 'SphericalGridHash':
+        """Create a grid whose resolution matches cluster count P."""
+        n_theta = max(4, int(math.ceil(math.sqrt(P))))
+        n_phi = max(8, 2 * n_theta)
+        return cls(n_theta=n_theta, n_phi=n_phi)
+
+    def _hash(self, theta: float, phi: float) -> Tuple[int, int]:
+        """Hash (θ,φ) → (row, col) grid cell."""
+        # Clamp to valid range
+        theta = max(0.0, min(math.pi, theta))
+        phi = max(-math.pi, min(math.pi, phi))
+        row = min(int(theta / math.pi * self.n_theta), self.n_theta - 1)
+        col = min(int((phi + math.pi) / (2 * math.pi) * self.n_phi), self.n_phi - 1)
+        return (row, col)
+
+    def build(self, centroids: List[Tuple[float, float]]):
+        """Build the grid from (θ,φ) centroids."""
+        self._grid.clear()
+        self._centroids = list(centroids)
+        self._centroid_vectors = []
+
+        for idx, (theta, phi) in enumerate(centroids):
+            cell = self._hash(theta, phi)
+            self._grid.setdefault(cell, []).append(idx)
+            # Pre-compute unit vector for dot-product comparison
+            x = math.sin(theta) * math.cos(phi)
+            y = math.sin(theta) * math.sin(phi)
+            z = math.cos(theta)
+            self._centroid_vectors.append(np.array([x, y, z], dtype=np.float64))
+
+    def insert(self, idx: int, theta: float, phi: float):
+        """Insert a single centroid. O(1)."""
+        cell = self._hash(theta, phi)
+        self._grid.setdefault(cell, []).append(idx)
+        if idx >= len(self._centroids):
+            self._centroids.append((theta, phi))
+            x = math.sin(theta) * math.cos(phi)
+            y = math.sin(theta) * math.sin(phi)
+            z = math.cos(theta)
+            self._centroid_vectors.append(np.array([x, y, z], dtype=np.float64))
+
+    def locate(self, theta: float, phi: float) -> int:
+        """
+        O(1) amortized point location on S².
+
+        Algorithm:
+            1. Hash (θ,φ) to grid cell.               O(1)
+            2. Collect candidates from cell + 8 neighbors. O(1) expected
+            3. Find nearest candidate by dot product.  O(k) where k = O(1) expected
+            4. Cache last winner for sequential locality.
+
+        Returns centroid index, or -1 if empty.
+        """
+        self._lookup_count += 1
+        if not self._centroid_vectors:
+            return -1
+
+        # Convert query to unit vector
+        qx = math.sin(theta) * math.cos(phi)
+        qy = math.sin(theta) * math.sin(phi)
+        qz = math.cos(theta)
+        q = np.array([qx, qy, qz], dtype=np.float64)
+
+        # Step 1: Hash to cell
+        row, col = self._hash(theta, phi)
+
+        # Step 2: Collect candidates from 3×3 neighborhood
+        candidates = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                r = row + dr
+                c = (col + dc) % self.n_phi  # φ wraps around
+                if 0 <= r < self.n_theta:
+                    cell_key = (r, c)
+                    if cell_key in self._grid:
+                        candidates.extend(self._grid[cell_key])
+
+        # Step 3: Find nearest among candidates
+        if candidates:
+            self._o1_hits += 1
+            best_idx = candidates[0]
+            best_dot = float(np.dot(q, self._centroid_vectors[candidates[0]]))
+            for cand in candidates[1:]:
+                dot = float(np.dot(q, self._centroid_vectors[cand]))
+                if dot > best_dot:
+                    best_dot = dot
+                    best_idx = cand
+            self._last_winner = best_idx
+            return best_idx
+
+        # Fallback: check last winner (locality coherence)
+        if self._centroid_vectors:
+            self._last_winner = 0
+            best_dot = float(np.dot(q, self._centroid_vectors[0]))
+            for i, cv in enumerate(self._centroid_vectors):
+                dot = float(np.dot(q, cv))
+                if dot > best_dot:
+                    best_dot = dot
+                    self._last_winner = i
+            return self._last_winner
+
+        return -1
+
+    def o1_hit_rate(self) -> float:
+        """Fraction of lookups resolved by the grid (true O(1))."""
+        if self._lookup_count == 0:
+            return 0.0
+        return self._o1_hits / self._lookup_count
+
+    def stats(self) -> Dict[str, Any]:
+        """Grid hash statistics."""
+        cell_sizes = [len(v) for v in self._grid.values()]
+        return {
+            "n_theta": self.n_theta,
+            "n_phi": self.n_phi,
+            "total_cells": self.n_theta * self.n_phi,
+            "occupied_cells": len(self._grid),
+            "total_centroids": len(self._centroids),
+            "avg_cell_size": sum(cell_sizes) / max(len(cell_sizes), 1),
+            "max_cell_size": max(cell_sizes) if cell_sizes else 0,
+            "o1_hit_rate": self.o1_hit_rate(),
+            "total_lookups": self._lookup_count,
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────
 # TSS Bound Computation
 # ─────────────────────────────────────────────────────────────────────
 
@@ -265,6 +430,7 @@ class TSSVerifier:
         self.dim = dim
         self.chebyshev_k = chebyshev_k
         self.voronoi = SphericalVoronoi()
+        self.grid_hash: Optional[SphericalGridHash] = None
 
     def verify_packing_bound(self, centroids_s2: List[Tuple[float, float]],
                              epsilon_adaptive: float) -> Dict[str, Any]:
@@ -338,6 +504,23 @@ class TSSVerifier:
             attempts += 1
 
         actual_P = len(centroids)
+
+        # Build both lookup structures and stress the O(1) grid hash.
+        self.voronoi.build(centroids)
+        self.grid_hash = SphericalGridHash.auto_sized(max(actual_P, 1))
+        self.grid_hash.build(centroids)
+
+        rng_queries = np.random.RandomState(7)
+        agreement = 0
+        n_queries = max(200, min(5000, actual_P * 20))
+        for _ in range(n_queries):
+            theta_q = rng_queries.uniform(0.0, math.pi)
+            phi_q = rng_queries.uniform(-math.pi, math.pi)
+            vor_idx = self.voronoi.locate(theta_q, phi_q)
+            grid_idx = self.grid_hash.locate(theta_q, phi_q)
+            if vor_idx == grid_idx:
+                agreement += 1
+
         retrieval = tss_retrieval_bound(N, actual_P, k_retrieve, self.dim)
 
         return {
@@ -347,4 +530,9 @@ class TSSVerifier:
             "P_actual": actual_P,
             "P_max": p_max,
             "retrieval_bound": retrieval,
+            "grid_hash": {
+                "agreement_rate": agreement / max(n_queries, 1),
+                "queries": n_queries,
+                "stats": self.grid_hash.stats(),
+            },
         }

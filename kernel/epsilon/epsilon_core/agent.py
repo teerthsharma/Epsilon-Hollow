@@ -230,6 +230,13 @@ class EpsilonHollowCore:
             result = {"status": "internal_reasoning"}
             reward = 0.05
 
+        elif decision["action"] == "explore":
+            result = {
+                "status": "exploration",
+                "target": decision.get("target", "memory_frontier"),
+            }
+            reward = 0.1
+
         # ── 5. LEARN ─────────────────────────────────────────────
         # Store experience on the manifold
         self.memory.store(
