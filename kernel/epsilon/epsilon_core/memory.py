@@ -21,6 +21,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+try:
+    from kernel.epsilon.epsilon_core.topological_state_sync import SphericalGridHash
+except ModuleNotFoundError:
+    try:
+        from epsilon_core.topological_state_sync import SphericalGridHash
+    except ModuleNotFoundError:
+        from topological_state_sync import SphericalGridHash  # type: ignore
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Union-Find (Disjoint Set) for O(α(n)) component tracking
@@ -73,7 +81,7 @@ class TopologicalManifoldMemory:
 
     Performance Guarantees:
         • store():    O(n) for ε-neighborhood update
-        • retrieve(): O(C) centroid lookup + O(k log k) within cluster
+        • retrieve(): O(1) amortized centroid lookup + O(k log k) within cluster
         • betti_0():  O(1) — maintained incrementally
     """
 
@@ -109,6 +117,8 @@ class TopologicalManifoldMemory:
         # S² centroid cache: cluster_id → (θ, φ) on unit sphere
         self._centroid_cache: Dict[int, Tuple[float, float]] = {}
         self._centroids_dirty = True
+        self._grid_hash: Optional[SphericalGridHash] = None
+        self._grid_index_to_component: List[int] = []
 
     # ─── Store ────────────────────────────────────────────────────
     def store(self, vector: np.ndarray, metadata: Optional[Dict] = None) -> int:
@@ -192,19 +202,27 @@ class TopologicalManifoldMemory:
         # Step 1: Find nearest centroid on S²
         q_theta, q_phi = self._project_to_s2(query_vector)
         best_cluster = -1
-        best_angular_dist = float("inf")
 
-        for cluster_id, (c_theta, c_phi) in self._centroid_cache.items():
-            # Great-circle distance on S²:
-            # d = arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ − φ₂))
-            cos_d = (math.sin(c_theta) * math.sin(q_theta) +
-                     math.cos(c_theta) * math.cos(q_theta) *
-                     math.cos(c_phi - q_phi))
-            cos_d = max(-1.0, min(1.0, cos_d))
-            dist = math.acos(cos_d)
-            if dist < best_angular_dist:
-                best_angular_dist = dist
-                best_cluster = cluster_id
+        # Fast path: O(1) amortized lookup through spherical grid hash.
+        if self._grid_hash is not None and self._grid_index_to_component:
+            grid_idx = self._grid_hash.locate(q_theta, q_phi)
+            if 0 <= grid_idx < len(self._grid_index_to_component):
+                best_cluster = self._grid_index_to_component[grid_idx]
+
+        # Robust fallback: exact spherical scan if grid is unavailable.
+        if best_cluster < 0:
+            best_angular_dist = float("inf")
+            for cluster_id, (c_theta, c_phi) in self._centroid_cache.items():
+                # Great-circle distance on S²:
+                # d = arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ − φ₂))
+                cos_d = (math.sin(c_theta) * math.sin(q_theta) +
+                         math.cos(c_theta) * math.cos(q_theta) *
+                         math.cos(c_phi - q_phi))
+                cos_d = max(-1.0, min(1.0, cos_d))
+                dist = math.acos(cos_d)
+                if dist < best_angular_dist:
+                    best_angular_dist = dist
+                    best_cluster = cluster_id
 
         if best_cluster < 0:
             # Fallback: brute-force cosine
@@ -290,6 +308,7 @@ class TopologicalManifoldMemory:
             return {"size": 0, "betti_0": 0, "dim": self.dim}
 
         self._rebuild_vectors_if_dirty()
+        self._rebuild_centroids_if_dirty()
         # Compute mean pairwise distance (sampled for large N)
         sample_size = min(n, 200)
         indices = np.random.choice(n, sample_size, replace=False) if n > sample_size else np.arange(n)
@@ -298,6 +317,11 @@ class TopologicalManifoldMemory:
         sims = sampled @ sampled.T
         np.fill_diagonal(sims, 0)
         mean_sim = float(np.mean(sims))
+        grid_stats = self._grid_hash.stats() if self._grid_hash is not None else {
+            "o1_hit_rate": 0.0,
+            "occupied_cells": 0,
+            "total_cells": 0,
+        }
 
         return {
             "size": n,
@@ -307,6 +331,9 @@ class TopologicalManifoldMemory:
             "num_centroids": len(self._centroid_cache),
             "capacity_used": n / self.capacity,
             "chebyshev_k": self.chebyshev_k,
+            "o1_hit_rate": grid_stats["o1_hit_rate"],
+            "grid_occupied_cells": grid_stats["occupied_cells"],
+            "grid_total_cells": grid_stats["total_cells"],
         }
 
     # ═══════════════════════════════════════════════════════════════
@@ -339,6 +366,17 @@ class TopologicalManifoldMemory:
             # Project to S²
             theta, phi = self._project_to_s2(centroid)
             self._centroid_cache[comp_id] = (theta, phi)
+
+        # Build O(1) lookup map from S² centroid list.
+        component_ids = sorted(self._centroid_cache.keys())
+        if component_ids:
+            centroid_list = [self._centroid_cache[cid] for cid in component_ids]
+            self._grid_hash = SphericalGridHash.auto_sized(len(centroid_list))
+            self._grid_hash.build(centroid_list)
+            self._grid_index_to_component = component_ids
+        else:
+            self._grid_hash = None
+            self._grid_index_to_component = []
 
         self._centroids_dirty = False
 

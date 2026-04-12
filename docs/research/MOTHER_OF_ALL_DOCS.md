@@ -83,6 +83,28 @@ Replaces traditional file storage with a geometric persistence layer. Files are 
 ### 3.3 Security and Hardening
 All research endpoints are gated behind `--dev-mode` and mandatory bearer token authentication. The `ConstitutionalSafetyFilter` uses information-entropy checks to prevent the model from generating unsafe or unstable trajectories during high-speed reasoning.
 
+### 3.4 Unified Liquid Memory World Model
+The kernel now includes an explicit unified world model at `kernel/epsilon/epsilon_core/world_model.py` with the following operational components:
+- **LatentPredictor:** transition dynamics using spectral contraction,
+  $$s_{t+1} = \mathrm{SCM}(s_t + W a_t),$$
+  with a learnable action projection matrix $W$ and an attractor manifold for stable convergence.
+- **RewardPredictor:** hybrid value signal combining extrinsic memory similarity, intrinsic novelty pressure, and thermodynamic erasure-aware penalties from TEB.
+- **LiquidMemoryWorldModel:** master orchestrator that binds Perception (`MultimodalEncoder`), Temporal Memory (`TopologicalManifoldMemory`), forward dreaming, and reward estimation into one class.
+
+The `dream(latent_state, action_sequence)` rollout path enables "learning in imagination" by unrolling hypothetical actions through latent dynamics while continuously querying topological memory and scoring futures.
+
+### 3.5 Simulation Engine and Theorem Mapping
+The executable simulation harness now lives at `kernel/epsilon/epsilon_core/simulation_engine.py`.
+
+It provides an instrumented pipeline that:
+- Initializes the `LiquidMemoryWorldModel`.
+- Runs synthetic memory population and retrieval benchmarks (TSS O(1) hit-rate checks).
+- Executes forward dream trajectories and reports SCM contraction behavior.
+- Runs integrated T1-T10 theorem verification through a single API surface.
+- Reports WPHB horizon, HCS separation verdict, and TEB thermodynamic viability in one run.
+
+This unifies empirical runtime behavior with the theorem stack and provides a single verification entrypoint for regression checks.
+
 ---
 
 ## 📈 4. H100 Scale Analysis
