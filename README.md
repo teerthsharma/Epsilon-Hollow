@@ -1,4 +1,4 @@
-# Epsilon-Hollow
+# Invented by Teerth Sharma — Epsilon-Hollow
 
 Technical setup and operations guide for the runnable paths in this repository.
 
