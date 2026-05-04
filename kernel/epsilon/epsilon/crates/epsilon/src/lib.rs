@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! ═══════════════════════════════════════════════════════════════════════════════
 //! Epsilon — Geometric State Transfer via Topological Surgery on Hollow Manifolds
 //! ═══════════════════════════════════════════════════════════════════════════════

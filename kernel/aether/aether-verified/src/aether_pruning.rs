@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! aether_pruning.rs
 //!
 //! Provenance: Lean 4 → C → Rust

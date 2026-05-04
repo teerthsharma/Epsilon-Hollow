@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 'use client';
 
 import React, { useEffect, useState } from 'react';

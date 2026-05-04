@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 # backend/tiers/bitnet_model.py
 #
 # The only file in the entire project that touches the AI model.

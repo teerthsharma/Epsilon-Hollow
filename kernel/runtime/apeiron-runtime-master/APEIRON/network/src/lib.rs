@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! # AETHER-Link: Ultra-Fast I/O Super-Kernel
 //!
 //! **AETHER-Link** is a high-performance I/O prediction kernel designed for

@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! Fast math approximations for sub-nanosecond operations.
 //!
 //! These functions trade precision for speed, suitable for probabilistic

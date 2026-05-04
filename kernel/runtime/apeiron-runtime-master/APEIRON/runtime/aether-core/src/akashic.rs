@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use crate::memory::ManifoldHeap;
 use cfg_if::cfg_if;
 cfg_if! {

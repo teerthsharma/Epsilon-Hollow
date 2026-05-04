@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 import React, { useState, useRef, useEffect } from 'react';
 import { useApeiron } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';

@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 """
 Single-model simulation entrypoint for Epsilon-Hollow unified world model.
 

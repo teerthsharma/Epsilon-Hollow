@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 // src/ml/tensor.rs
 // PHASE SEPARATION: Bio-Time (Kernel) vs. Civil-Time (Daemon)
 

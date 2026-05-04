@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use anyhow::{Error as E, Result};
 use candle_core::{Device, Tensor};
 use candle_core::quantized::gguf_file;

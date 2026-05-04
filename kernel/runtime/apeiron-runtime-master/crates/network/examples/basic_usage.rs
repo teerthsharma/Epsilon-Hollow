@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! Basic usage example for AETHER-Link kernel.
 //!
 //! Run with: cargo run --example basic_usage

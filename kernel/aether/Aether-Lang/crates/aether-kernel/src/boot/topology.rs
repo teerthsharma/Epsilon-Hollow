@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use alloc::vec::Vec;
 
 /// Represents the I/O capabilities of the organism (hardware).

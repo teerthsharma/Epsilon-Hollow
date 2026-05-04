@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use pyo3::prelude::*;
 use crate::Interpreter;
 use crate::parser::Parser;

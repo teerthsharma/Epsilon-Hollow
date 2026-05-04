@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
 # AEGIS CLI - Command Line Interface for AEGIS 3D ML Language

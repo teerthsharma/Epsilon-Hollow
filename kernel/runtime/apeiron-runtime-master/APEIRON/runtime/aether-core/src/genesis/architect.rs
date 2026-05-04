@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! The Architect (Self-Editing)
 //! Handles hot-swapping of Aether scripts and rollback mechanisms.
 //! Requires `std` for file I/O.

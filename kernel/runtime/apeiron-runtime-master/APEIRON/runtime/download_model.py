@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 import os
 import sys
 from huggingface_hub import hf_hub_download
