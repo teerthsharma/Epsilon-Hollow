@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use sanctuary_dsp::FftProcessor;
 use aether_link::AetherLinkKernel;
 use aegis_core::memory::TitanClock;

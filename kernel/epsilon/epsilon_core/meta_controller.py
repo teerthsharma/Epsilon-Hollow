@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 from __future__ import annotations
 
 import math

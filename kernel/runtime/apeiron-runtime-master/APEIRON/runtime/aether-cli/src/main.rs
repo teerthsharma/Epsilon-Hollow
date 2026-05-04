@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 ﻿use clap::Parser;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};

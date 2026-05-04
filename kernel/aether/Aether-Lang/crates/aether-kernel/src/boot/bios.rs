@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use core::iter::Iterator;
 use aether_core::PhysAddr;
 use multiboot2::{BootInformation, BootInformationHeader};

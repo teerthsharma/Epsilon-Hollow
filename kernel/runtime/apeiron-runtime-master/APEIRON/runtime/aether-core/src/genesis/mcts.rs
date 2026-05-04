@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! The Simulator (MCTS)
 //! "System 2" reasoning engine. Using Monte Carlo Tree Search for planning.
 

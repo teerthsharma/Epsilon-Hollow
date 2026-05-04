@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 import { useApeironStore } from '../lib/store';
 import { useEffect, useState } from 'react';
 

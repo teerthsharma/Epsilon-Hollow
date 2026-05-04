@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 use alloc::vec::Vec;
 use acpi::{AcpiHandler, PhysicalMapping};
 use core::ptr::NonNull;

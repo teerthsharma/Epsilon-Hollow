@@ -1,3 +1,6 @@
+# Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+# SPDX-License-Identifier: Epsilon-Hollow
+
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
 # Epsilon IDE Engine v2 — Automated Setup Script

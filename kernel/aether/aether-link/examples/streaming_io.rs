@@ -1,3 +1,6 @@
+// Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: Epsilon-Hollow
+
 //! Streaming I/O simulation for AETHER-Link.
 //!
 //! This example simulates real-time I/O processing with different
