@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://epsilon-hollow/schemas/manifold_payload.schema.json",
+  "title": "ManifoldPayload",
+  "description": "Cross-language contract for ManifoldPayload<D>. The Rust struct is defined at kernel/epsilon/epsilon/crates/epsilon/src/manifold.rs:264 and is the unit of context teleportation. The Python reference implementation in kernel/epsilon/epsilon_core must serialize to and deserialize from this shape.",
+  "type": "object",
+  "required": [
+    "dim",
+    "point_count",
+    "points",
+    "signature_b0",
+    "signature_b1",
+    "signature_b2",
+    "liveness_anchor"
+  ],
+  "properties": {
+    "dim": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The const generic D from the Rust type. Receivers must reject payloads whose dim does not match their compiled monomorphisation."
+    },
+    "point_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of valid entries in `points`. Must be <= MAX_PAYLOAD_POINTS (compiled into the receiver)."
+    },
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": { "type": "number" },
+        "description": "An EpsilonPoint<D>: a length-`dim` array of f64 coordinates."
+      },
+      "description": "The first `point_count` entries are valid; the rest may be padded zeros."
+    },
+    "signature_b0": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Betti number β₀ — number of connected components."
+    },
+    "signature_b1": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Betti number β₁ — number of 1-dimensional holes."
+    },
+    "signature_b2": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Betti number β₂. For a well-sampled S² point cloud this equals 1. Must satisfy the Euler-characteristic relation 2 − β₀ + β₁ within the receiver's tolerance."
+    },
+    "liveness_anchor": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Inherited liveness score from source agent (used by the Chebyshev guard)."
+    }
+  },
+  "additionalProperties": false
+}

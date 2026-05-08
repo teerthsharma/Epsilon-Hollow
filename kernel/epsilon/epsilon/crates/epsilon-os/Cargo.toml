@@ -1,0 +1,18 @@
+[package]
+name = "epsilon-os"
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+description = "Epsilon-Hollow Topological OS — CLI shell with Minimax 2.7 world model"
+
+[dependencies]
+aether-core = { path = "../aether-core", features = ["std"] }
+aether_verified = { path = "../../../../aether/aether-verified" }
+libm = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[[bin]]
+name = "epsilon-os"
+path = "src/main.rs"

@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-﻿//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //! Epsilon Hollow Cube Manifold & Injectable Payloads
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //!
@@ -65,15 +65,18 @@ const MAX_PAYLOAD_POINTS: usize = 64;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EpsilonPoint<const D: usize> {
+    /// Coordinates of the point in D-dimensional space.
     #[cfg_attr(feature = "serde", serde(with = "serde_big_array::BigArray"))]
     pub coords: [f64; D],
 }
 
 impl<const D: usize> EpsilonPoint<D> {
+    /// Create the origin point (all zero coordinates).
     pub const fn zero() -> Self {
         Self { coords: [0.0; D] }
     }
 
+    /// Construct a point from a coordinate array.
     pub fn new(coords: [f64; D]) -> Self {
         Self { coords }
     }
@@ -106,13 +109,16 @@ impl<const D: usize> EpsilonPoint<D> {
 /// Computes Betti numbers Î²â‚€ (connected components) and Î²â‚ (cycles).
 #[derive(Debug)]
 pub struct SparseGraph<const D: usize> {
+    /// Backing storage for points (only the first `point_count` entries are valid).
     pub points: [EpsilonPoint<D>; MAX_POINTS],
+    /// Number of points currently inserted into the graph.
     pub point_count: usize,
     epsilon: f64,
     adjacency: [u64; MAX_POINTS],
 }
 
 impl<const D: usize> SparseGraph<D> {
+    /// Construct an empty sparse graph with the given ε neighborhood radius.
     pub fn new(epsilon: f64) -> Self {
         Self {
             points: [EpsilonPoint::zero(); MAX_POINTS],
@@ -124,18 +130,18 @@ impl<const D: usize> SparseGraph<D> {
 
     /// Add a point and compute its sparse attention edges.
     pub fn add_point(&mut self, point: EpsilonPoint<D>) -> Option<usize> {
-        if self.point_count >= MAX_POINTS { return None; }
+        if self.point_count >= MAX_POINTS {
+            return None;
+        }
 
         let idx = self.point_count;
         self.points[idx] = point;
 
         let mut mask = 0u64;
         for i in 0..idx {
-            if point.is_neighbor(&self.points[i], self.epsilon) {
-                if i < 64 {
-                    mask |= 1 << i;
-                    self.adjacency[i] |= 1 << (idx % 64);
-                }
+            if point.is_neighbor(&self.points[i], self.epsilon) && i < 64 {
+                mask |= 1 << i;
+                self.adjacency[i] |= 1 << (idx % 64);
             }
         }
         self.adjacency[idx] = mask;
@@ -153,13 +159,17 @@ impl<const D: usize> SparseGraph<D> {
 
     /// Compute Î²â‚€ (connected components) via DFS.
     pub fn compute_betti_0(&self) -> u32 {
-        if self.point_count == 0 { return 0; }
+        if self.point_count == 0 {
+            return 0;
+        }
 
         let mut visited = [false; MAX_POINTS];
         let mut components = 0u32;
 
         for start in 0..self.point_count {
-            if visited[start] { continue; }
+            if visited[start] {
+                continue;
+            }
             components += 1;
 
             let mut stack = [0usize; 64];
@@ -169,7 +179,9 @@ impl<const D: usize> SparseGraph<D> {
             while top > 0 {
                 top -= 1;
                 let current = stack[top];
-                if visited[current] { continue; }
+                if visited[current] {
+                    continue;
+                }
                 visited[current] = true;
 
                 for (n, v) in visited.iter().enumerate().take(64.min(self.point_count)) {
@@ -196,7 +208,11 @@ impl<const D: usize> SparseGraph<D> {
 
         let b0 = self.compute_betti_0() as i32;
         let b1 = e - v + b0;
-        if b1 > 0 { b1 as u32 } else { 0 }
+        if b1 > 0 {
+            b1 as u32
+        } else {
+            0
+        }
     }
 
     /// Estimate beta2 using the Euler characteristic identity for S2.
@@ -206,11 +222,17 @@ impl<const D: usize> SparseGraph<D> {
     ///
     /// For degenerate inputs (disconnected graph) the result is clamped to 0.
     pub fn compute_betti_2_euler(&self) -> u32 {
-        if self.point_count == 0 { return 0; }
+        if self.point_count == 0 {
+            return 0;
+        }
         let b0 = self.compute_betti_0() as i32;
         let b1 = self.estimate_betti_1() as i32;
         let b2 = 2 - b0 + b1;
-        if b2 > 0 { b2 as u32 } else { 0 }
+        if b2 > 0 {
+            b2 as u32
+        } else {
+            0
+        }
     }
 
     /// Full topological shape signature: (beta0, beta1, beta2).
@@ -244,11 +266,19 @@ pub enum SurgeryError {
     /// The receiving void is already occupied
     VoidOccupied,
     /// Payload Betti signature doesn't match void boundary constraints
-    TopologyMismatch { expected_b0: u32, actual_b0: u32 },
+    TopologyMismatch {
+        /// Expected B0 implied by the void boundary.
+        expected_b0: u32,
+        /// Actual B0 measured on the payload.
+        actual_b0: u32,
+    },
     /// Payload is empty (zero points)
     EmptyPayload,
     /// Shell is degenerate (Î²â‚€ â‰  1, not a single connected component)
-    DegenerateShell { shell_b0: u32 },
+    DegenerateShell {
+        /// Measured B0 of the offending shell.
+        shell_b0: u32,
+    },
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -262,10 +292,14 @@ pub enum SurgeryError {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ManifoldPayload<const D: usize> {
+    /// Embedded points in this payload (fixed-capacity buffer).
     #[cfg_attr(feature = "serde", serde(with = "serde_big_array::BigArray"))]
     pub points: [EpsilonPoint<D>; MAX_PAYLOAD_POINTS],
+    /// Number of valid points stored in `points`.
     pub point_count: usize,
+    /// b0 Betti number (connected component count).
     pub signature_b0: u32,
+    /// b1 Betti number (independent loop count).
     pub signature_b1: u32,
     /// β₂ derived from Euler characteristic identity: 2 − β₀ + β₁.
     /// For a well-sampled S² point cloud this equals 1.
@@ -275,6 +309,7 @@ pub struct ManifoldPayload<const D: usize> {
 }
 
 impl<const D: usize> ManifoldPayload<D> {
+    /// Construct an empty payload (no points, zero Betti signature).
     pub fn new() -> Self {
         Self {
             points: [EpsilonPoint::zero(); MAX_PAYLOAD_POINTS],
@@ -304,11 +339,15 @@ impl<const D: usize> ManifoldPayload<D> {
     }
 
     /// Check if this payload is non-empty.
-    pub fn is_valid(&self) -> bool { self.point_count > 0 }
+    pub fn is_valid(&self) -> bool {
+        self.point_count > 0
+    }
 }
 
 impl<const D: usize> Default for ManifoldPayload<D> {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -351,10 +390,14 @@ impl<const D: usize> HollowCubeManifold<D> {
     }
 
     /// Shell's topological shape (Î²â‚€, Î²â‚).
-    pub fn shell_shape(&self) -> (u32, u32) { self.shell.shape() }
+    pub fn shell_shape(&self) -> (u32, u32) {
+        self.shell.shape()
+    }
 
     /// Is the void empty and ready for injection?
-    pub fn void_is_empty(&self) -> bool { self.void_payload.is_none() }
+    pub fn void_is_empty(&self) -> bool {
+        self.void_payload.is_none()
+    }
 
     /// Does the manifold have an unassimilated payload?
     pub fn has_pending_payload(&self) -> bool {
@@ -373,10 +416,7 @@ impl<const D: usize> HollowCubeManifold<D> {
     /// Caller MUST hold a [`SurgeryPermit`](crate::SurgeryPermit) from the
     /// [`SurgeryGovernor`](crate::SurgeryGovernor) to ensure derivative
     /// gain is zeroed. Enforced at the `sys_context_inject` level.
-    pub fn inject_into_void(
-        &mut self,
-        payload: ManifoldPayload<D>,
-    ) -> Result<(), SurgeryError> {
+    pub fn inject_into_void(&mut self, payload: ManifoldPayload<D>) -> Result<(), SurgeryError> {
         if self.void_payload.is_some() {
             return Err(SurgeryError::VoidOccupied);
         }
@@ -519,7 +559,10 @@ mod tests {
 
         assert_eq!(
             hollow.inject_into_void(payload),
-            Err(SurgeryError::TopologyMismatch { expected_b0: 1, actual_b0: 2 })
+            Err(SurgeryError::TopologyMismatch {
+                expected_b0: 1,
+                actual_b0: 2
+            })
         );
     }
 

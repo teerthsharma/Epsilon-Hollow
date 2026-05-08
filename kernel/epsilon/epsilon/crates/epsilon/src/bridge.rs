@@ -84,7 +84,6 @@ pub const DEFAULT_SPHERE_EPSILON: f64 = 1.0;
 /// Protects against division-by-zero in normalization.
 const MIN_PROJ_NORM: f64 = 1e-12;
 
-
 /// Maximum epsilon for widened retry in build_graph_with_retry().
 /// Beyond this radius the graph degenerates to a single clique with no topology.
 const MAX_RETRY_EPSILON: f64 = 2.0;
@@ -112,7 +111,9 @@ impl Xoshiro256 {
         let s1 = Self::splitmix64(&mut sm);
         let s2 = Self::splitmix64(&mut sm);
         let s3 = Self::splitmix64(&mut sm);
-        Self { s: [s0, s1, s2, s3] }
+        Self {
+            s: [s0, s1, s2, s3],
+        }
     }
 
     fn splitmix64(x: &mut u64) -> u64 {
@@ -125,10 +126,7 @@ impl Xoshiro256 {
 
     /// Generate next u64
     fn next_u64(&mut self) -> u64 {
-        let result = self.s[1]
-            .wrapping_mul(5)
-            .rotate_left(7)
-            .wrapping_mul(9);
+        let result = self.s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         let t = self.s[1] << 17;
         self.s[2] ^= self.s[0];
         self.s[3] ^= self.s[1];
@@ -175,6 +173,7 @@ impl Xoshiro256 {
 pub struct ProjectionMatrix<const E: usize, const D: usize> {
     /// Column-major: weights[e][d] = M[d][e]
     weights: [[f64; D]; E],
+    /// RNG seed used to construct the projection (for reproducibility).
     pub seed: u64,
 }
 
@@ -202,8 +201,8 @@ impl<const E: usize, const D: usize> ProjectionMatrix<E, D> {
     pub fn project(&self, v: &[f64; E]) -> [f64; D] {
         let mut out = [0.0f64; D];
         for (e, &ve) in v.iter().enumerate() {
-            for d in 0..D {
-                out[d] += self.weights[e][d] * ve;
+            for (d, slot) in out.iter_mut().enumerate() {
+                *slot += self.weights[e][d] * ve;
             }
         }
         out
@@ -218,11 +217,19 @@ impl<const E: usize, const D: usize> ProjectionMatrix<E, D> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeError {
     /// Too few tokens to guarantee sufficient angular coverage of S²
-    InsufficientTokens { provided: usize, required: usize },
+    InsufficientTokens {
+        /// Number of tokens supplied.
+        provided: usize,
+        /// Minimum required token count.
+        required: usize,
+    },
     /// All projected vectors were degenerate (near-zero norm)
     AllDegenerateProjections,
     /// Projected graph is topologically disconnected (β₀ > 1)
-    DisconnectedGraph { beta0: u32 },
+    DisconnectedGraph {
+        /// Measured connected-component count of the projected graph.
+        beta0: u32,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -305,10 +312,7 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
     /// - `BridgeError::InsufficientTokens` if fewer than `MIN_TOKENS` provided
     /// - `BridgeError::AllDegenerateProjections` if all projections collapse
     /// - `BridgeError::DisconnectedGraph` if β₀ > 1 with provided epsilon
-    pub fn build_graph(
-        &self,
-        embeddings: &[[f64; E]],
-    ) -> Result<SparseGraph<D>, BridgeError> {
+    pub fn build_graph(&self, embeddings: &[[f64; E]]) -> Result<SparseGraph<D>, BridgeError> {
         // Guard: minimum sampling density for topological recovery
         if embeddings.len() < MIN_TOKENS {
             return Err(BridgeError::InsufficientTokens {
@@ -394,7 +398,7 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
             // Create a temporary bridge with the wider epsilon
             let temp_bridge = Self {
                 projection: ProjectionMatrix {
-                    weights: self.projection.weights.clone(),
+                    weights: self.projection.weights,
                     seed: self.projection.seed,
                 },
                 epsilon: current_eps,
@@ -471,8 +475,10 @@ mod tests {
         let p2 = m2.project(&v);
 
         for i in 0..3 {
-            assert!((p1[i] - p2[i]).abs() < 1e-15,
-                "Same seed must produce identical projection");
+            assert!(
+                (p1[i] - p2[i]).abs() < 1e-15,
+                "Same seed must produce identical projection"
+            );
         }
     }
 
@@ -486,8 +492,15 @@ mod tests {
         let p2 = m2.project(&v);
 
         // Different seeds → different projections (with overwhelming probability)
-        let max_diff: f64 = p1.iter().zip(p2.iter()).map(|(a,b)| (a-b).abs()).fold(0.0_f64, f64::max);
-        assert!(max_diff > 1e-10, "Different seeds should produce different results");
+        let max_diff: f64 = p1
+            .iter()
+            .zip(p2.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_diff > 1e-10,
+            "Different seeds should produce different results"
+        );
     }
 
     // ─── Spherical Normalization Tests ─────────────────────────────────────
@@ -497,14 +510,17 @@ mod tests {
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xDEADBEEF);
         let v: [f64; 32] = make_embedding(1.5, 7);
 
-        let point = bridge.project_single(&v).expect("Should project successfully");
+        let point = bridge
+            .project_single(&v)
+            .expect("Should project successfully");
 
         // ||point||₂ must equal 1.0 (on unit sphere)
         let norm_sq: f64 = point.coords.iter().map(|&x| x * x).sum();
         let norm = sqrt(norm_sq);
         assert!(
             (norm - 1.0).abs() < 1e-10,
-            "Projected point must lie on unit sphere, got ||p||₂ = {}", norm
+            "Projected point must lie on unit sphere, got ||p||₂ = {}",
+            norm
         );
     }
 
@@ -530,7 +546,8 @@ mod tests {
         let bridge = EmbeddingBridge::<32, 3>::with_seed(42);
         let embeddings = make_embeddings::<32>(MIN_TOKENS + 10);
 
-        let graph = bridge.build_graph(&embeddings)
+        let graph = bridge
+            .build_graph(&embeddings)
             .expect("Should build graph from sufficient tokens");
 
         let beta0 = graph.compute_betti_0();
@@ -557,7 +574,8 @@ mod tests {
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xDEADBEEF);
         let embeddings = make_embeddings::<32>(MIN_TOKENS + 5);
 
-        let payload = bridge.build_payload_with_retry(&embeddings, 5.0, 10)
+        let payload = bridge
+            .build_payload_with_retry(&embeddings, 5.0, 10)
             .expect("Should build valid payload");
 
         assert!(payload.is_valid());
@@ -571,7 +589,8 @@ mod tests {
 
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xBEEF);
         let embeddings = make_embeddings::<32>(MIN_TOKENS + 5);
-        let payload = bridge.build_payload(&embeddings, 3.0)
+        let payload = bridge
+            .build_payload(&embeddings, 3.0)
             .expect("Should build valid payload");
 
         // Build receiver shell — needs at least one point with β₀=1
@@ -583,7 +602,11 @@ mod tests {
 
         // The full pipeline: embedding → payload → void injection
         let result = hollow.inject_into_void(payload);
-        assert!(result.is_ok(), "Valid payload must be accepted by void: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Valid payload must be accepted by void: {:?}",
+            result
+        );
 
         let merged = hollow.assimilate();
         assert!(merged > 0, "Assimilation must merge at least one point");
@@ -612,7 +635,8 @@ mod tests {
         assert!(
             close_dist < far_dist,
             "Similar embeddings ({:.6}) must map closer than dissimilar ({:.6})",
-            close_dist, far_dist
+            close_dist,
+            far_dist
         );
     }
 
@@ -647,9 +671,15 @@ mod tests {
         let embeddings = make_embeddings::<32>(MIN_TOKENS);
 
         let result_fail = bridge.build_graph(&embeddings);
-        assert!(matches!(result_fail, Err(BridgeError::DisconnectedGraph { .. })));
+        assert!(matches!(
+            result_fail,
+            Err(BridgeError::DisconnectedGraph { .. })
+        ));
 
         let result_success = bridge.build_graph_with_retry(&embeddings, 30);
-        assert!(result_success.is_ok(), "Retry logic must eventually connect the graph");
+        assert!(
+            result_success.is_ok(),
+            "Retry logic must eventually connect the graph"
+        );
     }
 }

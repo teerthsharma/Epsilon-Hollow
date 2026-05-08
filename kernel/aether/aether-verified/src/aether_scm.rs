@@ -27,11 +27,7 @@ pub fn convergence_half_life(rho: f64) -> f64 {
 }
 
 /// Verify contraction: ‖T(S₁) − T(S₂)‖ ≤ Lip · ‖S₁ − S₂‖
-pub fn verify_contraction(
-    dist_before: f64,
-    dist_after: f64,
-    alpha_min: f64,
-) -> bool {
+pub fn verify_contraction(dist_before: f64, dist_after: f64, alpha_min: f64) -> bool {
     let lip = lipschitz_constant(alpha_min);
     dist_after <= lip * dist_before + 1e-10
 }

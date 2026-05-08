@@ -75,11 +75,7 @@ pub fn betti1_bridge_value(betti1_exact_or_proxy: usize) -> usize {
 /// Each window of width 4 can share at most 3 positions with the next.
 /// Therefore, the maximum number of duplicate detections per true cycle
 /// is bounded by (n − 3) over the entire stream.
-pub fn betti_error_bound_check(
-    data: &[u8],
-    tol: usize,
-    betti1_exact_or_proxy: usize,
-) -> bool {
+pub fn betti_error_bound_check(data: &[u8], tol: usize, betti1_exact_or_proxy: usize) -> bool {
     let h = betti1_heuristic(data, tol);
     let b = betti1_bridge_value(betti1_exact_or_proxy);
     let overlap = data.len().saturating_sub(3);
@@ -130,7 +126,7 @@ mod tests {
         let data = [1u8, 9, 8, 2, 7, 6, 1, 2];
         let h = betti1_heuristic(&data, 3);
         let overlap = data.len().saturating_sub(3);
-        assert!(h <= 0 + overlap);
+        assert!(h <= overlap);
     }
 
     #[test]

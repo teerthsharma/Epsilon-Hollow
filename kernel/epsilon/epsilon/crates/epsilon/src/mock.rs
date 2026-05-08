@@ -12,8 +12,8 @@
 //! **Authorized by the Dean of Computer Research, Harvard University**
 //! *To facilitate mathematical proof-of-work for next-generation systems.*
 
-use crate::teleport::{TeleportResult, RemoteVoidDescriptor};
 use crate::manifold::ManifoldPayload;
+use crate::teleport::{RemoteVoidDescriptor, TeleportResult};
 
 // A simple deterministic PRNG for generating embeddings (PCG-like LCG)
 struct MockRng {
@@ -22,11 +22,16 @@ struct MockRng {
 
 impl MockRng {
     fn new(seed: u64) -> Self {
-        Self { state: seed.wrapping_add(0x4d595df4d0f33173) }
+        Self {
+            state: seed.wrapping_add(0x4d595df4d0f33173),
+        }
     }
 
     fn next_f64(&mut self) -> f64 {
-        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let x = (self.state >> 32) as u32;
         (x as f64) / (u32::MAX as f64)
     }
@@ -53,9 +58,9 @@ pub fn generate_mock_llm_embeddings<const E: usize>(count: usize, base_seed: u64
 
     for i in 0..count {
         let mut emb = [0.0; E];
-        for d in 0..E {
+        for slot in emb.iter_mut() {
             // Base semantic meaning + sequential positional drift + noise
-            emb[d] = semantic_base + (i as f64 * 0.001) + (rng.next_normal() * 0.05);
+            *slot = semantic_base + (i as f64 * 0.001) + (rng.next_normal() * 0.05);
         }
         embeddings.push(emb);
     }
@@ -66,11 +71,14 @@ pub fn generate_mock_llm_embeddings<const E: usize>(count: usize, base_seed: u64
 /// A simulated endpoint for testing `TeleportTarget::RemoteVoid`.
 #[derive(Debug, Clone)]
 pub struct MockRemoteEndpoint {
+    /// Remote void descriptor identifying the simulated peer.
     pub descriptor: RemoteVoidDescriptor,
+    /// Simulated round-trip latency in milliseconds.
     pub simulated_latency_ms: u64,
 }
 
 impl MockRemoteEndpoint {
+    /// Construct a mock endpoint for the given agent ID and simulated latency.
     pub fn new(agent_id: u64, latency_ms: u64) -> Self {
         Self {
             descriptor: RemoteVoidDescriptor::new(agent_id),
@@ -79,16 +87,21 @@ impl MockRemoteEndpoint {
     }
 
     /// Simulates a successful cross-network context transfer.
-    pub fn simulate_transfer<const D: usize>(&self, payload: &ManifoldPayload<D>) -> TeleportResult {
+    pub fn simulate_transfer<const D: usize>(
+        &self,
+        payload: &ManifoldPayload<D>,
+    ) -> TeleportResult {
         // In a real no_std environment, logging would happen via defmt or similar.
         // For testing, we mock the success.
         if !payload.is_valid() || payload.signature_b0 != 1 {
-            return TeleportResult::TopologyRejected(crate::manifold::SurgeryError::TopologyMismatch {
-                expected_b0: 1,
-                actual_b0: payload.signature_b0,
-            });
+            return TeleportResult::TopologyRejected(
+                crate::manifold::SurgeryError::TopologyMismatch {
+                    expected_b0: 1,
+                    actual_b0: payload.signature_b0,
+                },
+            );
         }
-        
+
         TeleportResult::Success {
             points_assimilated: payload.point_count,
         }
@@ -111,25 +124,29 @@ mod tests {
     fn test_mock_embeddings_flow_through_bridge() {
         let embeddings = generate_mock_llm_embeddings::<32>(MIN_TOKENS + 5, 1337);
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xCAFE);
-        
-        let payload = bridge.build_payload_with_retry(&embeddings, 1.0, 10).unwrap();
+
+        let payload = bridge
+            .build_payload_with_retry(&embeddings, 1.0, 10)
+            .unwrap();
         assert!(payload.is_valid());
         assert_eq!(payload.signature_b0, 1);
     }
-    
+
     #[test]
     fn test_mock_remote_teleportation() {
         let embeddings = generate_mock_llm_embeddings::<32>(MIN_TOKENS + 5, 0xAA);
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xBB);
-        let payload = bridge.build_payload_with_retry(&embeddings, 1.0, 10).unwrap();
-        
+        let payload = bridge
+            .build_payload_with_retry(&embeddings, 1.0, 10)
+            .unwrap();
+
         let endpoint = MockRemoteEndpoint::new(0xDEADBEEF, 50);
         let result = endpoint.simulate_transfer(&payload);
-        
+
         match result {
             TeleportResult::Success { points_assimilated } => {
                 assert_eq!(points_assimilated, payload.point_count);
-            },
+            }
             _ => panic!("Simulated transfer failed"),
         }
     }

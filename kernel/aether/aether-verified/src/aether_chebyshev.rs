@@ -75,6 +75,7 @@ pub fn chebyshev_guard_check(x: &[f64], k: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec::Vec;
 
     #[test]
     fn test_mean_basic() {

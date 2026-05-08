@@ -49,6 +49,7 @@ pub fn governor_error(r_target: f64, delta: f64, epsilon: f64) -> f64 {
 ///
 /// The Lean 4 proof of `govStep_lyapunov` guarantees V(e_{t+1}) ≤ V(e_t)
 /// for the Lyapunov function V(e) = e².
+#[allow(clippy::too_many_arguments)] // PID controller naturally takes all gains/limits.
 pub fn governor_step(
     epsilon: f64,
     e_prev: f64,
@@ -129,6 +130,6 @@ mod tests {
     #[test]
     fn test_clamp_bounds() {
         let eps = governor_step(0.5, 0.0, 100.0, 1.0, 10.0, 0.0, 0.1, 0.9, 0.3);
-        assert!(eps >= 0.1 && eps <= 0.9, "Clamp violated: {}", eps);
+        assert!((0.1..=0.9).contains(&eps), "Clamp violated: {}", eps);
     }
 }

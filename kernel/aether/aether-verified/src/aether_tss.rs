@@ -15,9 +15,10 @@
 /// Compute maximum cluster count from spherical cap packing.
 ///
 /// P_max = 4 / sin²(θ_min / 2)
+#[inline]
 pub fn p_max(theta_min: f64) -> f64 {
     let sin_half = libm::sin(theta_min / 2.0);
-    if sin_half.abs() < 1e-12 {
+    if libm::fabs(sin_half) < 1e-12 {
         return f64::INFINITY;
     }
     4.0 / (sin_half * sin_half)
@@ -40,8 +41,7 @@ pub fn epsilon_from_chebyshev(mu: f64, sigma: f64, k: f64) -> f64 {
 
 /// Great-circle distance on S² between two points (θ₁,φ₁) and (θ₂,φ₂).
 pub fn great_circle_distance(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
-    let cos_d = libm::sin(t1) * libm::sin(t2)
-        + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
+    let cos_d = libm::sin(t1) * libm::sin(t2) + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
     libm::acos(cos_d.max(-1.0).min(1.0))
 }
 
@@ -67,6 +67,7 @@ pub fn verify_separation(centroids: &[(f64, f64)], theta_min: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     #[test]
     fn test_p_max_basic() {

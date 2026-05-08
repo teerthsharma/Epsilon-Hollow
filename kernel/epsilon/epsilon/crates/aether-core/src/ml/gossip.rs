@@ -22,10 +22,9 @@
 #![allow(dead_code)]
 
 use libm::sqrt;
-use crate::ml::clustering::{KMeans, KMeansResult}; // Reuse existing clustering logic if needed
 
 /// Maximum dimension for the manifold points
-const MAX_DIM: usize = 3; 
+const MAX_DIM: usize = 3;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Core Structures
@@ -36,7 +35,7 @@ const MAX_DIM: usize = 3;
 pub struct GossipNode {
     /// Unique ID of the core
     pub id: usize,
-    
+
     /// Local data shard (simulated)
     local_data: heapless::Vec<[f64; MAX_DIM], 256>,
 
@@ -77,31 +76,31 @@ impl GossipNode {
 
         let mut sum = [0.0; MAX_DIM];
         for p in &self.local_data {
-            for i in 0..MAX_DIM {
-                sum[i] += p[i];
+            for (i, slot) in sum.iter_mut().enumerate() {
+                *slot += p[i];
             }
         }
 
         let n = self.local_data.len() as f64;
-        for i in 0..MAX_DIM {
-            self.local_centroid[i] = sum[i] / n;
+        for (i, slot) in self.local_centroid.iter_mut().enumerate() {
+            *slot = sum[i] / n;
         }
 
         // Initially, global estimate is just the local centroid
-        if self.weight <= 1.0 { 
-             self.global_estimate = self.local_centroid;
+        if self.weight <= 1.0 {
+            self.global_estimate = self.local_centroid;
         }
     }
 
     /// Receive a gossip message (neighbor's estimate) and update local state
     /// Uses exponential moving average or weighted average for consensus.
-    /// 
+    ///
     /// Formula: NewEstimate = (OldEstimate * Weight + NeighborEstimate) / (Weight + 1)
     pub fn update_consensus(&mut self, neighbor_estimate: [f64; MAX_DIM]) {
         let alpha = 0.5; // Mixing rate. 0.5 means equal weight to self and neighbor (fast mixing)
 
-        for i in 0..MAX_DIM {
-            self.global_estimate[i] = (self.global_estimate[i] * (1.0 - alpha)) + (neighbor_estimate[i] * alpha);
+        for (i, slot) in self.global_estimate.iter_mut().enumerate() {
+            *slot = (*slot * (1.0 - alpha)) + (neighbor_estimate[i] * alpha);
         }
     }
 }
@@ -115,7 +114,14 @@ pub struct GossipRing {
     pub nodes: heapless::Vec<GossipNode, 16>, // Max 16 cores for simulation
 }
 
+impl Default for GossipRing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GossipRing {
+    /// Create an empty gossip ring.
     pub fn new() -> Self {
         Self {
             nodes: heapless::Vec::new(),
@@ -169,21 +175,21 @@ impl GossipRing {
         // Calculate global mean of estimates
         let mut sum = [0.0; MAX_DIM];
         for node in &self.nodes {
-            for i in 0..MAX_DIM {
-                sum[i] += node.global_estimate[i];
+            for (i, slot) in sum.iter_mut().enumerate() {
+                *slot += node.global_estimate[i];
             }
         }
         let n = self.nodes.len() as f64;
         let mut mean = [0.0; MAX_DIM];
-        for i in 0..MAX_DIM {
-            mean[i] = sum[i] / n;
+        for (i, slot) in mean.iter_mut().enumerate() {
+            *slot = sum[i] / n;
         }
 
         // Check max deviation from mean
         for node in &self.nodes {
             let mut dist_sq = 0.0;
-            for i in 0..MAX_DIM {
-                let d = node.global_estimate[i] - mean[i];
+            for (i, &m) in mean.iter().enumerate() {
+                let d = node.global_estimate[i] - m;
                 dist_sq += d * d;
             }
             if sqrt(dist_sq) > tolerance {
@@ -220,10 +226,10 @@ mod tests {
         ring.add_node(n1);
 
         // Expected global average: [5, 5, 0]
-        
+
         // Run gossip
         let iters = ring.converge(0.1, 100);
-        
+
         println!("Converged in {} iterations", iters);
 
         // Verify

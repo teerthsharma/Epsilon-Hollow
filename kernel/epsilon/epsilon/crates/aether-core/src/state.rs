@@ -138,7 +138,10 @@ impl<const D: usize> Sub for SystemState<D> {
 
     fn sub(self, other: Self) -> [f64; D] {
         let mut result = [0.0; D];
-        for (r, (a, b)) in result.iter_mut().zip(self.vector.iter().zip(other.vector.iter())) {
+        for (r, (a, b)) in result
+            .iter_mut()
+            .zip(self.vector.iter().zip(other.vector.iter()))
+        {
             *r = a - b;
         }
         result
@@ -213,5 +216,40 @@ mod tests {
         let s2 = SystemState::new([0.0, 0.0, 0.0, 0.0], 0);
 
         assert!((s1.manhattan_deviation(&s2) - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_max_deviation_picks_largest_component() {
+        let s1 = SystemState::new([0.1, 0.5, 0.3, 0.2], 0);
+        let s2 = SystemState::new([0.0, 0.0, 0.0, 0.0], 0);
+        assert!((s1.max_deviation(&s2) - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_magnitude_matches_origin_deviation() {
+        let s = SystemState::new([1.0, 2.0, 2.0, 0.0], 0);
+        let z = SystemState::<4>::zero();
+        assert!((s.magnitude() - s.deviation(&z)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_elapsed_saturates_on_underflow() {
+        let later = SystemState::<4>::new([0.0; 4], 100);
+        let earlier = SystemState::<4>::new([0.0; 4], 50);
+        assert_eq!(later.elapsed_since(&earlier), 50);
+        assert_eq!(earlier.elapsed_since(&later), 0);
+    }
+
+    #[test]
+    fn test_deviation_is_symmetric() {
+        let s1 = SystemState::new([1.0, -2.0, 3.0, -4.0], 0);
+        let s2 = SystemState::new([-5.0, 6.0, -7.0, 8.0], 0);
+        assert!((s1.deviation(&s2) - s2.deviation(&s1)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_const_d_64_compiles_and_runs() {
+        let s = SystemState::<64>::zero();
+        assert!((s.magnitude() - 0.0).abs() < 1e-10);
     }
 }

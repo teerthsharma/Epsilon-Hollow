@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn test_fast_atan_one() {
         let result = fast_atan(1.0);
-        let expected = 0.7853981633974483; // π/4
+        let expected = core::f32::consts::FRAC_PI_4;
         assert!((result - expected).abs() < 0.02);
     }
 

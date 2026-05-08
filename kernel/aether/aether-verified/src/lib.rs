@@ -23,25 +23,27 @@
 //!   - `aether_hcs`:       T5: Hyperbolic Capacity Separation (distortion proof)
 //!   - `aether_world`:     T6-T10: RGCS, PHKP, TEB, CMA, WPHB (H100 world model)
 #![no_std]
+#![warn(missing_docs)]
+#![deny(unsafe_code)]
 
 #[cfg(test)]
 extern crate std;
 
 // ── Round 1: Foundation Kernels ──────────────────────────────────
-pub mod aether_pruning;
-pub mod aether_governor;
-pub mod aether_chebyshev;
 pub mod aether_betti;
+pub mod aether_chebyshev;
+pub mod aether_governor;
+pub mod aether_pruning;
 
 // ── Round 2: Novel Theorem Kernels ───────────────────────────────
-pub mod aether_tss;
-pub mod aether_scm;
-pub mod aether_gmc;
 pub mod aether_agcr;
+pub mod aether_gmc;
 pub mod aether_hcs;
+pub mod aether_scm;
+pub mod aether_tss;
 pub mod aether_world;
 
-pub use aether_pruning::*;
-pub use aether_governor::*;
-pub use aether_chebyshev::*;
 pub use aether_betti::*;
+pub use aether_chebyshev::*;
+pub use aether_governor::*;
+pub use aether_pruning::*;

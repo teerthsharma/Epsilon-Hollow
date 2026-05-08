@@ -72,22 +72,22 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
+#![warn(missing_docs)]
+#![deny(unsafe_code)]
+
 pub mod bridge;
-pub mod manifold;
 pub mod governor;
+pub mod manifold;
 pub mod memory;
-pub mod teleport;
 pub mod mock;
+pub mod teleport;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Public API Re-exports
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub use bridge::{EmbeddingBridge, BridgeError, MIN_TOKENS, DEFAULT_SPHERE_EPSILON};
-pub use manifold::{
-    HollowCubeManifold, ManifoldPayload, SurgeryError,
-    EpsilonPoint, SparseGraph,
-};
+pub use bridge::{BridgeError, EmbeddingBridge, DEFAULT_SPHERE_EPSILON, MIN_TOKENS};
 pub use governor::{SurgeryGovernor, SurgeryPermit};
-pub use memory::{LivenessAnchor, ChebyshevGuard};
-pub use teleport::{TeleportTarget, TeleportResult, sys_teleport_context, RemoteVoidDescriptor};
+pub use manifold::{EpsilonPoint, HollowCubeManifold, ManifoldPayload, SparseGraph, SurgeryError};
+pub use memory::{ChebyshevGuard, LivenessAnchor};
+pub use teleport::{sys_teleport_context, RemoteVoidDescriptor, TeleportResult, TeleportTarget};
