@@ -220,8 +220,12 @@ impl AetherLinkKernel {
         // Adaptive threshold evolution
         self.epsilon += self.lambda[0] * a1;
         // Manual clamp for no_std: clamp(0.1, 0.9)
-        if self.epsilon < 0.1 { self.epsilon = 0.1; }
-        if self.epsilon > 0.9 { self.epsilon = 0.9; }
+        if self.epsilon < 0.1 {
+            self.epsilon = 0.1;
+        }
+        if self.epsilon > 0.9 {
+            self.epsilon = 0.9;
+        }
 
         // Compute fetch probability via sigmoid
         let exponent = -(self.lambda[2] * a3 + self.bias);

@@ -316,4 +316,3 @@ mod tests {
         assert!(gov.should_trigger(0.6));
     }
 }
-

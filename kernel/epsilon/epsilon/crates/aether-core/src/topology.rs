@@ -181,13 +181,30 @@ pub enum VerifyResult {
     Pass,
 
     /// Density out of expected range
-    InvalidDensity { actual: f64, min: f64, max: f64 },
+    InvalidDensity {
+        /// Observed density.
+        actual: f64,
+        /// Lower bound of acceptable range.
+        min: f64,
+        /// Upper bound of acceptable range.
+        max: f64,
+    },
 
     /// Too many loops (possible obfuscation)
-    ExcessiveLoops { count: u32, max: u32 },
+    ExcessiveLoops {
+        /// Observed loop count.
+        count: u32,
+        /// Maximum allowed loops.
+        max: u32,
+    },
 
     /// Shape too different from reference
-    ShapeMismatch { distance: f64, threshold: f64 },
+    ShapeMismatch {
+        /// Topological distance to the reference shape.
+        distance: f64,
+        /// Maximum allowed distance.
+        threshold: f64,
+    },
 }
 
 /// Verify binary data against topological constraints
@@ -334,9 +351,6 @@ mod tests {
         // Verify returns a result (may pass or fail based on heuristics)
         let result = verify_shape(&prologue);
         // Just ensure it doesn't panic
-        match result {
-            VerifyResult::Pass => {}
-            _ => {}
-        }
+        let _ = result;
     }
 }

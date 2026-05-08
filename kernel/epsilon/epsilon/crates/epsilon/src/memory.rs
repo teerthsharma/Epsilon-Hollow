@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-﻿//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //! Epsilon Memory Guards â€” Chebyshev Liveness Inheritance
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //!
@@ -55,9 +55,13 @@ use libm::sqrt;
 /// - `anchor_liveness`: Recommended initial liveness for Injected objects
 #[derive(Debug, Clone, Copy)]
 pub struct LivenessAnchor {
+    /// Mean liveness from the source agent's heap.
     pub mean: f64,
+    /// Standard deviation of liveness scores.
     pub std_dev: f64,
+    /// Number of standard deviations for the safe boundary.
     pub k: f64,
+    /// Recommended initial liveness for injected objects.
     pub anchor_liveness: f64,
 }
 
@@ -83,9 +87,7 @@ impl LivenessAnchor {
 
         let n = samples.len() as f64;
         let mean = samples.iter().sum::<f64>() / n;
-        let variance = samples.iter()
-            .map(|x| (x - mean) * (x - mean))
-            .sum::<f64>() / n;
+        let variance = samples.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / n;
         let std_dev = sqrt(if variance < 0.0 { 0.0 } else { variance });
 
         Self {
@@ -139,7 +141,11 @@ impl ChebyshevGuard {
     /// Create a guard from a set of liveness samples.
     pub fn from_samples(samples: &[f64]) -> Self {
         if samples.is_empty() {
-            return Self { mean: 0.0, std_dev: 0.0, k: 2.0 };
+            return Self {
+                mean: 0.0,
+                std_dev: 0.0,
+                k: 2.0,
+            };
         }
 
         let n = samples.len() as f64;
@@ -172,7 +178,9 @@ impl ChebyshevGuard {
     ///
     /// Returns `true` if the object should NOT be evicted.
     pub fn is_safe(&self, liveness: f64) -> bool {
-        if liveness >= self.mean { return true; }
+        if liveness >= self.mean {
+            return true;
+        }
         let boundary = self.mean - (self.k * self.std_dev);
         liveness > boundary
     }
@@ -232,14 +240,12 @@ mod tests {
         assert!(
             guard.is_safe(anchor.anchor_liveness),
             "anchor_liveness ({:.2}) must be safe (boundary={:.2})",
-            anchor.anchor_liveness, guard.safe_boundary()
+            anchor.anchor_liveness,
+            guard.safe_boundary()
         );
 
         // Object with zero liveness (t_alive=0 without inheritance) â†’ evictable
-        assert!(
-            !guard.is_safe(0.0),
-            "Zero-liveness should be evictable"
-        );
+        assert!(!guard.is_safe(0.0), "Zero-liveness should be evictable");
     }
 
     #[test]

@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "kernel/epsilon/epsilon/crates/aether-core",
+    "kernel/epsilon/epsilon/crates/epsilon",
+    "kernel/epsilon/epsilon/crates/epsilon-os",
+    "kernel/aether/aether-link",
+    "kernel/aether/aether-verified",
+]
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Epsilon-Hollow — Unified Cargo Workspace
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Members:
+#   - aether-core:     Math foundation (topology, manifolds, PD control, memory)
+#   - epsilon:         Context Teleportation research implementation
+#   - aether-link:     Ultra-fast I/O super-kernel
+#   - aether_verified: Lean 4 → C → Rust verified kernels
+#
+# Experimental tracks live under experiments/ and are NOT part of this workspace.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+repository = "https://github.com/teerthsharma/epsilon"
+
+[workspace.dependencies]
+libm = "0.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
+heapless = "0.8"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+
+[profile.bench]
+lto = true
+codegen-units = 1

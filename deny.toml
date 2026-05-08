@@ -1,0 +1,51 @@
+# cargo-deny configuration for Epsilon-Hollow
+# https://github.com/EmbarkStudios/cargo-deny
+
+[graph]
+# Check all targets, not just the host triple.
+all-features = false
+no-default-features = false
+
+[advisories]
+# Database & feed used by `cargo audit` / `cargo deny`.
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+# Vulnerabilities, unmaintained, unsound and yanked crates fail the build.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# We ship under MIT. Block GPL/AGPL/LGPL viral licenses; allow MIT-compatible.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[bans]
+# Deny multiple versions of the same crate by default; tune as needed.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+# Crates explicitly forbidden anywhere in the dep graph.
+deny = []
+# Crates whose duplicate copies are tolerated (transitive dep churn).
+skip = []
+skip-tree = []
+
+[sources]
+# Block any crate not from crates.io unless explicitly allow-listed.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

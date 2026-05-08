@@ -1,4 +1,4 @@
-﻿cargo : warning: unused 
+cargo : warning: unused 
 import: `alloc::vec`
 At line:1 char:1
 + cargo test --test 

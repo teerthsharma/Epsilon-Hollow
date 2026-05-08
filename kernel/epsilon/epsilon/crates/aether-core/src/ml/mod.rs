@@ -23,13 +23,13 @@
 #![allow(dead_code)]
 
 // Core modules
+pub mod autograd;
 pub mod benchmark;
 pub mod convergence;
-pub mod linalg;
 pub mod convolution;
+pub mod linalg;
 pub mod regressor;
 pub mod tensor;
-pub mod autograd;
 
 // Extended ML library
 pub mod classification;
@@ -46,7 +46,7 @@ pub use clustering::{
 };
 pub use convergence::*;
 // pub use linalg::{Matrix, Vector}; // Removed
-pub use tensor::Tensor;
-pub use neural::{Activation, DenseLayer, TrainingResult, MLP, OptimizerConfig};
+pub use neural::{Activation, DenseLayer, OptimizerConfig, TrainingResult, MLP};
 pub use regressor::*;
+pub use tensor::Tensor;
 pub mod gossip;

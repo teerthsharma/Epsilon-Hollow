@@ -48,7 +48,11 @@ pub fn can_prune(q: &[f64], centroid: &[f64], radius: f64, threshold: f64) -> bo
 /// Double-check: verify that a specific key k also satisfies the pruning condition.
 /// This is the "belt and suspenders" check used during debug/validation.
 pub fn prune_safe_check(
-    q: &[f64], k: &[f64], centroid: &[f64], radius: f64, threshold: f64,
+    q: &[f64],
+    k: &[f64],
+    centroid: &[f64],
+    radius: f64,
+    threshold: f64,
 ) -> bool {
     if !can_prune(q, centroid, radius, threshold) {
         return false;
@@ -105,7 +109,12 @@ mod tests {
             // Generate any k within radius of centroid
             let k = [centroid[0] + 0.05, centroid[1] + 0.03, centroid[2] + 0.01];
             let dot: f64 = q.iter().zip(k.iter()).map(|(a, b)| a * b).sum();
-            assert!(dot < threshold, "Soundness violation: dot={} >= threshold={}", dot, threshold);
+            assert!(
+                dot < threshold,
+                "Soundness violation: dot={} >= threshold={}",
+                dot,
+                threshold
+            );
         }
     }
 }

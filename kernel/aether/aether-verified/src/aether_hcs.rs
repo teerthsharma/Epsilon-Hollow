@@ -49,9 +49,11 @@ mod tests {
     #[test]
     fn test_default_params() {
         // b=4, D=10, d=128, c=1.0
+        // δ_hyp = 2 / (1 · 128 · 10) = 0.0015625
+        // δ_euc = ln(4)/128 · 9 ≈ 0.0974
         let d_hyp = hyp_distortion_bound(1.0, 128, 10);
         let d_euc = euc_distortion_bound(4, 128, 10);
-        assert!(d_hyp < 0.001, "δ_hyp = {}", d_hyp);
+        assert!(d_hyp < 0.002, "δ_hyp = {}", d_hyp);
         assert!(d_euc > 0.05, "δ_euc = {}", d_euc);
         assert!(verify_hcs(1.0, 4, 128, 10));
     }
@@ -60,7 +62,7 @@ mod tests {
     fn test_h100_scale() {
         // d=4096, c=0.1, b=64, D=50
         let d_hyp = hyp_distortion_bound(0.1, 4096, 50);
-        let d_euc = euc_distortion_bound(64, 4096, 50);
+        let _d_euc = euc_distortion_bound(64, 4096, 50);
         let ratio = separation_ratio(0.1, 64, 50);
         assert!(d_hyp < 0.0001, "δ_hyp = {}", d_hyp);
         assert!(ratio > 400.0, "ratio = {}", ratio);

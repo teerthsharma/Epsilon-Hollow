@@ -26,7 +26,11 @@ pub fn tangent_deviation_bound(delta: f64, kappa: f64, p: usize) -> f64 {
 /// τ ≤ ε_tol · √p / (η · ‖ḡ‖ · κ)
 pub fn sync_frequency(eps_tol: f64, p: usize, lr: f64, grad_norm: f64, kappa: f64) -> f64 {
     let denom = lr * grad_norm * kappa;
-    if denom < 1e-12 { f64::INFINITY } else { eps_tol * libm::sqrt(p as f64) / denom }
+    if denom < 1e-12 {
+        f64::INFINITY
+    } else {
+        eps_tol * libm::sqrt(p as f64) / denom
+    }
 }
 
 /// NVLink ring-allreduce cost in seconds.
@@ -40,29 +44,38 @@ pub fn nvlink_sync_cost(n_params: usize, n_gpus: usize, bw_gb_s: f64) -> f64 {
 // T7: PHKP — Tier latency computation
 // ═══════════════════════════════════════════════════════════════════
 
-/// Memory tier access latencies (nanoseconds).
+/// HBM3 access latency (nanoseconds).
 pub const LATENCY_HBM3_NS: f64 = 100.0;
+/// DDR5 access latency (nanoseconds).
 pub const LATENCY_DDR5_NS: f64 = 300.0;
+/// NVMe access latency (nanoseconds).
 pub const LATENCY_NVME_NS: f64 = 50_000.0;
 
 /// Expected latency for Betti-guided partition.
-/// E[T] = Σ (N_tier/N) · t_tier
+/// `E[T] = Σ (N_tier/N) · t_tier`
 pub fn betti_latency(n_hbm: usize, n_ddr: usize, n_nvme: usize) -> f64 {
     let n = (n_hbm + n_ddr + n_nvme) as f64;
-    if n < 1.0 { return 0.0; }
+    if n < 1.0 {
+        return 0.0;
+    }
     LATENCY_HBM3_NS * n_hbm as f64 / n
         + LATENCY_DDR5_NS * n_ddr as f64 / n
         + LATENCY_NVME_NS * n_nvme as f64 / n
 }
 
-/// Sparse-adjusted latency: E[T]_sparse = (1−s) · E[T]
+/// Sparse-adjusted latency: `E[T]_sparse = (1−s) · E[T]`
 pub fn sparse_latency(base_latency: f64, sparsity: f64) -> f64 {
     (1.0 - sparsity) * base_latency
 }
 
 /// KV cache size in GB.
-pub fn kv_cache_size_gb(seq_len: usize, n_layers: usize, head_dim: usize,
-                        n_kv_heads: usize, dtype_bytes: usize) -> f64 {
+pub fn kv_cache_size_gb(
+    seq_len: usize,
+    n_layers: usize,
+    head_dim: usize,
+    n_kv_heads: usize,
+    dtype_bytes: usize,
+) -> f64 {
     let total = seq_len * 2 * head_dim * n_kv_heads * n_layers * dtype_bytes;
     total as f64 / (1024.0 * 1024.0 * 1024.0)
 }
@@ -87,10 +100,19 @@ pub fn min_energy_per_update(n_hot: usize, precision_bits: usize, temp_k: f64) -
 }
 
 /// Maximum sustainable hot ratio given power budget.
-pub fn max_hot_ratio(total_params: usize, power_watts: f64, freq_hz: f64,
-                     prec_bits: usize, temp_k: f64) -> f64 {
+pub fn max_hot_ratio(
+    total_params: usize,
+    power_watts: f64,
+    freq_hz: f64,
+    prec_bits: usize,
+    temp_k: f64,
+) -> f64 {
     let denom = freq_hz * total_params as f64 * prec_bits as f64 * landauer_energy_per_bit(temp_k);
-    if denom < 1e-30 { f64::INFINITY } else { power_watts / denom }
+    if denom < 1e-30 {
+        f64::INFINITY
+    } else {
+        power_watts / denom
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -99,7 +121,9 @@ pub fn max_hot_ratio(total_params: usize, power_watts: f64, freq_hz: f64,
 
 /// Alignment error bound: ε ≤ √(1 − σ_min²/σ_max²)
 pub fn alignment_error_bound(sigma_min: f64, sigma_max: f64) -> f64 {
-    if sigma_max < 1e-12 { return 1.0; }
+    if sigma_max < 1e-12 {
+        return 1.0;
+    }
     let ratio = (sigma_min / sigma_max) * (sigma_min / sigma_max);
     let val = 1.0 - ratio;
     libm::sqrt(if val > 0.0 { val } else { 0.0 })
@@ -113,7 +137,9 @@ pub fn transitive_error(pairwise: &[f64]) -> f64 {
 /// Mutual information lower bound.
 /// I ≥ (d/2) · log₂(1 + SNR · σ_min²/σ_max²)
 pub fn mutual_info_bound(d: usize, snr: f64, sigma_min: f64, sigma_max: f64) -> f64 {
-    if sigma_max < 1e-12 { return 0.0; }
+    if sigma_max < 1e-12 {
+        return 0.0;
+    }
     let ratio = (sigma_min / sigma_max) * (sigma_min / sigma_max);
     d as f64 / 2.0 * libm::log2(1.0 + snr * ratio)
 }
@@ -133,7 +159,9 @@ pub fn model_info_capacity(p: usize, d: usize, eps_quant: f64) -> f64 {
 
 /// Predictive horizon: H = I / h
 pub fn predictive_horizon(p: usize, d: usize, eps_quant: f64, entropy_rate: f64) -> f64 {
-    if entropy_rate < 1e-12 { return f64::INFINITY; }
+    if entropy_rate < 1e-12 {
+        return f64::INFINITY;
+    }
     model_info_capacity(p, d, eps_quant) / entropy_rate
 }
 
@@ -148,13 +176,18 @@ pub fn multi_model_horizon(horizons: &[f64], cross_mi: &[f64], entropy_rate: f64
     }
     let bonus: f64 = cross_mi.iter().sum();
     let k = horizons.len() as f64;
-    let er = if entropy_rate > 1e-12 { entropy_rate } else { 1e-12 };
+    let er = if entropy_rate > 1e-12 {
+        entropy_rate
+    } else {
+        1e-12
+    };
     base + bonus / (k * er)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     // T6 tests
     #[test]

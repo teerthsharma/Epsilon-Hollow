@@ -26,10 +26,10 @@ fn main() {
 
     // Simulate an LBA stream (Logical Block Addresses)
     let lba_stream: Vec<u64> = vec![
-        1000, 1001, 1002, 1003, 1004,  // Sequential reads
-        1010, 1011, 1012,              // Small jump
-        2000, 2001, 2002,              // Large jump (new file?)
-        2003, 2004, 2005, 2006,        // Continue sequential
+        1000, 1001, 1002, 1003, 1004, // Sequential reads
+        1010, 1011, 1012, // Small jump
+        2000, 2001, 2002, // Large jump (new file?)
+        2003, 2004, 2005, 2006, // Continue sequential
     ];
 
     println!("📥 Processing LBA stream ({} addresses):", lba_stream.len());
@@ -39,17 +39,27 @@ fn main() {
     // Process the I/O cycle
     let should_prefetch = kernel.process_io_cycle(&lba_stream);
 
-    println!("⚡ Decision: {}", if should_prefetch {
-        "PREFETCH → Bypass OS, use DirectStorage!"
-    } else {
-        "STANDARD → Use OS page cache"
-    });
+    println!(
+        "⚡ Decision: {}",
+        if should_prefetch {
+            "PREFETCH → Bypass OS, use DirectStorage!"
+        } else {
+            "STANDARD → Use OS page cache"
+        }
+    );
     println!();
 
     // Show updated state
     println!("📈 Updated kernel state after learning:");
-    println!("   ε (epsilon): {:.3} ({})", kernel.epsilon, 
-        if kernel.epsilon > 0.5 { "conservative" } else { "aggressive" });
+    println!(
+        "   ε (epsilon): {:.3} ({})",
+        kernel.epsilon,
+        if kernel.epsilon > 0.5 {
+            "conservative"
+        } else {
+            "aggressive"
+        }
+    );
     println!("   φ (phi):     {:.3} rad", kernel.phi);
     println!();
 

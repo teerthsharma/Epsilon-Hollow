@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: cargo fmt --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: cargo test --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  bench-compile:
+    name: cargo bench --no-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --workspace --no-run
+
+  miri:
+    name: miri (UB detection)
+    runs-on: ubuntu-latest
+    # Miri can flag false positives in dependency code (e.g. libm/nalgebra
+    # internals using strict-provenance-incompatible patterns). We treat this
+    # job as informational until the dependency tree is miri-clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo miri setup
+        run: cargo miri setup
+      # Limit miri to the modules with no FFI/external code: the unit tests
+      # in the `state` and `os` modules of aether-core, plus the new proptest
+      # harness `proptest_os`. Other tests pull in libm/nalgebra paths miri
+      # is known to be noisy on.
+      - name: cargo miri test (aether-core state + os)
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+        run: |
+          cargo miri test -p aether-core --lib state::tests
+          cargo miri test -p aether-core --lib os::tests
+          cargo miri test -p aether-core --test proptest_os
+
+  bench-regression:
+    name: bench regression gate (io_cycle_8_lbas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+      - uses: Swatinem/rust-cache@v2
+      - name: Run criterion bench in bencher format
+        shell: bash
+        run: |
+          cargo bench --bench io_cycle --manifest-path kernel/aether/aether-link/Cargo.toml -- --output-format bencher 2>&1 | tee bench.txt
+      - name: Gate on io_cycle_8_lbas median ns/iter
+        shell: bash
+        run: |
+          set -euo pipefail
+          # bencher format line example:
+          #   test io_cycle_8_lbas ... bench:          18 ns/iter (+/- 2)
+          line=$(grep -E '^test io_cycle_8_lbas ' bench.txt | head -n1)
+          if [ -z "$line" ]; then
+            echo "Could not find io_cycle_8_lbas line in bench.txt"
+            cat bench.txt
+            exit 1
+          fi
+          ns=$(echo "$line" | sed -E 's/.*bench:[[:space:]]+([0-9]+)[[:space:]]+ns\/iter.*/\1/')
+          echo "io_cycle_8_lbas median = $ns ns/iter"
+          # Threshold: local claim is ~18 ns; CI runners are noisier — use 100 ns.
+          threshold=100
+          if [ "$ns" -gt "$threshold" ]; then
+            echo "REGRESSION: io_cycle_8_lbas = $ns ns/iter > threshold $threshold ns/iter"
+            exit 1
+          fi
+          echo "OK: io_cycle_8_lbas = $ns ns/iter ≤ $threshold ns/iter"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: io-cycle-bench
+          path: bench.txt
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check
+          arguments: --all-features
+
+  docs:
+    name: cargo doc -D warnings
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.75
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+
+  bom:
+    name: no UTF-8 BOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run BOM check
+        shell: bash
+        run: |
+          chmod +x scripts/check_no_bom.sh
+          ./scripts/check_no_bom.sh
+
+  python:
+    name: python compileall + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install minimal Python deps (numpy only; torch tests are skipUnless)
+        run: python -m pip install --upgrade pip && python -m pip install numpy
+      - name: compileall (syntax check)
+        run: python -m compileall -q infrastructure scripts tests kernel/epsilon/epsilon_core
+      - name: Run unittest discovery
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  lean:
+    name: Lean 4 (aether-verified)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Lean toolchain & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel/aether/aether-verified/lean/.lake
+            ~/.elan
+          key: lean-${{ runner.os }}-v4.7.0-${{ hashFiles('kernel/aether/aether-verified/lean/lakefile.lean', 'kernel/aether/aether-verified/lean/lean-toolchain') }}
+          restore-keys: |
+            lean-${{ runner.os }}-v4.7.0-
+
+      - name: Build aether-verified Lean package
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: kernel/aether/aether-verified/lean
+          use-mathlib-cache: true

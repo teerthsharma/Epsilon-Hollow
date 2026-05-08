@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-﻿//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //! Epsilon Surgery Governor
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //!
@@ -78,20 +78,32 @@ impl SurgeryGovernor {
 
     /// Create a governor with custom gains.
     pub fn with_gains(alpha: f64, beta: f64) -> Self {
-        Self { alpha, beta, ..Self::new() }
+        Self {
+            alpha,
+            beta,
+            ..Self::new()
+        }
     }
 
     /// Current threshold Îµ(t).
-    pub fn epsilon(&self) -> f64 { self.epsilon }
+    pub fn epsilon(&self) -> f64 {
+        self.epsilon
+    }
 
     /// Current derivative gain Î².
-    pub fn beta(&self) -> f64 { self.beta }
+    pub fn beta(&self) -> f64 {
+        self.beta
+    }
 
     /// Previous error signal.
-    pub fn last_error(&self) -> f64 { self.last_error }
+    pub fn last_error(&self) -> f64 {
+        self.last_error
+    }
 
     /// Total ticks processed.
-    pub fn tick_count(&self) -> u64 { self.tick_count }
+    pub fn tick_count(&self) -> u64 {
+        self.tick_count
+    }
 
     /// Adapt Îµ based on observed deviation.
     ///
@@ -167,7 +179,9 @@ impl SurgeryGovernor {
 }
 
 impl Default for SurgeryGovernor {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// One-shot token representing the governor's saved derivative state
@@ -189,10 +203,14 @@ pub struct SurgeryPermit {
 
 impl SurgeryPermit {
     /// Saved derivative gain Î² (for diagnostics).
-    pub fn saved_beta(&self) -> f64 { self.saved_beta }
+    pub fn saved_beta(&self) -> f64 {
+        self.saved_beta
+    }
 
     /// Saved error signal (for diagnostics).
-    pub fn saved_last_error(&self) -> f64 { self.saved_last_error }
+    pub fn saved_last_error(&self) -> f64 {
+        self.saved_last_error
+    }
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -214,11 +232,15 @@ mod tests {
         let mut gov = SurgeryGovernor::new();
 
         // Drive epsilon to extremes
-        for _ in 0..10000 { gov.adapt(1000.0, 0.001); }
+        for _ in 0..10000 {
+            gov.adapt(1000.0, 0.001);
+        }
         assert!(gov.epsilon() >= EPSILON_MIN);
 
         gov.reset();
-        for _ in 0..10000 { gov.adapt(0.0001, 0.001); }
+        for _ in 0..10000 {
+            gov.adapt(0.0001, 0.001);
+        }
         assert!(gov.epsilon() <= EPSILON_MAX);
     }
 

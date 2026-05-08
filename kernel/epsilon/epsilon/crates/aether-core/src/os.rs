@@ -55,9 +55,26 @@ impl CpuContext {
     /// Create a new, blank CPU context
     pub const fn empty() -> Self {
         Self {
-            r15: 0, r14: 0, r13: 0, r12: 0, r11: 0, r10: 0, r9: 0, r8: 0,
-            rbp: 0, rdi: 0, rsi: 0, rdx: 0, rcx: 0, rbx: 0, rax: 0,
-            rip: 0, cs: 0, rflags: 0, rsp: 0, ss: 0,
+            r15: 0,
+            r14: 0,
+            r13: 0,
+            r12: 0,
+            r11: 0,
+            r10: 0,
+            r9: 0,
+            r8: 0,
+            rbp: 0,
+            rdi: 0,
+            rsi: 0,
+            rdx: 0,
+            rcx: 0,
+            rbx: 0,
+            rax: 0,
+            rip: 0,
+            cs: 0,
+            rflags: 0,
+            rsp: 0,
+            ss: 0,
         }
     }
 }
@@ -92,19 +109,31 @@ pub struct PageTableEntry {
 }
 
 impl PageTableEntry {
-    // Standard x86_64 Paging Bits
-    const PRESENT: u64 = 1 << 0;
-    const WRITABLE: u64 = 1 << 1;
-    const USER_ACCESSIBLE: u64 = 1 << 2;
-    const WRITE_THROUGH: u64 = 1 << 3;
-    const NO_CACHE: u64 = 1 << 4;
-    const ACCESSED: u64 = 1 << 5;
-    const DIRTY: u64 = 1 << 6;
-    const HUGE_PAGE: u64 = 1 << 7;
-    const GLOBAL: u64 = 1 << 8;
-    const NO_EXECUTE: u64 = 1 << 63;
+    /// PTE bit 0: page is present in memory.
+    pub const PRESENT: u64 = 1 << 0;
+    /// PTE bit 1: page is writable.
+    pub const WRITABLE: u64 = 1 << 1;
+    /// PTE bit 2: page is accessible from user mode.
+    pub const USER_ACCESSIBLE: u64 = 1 << 2;
+    /// PTE bit 3: write-through caching enabled.
+    pub const WRITE_THROUGH: u64 = 1 << 3;
+    /// PTE bit 4: caching disabled.
+    pub const NO_CACHE: u64 = 1 << 4;
+    /// PTE bit 5: page has been accessed.
+    pub const ACCESSED: u64 = 1 << 5;
+    /// PTE bit 6: page has been written to.
+    pub const DIRTY: u64 = 1 << 6;
+    /// PTE bit 7: huge-page entry (2 MiB or 1 GiB).
+    pub const HUGE_PAGE: u64 = 1 << 7;
+    /// PTE bit 8: global page (TLB-pinned across CR3 reloads).
+    pub const GLOBAL: u64 = 1 << 8;
+    /// PTE bit 63: execute-disable.
+    pub const NO_EXECUTE: u64 = 1 << 63;
 
-    /// Create a raw entry
+    /// Mask covering the physical-address bits of an x86_64 PTE.
+    pub const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+
+    /// Create a raw entry.
     pub const fn new(entry: u64) -> Self {
         Self { entry }
     }
@@ -121,13 +150,13 @@ impl PageTableEntry {
 
     /// Get the physical address (masking out flags)
     pub fn addr(&self) -> u64 {
-        self.entry & 0x000F_FFFF_FFFF_F000
+        self.entry & Self::ADDR_MASK
     }
-    
+
     /// Set the physical address
     pub fn set_addr(&mut self, addr: u64) {
-         let flags = self.entry & !0x000F_FFFF_FFFF_F000;
-         self.entry = (addr & 0x000F_FFFF_FFFF_F000) | flags;
+        let flags = self.entry & !Self::ADDR_MASK;
+        self.entry = (addr & Self::ADDR_MASK) | flags;
     }
 }
 
@@ -192,19 +221,19 @@ pub struct MemoryRegion {
 pub struct HardwareTopology {
     /// Number of physical CPU cores (Neural Clusters)
     pub cpu_cores: usize,
-    
+
     /// Number of NUMA nodes (Memory Locality Domains)
     pub numa_nodes: usize,
-    
+
     /// Total usable system memory in bytes
     pub total_memory: u64,
-    
+
     /// Physical address of the root configuration (RSDP for ACPI, DTB for ARM)
     pub config_root: PhysAddr,
-    
+
     /// List of memory regions (The "Territory")
     pub memory_map: [MemoryRegion; 32], // Fixed size for no_std bootstrap
-    
+
     /// Number of valid regions in the map
     pub memory_map_len: usize,
 }
@@ -231,7 +260,7 @@ impl HardwareTopology {
         if self.memory_map_len < 32 {
             self.memory_map[self.memory_map_len] = region;
             self.memory_map_len += 1;
-            
+
             if region.region_type == MemoryType::Usable {
                 self.total_memory += region.length;
             }
@@ -265,20 +294,127 @@ pub enum KernelMode {
 pub trait BiosInterface {
     /// Get the raw memory map from firmware
     fn memory_map(&self) -> &[MemoryRegion];
-    
+
     /// Get the framebuffer info (if graphics enabled)
     fn framebuffer(&self) -> Option<FrameBufferInfo>;
-    
+
     /// Get the ACPI/DTB root pointer
     fn config_root(&self) -> PhysAddr;
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct FrameBufferInfo {
+    /// Physical address of the framebuffer's pixel array.
     pub address: PhysAddr,
+    /// Width of the visible region in pixels.
     pub width: u32,
+    /// Height of the visible region in pixels.
     pub height: u32,
+    /// Distance in bytes between the start of one row and the next.
     pub stride: u32,
+    /// Bytes per pixel (e.g. 4 for BGRX/RGBX).
     pub bytes_per_pixel: u8,
 }
 
+impl Default for HardwareTopology {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_table_entry_present_bit() {
+        let pte = PageTableEntry::new(PageTableEntry::PRESENT);
+        assert!(pte.is_present());
+        assert!(!pte.is_writable());
+    }
+
+    #[test]
+    fn page_table_entry_writable_bit() {
+        let pte = PageTableEntry::new(PageTableEntry::PRESENT | PageTableEntry::WRITABLE);
+        assert!(pte.is_present());
+        assert!(pte.is_writable());
+    }
+
+    #[test]
+    fn page_table_entry_round_trips_address() {
+        let mut pte = PageTableEntry::new(PageTableEntry::PRESENT | PageTableEntry::WRITABLE);
+        let phys = 0x0000_1234_5678_9000;
+        pte.set_addr(phys);
+        assert_eq!(pte.addr(), phys);
+        assert!(pte.is_present());
+        assert!(pte.is_writable());
+    }
+
+    #[test]
+    fn page_table_entry_addr_masks_flag_bits() {
+        let mut pte = PageTableEntry::new(0);
+        pte.set_addr(0x0000_1234_5678_9FFF);
+        assert_eq!(pte.addr(), 0x0000_1234_5678_9000);
+    }
+
+    #[test]
+    fn hardware_topology_starts_in_safe_mode() {
+        let t = HardwareTopology::new();
+        assert_eq!(t.suggest_mode(), KernelMode::SafeSerial);
+    }
+
+    #[test]
+    fn hardware_topology_promotes_to_standard() {
+        let mut t = HardwareTopology::new();
+        t.cpu_cores = 2;
+        assert_eq!(t.suggest_mode(), KernelMode::Standard);
+    }
+
+    #[test]
+    fn hardware_topology_promotes_to_deep_manifold() {
+        let mut t = HardwareTopology::new();
+        t.cpu_cores = 8;
+        t.total_memory = 16 * 1024 * 1024 * 1024;
+        assert_eq!(t.suggest_mode(), KernelMode::DeepManifold);
+    }
+
+    #[test]
+    fn hardware_topology_only_counts_usable_memory() {
+        let mut t = HardwareTopology::new();
+        t.add_region(MemoryRegion {
+            start: PhysAddr(0),
+            length: 1024,
+            region_type: MemoryType::Reserved,
+        });
+        assert_eq!(t.total_memory, 0);
+        t.add_region(MemoryRegion {
+            start: PhysAddr(1024),
+            length: 4096,
+            region_type: MemoryType::Usable,
+        });
+        assert_eq!(t.total_memory, 4096);
+        assert_eq!(t.memory_map_len, 2);
+    }
+
+    #[test]
+    fn hardware_topology_admits_at_most_32_regions() {
+        let mut t = HardwareTopology::new();
+        let region = MemoryRegion {
+            start: PhysAddr(0),
+            length: 1,
+            region_type: MemoryType::Usable,
+        };
+        for _ in 0..40 {
+            t.add_region(region);
+        }
+        assert_eq!(t.memory_map_len, 32);
+    }
+
+    #[test]
+    fn cpu_context_empty_is_zero() {
+        let ctx = CpuContext::empty();
+        assert_eq!(ctx.rax, 0);
+        assert_eq!(ctx.rip, 0);
+        assert_eq!(ctx.rsp, 0);
+    }
+}

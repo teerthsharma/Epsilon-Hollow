@@ -144,7 +144,10 @@ fn main() {
     let ns_per_op = elapsed.as_nanos() as f64 / iterations as f64;
 
     println!("   Single-cycle latency: {:.1} ns", ns_per_op);
-    println!("   Throughput: {:.1} million decisions/sec", 1000.0 / ns_per_op);
+    println!(
+        "   Throughput: {:.1} million decisions/sec",
+        1000.0 / ns_per_op
+    );
     println!("   Final ε: {:.4}", hft_kernel.epsilon);
     println!("   Final φ: {:.4} rad", hft_kernel.phi);
     println!();

@@ -1,4 +1,4 @@
-﻿# Epsilon API Reference
+# Epsilon API Reference
 
 ---
 

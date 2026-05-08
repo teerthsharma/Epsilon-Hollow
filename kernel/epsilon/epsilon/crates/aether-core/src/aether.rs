@@ -64,6 +64,7 @@ pub struct BlockMetadata<const D: usize> {
 }
 
 impl<const D: usize> BlockMetadata<D> {
+    /// Construct an empty block (zero centroid, zero count).
     pub const fn empty() -> Self {
         Self {
             centroid: [0.0; D],
@@ -188,6 +189,7 @@ pub struct HierarchicalBlockTree<const D: usize> {
 }
 
 impl<const D: usize> HierarchicalBlockTree<D> {
+    /// Construct an empty tree with all levels zeroed.
     pub fn new() -> Self {
         Self {
             levels: [[BlockMetadata::empty(); MAX_BLOCKS]; 3],
@@ -307,8 +309,10 @@ impl<const D: usize> HierarchicalBlockTree<D> {
         let mut active_l1 = [false; MAX_BLOCKS];
         for (i, active) in active_l1.iter_mut().enumerate().take(self.counts[1]) {
             let parent = i / 4;
-            if parent < self.counts[2] && active_l2[parent] 
-               && !self.levels[1][i].can_prune(query, threshold) {
+            if parent < self.counts[2]
+                && active_l2[parent]
+                && !self.levels[1][i].can_prune(query, threshold)
+            {
                 *active = true;
             }
         }
@@ -316,8 +320,10 @@ impl<const D: usize> HierarchicalBlockTree<D> {
         // Level 0 (finest) - final result
         for (i, res) in result.iter_mut().enumerate().take(self.counts[0]) {
             let parent = i / 4;
-            if parent < self.counts[1] && active_l1[parent]
-               && !self.levels[0][i].can_prune(query, threshold) {
+            if parent < self.counts[1]
+                && active_l1[parent]
+                && !self.levels[0][i].can_prune(query, threshold)
+            {
                 *res = true;
             }
         }
@@ -396,6 +402,7 @@ pub struct DriftDetector<const D: usize> {
 }
 
 impl<const D: usize> DriftDetector<D> {
+    /// Construct a new detector with empty history.
     pub fn new() -> Self {
         Self {
             history: [[0.0; D]; 32],

@@ -40,7 +40,11 @@ pub fn entropy_change_on_merge(a: usize, b: usize, n: usize) -> f64 {
     let b_f = b as f64;
 
     let neg_xlnx = |x: f64| -> f64 {
-        if x <= 0.0 { 0.0 } else { -(x / n_f) * libm::log2(x / n_f) }
+        if x <= 0.0 {
+            0.0
+        } else {
+            -(x / n_f) * libm::log2(x / n_f)
+        }
     };
 
     neg_xlnx(merged) - neg_xlnx(a_f) - neg_xlnx(b_f)
@@ -53,12 +57,17 @@ pub fn verify_entropy_nonincreasing(a: usize, b: usize, n: usize) -> bool {
 
 /// Maximum merges before termination: P₀ − 1.
 pub fn max_merges(p_initial: usize) -> usize {
-    if p_initial > 0 { p_initial - 1 } else { 0 }
+    if p_initial > 0 {
+        p_initial - 1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     #[test]
     fn test_entropy_decreases() {

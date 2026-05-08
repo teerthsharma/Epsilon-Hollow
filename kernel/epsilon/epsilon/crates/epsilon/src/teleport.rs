@@ -201,16 +201,13 @@ pub fn sys_teleport_context<const D: usize>(
 
     // ── Step 2: Void Injection — Betti-guarded write ─────────────────────────
     let inject_result = manifold.inject_into_void(payload);
-    match inject_result {
-        Err(err) => {
-            // Surgery aborted — still restore governor to avoid stuck β=0
-            governor.complete_surgery(permit);
-            return match err {
-                SurgeryError::VoidOccupied => TeleportResult::VoidBusy,
-                other => TeleportResult::TopologyRejected(other),
-            };
-        }
-        Ok(()) => {}
+    if let Err(err) = inject_result {
+        // Surgery aborted — still restore governor to avoid stuck β=0
+        governor.complete_surgery(permit);
+        return match err {
+            SurgeryError::VoidOccupied => TeleportResult::VoidBusy,
+            other => TeleportResult::TopologyRejected(other),
+        };
     }
 
     // ── Step 3: Wake-Up Rescan — assimilate into shell ───────────────────────
@@ -229,7 +226,7 @@ pub fn sys_teleport_context<const D: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifold::{EpsilonPoint, SparseGraph, ManifoldPayload};
+    use crate::manifold::{EpsilonPoint, ManifoldPayload, SparseGraph};
 
     /// Build a minimal connected shell for receiving tests.
     fn make_connected_shell<const D: usize>(epsilon: f64) -> HollowCubeManifold<D>
@@ -274,25 +271,29 @@ mod tests {
         let payload = make_connected_payload();
         let mut gov = SurgeryGovernor::new();
 
-        let result = sys_teleport_context(
-            &mut manifold,
-            payload,
-            &mut gov,
-            TeleportTarget::LocalVoid,
-        );
+        let result =
+            sys_teleport_context(&mut manifold, payload, &mut gov, TeleportTarget::LocalVoid);
 
         match result {
             TeleportResult::Success { points_assimilated } => {
-                assert!(points_assimilated > 0,
-                    "At least one point must be assimilated");
+                assert!(
+                    points_assimilated > 0,
+                    "At least one point must be assimilated"
+                );
             }
             other => panic!("Expected Success, got {:?}", other),
         }
 
         // Governor must be restored (β must be non-zero again)
-        assert!(gov.beta() > 0.0, "Governor β must be restored after surgery");
+        assert!(
+            gov.beta() > 0.0,
+            "Governor β must be restored after surgery"
+        );
         // Void must be empty again
-        assert!(manifold.void_is_empty(), "Void must empty after assimilation");
+        assert!(
+            manifold.void_is_empty(),
+            "Void must empty after assimilation"
+        );
     }
 
     // ─── Test 2: Topology rejection ───────────────────────────────────────────
@@ -319,16 +320,23 @@ mod tests {
 
         assert_eq!(
             result,
-            TeleportResult::TopologyRejected(
-                SurgeryError::TopologyMismatch { expected_b0: 1, actual_b0: 2 }
-            ),
+            TeleportResult::TopologyRejected(SurgeryError::TopologyMismatch {
+                expected_b0: 1,
+                actual_b0: 2
+            }),
             "Disconnected payload must be rejected"
         );
 
         // Governor must still be restored even on rejection
-        assert!(gov.beta() > 0.0, "Governor β must be restored even on rejection");
+        assert!(
+            gov.beta() > 0.0,
+            "Governor β must be restored even on rejection"
+        );
         // Void must still be empty
-        assert!(manifold.void_is_empty(), "Void must remain empty after rejection");
+        assert!(
+            manifold.void_is_empty(),
+            "Void must remain empty after rejection"
+        );
     }
 
     // ─── Test 3: Void-busy guard ──────────────────────────────────────────────
@@ -340,20 +348,21 @@ mod tests {
 
         // Manually occupy the void (direct injection, bypassing governor)
         let payload1 = make_connected_payload();
-        manifold.inject_into_void(payload1).expect("First injection must succeed");
+        manifold
+            .inject_into_void(payload1)
+            .expect("First injection must succeed");
         assert!(!manifold.void_is_empty());
 
         // Now teleport should return VoidBusy without touching the governor
         let payload2 = make_connected_payload();
-        let result = sys_teleport_context(
-            &mut manifold,
-            payload2,
-            &mut gov,
-            TeleportTarget::LocalVoid,
-        );
+        let result =
+            sys_teleport_context(&mut manifold, payload2, &mut gov, TeleportTarget::LocalVoid);
 
-        assert_eq!(result, TeleportResult::VoidBusy,
-            "Occupied void must return VoidBusy");
+        assert_eq!(
+            result,
+            TeleportResult::VoidBusy,
+            "Occupied void must return VoidBusy"
+        );
         // Governor should NOT have issued a permit (it was caught before step 1)
         // β still at default value (not zeroed for surgery)
         assert!(gov.beta() > 0.0);
@@ -374,8 +383,11 @@ mod tests {
             TeleportTarget::RemoteVoid(RemoteVoidDescriptor::new(0xDEAD_BEEF)),
         );
 
-        assert_eq!(result, TeleportResult::RemoteUnimplemented,
-            "RemoteVoid must return RemoteUnimplemented until transport is implemented");
+        assert_eq!(
+            result,
+            TeleportResult::RemoteUnimplemented,
+            "RemoteVoid must return RemoteUnimplemented until transport is implemented"
+        );
         // Void must remain untouched
         assert!(manifold.void_is_empty());
     }

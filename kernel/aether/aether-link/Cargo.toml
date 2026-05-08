@@ -28,6 +28,7 @@ windows = { version = "0.52", features = [
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+aether_verified = { path = "../aether-verified" }
 
 [[bench]]
 name = "aether_bench"
@@ -40,6 +41,10 @@ path = "examples/basic_usage.rs"
 [[example]]
 name = "streaming_io"
 path = "examples/streaming_io.rs"
+
+[[example]]
+name = "world_model_demo"
+path = "examples/world_model_demo.rs"
 
 [profile.release]
 lto = true
