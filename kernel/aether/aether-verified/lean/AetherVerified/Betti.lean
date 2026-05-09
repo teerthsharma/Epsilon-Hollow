@@ -68,7 +68,12 @@ theorem betti_error_bound (data : List UInt8) (tol : Nat) (β₁ : Nat) :
     betti1Heuristic data tol ≤ β₁ + data.length := by
   have h := heuristic_le_window_overlap data tol
   cases h with
-  | inl h => omega
+  | inl h =>
+    calc
+      betti1Heuristic data tol
+    ≤ data.length - 3 + 1 := h
+    ≤ data.length := Nat.sub_le (data.length - 1) 1
+    ≤ β₁ + data.length := Nat.add_le_add_left (Nat.zero_le β₁) data.length
   | inr h =>
     calc
       betti1Heuristic data tol
