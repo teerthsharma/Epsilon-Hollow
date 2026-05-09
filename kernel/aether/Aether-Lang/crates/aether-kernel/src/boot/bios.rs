@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Epsilon-Hollow
 
 use core::iter::Iterator;
-use aether_core::PhysAddr;
+use aether_core::os::PhysAddr;
 use multiboot2::{BootInformation, BootInformationHeader};
 
 /// A region of physical memory.
@@ -36,17 +36,7 @@ pub struct Framebuffer {
 /// The interface that the BIOS/Bootloader must satisfy.
 /// Acts as the "DNA transcription" layer.
 pub trait BiosInterface {
-    /// Get the raw memory map iterator
-    // We use a simplified return type here as returning `impl Iterator` in traits is tricky in no_std without GATs/TAITs fully stabilized or boxing.
-    // Ideally we'd return a custom iterator struct.
-    // For simplicity, we'll let the caller get the raw iter via a method or just handle it here.
-    // Changed: simplified to a function that processes regions or returns a specific iterator type.
-    // BUT since we can't return `impl Iterator` easily in stable traits, let's use a callback or just return a concrete iterator if possible, or just panic if not implemented.
-    // Wait, we can define the Iterator type in the impl.
-    // Let's refine the trait to be more practical for this step.
-    // We will just expose a method to get the info we need.
-    
-    // For this step, I'll modify the trait to be simpler or implement it directly on the struct.
+    // Required methods would go here.
 }
 
 /// BootInfo passed from the bootloader.
@@ -65,12 +55,14 @@ impl BootInfo {
 
     /// Access the raw multiboot information.
     fn raw(&self) -> Option<BootInformation> {
-        unsafe { multiboot2::load(self.multiboot_start as usize).ok() }
+        unsafe {
+            BootInformation::load(self.multiboot_start.0 as *const BootInformationHeader).ok()
+        }
     }
-    
+
     /// Iterate over the memory map using a callback.
     /// This avoids returning complex iterators with lifetimes.
-    pub fn walk_memory_map<F>(&self, mut f: F) 
+    pub fn walk_memory_map<F>(&self, mut f: F)
     where F: FnMut(MemoryRegion)
     {
          if let Some(info) = self.raw() {
@@ -94,8 +86,7 @@ impl BootInfo {
 
     pub fn framebuffer(&self) -> Option<Framebuffer> {
         let info = self.raw()?;
-        let tag = info.framebuffer_tag().ok()?; // Unwrap result
-        
+        let tag = info.framebuffer_tag()?;
         Some(Framebuffer {
             address: tag.address(),
             width: tag.width(),
@@ -107,20 +98,18 @@ impl BootInfo {
 
     pub fn config_root(&self) -> Option<PhysAddr> {
         let info = self.raw()?;
-        
+
         // Try RSDP (new ACPI)
         if let Some(tag) = info.rsdp_v2_tag() {
-            // Fix: signature() returns Result<&str, ...>, need to unwrap or handle
-             return Some(tag.signature().ok()?.as_ptr() as u64);
+            let sig: &str = tag.signature().ok()?;
+            return Some(PhysAddr(sig.as_ptr() as u64));
         }
-        
+
         // Try RSDP (old ACPI)
-        if let Some(tag) = info.rsdp_v1_tag() {
-            // Similarly.
+        if let Some(_tag) = info.rsdp_v1_tag() {
             return None; // Placeholder
         }
-        
-        // DTB not standard in multiboot2 usually (it's MBI), but we can look for it.
+
         None
     }
 }

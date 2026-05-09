@@ -16,6 +16,7 @@
 -/
 
 import Mathlib.Algebra.BigOperators.Basic
+import Mathlib.Algebra.BigOperators.Order
 import Mathlib.Data.Real.Basic
 import Mathlib.Tactic.Linarith
 import Mathlib.Tactic.Positivity
@@ -36,23 +37,22 @@ theorem markov_count_bound {n : ℕ}
     (y : Fin n → ℝ) (h_nn : ∀ i, 0 ≤ y i) (t : ℝ) (h_t : 0 < t) :
     (((Finset.univ.filter (fun i => t ≤ y i)).card : ℝ)) * t
       ≤ ∑ i, y i := by
-  -- Standard Markov: sum of y_i ≥ sum over filtered set ≥ |S| · t.
-  have h1 :
-      ∑ i in Finset.univ.filter (fun i => t ≤ y i), t
-        ≤ ∑ i in Finset.univ.filter (fun i => t ≤ y i), y i := by
+  let S := Finset.univ.filter (fun i => t ≤ y i)
+  -- Step 1: ∑_{i∈S} t ≤ ∑_{i∈S} y_i   (since t ≤ y_i on S)
+  have h1 : ∑ _i in S, t ≤ ∑ i in S, y i := by
     apply Finset.sum_le_sum
-    intro i hi
+    intros i hi
     exact (Finset.mem_filter.mp hi).2
-  have h2 :
-      ∑ i in Finset.univ.filter (fun i => t ≤ y i), y i ≤ ∑ i, y i := by
+  -- Step 2: ∑_{i∈S} y_i ≤ ∑_{i} y_i   (S ⊆ univ and y_i ≥ 0)
+  have h2 : ∑ i in S, y i ≤ ∑ i, y i := by
     apply Finset.sum_le_sum_of_subset_of_nonneg
-    · exact Finset.filter_subset _ _
+    · exact Finset.subset_univ S
     · intros i _ _; exact h_nn i
-  have h3 :
-      ∑ _i in Finset.univ.filter (fun i => t ≤ y i), t
-        = ((Finset.univ.filter (fun i => t ≤ y i)).card : ℝ) * t := by
+  -- Step 3: ∑_{i∈S} t = |S| · t
+  have h3 : ∑ _i in S, t = (S.card : ℝ) * t := by
     simp [Finset.sum_const, mul_comm]
-  linarith [h1, h2, h3.symm.le, h3.le]
+  -- Chain: |S|·t = ∑S t ≤ ∑S y ≤ ∑ y
+  linarith [h1, h2, h3]
 
 /-- **Chebyshev counting bound (one-sided form used by the Rust guard).**
 

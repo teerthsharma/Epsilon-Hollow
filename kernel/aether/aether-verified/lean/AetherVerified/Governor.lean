@@ -45,7 +45,7 @@ theorem lyapunov_descent (ρ e : ℝ) (h_ρ : |ρ| ≤ 1) :
     If `|ρ| < 1` and we iterate `e_{t+1} = ρ · e_t`, then
     `|e_t| ≤ |ρ|^t · |e_0|`. The Rust `governor_step` claims this
     behavior; the Lyapunov form above is its single-step counterpart. -/
-theorem geometric_bound (ρ e₀ : ℝ) (t : ℕ) (h_ρ_nn : 0 ≤ |ρ|) (h_ρ_lt : |ρ| ≤ 1) :
+theorem geometric_bound (ρ e₀ : ℝ) (t : Nat) (h_ρ_nn : 0 ≤ |ρ|) (h_ρ_lt : |ρ| ≤ 1) :
     |ρ| ^ t * |e₀| ≤ |e₀| := by
   have h_pow : |ρ| ^ t ≤ 1 := pow_le_one t h_ρ_nn h_ρ_lt
   have h_e : 0 ≤ |e₀| := abs_nonneg _
