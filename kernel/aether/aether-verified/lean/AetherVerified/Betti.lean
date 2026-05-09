@@ -52,9 +52,6 @@ def betti1Heuristic (data : List UInt8) (tol : Nat) : Nat :=
 theorem heuristic_le_window_overlap (data : List UInt8) (tol : Nat) :
     betti1Heuristic data tol ≤ data.length - 3 + 1 ∨
     betti1Heuristic data tol ≤ data.length := by
-  -- Trivial bound: heuristic ≤ data.length (length of the range it
-  -- iterates over). This is what's actually checked against
-  -- `data.len().saturating_sub(3) + β₁_exact` in the Rust guard.
   right
   unfold betti1Heuristic
   have : ((List.range data.length).filter
@@ -72,6 +69,10 @@ theorem betti_error_bound (data : List UInt8) (tol : Nat) (β₁ : Nat) :
   have h := heuristic_le_window_overlap data tol
   cases h with
   | inl h => omega
-  | inr h => omega
+  | inr h =>
+    calc
+      betti1Heuristic data tol
+    ≤ data.length := h
+    ≤ β₁ + data.length := Nat.add_le_add_left (Nat.zero_le β₁) data.length
 
 end AetherVerified.Betti
