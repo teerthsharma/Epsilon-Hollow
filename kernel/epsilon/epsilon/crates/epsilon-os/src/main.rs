@@ -76,7 +76,11 @@ fn boot(w: &World) {
         "  dim={}  capacity={}  API key: {}",
         status.dim,
         status.capacity,
-        if status.api_key_set { "set" } else { "NOT SET (LLM disabled)" }
+        if status.api_key_set {
+            "set"
+        } else {
+            "NOT SET (LLM disabled)"
+        }
     );
     println!();
 
@@ -88,7 +92,11 @@ fn boot(w: &World) {
     let total = results.len();
     println!("  Theorems: {passed}/{total} passed in {:.2?}", dt);
     if passed < total {
-        let failed: Vec<&str> = results.iter().filter(|(_, ok)| !*ok).map(|(n, _)| *n).collect();
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|(_, ok)| !*ok)
+            .map(|(n, _)| *n)
+            .collect();
         println!("  Failed: {}", failed.join(", "));
     }
     println!();

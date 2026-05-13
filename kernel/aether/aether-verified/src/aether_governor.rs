@@ -21,7 +21,7 @@
 /// Clamp a value to [lo, hi].
 #[inline]
 fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
-    x.max(lo).min(hi)
+    x.clamp(lo, hi)
 }
 
 /// (Lean: govError)
