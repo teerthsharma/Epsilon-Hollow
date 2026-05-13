@@ -16,6 +16,7 @@ use aether_core::scm::SpectralContractionOperator;
 
 /// A single memory episode stored in the topological manifold.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Episode {
     pub vector: Vec<f64>,
     pub text: String,
@@ -57,13 +58,16 @@ impl UnionFind {
         if ra == rb {
             return false;
         }
-        if self.rank[ra] < self.rank[rb] {
-            self.parent[ra] = rb;
-        } else if self.rank[ra] > self.rank[rb] {
-            self.parent[rb] = ra;
-        } else {
-            self.parent[rb] = ra;
-            self.rank[ra] += 1;
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            std::cmp::Ordering::Less => {
+                self.parent[ra] = rb;
+            }
+            std::cmp::Ordering::Greater => {
+                self.parent[rb] = ra;
+            }
+            std::cmp::Ordering::Equal => {
+                self.rank[ra] += 1;
+            }
         }
         self.components -= 1;
         true
@@ -306,9 +310,9 @@ impl LatentPredictor {
     pub fn step(&self, state: &[f64], action: &[f64], attractor: &[f64]) -> Vec<f64> {
         let mut s_prime = state.to_vec();
         // Add W^T * action contribution
-        for j in 0..self.action_dim.min(action.len()) {
+        for (j, &action_j) in action.iter().enumerate().take(self.action_dim) {
             for i in 0..self.state_dim.min(s_prime.len()) {
-                s_prime[i] += self.w_matrix[j * self.state_dim + i] * action[j] * 0.1;
+                s_prime[i] += self.w_matrix[j * self.state_dim + i] * action_j * 0.1;
             }
         }
         // Apply SCM contraction toward attractor (componentwise on first 4 dims)
