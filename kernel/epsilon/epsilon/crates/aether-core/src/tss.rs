@@ -21,7 +21,7 @@
 #[inline]
 fn great_circle_distance(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
     let cos_d = libm::sin(t1) * libm::sin(t2) + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
-    libm::acos(cos_d.max(-1.0).min(1.0))
+    libm::acos(cos_d.clamp(-1.0, 1.0))
 }
 
 /// Verify all centroid pairs satisfy separation ≥ θ_min (used in `new`).

@@ -127,7 +127,12 @@ impl ManifoldMemory {
     }
 
     /// Store an episode. Returns its index.
-    pub fn store(&mut self, vector: Vec<f64>, text: String, metadata: HashMap<String, String>) -> usize {
+    pub fn store(
+        &mut self,
+        vector: Vec<f64>,
+        text: String,
+        metadata: HashMap<String, String>,
+    ) -> usize {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_micros() as u64)
@@ -211,7 +216,8 @@ impl ManifoldMemory {
         let mut uf = UnionFind::new(n);
         for i in 0..n {
             for j in (i + 1)..n {
-                let sim = Self::cosine_similarity(&self.episodes[i].vector, &self.episodes[j].vector);
+                let sim =
+                    Self::cosine_similarity(&self.episodes[i].vector, &self.episodes[j].vector);
                 if sim > self.cluster_radius {
                     uf.union(i, j);
                 }
@@ -264,7 +270,9 @@ impl LatentPredictor {
         let scale = libm::sqrt(2.0 / (state_dim + action_dim) as f64);
         for v in w.iter_mut() {
             // LCG PRNG
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng_state = rng_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let u = (rng_state >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
             *v = u * scale;
         }
@@ -351,12 +359,17 @@ impl MinimaxBridge {
         let output = Command::new("curl")
             .args([
                 "-s",
-                "-X", "POST",
+                "-X",
+                "POST",
                 &self.endpoint,
-                "-H", "Content-Type: application/json",
-                "-H", &format!("Authorization: Bearer {}", self.api_key),
-                "-d", &body.to_string(),
-                "--max-time", "30",
+                "-H",
+                "Content-Type: application/json",
+                "-H",
+                &format!("Authorization: Bearer {}", self.api_key),
+                "-d",
+                &body.to_string(),
+                "--max-time",
+                "30",
             ])
             .output()
             .map_err(|e| format!("curl failed: {e}"))?;
@@ -479,8 +492,7 @@ pub struct World {
     ingest_steps: u64,
 }
 
-const SYSTEM_PROMPT: &str =
-    "You are the reasoning cortex of Epsilon-Hollow, a topological OS. \
+const SYSTEM_PROMPT: &str = "You are the reasoning cortex of Epsilon-Hollow, a topological OS. \
      You receive retrieved memories from a manifold memory store (with \
      similarity scores and Betti numbers). Synthesize them into a clear, \
      concise answer. If memories are empty, reason from first principles.";
@@ -571,7 +583,7 @@ impl World {
 
             // Simple reward: novelty (inverse similarity to nearest)
             let novelty = if let Some((_, score, _)) = matches.first() {
-                1.0 - score.max(0.0).min(1.0)
+                1.0 - score.clamp(0.0, 1.0)
             } else {
                 1.0
             };

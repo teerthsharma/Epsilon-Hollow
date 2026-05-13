@@ -168,7 +168,7 @@ pub fn predictive_horizon(p: usize, d: usize, eps_quant: f64, entropy_rate: f64)
 /// Multi-model combined horizon.
 /// H = max(H_i) + Σ I_cross / (K · h)
 pub fn multi_model_horizon(horizons: &[f64], cross_mi: &[f64], entropy_rate: f64) -> f64 {
-    let mut base = core::f64::NEG_INFINITY;
+    let mut base = f64::NEG_INFINITY;
     for &h in horizons {
         if h > base {
             base = h;
