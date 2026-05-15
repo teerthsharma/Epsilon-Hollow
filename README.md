@@ -1,166 +1,157 @@
-# Invented by Teerth Sharma — Epsilon-Hollow
+# Epsilon-Hollow
 
-Technical setup and operations guide for the runnable paths in this repository.
+Topological operating system kernel with mathematically verified memory management.
 
-This repository contains several experimental tracks (Python, Rust, Aether-Lang, runtime research). The instructions below focus on the paths that are currently executable from code in this repo:
+Epsilon-Hollow models agent memory as a Riemannian manifold on S^(D-1). Episodes are
+stored on the manifold, clustered via Betti-0 connected components, and retrieved through
+O(1) amortized spherical Voronoi tessellation. A spectral contraction operator drives
+forward dynamics. Ten theorems govern the system's behavior; each is implemented in Rust,
+verified at boot, and backed by Lean 4 proofs.
 
-- Python geometric core and theorem verification suite.
-- FastAPI IDE backend with three local model tiers and Hugging Face downloads.
-- Orchestrator entrypoint that can launch agent mode and/or backend mode.
+## Build
 
-## Runtime Components
-
-| Component | Entrypoint | Notes |
-|---|---|---|
-| Geometric core agent | `kernel/epsilon/epsilon_core/main.py` | Standalone loop over `EpsilonHollowCore`. |
-| Orchestrator | `infrastructure/orchestrator/main.py` | Modes: `agent`, `ide`, `full`. |
-| IDE backend (FastAPI) | `kernel/epsilon/epsilon-ide/pentesting/backend/main.py` | API on `127.0.0.1:8742`. |
-| Model downloader helper | `scripts/download_models.py` | Downloads backend model tiers to local disk. |
-| One-click Ubuntu bootstrap | `ubuntu_one_click.sh` | Installs deps, creates venv, downloads LLMs, starts backend. |
-
-## One-Click Ubuntu Setup
-
-If you want a single file to do everything (configure + download LLMs + run backend):
+Requires Rust 1.85+.
 
 ```bash
-chmod +x ubuntu_one_click.sh
-./ubuntu_one_click.sh
+cd kernel/epsilon/epsilon
+cargo build --workspace
+cargo test --workspace        # 139 tests
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Default behavior is fresh-machine bootstrap:
-
-- Recreates `.venv`.
-- Force reinstalls Python dependencies.
-- Force re-downloads selected model tiers in parallel.
-- Starts backend automatically and opens frontend automatically.
-- Writes a full execution log to `logs/ubuntu_one_click_<timestamp>.log`.
-- On failure, prints exact line number and failing command.
-- On failure, attempts OpenClaw fallback provisioning and writes `launch_openclaw_debug.sh`.
-
-What this script does:
-
-1. Installs system packages (`python3`, `venv`, build tools, `git`, `curl`).
-2. Creates or reuses `.venv` at repo root.
-3. Installs runtime Python dependencies from `requirements/ubuntu-runtime.txt`.
-4. Installs `torch` (CUDA wheel attempted when NVIDIA is detected).
-5. Downloads model tiers used by backend into `kernel/epsilon/epsilon-ide/pentesting/backend/models`.
-6. Exports backend runtime env and starts backend on `http://127.0.0.1:8742`.
-
-### Script Options
+Run the OS shell:
 
 ```bash
-./ubuntu_one_click.sh --help
+cargo run -p epsilon-os
 ```
 
-Common combinations:
+With LLM reasoning (Minimax 2.7):
 
 ```bash
-# Setup only, do not run server
-./ubuntu_one_click.sh --no-run
-
-# Setup server deps only, skip model downloads
-./ubuntu_one_click.sh --skip-models --no-run
-
-# Download only selected tiers
-./ubuntu_one_click.sh --tiers foreman,logicgate --no-run
-
-# Tune parallel model downloading
-./ubuntu_one_click.sh --workers 3 --retries 2 --hf-workers 8
-
-# Disable browser auto-open if running on headless server
-./ubuntu_one_click.sh --no-open-frontend
-
-# Override frontend URL and backend readiness timeout
-./ubuntu_one_click.sh --frontend-url http://127.0.0.1:8742/ --ready-timeout 120
-
-# Reuse existing virtualenv and avoid forced model re-download
-./ubuntu_one_click.sh --reuse-venv --no-force-models --no-force-pip
-
-# Set explicit workspace path exposed by backend
-./ubuntu_one_click.sh --workspace /absolute/path/to/workspace
+cargo run -p epsilon-os -- --api-key YOUR_KEY
+# or
+MINIMAX_API_KEY=key cargo run -p epsilon-os
 ```
 
-## Model Tiers Downloaded
+## Shell Commands
 
-The bootstrap and backend use these tier definitions:
-
-| Tier | Hugging Face repo_id | Target directory |
-|---|---|---|
-| `foreman` | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` | `kernel/epsilon/epsilon-ide/pentesting/backend/models/tinyllama-1.1b` |
-| `logicgate` | `Qwen/Qwen2.5-Coder-7B` | `kernel/epsilon/epsilon-ide/pentesting/backend/models/qwen2.5-coder-7b` |
-| `architect` | `deepseek-ai/deepseek-coder-33b-instruct` | `kernel/epsilon/epsilon-ide/pentesting/backend/models/deepseek-coder-33b` |
-
-Notes:
-
-- Full snapshots can be large. Plan for high free disk headroom before downloading all tiers.
-- To avoid hub throttling, set `HF_TOKEN` (or `HUGGINGFACE_HUB_TOKEN`) before running bootstrap.
-
-## Manual Run After Setup
-
-If you used `--no-run`, start backend manually:
-
-```bash
-source .venv/bin/activate
-export EPSILON_WORKSPACE_ROOT="$(pwd)"
-export EPSILON_DEV_MODE=1
-python kernel/epsilon/epsilon-ide/pentesting/backend/main.py
+```
+/step <text>     Ingest observation into topological memory
+/query <text>    Retrieve from memory + LLM synthesis
+/dream <text>    Counterfactual rollout through latent dynamics
+/memory          Memory stats: size, Betti-0, TSS state, cell distribution
+/theorems        Run T1-T10 verification suite
+/status          Dim, capacity, API key status
+/history         Ingestion log
+/reset           Clear memory
 ```
 
-### Quick Health Checks
+Plain text at the prompt is treated as `/query`.
 
-```bash
-curl -s http://127.0.0.1:8742/api/v1/status
-curl -s http://127.0.0.1:8742/api/v1/workspace
-curl -s http://127.0.0.1:8742/api/v1/claw/health
+## Architecture
+
+```
+kernel/
+  epsilon/epsilon/             Rust workspace (resolver = "2")
+    crates/
+      aether-core/             Math foundation
+        src/
+          tss.rs               SphericalVoronoiIndex<K> — O(1) cell lookup on S^2
+          scm.rs               SpectralContractionOperator<D> — Banach fixed-point dynamics
+          governor.rs          GeometricGovernor — PD adaptive threshold control
+          topology.rs          Betti number computation (filtration-based)
+          manifold.rs          Point cloud, sparse graph, topological surgery
+          memory.rs            Spatial clustering, SIMD-aligned allocation
+          state.rs             LatentState<D> — deviation metrics
+          ml/                  Autograd, clustering, neural nets, gossip
+          os/                  Page tables, CPU context, hardware topology
+      epsilon/                 Context Teleportation research (bridge, manifold, teleport)
+      epsilon-os/              Operating system shell
+        src/
+          world.rs             ManifoldMemory, LatentPredictor, World, theorem verification
+          main.rs              CLI REPL
+  aether/
+    aether-verified/           Theorem implementations (T1-T10 formulas)
+      src/                     Rust: TSS, SCM, GMC, AGCR, HCS, RGCS, PHKP, TEB, CMA, WPHB
+      lean/                    Lean 4 proofs: Betti, Chebyshev, Governor, Pruning
+    aether-link/               I/O prefetching kernel (POVM-based, DirectStorage)
+    Aether-Lang/               Language compiler (lexer, parser, AST, ML runtime)
+  runtime/
+    apeiron-runtime-master/    Runtime workspace (DSP, kernel, CLI)
 ```
 
-If bootstrap fails and OpenClaw fallback is enabled, run:
+## Theorems
 
-```bash
-./launch_openclaw_debug.sh
+| ID | Name | What it governs | Status |
+|----|------|-----------------|--------|
+| T1 | TSS  | O(1) retrieval via spherical Voronoi tessellation | **Active** — wired into `retrieve()` |
+| T2 | SCM  | Spectral contraction toward attractor (Banach) | **Active** — wired into `LatentPredictor::step()` |
+| T3 | GMC  | Renyi entropy bound on memory consolidation | Verified |
+| T4 | AGCR | Governor convergence (eigenvalue-bounded PD control) | Verified |
+| T5 | HCS  | Hyperbolic vs. Euclidean separation ratio | Verified |
+| T6 | RGCS | Tangent deviation bound for sync frequency | Verified |
+| T7 | PHKP | Betti-guided latency (topological persistence) | Verified |
+| T8 | TEB  | Landauer energy bound per bit erasure | Verified |
+| T9 | CMA  | Alignment error (Procrustes curvature + SVD) | Verified |
+| T10 | WPHB | Predictive horizon (information + stability) | Verified |
+
+**Active** = the theorem's output drives runtime decisions.
+**Verified** = formula implemented and passes boot-time verification, not yet wired into control flow.
+
+All 10 pass `cargo test` and boot-time verification.
+
+## How Memory Works
+
+1. **Store**: Text is encoded to an L2-normalized vector via trigram hashing. The vector is
+   assigned to a cluster (by cosine similarity threshold) and pushed into a `VecDeque<Episode>`.
+   When episode count exceeds 16, the spherical Voronoi index activates: the first 3 dimensions
+   are projected to (theta, phi) on S^2, and the episode is assigned to one of 8 cells.
+
+2. **Retrieve**: With TSS active, the query vector is projected to S^2, the nearest Voronoi
+   cell is located in O(8) = O(1), and only that cell's episodes are scored by cosine
+   similarity. Falls back to full scan if the cell has fewer than k results.
+
+3. **Evict**: FIFO via `VecDeque::pop_front()`. Cell bookkeeping is maintained through an
+   absolute index scheme (`base_offset`) so Voronoi assignments survive eviction.
+
+4. **Dream**: Counterfactual rollout. The latent predictor applies the spectral contraction
+   operator (T2/SCM) to step the state toward the nearest memory attractor, producing a
+   reward trace over the horizon.
+
+## Tests
+
+```
+aether-core    70 unit + 7 proptest
+epsilon        37 unit
+epsilon-os     25 unit (6 TSS-specific)
+               ─────────
+               139 total, 0 failures
 ```
 
-## Orchestrator Usage
-
-The orchestrator now honors `--port` and `--dev-mode` for IDE startup.
+## Lean Proofs
 
 ```bash
-source .venv/bin/activate
-python infrastructure/orchestrator/main.py --mode ide --port 8742 --dev-mode
+cd kernel/aether/aether-verified/lean
+lake build
 ```
 
-Other modes:
+Proves: Betti number properties, Chebyshev concentration bounds, governor convergence,
+pruning correctness.
+
+## Python Verification
 
 ```bash
-python infrastructure/orchestrator/main.py --mode agent
-python infrastructure/orchestrator/main.py --mode full --dev-mode
-```
-
-## Theorem Verification Suite
-
-Run the 10-theorem Python verification script:
-
-```bash
-source .venv/bin/activate
 python tests/verify_theorems.py
 ```
 
-## Security and Runtime Controls
+Cross-checks Lean/Rust theorem implementations against a Python reference.
 
-- `EPSILON_WORKSPACE_ROOT`: initial backend workspace root.
-- `EPSILON_DEV_MODE=1`: enables DEV-only terminal endpoints in backend.
-- `EPSILON_API_TOKEN`: optional bearer-token gate for mutating endpoints.
+## CI
 
-The backend can still change workspace at runtime via `POST /api/v1/workspace/open`.
+GitHub Actions (`.github/workflows/ci.yml`): fmt, clippy, test, bench-compile.
+Runs on every push and PR against `main`.
 
-## Important Boundaries
+## License
 
-- Native C++ extensions in backend core are optional; Python fallbacks are present.
-- Downloaded models are on disk; they are not loaded into RAM/VRAM until explicit load endpoints are called.
-- Experimental Rust/Aether subprojects in this repo are not fully covered by `ubuntu_one_click.sh`.
-
-## Reference Docs
-
-- Research doc: `docs/research/MOTHER_OF_ALL_DOCS.md`
-- Backend runtime: `kernel/epsilon/epsilon-ide/pentesting/backend/main.py`
-- Bootstrap script: `ubuntu_one_click.sh`
+Custom Attribution License. Copyright (c) 2024 Teerth Sharma.
+See [LICENSE](LICENSE).

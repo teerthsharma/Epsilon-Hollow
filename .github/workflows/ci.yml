@@ -51,10 +51,9 @@ jobs:
   miri:
     name: miri (UB detection)
     runs-on: ubuntu-latest
-    # Miri can flag false positives in dependency code (e.g. libm/nalgebra
-    # internals using strict-provenance-incompatible patterns). We treat this
-    # job as informational until the dependency tree is miri-clean.
     continue-on-error: true
+    env:
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -62,18 +61,14 @@ jobs:
           components: miri
       - uses: Swatinem/rust-cache@v2
       - name: cargo miri setup
-        run: cargo miri setup
-      # Limit miri to the modules with no FFI/external code: the unit tests
-      # in the `state` and `os` modules of aether-core, plus the new proptest
-      # harness `proptest_os`. Other tests pull in libm/nalgebra paths miri
-      # is known to be noisy on.
+        run: cargo +nightly miri setup
       - name: cargo miri test (aether-core state + os)
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
         run: |
-          cargo miri test -p aether-core --lib state::tests
-          cargo miri test -p aether-core --lib os::tests
-          cargo miri test -p aether-core --test proptest_os
+          cargo +nightly miri test -p aether-core --lib state::tests
+          cargo +nightly miri test -p aether-core --lib os::tests
+          cargo +nightly miri test -p aether-core --test proptest_os
 
   bench-regression:
     name: bench regression gate (io_cycle_8_lbas)
@@ -90,8 +85,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # bencher format line example:
-          #   test io_cycle_8_lbas ... bench:          18 ns/iter (+/- 2)
           line=$(grep -E '^test io_cycle_8_lbas ' bench.txt | head -n1)
           if [ -z "$line" ]; then
             echo "Could not find io_cycle_8_lbas line in bench.txt"
@@ -100,7 +93,6 @@ jobs:
           fi
           ns=$(echo "$line" | sed -E 's/.*bench:[[:space:]]+([0-9]+)[[:space:]]+ns\/iter.*/\1/')
           echo "io_cycle_8_lbas median = $ns ns/iter"
-          # Threshold: local claim is ~18 ns; CI runners are noisier — use 100 ns.
           threshold=100
           if [ "$ns" -gt "$threshold" ]; then
             echo "REGRESSION: io_cycle_8_lbas = $ns ns/iter > threshold $threshold ns/iter"
@@ -118,9 +110,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@1.85
+      - name: Install cargo-audit (locked to avoid MSRV-incompatible deps)
+        run: cargo install cargo-audit --locked
+      - run: cargo audit
 
   deny:
     name: cargo deny

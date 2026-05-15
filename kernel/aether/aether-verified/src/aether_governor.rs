@@ -31,6 +31,7 @@ fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
 ///
 /// where δ is the measured sparsity delta and ε is the current threshold.
 pub fn governor_error(r_target: f64, delta: f64, epsilon: f64) -> f64 {
+    debug_assert!(epsilon.abs() > f64::EPSILON, "epsilon must be non-zero");
     delta / epsilon - r_target
 }
 
