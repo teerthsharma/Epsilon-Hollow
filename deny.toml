@@ -36,6 +36,12 @@ allow = [
 confidence-threshold = 0.9
 exceptions = []
 
+[licenses.private]
+# Workspace crates use license-file (custom license) which cargo-deny cannot
+# resolve as SPDX. Skip license checks for unpublished workspace crates.
+ignore = true
+registries = []
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
