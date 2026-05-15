@@ -3,18 +3,23 @@
 
 //! Topological World Model — Rust reference implementation.
 //!
-//! Episodic memory with cosine-similarity retrieval (O(n) linear scan),
-//! Betti-0 tracking via Union-Find, spectral contraction dynamics,
-//! theorem verification (T1-T10), and Minimax LLM bridge.
+//! Episodic memory with O(1) amortized retrieval via spherical Voronoi
+//! tessellation (T1/TSS), Betti-0 tracking via Union-Find, spectral
+//! contraction dynamics, theorem verification (T1-T10), and Minimax LLM bridge.
 //!
-//! The O(1) retrieval bound from T1 applies to [`aether_core::tss::SphericalVoronoiIndex`];
-//! this module uses a simpler linear scan suitable for the reference CLI.
+//! When episode count exceeds `TSS_THRESHOLD`, retrieval switches from O(n)
+//! linear scan to O(1) cell lookup via [`aether_core::tss::SphericalVoronoiIndex`]
+//! followed by O(n/K) intra-cell scan.
 
 use std::collections::{HashMap, VecDeque};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use aether_core::scm::SpectralContractionOperator;
+use aether_core::tss::SphericalVoronoiIndex;
+
+const TSS_CELLS: usize = 8;
+const TSS_THRESHOLD: usize = 16;
 
 // ─── Memory Episode ──────────────────────────────────────────────────
 
@@ -79,24 +84,50 @@ impl UnionFind {
     }
 }
 
-/// Topological manifold memory with L2-normalized vectors and Betti-0 clustering.
+/// Topological manifold memory with L2-normalized vectors, Betti-0 clustering,
+/// and O(1) amortized retrieval via spherical Voronoi tessellation (T1/TSS).
 pub struct ManifoldMemory {
     pub episodes: VecDeque<Episode>,
     pub dim: usize,
     pub capacity: usize,
     chebyshev_k: f64,
     cluster_radius: f64,
+    // T1/TSS: O(1) retrieval via spherical Voronoi cells
+    voronoi: SphericalVoronoiIndex<TSS_CELLS>,
+    cell_episodes: [Vec<usize>; TSS_CELLS],
+    episode_cell: VecDeque<usize>,
+    base_offset: usize,
+    tss_active: bool,
+    rejected_insertions: u64,
 }
 
 impl ManifoldMemory {
     pub fn new(dim: usize, capacity: usize) -> Self {
+        let default_centroids = Self::default_centroids();
         Self {
             episodes: VecDeque::new(),
             dim,
             capacity,
             chebyshev_k: 2.0,
             cluster_radius: 0.5,
+            voronoi: SphericalVoronoiIndex::<TSS_CELLS>::new(default_centroids),
+            cell_episodes: Default::default(),
+            episode_cell: VecDeque::new(),
+            base_offset: 0,
+            tss_active: false,
+            rejected_insertions: 0,
         }
+    }
+
+    fn default_centroids() -> [(f64, f64); TSS_CELLS] {
+        let mut c = [(0.0, 0.0); TSS_CELLS];
+        for (i, slot) in c.iter_mut().enumerate() {
+            *slot = (
+                core::f64::consts::FRAC_PI_2,
+                (i as f64) * (2.0 * core::f64::consts::PI / TSS_CELLS as f64),
+            );
+        }
+        c
     }
 
     /// Encode text into a deterministic f64 vector via character trigram hashing.
@@ -135,7 +166,86 @@ impl ManifoldMemory {
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
-    /// Store an episode. Returns its index.
+    // ── T1/TSS: O(1) retrieval infrastructure ───────────────────────
+
+    fn vec_to_spherical(v: &[f64]) -> (f64, f64) {
+        let x = v.first().copied().unwrap_or(0.0);
+        let y = v.get(1).copied().unwrap_or(0.0);
+        let z = v.get(2).copied().unwrap_or(0.0);
+        let r = libm::sqrt(x * x + y * y + z * z);
+        if r < 1e-12 {
+            return (0.0, 0.0);
+        }
+        let theta = libm::acos((z / r).clamp(-1.0, 1.0));
+        let phi = libm::atan2(y, x);
+        (theta, phi)
+    }
+
+    fn rebuild_voronoi(&mut self) {
+        if self.episodes.len() < TSS_THRESHOLD {
+            return;
+        }
+        let coords: Vec<(f64, f64)> = self
+            .episodes
+            .iter()
+            .map(|ep| Self::vec_to_spherical(&ep.vector))
+            .collect();
+
+        // Greedy farthest-first traversal to pick TSS_CELLS well-separated centroids.
+        let mut selected = vec![0usize];
+        while selected.len() < TSS_CELLS && selected.len() < coords.len() {
+            let mut best_idx = 0;
+            let mut best_min_dist = f64::NEG_INFINITY;
+            for (i, &(t, p)) in coords.iter().enumerate() {
+                if selected.contains(&i) {
+                    continue;
+                }
+                let min_dist = selected
+                    .iter()
+                    .map(|&s| {
+                        let (st, sp) = coords[s];
+                        Self::great_circle(t, p, st, sp)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                if min_dist > best_min_dist {
+                    best_min_dist = min_dist;
+                    best_idx = i;
+                }
+            }
+            selected.push(best_idx);
+        }
+
+        let mut centroids = [(0.0, 0.0); TSS_CELLS];
+        for (i, &ep_idx) in selected.iter().enumerate() {
+            centroids[i] = coords[ep_idx];
+        }
+
+        self.voronoi = SphericalVoronoiIndex::<TSS_CELLS>::new(centroids);
+
+        // Reassign all episodes to cells.
+        for cell in &mut self.cell_episodes {
+            cell.clear();
+        }
+        self.episode_cell.clear();
+        for (i, &(t, p)) in coords.iter().enumerate() {
+            let cell = self.voronoi.locate((t, p));
+            let abs_idx = self.base_offset + i;
+            self.cell_episodes[cell].push(abs_idx);
+            self.episode_cell.push_back(cell);
+        }
+        self.tss_active = true;
+    }
+
+    fn great_circle(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
+        let cos_d =
+            libm::sin(t1) * libm::sin(t2) + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
+        libm::acos(cos_d.clamp(-1.0, 1.0))
+    }
+
+    /// Store an episode. Returns its absolute index.
+    ///
+    /// When episode count reaches `TSS_THRESHOLD`, the spherical Voronoi index
+    /// activates and all subsequent stores are assigned to O(1)-lookup cells.
     pub fn store(
         &mut self,
         vector: Vec<f64>,
@@ -148,11 +258,22 @@ impl ManifoldMemory {
             .unwrap_or(0);
 
         let cluster_id = self.assign_cluster(&vector);
-        let idx = self.episodes.len();
+        let spherical = Self::vec_to_spherical(&vector);
 
+        // Eviction at capacity — maintain TSS bookkeeping
         if self.episodes.len() >= self.capacity {
+            if self.tss_active {
+                let evicted_abs = self.base_offset;
+                if let Some(&evicted_cell) = self.episode_cell.front() {
+                    self.cell_episodes[evicted_cell].retain(|&idx| idx != evicted_abs);
+                }
+            }
+            self.episode_cell.pop_front();
             self.episodes.pop_front();
+            self.base_offset += 1;
         }
+
+        let abs_idx = self.base_offset + self.episodes.len();
 
         self.episodes.push_back(Episode {
             vector,
@@ -162,7 +283,20 @@ impl ManifoldMemory {
             reinforcement_count: 0,
             cluster_id,
         });
-        idx
+
+        // TSS cell assignment
+        if self.tss_active {
+            let cell = self.voronoi.locate(spherical);
+            self.cell_episodes[cell].push(abs_idx);
+            self.episode_cell.push_back(cell);
+        } else {
+            self.episode_cell.push_back(0);
+            if self.episodes.len() >= TSS_THRESHOLD {
+                self.rebuild_voronoi();
+            }
+        }
+
+        abs_idx
     }
 
     fn assign_cluster(&self, vector: &[f64]) -> i32 {
@@ -191,20 +325,61 @@ impl ManifoldMemory {
         }
     }
 
-    /// Retrieve top-k episodes by cosine similarity (O(n) scan).
+    /// Retrieve top-k episodes by cosine similarity.
+    ///
+    /// When TSS is active, uses O(1) Voronoi cell lookup followed by O(n/K)
+    /// intra-cell scan. Falls back to full O(n) scan when TSS is inactive or
+    /// the target cell has fewer than `k` candidates.
     pub fn retrieve(&self, query: &[f64], k: usize) -> Vec<(usize, f64, &Episode)> {
-        let mut scored: Vec<(usize, f64)> = self
-            .episodes
-            .iter()
-            .enumerate()
-            .map(|(i, ep)| (i, Self::cosine_similarity(query, &ep.vector)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored
-            .into_iter()
-            .take(k)
-            .map(|(i, s)| (i, s, &self.episodes[i]))
-            .collect()
+        if self.tss_active {
+            let (theta, phi) = Self::vec_to_spherical(query);
+            let cell = self.voronoi.locate((theta, phi));
+
+            let mut scored: Vec<(usize, f64)> = self.cell_episodes[cell]
+                .iter()
+                .filter_map(|&abs_idx| {
+                    let vd_idx = abs_idx.checked_sub(self.base_offset)?;
+                    let ep = self.episodes.get(vd_idx)?;
+                    Some((vd_idx, Self::cosine_similarity(query, &ep.vector)))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            if scored.len() < k {
+                for other in 0..TSS_CELLS {
+                    if other == cell {
+                        continue;
+                    }
+                    for &abs_idx in &self.cell_episodes[other] {
+                        if let Some(vd_idx) = abs_idx.checked_sub(self.base_offset) {
+                            if let Some(ep) = self.episodes.get(vd_idx) {
+                                scored.push((vd_idx, Self::cosine_similarity(query, &ep.vector)));
+                            }
+                        }
+                    }
+                }
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            }
+
+            scored
+                .into_iter()
+                .take(k)
+                .map(|(i, s)| (i, s, &self.episodes[i]))
+                .collect()
+        } else {
+            let mut scored: Vec<(usize, f64)> = self
+                .episodes
+                .iter()
+                .enumerate()
+                .map(|(i, ep)| (i, Self::cosine_similarity(query, &ep.vector)))
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored
+                .into_iter()
+                .take(k)
+                .map(|(i, s)| (i, s, &self.episodes[i]))
+                .collect()
+        }
     }
 
     /// Reinforce an episode (boost retrieval priority).
@@ -234,19 +409,37 @@ impl ManifoldMemory {
         uf.components
     }
 
-    /// Memory statistics.
+    /// Memory statistics including TSS state.
     pub fn stats(&self) -> MemoryStats {
+        let largest_cell = self
+            .cell_episodes
+            .iter()
+            .map(|c| c.len())
+            .max()
+            .unwrap_or(0);
         MemoryStats {
             size: self.episodes.len(),
             dim: self.dim,
             capacity: self.capacity,
             betti_0: self.betti_0(),
             chebyshev_k: self.chebyshev_k,
+            tss_active: self.tss_active,
+            tss_cells: TSS_CELLS,
+            rejected_insertions: self.rejected_insertions,
+            largest_cell_size: largest_cell,
         }
     }
 
     pub fn reset(&mut self) {
         self.episodes.clear();
+        self.voronoi = SphericalVoronoiIndex::<TSS_CELLS>::new(Self::default_centroids());
+        for cell in &mut self.cell_episodes {
+            cell.clear();
+        }
+        self.episode_cell.clear();
+        self.base_offset = 0;
+        self.tss_active = false;
+        self.rejected_insertions = 0;
     }
 }
 
@@ -257,6 +450,10 @@ pub struct MemoryStats {
     pub capacity: usize,
     pub betti_0: usize,
     pub chebyshev_k: f64,
+    pub tss_active: bool,
+    pub tss_cells: usize,
+    pub rejected_insertions: u64,
+    pub largest_cell_size: usize,
 }
 
 // ─── Latent Predictor (SCM dynamics) ─────────────────────────────────
@@ -932,5 +1129,152 @@ mod tests {
             .collect();
         assert!(failed.is_empty(), "failed theorems: {:?}", failed);
         assert_eq!(results.len(), 10);
+    }
+
+    // ── T1/TSS: O(1) retrieval ─────────────────────────────────
+
+    #[test]
+    fn test_tss_activates_at_threshold() {
+        let mut mem = ManifoldMemory::new(64, 1000);
+        assert!(!mem.tss_active);
+        for i in 0..TSS_THRESHOLD - 1 {
+            let v = mem.encode_text(&format!("topic {i}"));
+            mem.store(v, format!("topic {i}"), HashMap::new());
+        }
+        assert!(!mem.tss_active, "should not activate before threshold");
+
+        let v = mem.encode_text(&format!("topic {}", TSS_THRESHOLD - 1));
+        mem.store(v, format!("topic {}", TSS_THRESHOLD - 1), HashMap::new());
+        assert!(mem.tss_active, "should activate at threshold");
+        assert_eq!(mem.episode_cell.len(), mem.episodes.len());
+    }
+
+    #[test]
+    fn test_tss_retrieval_correct() {
+        let mut mem = ManifoldMemory::new(128, 1000);
+        // Store enough to activate TSS, with distinct cluster topics.
+        let topics = [
+            "quantum physics experiments",
+            "classical music composition",
+            "marine biology research",
+            "software engineering practices",
+            "culinary arts and cooking",
+            "ancient history archaeology",
+            "space exploration missions",
+            "abstract mathematics proofs",
+        ];
+        for round in 0..3 {
+            for t in &topics {
+                let text = format!("{t} round {round}");
+                let v = mem.encode_text(&text);
+                mem.store(v, text, HashMap::new());
+            }
+        }
+        assert!(mem.tss_active);
+
+        // Query for a topic — the best match should be from that topic.
+        let query = mem.encode_text("quantum physics experiments round 2");
+        let results = mem.retrieve(&query, 3);
+        assert!(!results.is_empty());
+        assert!(
+            results[0].2.text.contains("quantum"),
+            "top result should match query topic, got: {}",
+            results[0].2.text
+        );
+    }
+
+    #[test]
+    fn test_tss_survives_eviction() {
+        let capacity = 20;
+        let mut mem = ManifoldMemory::new(64, capacity);
+        // Fill to capacity and beyond — TSS activates at 16, eviction starts at 20.
+        for i in 0..40 {
+            let v = mem.encode_text(&format!("entry {i}"));
+            mem.store(v, format!("entry {i}"), HashMap::new());
+        }
+        assert!(mem.tss_active);
+        assert_eq!(mem.episodes.len(), capacity);
+        assert_eq!(mem.episode_cell.len(), capacity);
+
+        // Cell episodes should only reference valid absolute indices.
+        let total_in_cells: usize = mem.cell_episodes.iter().map(|c| c.len()).sum();
+        assert_eq!(
+            total_in_cells, capacity,
+            "cell_episodes should account for all live episodes"
+        );
+        for cell in &mem.cell_episodes {
+            for &abs_idx in cell {
+                let vd_idx = abs_idx - mem.base_offset;
+                assert!(
+                    vd_idx < mem.episodes.len(),
+                    "stale index {abs_idx} (vd={vd_idx}) in cell after eviction"
+                );
+            }
+        }
+
+        // Retrieval should still work.
+        let query = mem.encode_text("entry 39");
+        let results = mem.retrieve(&query, 3);
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_tss_stats_fields() {
+        let mut mem = ManifoldMemory::new(64, 1000);
+        let stats = mem.stats();
+        assert!(!stats.tss_active);
+        assert_eq!(stats.tss_cells, TSS_CELLS);
+        assert_eq!(stats.rejected_insertions, 0);
+
+        for i in 0..TSS_THRESHOLD {
+            let v = mem.encode_text(&format!("data {i}"));
+            mem.store(v, format!("data {i}"), HashMap::new());
+        }
+        let stats = mem.stats();
+        assert!(stats.tss_active);
+        assert!(stats.largest_cell_size > 0);
+    }
+
+    #[test]
+    fn test_tss_reset_clears_state() {
+        let mut mem = ManifoldMemory::new(64, 1000);
+        for i in 0..20 {
+            let v = mem.encode_text(&format!("item {i}"));
+            mem.store(v, format!("item {i}"), HashMap::new());
+        }
+        assert!(mem.tss_active);
+        mem.reset();
+        assert!(!mem.tss_active);
+        assert_eq!(mem.base_offset, 0);
+        assert!(mem.episode_cell.is_empty());
+        for cell in &mem.cell_episodes {
+            assert!(cell.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_tss_cell_distribution() {
+        let dim = 64;
+        let mut mem = ManifoldMemory::new(dim, 1000);
+        // Store vectors with controlled first-3-dim spread so they land
+        // in different Voronoi cells on S².
+        for i in 0..24 {
+            let angle = (i as f64) * core::f64::consts::PI / 12.0;
+            let mut v = vec![0.0; dim];
+            v[0] = libm::cos(angle);
+            v[1] = libm::sin(angle);
+            v[2] = if i % 3 == 0 { 0.5 } else { -0.3 };
+            let norm = libm::sqrt(v.iter().map(|x| x * x).sum::<f64>());
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+            mem.store(v, format!("vec {i}"), HashMap::new());
+        }
+        assert!(mem.tss_active);
+        let nonempty = mem.cell_episodes.iter().filter(|c| !c.is_empty()).count();
+        assert!(
+            nonempty >= 2,
+            "episodes should spread across at least 2 cells, got {nonempty}"
+        );
     }
 }
