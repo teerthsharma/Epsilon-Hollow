@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma"]
 license-file = "../../../../../LICENSE"
-description = "Epsilon-Hollow Topological OS — CLI shell with Minimax 2.7 world model"
+description = "Epsilon-Hollow Topological OS — episodic memory with O(1) Voronoi retrieval, SCM dynamics, and LLM bridge"
 
 [dependencies]
 aether-core = { path = "../aether-core", features = ["std"] }

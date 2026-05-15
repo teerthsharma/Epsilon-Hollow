@@ -202,3 +202,52 @@ Concretely: source agent processes N = 10⁶ tokens once (O(N²) = O(10¹²) ope
 | `lib.rs` | ~90 | Documentation, re-exports |
 
 Total: ~1,580 lines of Rust. Zero external runtime dependencies. No `std` required (only `libm` for transcendentals).
+
+---
+
+## 10. Topological OS (epsilon-os)
+
+The `epsilon-os` crate builds on `aether-core` and `aether_verified` to provide a
+running system that uses the mathematical infrastructure for memory management.
+
+### 10.1 ManifoldMemory
+
+Episodic store where each entry is an L2-normalized vector on S^(D-1).
+
+- **Encoding**: Trigram hash of input text spread across D dimensions, then L2-normalized.
+- **Clustering**: Each episode is assigned to the cluster of its nearest existing neighbor (by cosine similarity). New cluster if similarity < `cluster_radius`.
+- **Betti-0**: Connected components computed via Union-Find on the cosine threshold graph.
+- **Eviction**: FIFO via `VecDeque::pop_front()` when at capacity.
+
+### 10.2 T1/TSS: O(1) Retrieval
+
+When episode count exceeds 16, the system builds a `SphericalVoronoiIndex<8>`:
+
+1. Project each episode's L2-normalized vector to spherical coordinates (theta, phi) using the first 3 dimensions.
+2. Select 8 centroids via greedy farthest-first traversal (maximizes minimum great-circle separation).
+3. Assign each episode to its nearest centroid cell.
+4. On retrieval: locate the query's cell in O(8) = O(1), scan only that cell's episodes.
+
+Cell bookkeeping uses absolute indices (`base_offset + VecDeque_index`) so assignments survive eviction without reindexing.
+
+### 10.3 T2/SCM: Spectral Contraction
+
+The `LatentPredictor` applies a spectral contraction operator during `dream()`:
+
+```
+s' = (1 - alpha) * (s + W^T * a * 0.1) + alpha * attractor
+```
+
+where `attractor` is the nearest memory episode. The Lipschitz constant is `1 - alpha`, guaranteeing convergence to the attractor by Banach's fixed-point theorem.
+
+### 10.4 Theorem Verification
+
+At boot, all 10 theorems are verified against their mathematical bounds. Results are printed but do not currently gate execution. Each theorem's formula is implemented in `aether_verified` and tested independently.
+
+### 10.5 Limitations
+
+1. **Text encoder has low spherical discrimination.** The trigram hash concentrates most variance in dimensions well above index 2. The first 3 dimensions (used for S^2 projection) have limited spread for typical text. The Voronoi index is most effective with vectors that have natural 3D structure or when using a learned embedding model.
+
+2. **Eviction is FIFO, not entropy-guided.** The paper's T3 (GMC) proves entropy-optimal eviction exists, but the implementation uses simple FIFO. This is a known gap.
+
+3. **8 theorems are verified but passive.** T3-T10 (except T2) compute correct values at boot but do not influence runtime decisions. Wiring them into control flow is planned.
