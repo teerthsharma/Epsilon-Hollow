@@ -6,12 +6,13 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 //!
 //! Implements Topological Data Analysis (TDA) for binary authentication.
-//! Uses Persistent Homology to compute "shape signatures" of code.
+//! Computes Betti number signatures of byte streams at multiple filtration scales.
 //!
 //! Mathematical Foundation:
-//!   - Embedding: Φ: B → P ∈ ℝⁿ (Time-Delay Embedding)
-//!   - Homology: H_k (Betti numbers β₀, β₁)
-//!   - Authentication: d_Wasserstein(Shape(B), Shape_ref) ≤ δ
+//!   - Embedding: Bytes as 1D point cloud on ℝ
+//!   - Homology: β₀ (components via gap detection), β₁ (loops via window return)
+//!   - Multi-scale filtration: Betti numbers at thresholds [5, 10, 15, 25, 50]
+//!   - Distance: L2 on (β₀, β₁, density) feature vector
 //!
 //! Heuristics:
 //!   - Safe Code (linear logic): β₁ ≈ 0 (low loop complexity)
@@ -75,7 +76,7 @@ impl TopologicalShape {
         }
     }
 
-    /// Simple distance metric between shapes
+    /// L2 distance between shape feature vectors (β₀, β₁, density).
     pub fn distance(&self, other: &Self) -> f64 {
         let d0 = libm::pow(self.betti_0 as f64 - other.betti_0 as f64, 2.0);
         let d1 = libm::pow(self.betti_1 as f64 - other.betti_1 as f64, 2.0);
@@ -89,18 +90,11 @@ impl TopologicalShape {
 // Betti Number Computation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Compute β₀ (connected components) via 1D clustering approximation
+/// Compute β₀ (connected components) at a given threshold.
 ///
-/// This is a simplified Vietoris-Rips filtration for 1D point clouds.
-/// We treat bytes as points on ℝ and count "gaps" > threshold as
-/// component boundaries.
-///
-/// # Arguments
-/// * `data` - Binary data to analyze
-///
-/// # Returns
-/// β₀: Number of connected components
-pub fn compute_betti_0(data: &[u8]) -> u32 {
+/// Treats bytes as a 1D point cloud on ℝ and counts "gaps" exceeding
+/// the threshold as component boundaries (1D Vietoris-Rips at scale ε).
+pub fn compute_betti_0_at(data: &[u8], threshold: i16) -> u32 {
     if data.len() < 2 {
         return if data.is_empty() { 0 } else { 1 };
     }
@@ -111,7 +105,7 @@ pub fn compute_betti_0(data: &[u8]) -> u32 {
     for window in data.windows(2) {
         let dist = (window[0] as i16 - window[1] as i16).abs();
 
-        if dist > CLUSTER_THRESHOLD {
+        if dist > threshold {
             if !in_component {
                 components += 1;
                 in_component = true;
@@ -122,6 +116,24 @@ pub fn compute_betti_0(data: &[u8]) -> u32 {
     }
 
     components
+}
+
+/// Compute β₀ at the default threshold (CLUSTER_THRESHOLD = 15).
+pub fn compute_betti_0(data: &[u8]) -> u32 {
+    compute_betti_0_at(data, CLUSTER_THRESHOLD)
+}
+
+/// Multi-scale filtration: compute β₀ at several thresholds.
+///
+/// Returns a persistence-like profile showing how β₀ changes as the
+/// connectivity threshold increases. This is the 1D analogue of a
+/// Vietoris-Rips barcode for β₀.
+pub fn betti_0_filtration(data: &[u8]) -> Vec<(i16, u32)> {
+    const SCALES: [i16; 5] = [5, 10, 15, 25, 50];
+    SCALES
+        .iter()
+        .map(|&t| (t, compute_betti_0_at(data, t)))
+        .collect()
 }
 
 /// Compute β₁ (loops/cycles) via local pattern detection
@@ -248,7 +260,7 @@ pub fn is_shape_valid(data: &[u8]) -> bool {
     matches!(verify_shape(data), VerifyResult::Pass)
 }
 
-/// Verify with custom reference shape (Wasserstein-like distance)
+/// Verify with custom reference shape (L2 distance on shape features)
 pub fn verify_against_reference(
     data: &[u8],
     reference: &TopologicalShape,
@@ -337,6 +349,27 @@ mod tests {
 
         // Should have reasonable density for compiled code
         assert!(shape.density >= 0.0);
+    }
+
+    #[test]
+    fn test_betti_0_filtration_monotone() {
+        // β₀ should be non-increasing as threshold grows (fewer gaps)
+        let data: [u8; 32] = [
+            0x10, 0x50, 0x90, 0x12, 0x55, 0x98, 0x15, 0x60, 0xA0, 0x20, 0x65, 0xA5, 0x25, 0x70,
+            0xB0, 0x30, 0x75, 0xB5, 0x35, 0x80, 0xC0, 0x40, 0x85, 0xC5, 0x45, 0x88, 0xD0, 0x48,
+            0x8A, 0xD5, 0x4A, 0x8C,
+        ];
+        let profile = betti_0_filtration(&data);
+        for i in 1..profile.len() {
+            assert!(
+                profile[i].1 <= profile[i - 1].1,
+                "β₀ should decrease: at threshold {} got {}, at {} got {}",
+                profile[i - 1].0,
+                profile[i - 1].1,
+                profile[i].0,
+                profile[i].1
+            );
+        }
     }
 
     #[test]

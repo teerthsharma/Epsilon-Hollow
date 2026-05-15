@@ -468,16 +468,21 @@ pub fn verify_theorems() -> Vec<(&'static str, bool)> {
         results.push(("T8_TEB", e > 2.8e-21 && e < 2.9e-21));
     }
 
-    // T9: CMA — alignment error bound
+    // T9: CMA — alignment error bound (curvature + SVD)
     {
-        let b = aether_world::alignment_error_bound(0.5, 1.0);
-        results.push(("T9_CMA", (b - 0.866).abs() < 0.01));
+        let svd_b = aether_world::alignment_error_bound(0.5, 1.0);
+        let curv_b = aether_world::procrustes_curvature_error(1.0, 0.5, 128, 128);
+        results.push((
+            "T9_CMA",
+            (svd_b - 0.866).abs() < 0.01 && curv_b > 0.0 && curv_b < 1.0,
+        ));
     }
 
-    // T10: WPHB — predictive horizon
+    // T10: WPHB — predictive horizon (info-theoretic + stability)
     {
-        let h = aether_world::predictive_horizon(1000, 128, 1e-4, 10.0);
-        results.push(("T10_WPHB", h > 1e5));
+        let h_info = aether_world::predictive_horizon(1000, 128, 1e-4, 10.0);
+        let h_stab = aether_world::paper_horizon_estimate();
+        results.push(("T10_WPHB", h_info > 1e5 && h_stab > 1e6));
     }
 
     results
