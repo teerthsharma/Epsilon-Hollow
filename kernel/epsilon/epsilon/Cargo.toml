@@ -29,7 +29,7 @@ license = "LicenseRef-Epsilon-Hollow"
 repository = "https://github.com/teerthsharma/epsilon"
 
 [workspace.dependencies]
-libm = "0.2"
+libm = { version = "0.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
 heapless = "0.8"

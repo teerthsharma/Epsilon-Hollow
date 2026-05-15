@@ -25,6 +25,7 @@ default = ["std"]
 std = ["alloc"]                 # Use standard library
 alloc = []                      # Use alloc crate (no_std with allocator)
 no_std = ["alloc"]              # Bare-metal mode
+force-soft-floats = ["libm/force-soft-floats"]
 
 [dependencies]
 libm = { workspace = true }
