@@ -2,6 +2,7 @@
 members = [
     "crates/aether-core",
     "crates/epsilon",
+    "crates/epsilon-os",
 ]
 resolver = "2"
 
