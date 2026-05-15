@@ -83,7 +83,7 @@ Epsilon-Hollow addresses all three simultaneously. Knowledge retrieval is projec
 The central contributions are:
 \begin{enumerate}[nosep]
   \item Ten independently verifiable mathematical theorems with complete proofs.
-  \item A complete Rust implementation: five workspace crates totaling $\sim$5{,}300 lines, 185 tests passing, all ten theorems verified at boot in $\sim$30$\mu$s.
+  \item A complete Rust implementation: five workspace crates totaling $\sim$5{,}300 lines, 204 tests passing, all ten theorems verified at boot in $\sim$30$\mu$s.
   \item A topological world model composing manifold memory, spectral contraction dynamics, and LLM reasoning (Minimax~2.7) into a runnable CLI operating system.
   \item Lean~4 formalizations of core theorems (Betti bounds, Chebyshev pruning, governor convergence).
 \end{enumerate}
@@ -403,7 +403,7 @@ H \geq 33.3 \times 16.1 \times 7.8 \times 10^6 \approx 21.8 \times 10^6 \text{ t
 
 \subsection{Build and Execution}
 
-The system targets Rust 1.75 (edition 2021) with zero external HTTP dependencies. The Minimax 2.7 API is called via \texttt{curl} subprocess to avoid pulling \texttt{edition2024} transitive dependencies. The release profile uses LTO (\texttt{lto = "fat"}), single codegen unit, and \texttt{panic = "abort"} for maximum performance.
+The system targets Rust 1.85 (edition 2021) with zero external HTTP dependencies. The Minimax 2.7 API is called via \texttt{curl} subprocess to avoid pulling \texttt{edition2024} transitive dependencies. The release profile uses LTO (\texttt{lto = "fat"}), single codegen unit, and \texttt{panic = "abort"} for maximum performance.
 
 \begin{lstlisting}[caption={Building and running}]
 # Build and run
@@ -420,7 +420,7 @@ MINIMAX_API_KEY=<key> cargo run -p epsilon-os --release
 
 \textbf{Update} (\texttt{/step}): Encodes text via trigram hash, stores in ManifoldMemory with timestamp and cluster assignment, returns index, memory size, and Betti-0 count.
 
-\textbf{Query} (\texttt{/query}): Encodes query, retrieves top-$k$ episodes by cosine similarity, formats context with scores and cluster IDs, calls Minimax 2.7 with system prompt and retrieved context, returns synthesized response with retrieval timing.
+\textbf{Query} (\texttt{/query}): Encodes query, retrieves top-$k$ episodes by cosine similarity (linear scan in this reference implementation; the $O(1)$ bound from T1 applies to \texttt{SphericalVoronoiIndex} in \texttt{aether-core}), formats context with scores and cluster IDs, calls Minimax 2.7 with system prompt and retrieved context, returns synthesized response with retrieval timing.
 
 \textbf{Dream} (\texttt{/dream}): Initializes latent state from text encoding, iterates forward dynamics for $h$ steps using the SCM operator with nearest-memory attractors, computes novelty reward (inverse similarity to nearest episode), returns trajectory trace with state norms and cumulative reward.
 
@@ -439,7 +439,7 @@ Each theorem module (e.g., \texttt{aether\_tss}, \texttt{aether\_scm}) exposes n
 
 \begin{table}[h!]
 \centering
-\caption{Test results across the workspace (Rust 1.75, release mode).}
+\caption{Test results across the workspace (Rust 1.85, release mode).}
 \label{tab:tests}
 \begin{tabular}{l|c|l}
 \hline
@@ -448,10 +448,11 @@ Each theorem module (e.g., \texttt{aether\_tss}, \texttt{aether\_scm}) exposes n
 aether-core & 69 + 7 proptest & Topology, SCM, TSS, memory, manifold, governor \\
 aether-verified & 51 + 5 proptest & T1--T10 microkernels, property-based bounds \\
 epsilon & 37 & Context teleportation, bridging, manifold ops \\
+epsilon-os & 19 & World model, memory, predictor, Union-Find \\
 aether-link & 11 & I/O super-kernel, DMA transfer \\
 Doc tests & 5 & API examples \\
 \hline
-\textbf{Total} & \textbf{185} & All passing \\
+\textbf{Total} & \textbf{204} & All passing \\
 \hline
 \end{tabular}
 \end{table}
@@ -477,7 +478,7 @@ Gradient Sync Frequency & $O(\log(1/\epsilon))$ & T6 (RGCS) \\
 KV-Cache Speedup vs. LRU & $241$--$1500\times$ & T7 (PHKP) \\
 Hyperbolic vs. Euclidean Distortion & $O(1/D)$ vs $\Omega(D)$ & T5 (HCS) \\
 Boot Theorem Verification & $\sim$30$\mu$s (10/10) & All \\
-Rust Test Suite & 185/185 passing & All \\
+Rust Test Suite & 204/204 passing & All \\
 \hline
 \end{tabular}
 \end{table}

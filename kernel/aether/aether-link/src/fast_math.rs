@@ -1,18 +1,10 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-//! Fast math approximations for sub-nanosecond operations.
+//! Math functions used by the I/O prefetch kernel.
 //!
-//! These functions trade precision for speed, suitable for probabilistic
-//! heuristics where exact values aren't required.
-//!
-//! # Error Bounds
-//!
-//! | Function | Max Error | Valid Range |
-//! |----------|-----------|-------------|
-//! | `fast_atan` | < 0.2% | All real |
-//! | `fast_exp` | < 1% | [-10, 10] |
-//! | `fast_sigmoid` | < 1% | [-10, 10] |
+//! `fast_atan` is a Padé approximant (~2x faster than libm, < 0.2% error).
+//! `fast_exp` and `fast_sigmoid` delegate to the standard library.
 
 use core::f32::consts::FRAC_PI_2;
 
@@ -42,21 +34,14 @@ pub fn fast_atan(x: f32) -> f32 {
     x / (1.0 + 0.28125 * x * x)
 }
 
-/// Fast exponential approximation.
-///
-/// Uses hardware intrinsic for maximum performance with full precision.
-///
-/// # Example
+/// Exponential function — delegates to standard library `exp()`.
 ///
 /// ```rust
 /// use aether_link::fast_exp;
-///
-/// let result = fast_exp(0.0);
-/// assert!((result - 1.0).abs() < 0.001);
+/// assert!((fast_exp(0.0) - 1.0).abs() < 0.001);
 /// ```
 #[inline(always)]
 pub fn fast_exp(x: f32) -> f32 {
-    // Use standard library exp which typically compiles to a single instruction
     x.exp()
 }
 

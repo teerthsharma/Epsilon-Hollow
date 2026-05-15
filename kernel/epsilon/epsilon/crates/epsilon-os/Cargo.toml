@@ -3,7 +3,7 @@ name = "epsilon-os"
 version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma"]
-license = "MIT"
+license-file = "../../../../../LICENSE"
 description = "Epsilon-Hollow Topological OS — CLI shell with Minimax 2.7 world model"
 
 [dependencies]
