@@ -67,7 +67,7 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-We present Epsilon-Hollow, a topological operating system implemented entirely in Rust that unifies manifold-structured memory, spectral contraction dynamics, and large language model reasoning into a single executable kernel. The system projects semantic states onto spherical and hyperbolic manifolds, achieving $O(1)$ amortized retrieval via Betti-0 component tracking with Union-Find, stable forward prediction via Banach contraction mapping, and thermodynamically viable continuous weight updates on H100-class hardware. We establish ten novel mathematical theorems (T1--T10) with complete proofs, implement each as a verified Rust microkernel, and compose them into a CLI shell that boots with all ten theorems verified in $\sim$30$\mu$s. The world model integrates Minimax 2.7 as an external reasoning cortex over topological memory, enabling counterfactual rollouts through latent dynamics. The complete system comprises 185 passing Rust tests across five crates, with an additional Lean~4 formalization of core theorems. The implementation is available at \url{https://github.com/teerthsharma/Epsilon-Hollow}.
+We present Epsilon-Hollow, a topological operating system implemented entirely in Rust that unifies manifold-structured memory, spectral contraction dynamics, and large language model reasoning into a single executable kernel. The system projects semantic states onto spherical and hyperbolic manifolds, achieving $O(1)$ amortized retrieval via Betti-0 component tracking with Union-Find, stable forward prediction via Banach contraction mapping, and thermodynamically viable continuous weight updates on H100-class hardware. We establish ten novel mathematical theorems (T1--T10) with complete proofs, implement each as a verified Rust microkernel, and compose them into a CLI shell that boots with all ten theorems verified in $\sim$30$\mu$s. The world model integrates Minimax 2.7 as an external reasoning cortex over topological memory, enabling counterfactual rollouts through latent dynamics. The complete system comprises 218 passing Rust tests across five crates, with an additional Lean~4 formalization of core theorems. The implementation is available at \url{https://github.com/teerthsharma/Epsilon-Hollow}.
 \end{abstract}
 
 \linenumbers
@@ -83,7 +83,7 @@ Epsilon-Hollow addresses all three simultaneously. Knowledge retrieval is projec
 The central contributions are:
 \begin{enumerate}[nosep]
   \item Ten independently verifiable mathematical theorems with complete proofs.
-  \item A complete Rust implementation: five workspace crates totaling $\sim$5{,}300 lines, 204 tests passing, all ten theorems verified at boot in $\sim$30$\mu$s.
+  \item A complete Rust implementation: five workspace crates totaling $\sim$5{,}300 lines, 218 tests passing, all ten theorems verified at boot in $\sim$30$\mu$s.
   \item A topological world model composing manifold memory, spectral contraction dynamics, and LLM reasoning (Minimax~2.7) into a runnable CLI operating system.
   \item Lean~4 formalizations of core theorems (Betti bounds, Chebyshev pruning, governor convergence).
 \end{enumerate}
@@ -445,14 +445,14 @@ Each theorem module (e.g., \texttt{aether\_tss}, \texttt{aether\_scm}) exposes n
 \hline
 \textbf{Crate} & \textbf{Tests} & \textbf{Coverage} \\
 \hline
-aether-core & 69 + 7 proptest & Topology, SCM, TSS, memory, manifold, governor \\
-aether-verified & 51 + 5 proptest & T1--T10 microkernels, property-based bounds \\
+aether-core & 70 + 7 proptest & Topology, SCM, TSS, memory, manifold, governor \\
+aether-verified & 64 + 5 proptest & T1--T10 microkernels, Renyi entropy, eigenvalues \\
 epsilon & 37 & Context teleportation, bridging, manifold ops \\
 epsilon-os & 19 & World model, memory, predictor, Union-Find \\
 aether-link & 11 & I/O super-kernel, DMA transfer \\
 Doc tests & 5 & API examples \\
 \hline
-\textbf{Total} & \textbf{204} & All passing \\
+\textbf{Total} & \textbf{218} & All passing \\
 \hline
 \end{tabular}
 \end{table}
@@ -478,7 +478,7 @@ Gradient Sync Frequency & $O(\log(1/\epsilon))$ & T6 (RGCS) \\
 KV-Cache Speedup vs. LRU & $241$--$1500\times$ & T7 (PHKP) \\
 Hyperbolic vs. Euclidean Distortion & $O(1/D)$ vs $\Omega(D)$ & T5 (HCS) \\
 Boot Theorem Verification & $\sim$30$\mu$s (10/10) & All \\
-Rust Test Suite & 204/204 passing & All \\
+Rust Test Suite & 218/218 passing & All \\
 \hline
 \end{tabular}
 \end{table}
@@ -497,7 +497,7 @@ World models in the reinforcement learning sense trace to Ha and Schmidhuber's p
 
 Epsilon-Hollow demonstrates that a topological operating system grounded in verified mathematics is not merely theoretically possible but practically runnable. The system boots, verifies all ten theorems in microseconds, accepts natural language observations into a manifold memory, retrieves them via Betti-0 component tracking, predicts forward dynamics via spectral contraction, and synthesizes responses through an LLM reasoning cortex.
 
-The ten theorems provide independently verifiable guarantees: $O(1)$ retrieval (T1), stable contraction (T2), entropy-reducing consolidation (T3), governor convergence (T4), hyperbolic capacity advantage (T5), gradient coherence bounds (T6), exponential cache speedup (T7), thermodynamic viability (T8), linear alignment error (T9), and a 21.8M-token predictive horizon (T10). Each is verified in Rust, tested with 185 passing tests, and select theorems are formalized in Lean~4.
+The ten theorems provide independently verifiable guarantees: $O(1)$ retrieval (T1), stable contraction (T2), entropy-reducing consolidation (T3), governor convergence (T4), hyperbolic capacity advantage (T5), gradient coherence bounds (T6), exponential cache speedup (T7), thermodynamic viability (T8), linear alignment error (T9), and a 21.8M-token predictive horizon (T10). Each is verified in Rust, tested with 218 passing tests, and select theorems are formalized in Lean~4.
 
 The implementation is available at \url{https://github.com/teerthsharma/Epsilon-Hollow}.
 
