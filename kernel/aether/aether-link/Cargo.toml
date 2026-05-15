@@ -34,6 +34,10 @@ aether_verified = { path = "../aether-verified" }
 name = "aether_bench"
 harness = false
 
+[[bench]]
+name = "io_cycle"
+harness = false
+
 [[example]]
 name = "basic_usage"
 path = "examples/basic_usage.rs"
