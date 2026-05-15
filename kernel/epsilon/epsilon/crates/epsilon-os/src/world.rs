@@ -1,15 +1,27 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-//! Topological World Model — Rust reference implementation.
+//! Topological World Model.
 //!
-//! Episodic memory with O(1) amortized retrieval via spherical Voronoi
-//! tessellation (T1/TSS), Betti-0 tracking via Union-Find, spectral
-//! contraction dynamics, theorem verification (T1-T10), and Minimax LLM bridge.
+//! # Components
 //!
-//! When episode count exceeds `TSS_THRESHOLD`, retrieval switches from O(n)
-//! linear scan to O(1) cell lookup via [`aether_core::tss::SphericalVoronoiIndex`]
-//! followed by O(n/K) intra-cell scan.
+//! - [`ManifoldMemory`]: Episodic store on S^(D-1). L2-normalized vectors,
+//!   Betti-0 clustering via Union-Find, FIFO eviction. When episode count
+//!   exceeds [`TSS_THRESHOLD`] (16), retrieval switches from O(n) linear scan
+//!   to O(1) Voronoi cell lookup + O(n/K) intra-cell scan via
+//!   [`aether_core::tss::SphericalVoronoiIndex`].
+//!
+//! - [`LatentPredictor`]: Forward dynamics via spectral contraction (T2/SCM).
+//!   Steps state toward an attractor using [`aether_core::scm::SpectralContractionOperator`].
+//!
+//! - [`MinimaxBridge`]: Optional LLM reasoning via Minimax 2.7 API (curl subprocess).
+//!
+//! - [`World`]: Combines all three. The CLI shell in `main.rs` drives it.
+//!
+//! # Active Theorems
+//!
+//! T1 (TSS) drives retrieval. T2 (SCM) drives prediction.
+//! T3-T10 are verified at boot but not yet wired into control flow.
 
 use std::collections::{HashMap, VecDeque};
 use std::process::Command;
