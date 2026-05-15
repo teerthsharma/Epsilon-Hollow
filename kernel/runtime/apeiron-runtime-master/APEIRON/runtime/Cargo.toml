@@ -29,7 +29,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["AEGIS Research Team"]
-license = "MIT"
+license = "LicenseRef-Epsilon-Hollow"
 repository = "https://github.com/teerthsharma/aether"
 
 [workspace.dependencies]

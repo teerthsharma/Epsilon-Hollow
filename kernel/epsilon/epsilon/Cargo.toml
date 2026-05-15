@@ -24,7 +24,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma"]
-license = "MIT"
+license = "LicenseRef-Epsilon-Hollow"
 repository = "https://github.com/teerthsharma/epsilon"
 
 [workspace.dependencies]
