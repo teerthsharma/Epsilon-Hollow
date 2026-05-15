@@ -11,7 +11,11 @@ no-default-features = false
 # cannot handle CVSS 4.0 entries now present in the RustSec advisory-db.
 db-urls = []
 yanked = "deny"
-ignore = []
+ignore = [
+    # paste is unmaintained (RUSTSEC-2024-0436) but pulled transitively via
+    # nalgebra -> simba -> paste. No action available until nalgebra migrates.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 # Workspace ships under LicenseRef-Epsilon-Hollow (custom attribution license).
