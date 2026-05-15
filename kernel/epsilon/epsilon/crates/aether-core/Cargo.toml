@@ -34,7 +34,7 @@ heapless = { workspace = true }
 
 [dev-dependencies]
 # Pin to 1.5 to avoid pulling rand 0.9 / getrandom 0.4 which require
-# edition2024 (not stable on the workspace's Rust 1.75 toolchain).
+# edition2024 features beyond the workspace's Rust 1.85 toolchain.
 proptest = "=1.5.0"
 
 [lib]

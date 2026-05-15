@@ -1,12 +1,16 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-//! Topological World Model — Rust implementation.
+//! Topological World Model — Rust reference implementation.
 //!
-//! Graph-based state store with O(1) spherical retrieval, spectral contraction
-//! dynamics, theorem verification (T1-T10), and Minimax 2.7 LLM bridge.
+//! Episodic memory with cosine-similarity retrieval (O(n) linear scan),
+//! Betti-0 tracking via Union-Find, spectral contraction dynamics,
+//! theorem verification (T1-T10), and Minimax LLM bridge.
+//!
+//! The O(1) retrieval bound from T1 applies to [`aether_core::tss::SphericalVoronoiIndex`];
+//! this module uses a simpler linear scan suitable for the reference CLI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -66,6 +70,7 @@ impl UnionFind {
                 self.parent[rb] = ra;
             }
             std::cmp::Ordering::Equal => {
+                self.parent[rb] = ra;
                 self.rank[ra] += 1;
             }
         }
@@ -76,7 +81,7 @@ impl UnionFind {
 
 /// Topological manifold memory with L2-normalized vectors and Betti-0 clustering.
 pub struct ManifoldMemory {
-    pub episodes: Vec<Episode>,
+    pub episodes: VecDeque<Episode>,
     pub dim: usize,
     pub capacity: usize,
     chebyshev_k: f64,
@@ -86,7 +91,7 @@ pub struct ManifoldMemory {
 impl ManifoldMemory {
     pub fn new(dim: usize, capacity: usize) -> Self {
         Self {
-            episodes: Vec::new(),
+            episodes: VecDeque::new(),
             dim,
             capacity,
             chebyshev_k: 2.0,
@@ -145,12 +150,11 @@ impl ManifoldMemory {
         let cluster_id = self.assign_cluster(&vector);
         let idx = self.episodes.len();
 
-        // Evict oldest if at capacity
         if self.episodes.len() >= self.capacity {
-            self.episodes.remove(0);
+            self.episodes.pop_front();
         }
 
-        self.episodes.push(Episode {
+        self.episodes.push_back(Episode {
             vector,
             text,
             metadata,
@@ -187,7 +191,7 @@ impl ManifoldMemory {
         }
     }
 
-    /// Retrieve top-k episodes by cosine similarity.
+    /// Retrieve top-k episodes by cosine similarity (O(n) scan).
     pub fn retrieve(&self, query: &[f64], k: usize) -> Vec<(usize, f64, &Episode)> {
         let mut scored: Vec<(usize, f64)> = self
             .episodes
@@ -551,6 +555,7 @@ impl World {
             let prompt = format!("Query: {text}\n\nRetrieved context:\n{ctx}");
             match self.llm.call(SYSTEM_PROMPT, &prompt) {
                 Ok(resp) => llm_response = Some(resp),
+                // Wrap errors as text so the CLI always has something to display.
                 Err(e) => llm_response = Some(format!("[LLM error: {e}]")),
             }
         }
@@ -700,4 +705,227 @@ pub struct WorldStatus {
     pub memory: MemoryStats,
     pub history_len: usize,
     pub api_key_set: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Union-Find ──────────────────────────────────────────────
+
+    #[test]
+    fn test_union_find_basic() {
+        let mut uf = UnionFind::new(5);
+        assert_eq!(uf.components, 5);
+        uf.union(0, 1);
+        assert_eq!(uf.components, 4);
+        uf.union(2, 3);
+        assert_eq!(uf.components, 3);
+        uf.union(0, 3);
+        assert_eq!(uf.components, 2);
+        assert_eq!(uf.find(0), uf.find(3));
+        assert_eq!(uf.find(1), uf.find(2));
+    }
+
+    #[test]
+    fn test_union_find_equal_rank_merge() {
+        // Regression: equal-rank roots must actually merge.
+        let mut uf = UnionFind::new(4);
+        uf.union(0, 1); // rank[root] = 1
+        uf.union(2, 3); // rank[root] = 1
+                        // Both trees have rank 1 — this is the Equal case.
+        uf.union(0, 2);
+        assert_eq!(uf.components, 1);
+        // All four nodes must resolve to the same root.
+        let root = uf.find(0);
+        assert_eq!(uf.find(1), root);
+        assert_eq!(uf.find(2), root);
+        assert_eq!(uf.find(3), root);
+    }
+
+    #[test]
+    fn test_union_find_idempotent() {
+        let mut uf = UnionFind::new(3);
+        assert!(uf.union(0, 1));
+        assert!(!uf.union(0, 1)); // already same component
+        assert_eq!(uf.components, 2);
+    }
+
+    // ── ManifoldMemory ──────────────────────────────────────────
+
+    #[test]
+    fn test_encode_text_deterministic() {
+        let mem = ManifoldMemory::new(64, 100);
+        let a = mem.encode_text("hello world");
+        let b = mem.encode_text("hello world");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_encode_text_unit_norm() {
+        let mem = ManifoldMemory::new(128, 100);
+        let v = mem.encode_text("topological operating system");
+        let norm: f64 = libm::sqrt(v.iter().map(|x| x * x).sum::<f64>());
+        assert!((norm - 1.0).abs() < 1e-10, "norm = {}", norm);
+    }
+
+    #[test]
+    fn test_encode_empty_string() {
+        let mem = ManifoldMemory::new(64, 100);
+        let v = mem.encode_text("");
+        // Empty string produces a zero vector (can't be normalized).
+        assert!(v.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn test_store_and_retrieve_ordering() {
+        let mut mem = ManifoldMemory::new(128, 1000);
+        let v1 = mem.encode_text("the cat sat on the mat");
+        let v2 = mem.encode_text("dogs are loyal animals");
+        let v3 = mem.encode_text("the cat sat on the rug");
+        mem.store(v1, "the cat sat on the mat".into(), HashMap::new());
+        mem.store(v2, "dogs are loyal animals".into(), HashMap::new());
+        mem.store(v3.clone(), "the cat sat on the rug".into(), HashMap::new());
+
+        let results = mem.retrieve(&v3, 2);
+        assert_eq!(results.len(), 2);
+        // The query is identical to episode 2, so it must rank first.
+        assert!(
+            (results[0].1 - 1.0).abs() < 1e-6,
+            "self-similarity should be 1.0"
+        );
+    }
+
+    #[test]
+    fn test_betti_0_single_cluster() {
+        let mut mem = ManifoldMemory::new(128, 1000);
+        // Store the same text three times — high cosine similarity.
+        for _ in 0..3 {
+            let v = mem.encode_text("identical text");
+            mem.store(v, "identical text".into(), HashMap::new());
+        }
+        assert_eq!(mem.betti_0(), 1);
+    }
+
+    #[test]
+    fn test_betti_0_separate_clusters() {
+        let mut mem = ManifoldMemory::new(128, 1000);
+        // Very different texts should form separate components.
+        let texts = ["aaa", "zzz999xyz", "!!@@##$$"];
+        for t in texts {
+            let v = mem.encode_text(t);
+            mem.store(v, t.into(), HashMap::new());
+        }
+        assert!(mem.betti_0() >= 2, "betti_0 = {}", mem.betti_0());
+    }
+
+    #[test]
+    fn test_eviction_at_capacity() {
+        let mut mem = ManifoldMemory::new(32, 3);
+        for i in 0..5 {
+            let v = mem.encode_text(&format!("text {i}"));
+            mem.store(v, format!("text {i}"), HashMap::new());
+        }
+        assert_eq!(mem.episodes.len(), 3);
+    }
+
+    #[test]
+    fn test_reinforce() {
+        let mut mem = ManifoldMemory::new(32, 100);
+        let v = mem.encode_text("test");
+        mem.store(v, "test".into(), HashMap::new());
+        assert_eq!(mem.episodes[0].reinforcement_count, 0);
+        mem.reinforce(0);
+        assert_eq!(mem.episodes[0].reinforcement_count, 1);
+    }
+
+    #[test]
+    fn test_reset_clears() {
+        let mut mem = ManifoldMemory::new(32, 100);
+        let v = mem.encode_text("data");
+        mem.store(v, "data".into(), HashMap::new());
+        mem.reset();
+        assert_eq!(mem.episodes.len(), 0);
+    }
+
+    // ── LatentPredictor ─────────────────────────────────────────
+
+    #[test]
+    fn test_predictor_deterministic() {
+        let p = LatentPredictor::new(64, 16, 42);
+        let state = vec![1.0; 64];
+        let action = p.hash_action("test action");
+        let attractor = vec![0.0; 64];
+        let a = p.step(&state, &action, &attractor);
+        let b = p.step(&state, &action, &attractor);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_predictor_contracts_toward_attractor() {
+        let p = LatentPredictor::new(64, 16, 42);
+        let attractor = vec![0.0; 64];
+        let action = vec![0.0; 16]; // zero action — pure contraction
+        let mut state = vec![10.0; 64];
+        let initial_dist: f64 = state.iter().map(|x| x * x).sum::<f64>();
+        for _ in 0..100 {
+            state = p.step(&state, &action, &attractor);
+        }
+        let final_dist: f64 = state.iter().map(|x| x * x).sum::<f64>();
+        assert!(
+            final_dist < initial_dist,
+            "should contract toward attractor"
+        );
+    }
+
+    #[test]
+    fn test_hash_action_normalized() {
+        let p = LatentPredictor::new(64, 32, 42);
+        let a = p.hash_action("some action string");
+        let norm = libm::sqrt(a.iter().map(|x| x * x).sum::<f64>());
+        assert!((norm - 1.0).abs() < 1e-10, "norm = {}", norm);
+    }
+
+    // ── World ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_world_update() {
+        let mut w = World::new(String::new(), 64, 1000);
+        let r = w.update("observation one");
+        assert_eq!(r.ingest_step, 1);
+        assert_eq!(r.memory_size, 1);
+        let r2 = w.update("observation two");
+        assert_eq!(r2.ingest_step, 2);
+        assert_eq!(r2.memory_size, 2);
+    }
+
+    #[test]
+    fn test_world_query_no_llm() {
+        let mut w = World::new(String::new(), 64, 1000);
+        w.update("the sky is blue");
+        let r = w.query("sky color", 3);
+        assert!(r.llm_response.is_none()); // no API key → no LLM call
+        assert!(!r.top_k.is_empty());
+    }
+
+    #[test]
+    fn test_world_dream_trace_length() {
+        let mut w = World::new(String::new(), 64, 1000);
+        w.update("seed memory");
+        let r = w.dream("future", 5);
+        assert_eq!(r.trace.len(), 5);
+        assert_eq!(r.horizon, 5);
+    }
+
+    #[test]
+    fn test_verify_theorems_all_pass() {
+        let results = verify_theorems();
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|(_, ok)| !*ok)
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(failed.is_empty(), "failed theorems: {:?}", failed);
+        assert_eq!(results.len(), 10);
+    }
 }

@@ -10,14 +10,15 @@
 //! - **DirectStorage Gaming** - Bypass OS for direct GPU loading
 //! - **WSL2 Acceleration** - NVMe optimization for Linux workloads
 //!
-//! ## Core Algorithm: Adaptive POVM Prefetching
+//! ## Core Algorithm: Adaptive Prefetching (Quantum-Inspired Heuristic)
 //!
-//! Instead of simple stride-based prefetching, AETHER-Link treats I/O requests
-//! as a quantum-probabilistic observation system:
+//! Instead of simple stride-based prefetching, AETHER-Link uses a classical
+//! trigonometric heuristic inspired by POVM (Positive Operator-Valued Measure)
+//! formalism. No quantum hardware is required.
 //!
-//! 1. **Feature Extraction** - 6D telemetry from LBA stream (~1.4ns)
-//! 2. **State Encoding** - Map to quantum angle space (~47ns)
-//! 3. **POVM Decision** - Adaptive threshold triggers fetch (~18ns total)
+//! 1. **Feature Extraction** - 6D telemetry from LBA stream
+//! 2. **State Encoding** - Map to angle space via arctan
+//! 3. **Decision** - Adaptive threshold triggers fetch
 //!
 //! ## Quick Start
 //!
@@ -133,18 +134,17 @@ impl AetherLinkKernel {
 
     /// Extract 6D telemetry features from LBA stream.
     ///
-    /// This is the "Event Radar" - sub-nanosecond DSP that captures:
-    /// - Δ (Delta): Spatial locality deviation
-    /// - V (Velocity): Read head movement acceleration
-    /// - σ² (Variance): Pattern entropy
-    /// - C (Chebyshev): Spectral prediction
-    /// - H (History): Temporal context
-    /// - Ω (Context): Workload fingerprint
+    /// Currently computed from the stream:
+    /// - Δ (Delta): Spatial locality deviation (last - first LBA)
+    /// - V (Velocity): Derived from delta
     ///
-    /// # Safety
+    /// Placeholder constants (not yet computed from stream data):
+    /// - σ² (Variance): Hardcoded 0.1
+    /// - C (Spectrum): Hardcoded 0.01
+    /// - H (History): Hardcoded 0.8
+    /// - Ω (Context): Hardcoded 1.0
     ///
-    /// Uses unchecked indexing for maximum performance. Stream must
-    /// have at least 2 elements.
+    /// Stream must have at least 2 elements.
     #[inline(always)]
     pub fn extract_telemetry(&self, lba_stream: &[u64]) -> [f32; 6] {
         let len = lba_stream.len();
@@ -152,9 +152,8 @@ impl AetherLinkKernel {
             return [0.0; 6];
         }
 
-        // SAFETY: Bounds checked above
-        let last = unsafe { *lba_stream.get_unchecked(len - 1) };
-        let first = unsafe { *lba_stream.get_unchecked(0) };
+        let last = lba_stream[len - 1];
+        let first = lba_stream[0];
 
         // Fast float conversion with wrapping arithmetic
         let delta = last.wrapping_sub(first) as f32;
@@ -169,14 +168,9 @@ impl AetherLinkKernel {
         [delta, velocity, variance, spectrum, history, context]
     }
 
-    /// Encode features into quantum angle space (HexaQubit preparation).
+    /// Map 6D telemetry to 8D angle space via arctan.
     ///
-    /// Maps 6D telemetry → 8D angle space using fast arctan approximation.
-    /// Output is padded to 8 elements for potential SIMD optimization.
-    ///
-    /// # Error Bounds
-    ///
-    /// Fast atan approximation error < 0.2%, acceptable for probabilistic heuristic.
+    /// Output padded to 8 elements for alignment.
     #[inline]
     pub fn prepare_quantum_state(&self, features: [f32; 6]) -> [f32; 8] {
         let mut out = [0.0f32; 8];
@@ -233,10 +227,9 @@ impl AetherLinkKernel {
         should_fetch
     }
 
-    /// Simulate quantum observable evaluation.
+    /// Compute three decision signals via trigonometric combination of angles.
     ///
-    /// In a real quantum system, this would be actual POVM measurement.
-    /// Here we approximate with trigonometric expectation values.
+    /// Inspired by POVM formalism but purely classical.
     #[inline(always)]
     fn simulate_qpu_eval(&self, angles: &[f32], phi: f32) -> (f32, f32, f32) {
         let s = angles[0] + angles[1];

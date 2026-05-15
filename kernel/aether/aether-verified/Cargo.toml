@@ -3,7 +3,7 @@ name = "aether_verified"
 version = "0.1.0"
 edition = "2021"
 description = "Lean 4 → C → Rust verified kernels for Epsilon-Hollow"
-license = "Apache-2.0"
+license-file = "../../../LICENSE"
 authors = ["Teerth Sharma"]
 
 [dependencies]
@@ -11,7 +11,7 @@ libm = "0.2"
 
 [dev-dependencies]
 # Pin to 1.5 to avoid pulling rand 0.9 / getrandom 0.4 which require
-# edition2024 (not stable on the workspace's Rust 1.75 toolchain).
+# edition2024 features beyond the workspace's Rust 1.85 toolchain.
 proptest = "=1.5.0"
 
 [lib]

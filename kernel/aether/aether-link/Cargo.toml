@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma <teerthsharma@users.noreply.github.com>"]
 description = "🚀 Ultra-fast I/O Super-Kernel with Adaptive POVM-based Prefetching for HFT, DirectStorage & WSL2"
-license = "MIT OR Apache-2.0"
+license-file = "../../../LICENSE"
 repository = "https://github.com/teerthsharma/aether-link"
 homepage = "https://github.com/teerthsharma/aether-link"
 documentation = "https://docs.rs/aether-link"
 readme = "README.md"
 keywords = ["io", "prefetch", "nvme", "directstorage", "kernel"]
 categories = ["hardware-support", "algorithms", "os"]
-rust-version = "1.70"
+rust-version = "1.85"
 
 [features]
 default = []
