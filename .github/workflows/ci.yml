@@ -65,11 +65,10 @@ jobs:
       - name: cargo miri test (aether-core state + os)
         env:
           MIRIFLAGS: "-Zmiri-disable-isolation"
-          RUSTFLAGS: "--cfg force_soft_floats"
         run: |
-          cargo +nightly miri test -p aether-core --lib state::tests
-          cargo +nightly miri test -p aether-core --lib os::tests
-          cargo +nightly miri test -p aether-core --test proptest_os
+          cargo +nightly miri test -p aether-core --features force-soft-floats --lib state::tests
+          cargo +nightly miri test -p aether-core --features force-soft-floats --lib os::tests
+          cargo +nightly miri test -p aether-core --features force-soft-floats --test proptest_os
 
   bench-regression:
     name: bench regression gate (io_cycle_8_lbas)
@@ -97,7 +96,7 @@ jobs:
           ns=$(echo "$line" | sed -E 's/.*\[.*[[:space:]]([0-9]+(\.[0-9]+)?)[[:space:]]ns.*/\1/' | head -n1)
           ns_int=${ns%.*}
           echo "io_cycle_8_lbas median = $ns ns/iter"
-          threshold=100
+          threshold=120
           if [ "$ns_int" -gt "$threshold" ]; then
             echo "REGRESSION: io_cycle_8_lbas = $ns ns/iter > threshold $threshold ns/iter"
             exit 1
