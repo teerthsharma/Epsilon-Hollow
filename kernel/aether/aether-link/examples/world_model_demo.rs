@@ -64,11 +64,13 @@ fn main() {
     // ── T3: Geodesic Memory Consolidation (GMC) ───────────────────
     {
         let merges = aether_gmc::max_merges(1024);
-        let dh = aether_gmc::entropy_change_on_merge(40, 60, 1000);
+        let h_before = aether_gmc::renyi_entropy(&[40, 60, 900], 2.0);
+        let h_after = aether_gmc::renyi_entropy(&[100, 900], 2.0);
+        let dh = h_after - h_before;
         let nonincreasing = aether_gmc::verify_entropy_nonincreasing(40, 60, 1000);
         println!("[T3 GMC]   max merges (P=1024) = {}", merges);
         println!(
-            "           ΔH on merge = {:.5} bits  (nonincreasing: {})",
+            "           ΔH₂ on merge = {:.5} bits  (nonincreasing: {})",
             dh, nonincreasing
         );
         if nonincreasing {

@@ -12,7 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma <teerthsharma@users.noreply.github.com>"]
-license = "MIT"
+license = "LicenseRef-Epsilon-Hollow"
 repository = "https://github.com/teerthsharma/apeiron-runtime"
 
 [workspace.dependencies]

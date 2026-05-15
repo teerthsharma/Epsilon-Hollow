@@ -15,6 +15,10 @@
 ///
 /// Lip(T) = 1 − α_min
 pub fn lipschitz_constant(alpha_min: f64) -> f64 {
+    debug_assert!(
+        alpha_min > 0.0 && alpha_min < 1.0,
+        "alpha_min must be in (0,1), got {alpha_min}"
+    );
     1.0 - alpha_min
 }
 

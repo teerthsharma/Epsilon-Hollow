@@ -4,8 +4,8 @@
 //! Epsilon-Hollow Topological OS — CLI Shell
 //!
 //! Usage:
-//!   cargo run -p epsilon-os -- --api-key <MINIMAX_KEY>
-//!   MINIMAX_API_KEY=<key> cargo run -p epsilon-os
+//!   cargo run -p epsilon-os -- --api-key MINIMAX_KEY
+//!   MINIMAX_API_KEY=key cargo run -p epsilon-os
 
 mod world;
 

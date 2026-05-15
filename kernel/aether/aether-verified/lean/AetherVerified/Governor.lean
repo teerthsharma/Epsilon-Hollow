@@ -64,6 +64,7 @@ theorem gain_margin_yields_contraction (dt : ℝ) (h : gainMarginRefined dt) :
   have h005 : 0 < (0.05 : ℝ) / dt := by positivity
   refine ⟨?_, ?_⟩
   · linarith
-  · linarith
+  · have h_sum_pos : 0 < (0.01 : ℝ) + 0.05 / dt := by positivity
+    linarith
 
 end AetherVerified.Governor

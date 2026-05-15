@@ -12,8 +12,11 @@
 //!
 //! Key Components:
 //! 1. ManifoldHeap: A spatial tree (Octree-like) organizing objects into blocks.
-//! 2. Entropy Regulation: O(log N) regulation by pruning cold branches.
-//! 3. Chebyshev's Guard: Statistical safety protocol.
+//! 2. Entropy Regulation: O(N/8) scan over blocks with Chebyshev-guarded pruning.
+//!    The spatial tree enables future O(log N) branch-skip optimization when
+//!    aggregate liveness statistics are maintained per-node.
+//! 3. Chebyshev's Guard: Statistical safety — objects within k·σ of mean liveness
+//!    are protected from collection.
 //!
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -442,7 +445,7 @@ impl ChebyshevGuard {
 }
 
 impl<T> ManifoldHeap<T> {
-    /// Regulation with Spatial Optimization
+    /// Regulation pass: mark-trace-sweep with Chebyshev-guarded pruning.
     pub fn regulate_entropy<F>(&mut self, tracer: F) -> usize
     where
         F: Fn(&mut Self),

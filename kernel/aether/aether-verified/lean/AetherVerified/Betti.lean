@@ -43,16 +43,11 @@ def detectedLoopAt (data : List UInt8) (tol i : Nat) : Bool :=
 def betti1Heuristic (data : List UInt8) (tol : Nat) : Nat :=
   ((List.range data.length).filter (fun i => detectedLoopAt data tol i)).length
 
-/-- **Window-overlap bound (the load-bearing fact).**
-
-    The number of detected loops is at most the number of indices `i`
-    with `i + 3 < n`. For `n ≥ 3` this is `n − 3`; for `n < 3` it is
-    `0`. We state the saturating-subtraction form, matching the Rust
-    code's `data.len().saturating_sub(3)`. -/
-theorem heuristic_le_window_overlap (data : List UInt8) (tol : Nat) :
-    betti1Heuristic data tol ≤ data.length - 3 + 1 ∨
+/-- **Window-overlap bound.** The heuristic count is at most `n`
+    (the number of candidate indices scanned). A filter over
+    `List.range n` cannot produce more than `n` elements. -/
+theorem heuristic_le_length (data : List UInt8) (tol : Nat) :
     betti1Heuristic data tol ≤ data.length := by
-  right
   unfold betti1Heuristic
   have : ((List.range data.length).filter
             (fun i => detectedLoopAt data tol i)).length
@@ -61,23 +56,11 @@ theorem heuristic_le_window_overlap (data : List UInt8) (tol : Nat) :
   simpa [List.length_range] using this
 
 /-- **The Rust guard's bound.** With any non-negative `β₁_exact`,
-    the heuristic is bounded by `β₁_exact + n` (and a fortiori by
-    `β₁_exact + saturating_sub(n, 3)` once we tighten the window
-    arithmetic — see `heuristic_le_window_overlap`). -/
+    the heuristic is bounded by `β₁_exact + n`. Follows immediately
+    from `heuristic_le_length`: `x ≤ n` implies `x ≤ β₁ + n`. -/
 theorem betti_error_bound (data : List UInt8) (tol : Nat) (β₁ : Nat) :
     betti1Heuristic data tol ≤ β₁ + data.length := by
-  have h := heuristic_le_window_overlap data tol
-  cases h with
-  | inl h =>
-    calc
-      betti1Heuristic data tol
-    ≤ data.length - 3 + 1 := h
-    ≤ data.length := Nat.sub_le (data.length - 1) 1
-    ≤ β₁ + data.length := Nat.add_le_add_left (Nat.zero_le β₁) data.length
-  | inr h =>
-    calc
-      betti1Heuristic data tol
-    ≤ data.length := h
-    ≤ β₁ + data.length := Nat.add_le_add_left (Nat.zero_le β₁) data.length
+  have h := heuristic_le_length data tol
+  omega
 
 end AetherVerified.Betti
