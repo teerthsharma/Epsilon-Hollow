@@ -2,20 +2,20 @@
 # https://github.com/EmbarkStudios/cargo-deny
 
 [graph]
-# Check all targets, not just the host triple.
 all-features = false
 no-default-features = false
 
 [advisories]
-# Database & feed used by `cargo audit` / `cargo deny`.
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/RustSec/advisory-db"]
-# Vulnerabilities, unmaintained, unsound and yanked crates fail the build.
+# Advisory vulnerability scanning is handled by the dedicated `cargo audit`
+# CI job. We disable DB fetching here because cargo-deny's bundled parser
+# cannot handle CVSS 4.0 entries now present in the RustSec advisory-db.
+db-urls = []
 yanked = "deny"
 ignore = []
 
 [licenses]
-# We ship under MIT. Block GPL/AGPL/LGPL viral licenses; allow MIT-compatible.
+# Workspace ships under LicenseRef-Epsilon-Hollow (custom attribution license).
+# Dependencies must use permissive licenses; GPL/AGPL/LGPL are blocked.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -33,18 +33,14 @@ confidence-threshold = 0.9
 exceptions = []
 
 [bans]
-# Deny multiple versions of the same crate by default; tune as needed.
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
-# Crates explicitly forbidden anywhere in the dep graph.
 deny = []
-# Crates whose duplicate copies are tolerated (transitive dep churn).
 skip = []
 skip-tree = []
 
 [sources]
-# Block any crate not from crates.io unless explicitly allow-listed.
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
