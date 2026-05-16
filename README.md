@@ -1,6 +1,6 @@
 # Epsilon-Hollow
 
-The largest open-source scientific Rust operating system.
+The largest open-source geometrical scientific Rust operating system.
 
 Three projects. One repository. Mathematically verified.
 
