@@ -15,7 +15,6 @@
 //! 5. Answer emerges when topology stabilizes
 //!    ═══════════════════════════════════════════════════════════════════════════════
 
-
 use crate::ml::convergence::{Answer, BettiNumbers, ConvergenceDetector, ResidualAnalyzer};
 use crate::ml::regressor::{Coefficients, ManifoldRegressor, ModelType};
 use heapless::Vec as HVec;

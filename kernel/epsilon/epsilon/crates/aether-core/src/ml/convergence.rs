@@ -15,7 +15,6 @@
 //! This gives us a mathematically principled "stop" condition.
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-
 use heapless::Vec as HVec;
 use libm::sqrt;
 
