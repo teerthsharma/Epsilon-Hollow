@@ -9,7 +9,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
 #![allow(rustdoc::broken_intra_doc_links)]
 
 use crate::ml::neural::Activation;

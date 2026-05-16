@@ -37,8 +37,8 @@ use libm::sqrt;
 /// We implement Copy/Clone manually to avoid implicit T: Copy bound.
 #[derive(Debug, PartialOrd, Ord)]
 pub struct Gc<T> {
-    pub index: usize,
-    pub generation: u32,
+    pub(crate) index: usize,
+    pub(crate) generation: u32,
     _marker: PhantomData<fn() -> T>, // Covariant, implies no ownership logic for drop
 }
 
@@ -72,6 +72,16 @@ impl<T> Gc<T> {
             generation,
             _marker: PhantomData,
         }
+    }
+
+    /// Returns the slot index of this handle within the heap.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Returns the generation counter used to detect stale handles.
+    pub fn generation(&self) -> u32 {
+        self.generation
     }
 }
 
@@ -262,7 +272,7 @@ impl<T> ManifoldHeap<T> {
                         self.free_head = Some(*next_free);
                     }
                 } else {
-                    panic!("Free head pointed to occupied slot");
+                    return Gc::new(0, 0); // Corrupt free-list; return a dead handle
                 }
             }
             (b, s)

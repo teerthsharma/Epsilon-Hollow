@@ -23,7 +23,7 @@ htmlcov/
 # --- Rust ---
 target/
 **/target/
-Cargo.lock
+# Cargo.lock is committed for reproducible CI builds
 **/*.rs.bk
 *.profraw
 *.profdata
@@ -81,7 +81,7 @@ desktop.ini
 .project
 .settings/
 
-# --- Temporary & Build ---
+# --- Build Artifacts & Output ---
 build/
 dist/
 temp/
@@ -91,3 +91,17 @@ tmp/
 *.bak
 sdist/
 wheels/
+**/output.txt
+**/test_results*.txt
+**/build_log*.txt
+**/build_errors*.txt
+**/check_output*.txt
+**/compile_error*.txt
+**/tree*.txt
+**/temp_*.rs
+
+# --- LaTeX ---
+*.aux
+*.bbl
+*.blg
+*.synctex.gz

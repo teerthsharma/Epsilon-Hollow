@@ -12,8 +12,6 @@
 //! - Topological convergence detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
@@ -24,9 +22,9 @@ use alloc::collections::BTreeMap;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
 #[cfg(not(feature = "std"))]
-use alloc::{format, vec};
-#[cfg(not(feature = "std"))]
 use alloc::string::ToString;
+#[cfg(not(feature = "std"))]
+use alloc::{format, vec};
 
 #[cfg(not(feature = "std"))]
 macro_rules! println {
@@ -45,18 +43,18 @@ use std::vec::Vec;
 use crate::ast::*;
 use aether_core::aether::{BlockMetadata, DriftDetector, HierarchicalBlockTree};
 use aether_core::manifold::{ManifoldPoint, TimeDelayEmbedder};
-use aether_core::ml::{MLP, KMeans, Activation, OptimizerConfig};
-use aether_core::ml::tensor::Tensor;
-use aether_core::ml::linalg::LossConfig;
 use aether_core::ml::convolution::Conv2D;
+use aether_core::ml::linalg::LossConfig;
+use aether_core::ml::tensor::Tensor;
+use aether_core::ml::{Activation, KMeans, OptimizerConfig, MLP};
 use libm::{fabs, sqrt};
 
-#[cfg(feature = "std")]
-use safetensors::SafeTensors;
-#[cfg(feature = "std")]
-use std::sync::Arc;
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "ml", not(feature = "std")))]
 use alloc::sync::Arc;
+#[cfg(feature = "net")]
+use safetensors::SafeTensors;
+#[cfg(all(feature = "ml", feature = "std"))]
+use std::sync::Arc;
 
 #[cfg(feature = "ml")]
 use candle_core::{Device, Tensor as CandleTensor};
@@ -119,8 +117,6 @@ pub struct LlamaContext {
     pub tokenizer: Tokenizer,
     pub name: String,
 }
-
-
 
 /// Native function pointer type
 #[derive(Debug, Clone)]
@@ -296,11 +292,11 @@ pub enum RegressionModel {
 /// Escalating benchmark system
 pub struct EscalatingRegressor {
     /// Current model complexity
-    current_level: u32,
+    _current_level: u32,
     /// Target for regression
     target: Vec<f64>,
     /// Predictions
-    predictions: Vec<f64>,
+    _predictions: Vec<f64>,
     /// Convergence epsilon
     epsilon: f64,
     /// Betti stability window
@@ -310,9 +306,9 @@ pub struct EscalatingRegressor {
 impl EscalatingRegressor {
     pub fn new(epsilon: f64) -> Self {
         Self {
-            current_level: 0,
+            _current_level: 0,
             target: Vec::new(),
-            predictions: Vec::new(),
+            _predictions: Vec::new(),
             epsilon,
             betti_history: Vec::new(),
         }
@@ -391,7 +387,9 @@ impl EscalatingRegressor {
                 let mut sum_xx = 0.0;
 
                 for (i, p) in manifold.points.iter().enumerate() {
-                    if i >= self.target.len() { break; }
+                    if i >= self.target.len() {
+                        break;
+                    }
                     let x = p.coords[0];
                     let y = self.target[i];
                     sum_x += x;
@@ -428,7 +426,9 @@ impl EscalatingRegressor {
         let mut count = 0;
 
         for (i, p) in manifold.points.iter().enumerate() {
-            if i >= self.target.len() { break; }
+            if i >= self.target.len() {
+                break;
+            }
             let pred = self.predict(p.coords[0], coeffs, model);
             let err = pred - self.target[i];
             mse += err * err;
@@ -444,21 +444,7 @@ impl EscalatingRegressor {
     }
 
     fn predict(&self, x: f64, coeffs: &[f64; 8], model: &RegressionModel) -> f64 {
-        match model {
-            RegressionModel::Linear => coeffs[0] + coeffs[1] * x,
-            RegressionModel::Polynomial { degree } => {
-                let mut y = coeffs[0];
-                let mut x_pow = x;
-                for coeff in coeffs.iter().take((*degree as usize).min(7) + 1).skip(1) {
-                    y += coeff * x_pow;
-                    x_pow *= x;
-                }
-                y
-            }
-            RegressionModel::Rbf { .. } => {
-                self.predict(x, coeffs, &RegressionModel::Polynomial { degree: 3 })
-            }
-        }
+        predict_value(x, coeffs, model)
     }
 
     fn compute_residual_betti(
@@ -473,7 +459,9 @@ impl EscalatingRegressor {
         let mut prev_sign = true;
 
         for (i, p) in manifold.points.iter().enumerate() {
-            if i >= self.target.len() { break; }
+            if i >= self.target.len() {
+                break;
+            }
             let pred = self.predict(p.coords[0], coeffs, model);
             let residual = self.target[i] - pred;
             let sign = residual >= 0.0;
@@ -495,12 +483,34 @@ impl EscalatingRegressor {
     }
 
     fn is_converged(&self, error: f64, current_betti: &(u32, u32)) -> bool {
-        if error < self.epsilon { return true; }
+        if error < self.epsilon {
+            return true;
+        }
         if self.betti_history.len() >= 3 {
             let recent: Vec<&(u32, u32)> = self.betti_history.iter().rev().take(3).collect();
-            if recent.iter().all(|b| **b == *current_betti) { return true; }
+            if recent.iter().all(|b| **b == *current_betti) {
+                return true;
+            }
         }
         false
+    }
+}
+
+fn predict_value(x: f64, coeffs: &[f64; 8], model: &RegressionModel) -> f64 {
+    match model {
+        RegressionModel::Linear => coeffs[0] + coeffs[1] * x,
+        RegressionModel::Polynomial { degree } => {
+            let mut y = coeffs[0];
+            let mut x_pow = x;
+            for coeff in coeffs.iter().take((*degree as usize).min(7) + 1).skip(1) {
+                y += coeff * x_pow;
+                x_pow *= x;
+            }
+            y
+        }
+        RegressionModel::Rbf { .. } => {
+            predict_value(x, coeffs, &RegressionModel::Polynomial { degree: 3 })
+        }
     }
 }
 
@@ -533,7 +543,10 @@ impl Interpreter {
         }
 
         let mut variables = BTreeMap::new();
-        variables.insert(String::from("print"), Value::NativeFn(NativeFunction::Print));
+        variables.insert(
+            String::from("print"),
+            Value::NativeFn(NativeFunction::Print),
+        );
 
         Self {
             variables,
@@ -574,7 +587,7 @@ impl Interpreter {
             StmtKind::Expr(expr) => {
                 self.evaluate_expr(expr)?;
                 Ok(Value::Unit)
-            },
+            }
             StmtKind::Empty => Ok(Value::Unit),
         }
     }
@@ -593,13 +606,16 @@ impl Interpreter {
 
         let handle = ClassHandle(self.classes.len());
         self.classes.push(class_def);
-        self.variables.insert(decl.name.clone(), Value::Class(handle));
+        self.variables
+            .insert(decl.name.clone(), Value::Class(handle));
         Ok(Value::Class(handle))
     }
 
     #[allow(unused_variables)]
     fn evaluate_new(&mut self, class_name: &String, args: &[Expr]) -> Result<Value, String> {
-        let class_handle = if let Some(Value::Class(h)) = self.variables.get(class_name) { *h } else {
+        let class_handle = if let Some(Value::Class(h)) = self.variables.get(class_name) {
+            *h
+        } else {
             return Err(format!("Class '{}' not found", class_name));
         };
 
@@ -633,18 +649,51 @@ impl Interpreter {
     fn import_math(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
-                "pi" => { self.variables.insert(String::from("pi"), Value::Num(core::f64::consts::PI)); },
-                "sin" => { self.variables.insert(String::from("sin"), Value::NativeFn(NativeFunction::MathSin)); },
-                "cos" => { self.variables.insert(String::from("cos"), Value::NativeFn(NativeFunction::MathCos)); },
-                "sqrt" => { self.variables.insert(String::from("sqrt"), Value::NativeFn(NativeFunction::MathSqrt)); },
-                "exp" => { self.variables.insert(String::from("exp"), Value::NativeFn(NativeFunction::MathExp)); },
+                "pi" => {
+                    self.variables
+                        .insert(String::from("pi"), Value::Num(core::f64::consts::PI));
+                }
+                "sin" => {
+                    self.variables.insert(
+                        String::from("sin"),
+                        Value::NativeFn(NativeFunction::MathSin),
+                    );
+                }
+                "cos" => {
+                    self.variables.insert(
+                        String::from("cos"),
+                        Value::NativeFn(NativeFunction::MathCos),
+                    );
+                }
+                "sqrt" => {
+                    self.variables.insert(
+                        String::from("sqrt"),
+                        Value::NativeFn(NativeFunction::MathSqrt),
+                    );
+                }
+                "exp" => {
+                    self.variables.insert(
+                        String::from("exp"),
+                        Value::NativeFn(NativeFunction::MathExp),
+                    );
+                }
                 _ => return Err(format!("Symbol '{}' not found in math", symbol)),
             }
         } else {
-             self.variables.insert(String::from("pi"), Value::Num(core::f64::consts::PI));
-             self.variables.insert(String::from("sin"), Value::NativeFn(NativeFunction::MathSin));
-             self.variables.insert(String::from("cos"), Value::NativeFn(NativeFunction::MathCos));
-             self.variables.insert(String::from("sqrt"), Value::NativeFn(NativeFunction::MathSqrt));
+            self.variables
+                .insert(String::from("pi"), Value::Num(core::f64::consts::PI));
+            self.variables.insert(
+                String::from("sin"),
+                Value::NativeFn(NativeFunction::MathSin),
+            );
+            self.variables.insert(
+                String::from("cos"),
+                Value::NativeFn(NativeFunction::MathCos),
+            );
+            self.variables.insert(
+                String::from("sqrt"),
+                Value::NativeFn(NativeFunction::MathSqrt),
+            );
         }
         Ok(Value::Unit)
     }
@@ -652,7 +701,10 @@ impl Interpreter {
     fn import_topology(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
-                "Betti" => self.variables.insert(String::from("Betti"), Value::NativeFn(NativeFunction::TopoBetti)),
+                "Betti" => self.variables.insert(
+                    String::from("Betti"),
+                    Value::NativeFn(NativeFunction::TopoBetti),
+                ),
                 _ => return Err(format!("Symbol '{}' not found in topology", symbol)),
             };
         }
@@ -662,41 +714,99 @@ impl Interpreter {
     fn import_ml(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
-                 "MLP" => { self.variables.insert(String::from("MLP"), Value::NativeFn(NativeFunction::MlpNew)); },
-                 "KMeans" => { self.variables.insert(String::from("KMeans"), Value::NativeFn(NativeFunction::KMeansNew)); },
-                 "Conv2D" => { self.variables.insert(String::from("Conv2D"), Value::NativeFn(NativeFunction::Conv2DNew)); },
-                 _ => return Err(format!("Symbol '{}' not found in ml", symbol)),
+                "MLP" => {
+                    self.variables
+                        .insert(String::from("MLP"), Value::NativeFn(NativeFunction::MlpNew));
+                }
+                "KMeans" => {
+                    self.variables.insert(
+                        String::from("KMeans"),
+                        Value::NativeFn(NativeFunction::KMeansNew),
+                    );
+                }
+                "Conv2D" => {
+                    self.variables.insert(
+                        String::from("Conv2D"),
+                        Value::NativeFn(NativeFunction::Conv2DNew),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in ml", symbol)),
             };
         } else {
-             self.variables.insert(String::from("MLP"), Value::NativeFn(NativeFunction::MlpNew));
-             self.variables.insert(String::from("KMeans"), Value::NativeFn(NativeFunction::KMeansNew));
-             self.variables.insert(String::from("Conv2D"), Value::NativeFn(NativeFunction::Conv2DNew));
-             self.variables.insert(String::from("load_weights"), Value::NativeFn(NativeFunction::MlLoadWeights));
-             self.variables.insert(String::from("matmul"), Value::NativeFn(NativeFunction::MlMatMul));
-             self.variables.insert(String::from("add"), Value::NativeFn(NativeFunction::MlAdd));
-             self.variables.insert(String::from("relu"), Value::NativeFn(NativeFunction::MlRelu));
-             self.variables.insert(String::from("softmax"), Value::NativeFn(NativeFunction::MlSoftmax));
-             self.variables.insert(String::from("attention"), Value::NativeFn(NativeFunction::MlAttention));
-             self.variables.insert(String::from("gpu_check"), Value::NativeFn(NativeFunction::MlGpuCheck));
-             self.variables.insert(String::from("backward"), Value::NativeFn(NativeFunction::MlBackward));
-             self.variables.insert(String::from("update"), Value::NativeFn(NativeFunction::MlUpdate));
-             self.variables.insert(String::from("load_llama"), Value::NativeFn(NativeFunction::MlLoadLlama));
-             self.variables.insert(String::from("generate"), Value::NativeFn(NativeFunction::MlGenerate));
-             self.variables.insert(String::from("Ml"), Value::Module(String::from("Ml")));
+            self.variables
+                .insert(String::from("MLP"), Value::NativeFn(NativeFunction::MlpNew));
+            self.variables.insert(
+                String::from("KMeans"),
+                Value::NativeFn(NativeFunction::KMeansNew),
+            );
+            self.variables.insert(
+                String::from("Conv2D"),
+                Value::NativeFn(NativeFunction::Conv2DNew),
+            );
+            self.variables.insert(
+                String::from("load_weights"),
+                Value::NativeFn(NativeFunction::MlLoadWeights),
+            );
+            self.variables.insert(
+                String::from("matmul"),
+                Value::NativeFn(NativeFunction::MlMatMul),
+            );
+            self.variables
+                .insert(String::from("add"), Value::NativeFn(NativeFunction::MlAdd));
+            self.variables.insert(
+                String::from("relu"),
+                Value::NativeFn(NativeFunction::MlRelu),
+            );
+            self.variables.insert(
+                String::from("softmax"),
+                Value::NativeFn(NativeFunction::MlSoftmax),
+            );
+            self.variables.insert(
+                String::from("attention"),
+                Value::NativeFn(NativeFunction::MlAttention),
+            );
+            self.variables.insert(
+                String::from("gpu_check"),
+                Value::NativeFn(NativeFunction::MlGpuCheck),
+            );
+            self.variables.insert(
+                String::from("backward"),
+                Value::NativeFn(NativeFunction::MlBackward),
+            );
+            self.variables.insert(
+                String::from("update"),
+                Value::NativeFn(NativeFunction::MlUpdate),
+            );
+            self.variables.insert(
+                String::from("load_llama"),
+                Value::NativeFn(NativeFunction::MlLoadLlama),
+            );
+            self.variables.insert(
+                String::from("generate"),
+                Value::NativeFn(NativeFunction::MlGenerate),
+            );
+            self.variables
+                .insert(String::from("Ml"), Value::Module(String::from("Ml")));
         }
         Ok(Value::Unit)
     }
 
     fn import_seal(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
         if let Some(symbol) = &stmt.symbol {
-             match symbol.as_str() {
-                  "train" => { self.variables.insert(String::from("train"), Value::NativeFn(NativeFunction::SealTrain)); },
-                  _ => return Err(format!("Symbol '{}' not found in Seal", symbol)),
-             };
-         } else {
-             self.variables.insert(String::from("Seal"), Value::Module(String::from("Seal")));
-         }
-         Ok(Value::Unit)
+            match symbol.as_str() {
+                "train" => {
+                    self.variables.insert(
+                        String::from("train"),
+                        Value::NativeFn(NativeFunction::SealTrain),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in Seal", symbol)),
+            };
+        } else {
+            self.variables
+                .insert(String::from("Seal"), Value::Module(String::from("Seal")));
+        }
+        Ok(Value::Unit)
     }
 
     fn execute_manifold(&mut self, decl: &ManifoldDecl) -> Result<Value, String> {
@@ -705,7 +815,8 @@ impl Interpreter {
         workspace.embed_data(&self.sample_data);
         let handle = ManifoldHandle(self.manifolds.len());
         self.manifolds.push(workspace);
-        self.variables.insert(decl.name.clone(), Value::Manifold(handle));
+        self.variables
+            .insert(decl.name.clone(), Value::Manifold(handle));
         Ok(Value::Manifold(handle))
     }
 
@@ -730,7 +841,8 @@ impl Interpreter {
             let block = workspace.extract_block(start, end);
             let handle = BlockHandle(self.blocks.len());
             self.blocks.push(block);
-            self.variables.insert(decl.name.clone(), Value::Block(handle));
+            self.variables
+                .insert(decl.name.clone(), Value::Block(handle));
             Ok(Value::Block(handle))
         } else {
             Err("manifold not found".to_string())
@@ -750,7 +862,7 @@ impl Interpreter {
                 let end = range.end.as_f64() as usize;
                 Ok((handle, start, end))
             }
-            _ => Err("invalid block source".to_string())
+            _ => Err("invalid block source".to_string()),
         }
     }
 
@@ -770,8 +882,12 @@ impl Interpreter {
             if let CallArg::Positional(expr) = arg {
                 match &expr.node {
                     ExprKind::Literal(Literal::Num(n)) => {
-                        if i == 0 { start = *n as usize; }
-                        if i == 1 { end = *n as usize; }
+                        if i == 0 {
+                            start = *n as usize;
+                        }
+                        if i == 1 {
+                            end = *n as usize;
+                        }
                     }
                     ExprKind::Range(r) => {
                         start = r.start.as_f64() as usize;
@@ -842,7 +958,9 @@ impl Interpreter {
                 Value::Bool(b) => b,
                 _ => return Err(String::from("condition must be boolean")),
             };
-            if !is_true { break; }
+            if !is_true {
+                break;
+            }
             last_val = self.execute_stmt_block(&stmt.body)?;
         }
         Ok(last_val)
@@ -875,16 +993,22 @@ impl Interpreter {
             ExprKind::Call { name, args } => self.evaluate_call(name, args),
             ExprKind::New { class, args } => self.evaluate_new(class, args),
             ExprKind::List(elements) => self.evaluate_list(elements),
-            ExprKind::MethodCall { object, method, args } => self.evaluate_method_call(object, method, args),
-            ExprKind::Range(_) => Err(String::from("Ranges cannot be evaluated directly as values")),
+            ExprKind::MethodCall {
+                object,
+                method,
+                args,
+            } => self.evaluate_method_call(object, method, args),
+            ExprKind::Range(_) => Err(String::from(
+                "Ranges cannot be evaluated directly as values",
+            )),
             ExprKind::BinaryOp(left, op, right) => {
-                 let l = self.evaluate_expr(left)?;
-                 let r = self.evaluate_expr(right)?;
-                 self.evaluate_binary(l, *op, r)
-            },
+                let l = self.evaluate_expr(left)?;
+                let r = self.evaluate_expr(right)?;
+                self.evaluate_binary(l, *op, r)
+            }
             ExprKind::UnaryOp(_, _) => Err(String::from("Unary ops not implemented yet")),
             ExprKind::Index { object, range } => {
-                // Simplified: returns a descriptive string or handle? 
+                // Simplified: returns a descriptive string or handle?
                 // For now, let's treat it as a lookup that returns a sub-manifold or block value
                 let handle = self.get_manifold_handle(object)?;
                 let start = range.start.as_f64() as usize;
@@ -898,17 +1022,19 @@ impl Interpreter {
                     Err(format!("Manifold '{}' not found", object))
                 }
             }
-            ExprKind::Config(_) => Err(String::from("Raw config blocks cannot be evaluated as expressions")),
+            ExprKind::Config(_) => Err(String::from(
+                "Raw config blocks cannot be evaluated as expressions",
+            )),
         }
     }
-    
+
     fn evaluate_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, String> {
         match (left, op, right) {
             (Value::Num(a), BinaryOp::Add, Value::Num(b)) => Ok(Value::Num(a + b)),
             (Value::Num(a), BinaryOp::Sub, Value::Num(b)) => Ok(Value::Num(a - b)),
             (Value::Num(a), BinaryOp::Mul, Value::Num(b)) => Ok(Value::Num(a * b)),
             (Value::Num(a), BinaryOp::Div, Value::Num(b)) => Ok(Value::Num(a / b)),
-            _ => Err("Invalid binary operation".into())
+            _ => Err("Invalid binary operation".into()),
         }
     }
 
@@ -920,7 +1046,7 @@ impl Interpreter {
         Ok(Value::List(values))
     }
 
-    fn evaluate_call(&mut self, name: &Ident, args: &Vec<CallArg>) -> Result<Value, String> {
+    fn evaluate_call(&mut self, name: &Ident, args: &[CallArg]) -> Result<Value, String> {
         if let Some(val) = self.variables.get(name) {
             match val.clone() {
                 Value::NativeFn(func) => self.execute_native_fn(func, args),
@@ -931,11 +1057,19 @@ impl Interpreter {
         }
     }
 
-    fn execute_native_fn(&mut self, func: NativeFunction, args: &[CallArg]) -> Result<Value, String> {
+    fn execute_native_fn(
+        &mut self,
+        func: NativeFunction,
+        args: &[CallArg],
+    ) -> Result<Value, String> {
         let mut get_f64 = |args: &[CallArg]| -> Result<f64, String> {
             if let Some(CallArg::Positional(expr)) = args.first() {
                 let val = self.evaluate_expr(expr)?;
-                if let Value::Num(n) = val { Ok(n) } else { Err(String::from("Expected number")) }
+                if let Value::Num(n) = val {
+                    Ok(n)
+                } else {
+                    Err(String::from("Expected number"))
+                }
             } else {
                 Err(String::from("Expected number"))
             }
@@ -948,112 +1082,145 @@ impl Interpreter {
             NativeFunction::MathExp => Ok(Value::Num(libm::exp(get_f64(args)?))),
             NativeFunction::TopoBetti => Ok(Value::List(vec![Value::Num(1.0), Value::Num(0.0)])),
             NativeFunction::Print => {
-                 for arg in args {
-                     if let CallArg::Positional(expr) = arg {
-                         let val = self.evaluate_expr(expr)?;
-                         #[cfg(feature = "std")]
-                         println!("{:?}", val);
-                     }
-                 }
-                 Ok(Value::Unit)
-            },
+                for arg in args {
+                    if let CallArg::Positional(expr) = arg {
+                        let val = self.evaluate_expr(expr)?;
+                        #[cfg(feature = "std")]
+                        println!("{:?}", val);
+                    }
+                }
+                Ok(Value::Unit)
+            }
             NativeFunction::MlpNew => {
                 let lr = get_f64(args).unwrap_or(0.01);
-                let config = OptimizerConfig::SGD { learning_rate: lr, momentum: 0.9 };
+                let config = OptimizerConfig::SGD {
+                    learning_rate: lr,
+                    momentum: 0.9,
+                };
                 Ok(Value::Mlp(Box::new(MLP::new(config, LossConfig::MSE))))
-            },
+            }
             NativeFunction::KMeansNew => {
-                 let k = get_f64(args).unwrap_or(2.0) as usize;
-                 Ok(Value::KMeans(Box::new(KMeans::new(k))))
-            },
-            NativeFunction::Conv2DNew => Ok(Value::Conv2D(Box::new(Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU)))),
-            
+                let k = get_f64(args).unwrap_or(2.0) as usize;
+                Ok(Value::KMeans(Box::new(KMeans::new(k))))
+            }
+            NativeFunction::Conv2DNew => Ok(Value::Conv2D(Box::new(Conv2D::new(
+                1,
+                1,
+                3,
+                1,
+                1,
+                Activation::ReLU,
+            )))),
+
             // ML Ops
             NativeFunction::MlMatMul => {
                 let a = self.get_tensor_arg(args, 0)?;
                 let b = self.get_tensor_arg(args, 1)?;
                 Ok(Value::Tensor(a.matmul(&b)))
-            },
+            }
             NativeFunction::MlAdd => {
                 let a = self.get_tensor_arg(args, 0)?;
                 let b = self.get_tensor_arg(args, 1)?;
                 Ok(Value::Tensor(a.add(&b)))
-            },
+            }
             NativeFunction::MlRelu => {
                 let a = self.get_tensor_arg(args, 0)?;
                 Ok(Value::Tensor(Activation::ReLU.apply(&a)))
-            },
+            }
             NativeFunction::MlSoftmax => {
                 let a = self.get_tensor_arg(args, 0)?;
                 Ok(Value::Tensor(Activation::Softmax.apply(&a)))
-            },
+            }
             NativeFunction::MlLoadWeights => {
                 // Acts as "Create Tensor from List"
-                 if let Some(CallArg::Positional(expr)) = args.first() {
-                     let val = self.evaluate_expr(expr)?;
-                     let t = self.value_to_tensor_core(&val)?;
-                     Ok(Value::Tensor(t))
-                 } else {
-                     Err("Missing argument".into())
-                 }
-            },
-            NativeFunction::MlForward => { // Map "forward"
-                 // Args: model, input
-                 // Actually this might be MethodCall on Mlp object
-                 Ok(Value::Unit)
-            },
-            _ => Ok(Value::Unit)
+                if let Some(CallArg::Positional(expr)) = args.first() {
+                    let val = self.evaluate_expr(expr)?;
+                    let t = self.value_to_tensor_core(&val)?;
+                    Ok(Value::Tensor(t))
+                } else {
+                    Err("Missing argument".into())
+                }
+            }
+            NativeFunction::MlForward => {
+                // Map "forward"
+                // Args: model, input
+                // Actually this might be MethodCall on Mlp object
+                Ok(Value::Unit)
+            }
+            _ => Ok(Value::Unit),
         }
     }
 
     fn get_tensor_arg(&mut self, args: &[CallArg], index: usize) -> Result<Tensor, String> {
         if let Some(CallArg::Positional(expr)) = args.get(index) {
-             let val = self.evaluate_expr(expr)?;
-             self.value_to_tensor_core(&val)
+            let val = self.evaluate_expr(expr)?;
+            self.value_to_tensor_core(&val)
         } else {
-             Err(format!("Missing argument {}", index))
+            Err(format!("Missing argument {}", index))
         }
     }
 
     fn value_to_tensor_core(&self, val: &Value) -> Result<Tensor, String> {
-         match val {
+        match val {
             Value::Tensor(t) => Ok(t.clone()),
             Value::List(rows) => {
-                 if rows.is_empty() { return Ok(Tensor::zeros(&[0])); }
-                 
-                 let mut data = Vec::new();
-                 
-                 // Check if 2D or 1D
-                 if let Value::List(_) = &rows[0] {
-                     // 2D
-                     let rows_cnt = rows.len();
-                     let mut cols_cnt = 0;
-                     for (i, row) in rows.iter().enumerate() {
-                         if let Value::List(cols) = row {
-                             if i == 0 { cols_cnt = cols.len(); }
-                             else if cols.len() != cols_cnt { return Err("Ragged tensor".into()); }
-                             for c in cols {
-                                 if let Value::Num(n) = c { data.push(*n); }
-                                 else { return Err("Tensor must contain numbers".into()); }
-                             }
-                         } else { return Err("Expected 2D list".into()); }
-                     }
-                     Ok(Tensor::new(&data, &[rows_cnt, cols_cnt]))
-                 } else {
-                     // 1D
-                      for c in rows {
-                         if let Value::Num(n) = c { data.push(*n); }
-                         else { return Err("Tensor must contain numbers".into()); }
-                     }
-                     Ok(Tensor::new(&data, &[rows.len()]))
-                 }
-            },
-            _ => Err("Expected Tensor or List".into())
-         }
+                if rows.is_empty() {
+                    return Ok(Tensor::zeros(&[0]));
+                }
+
+                let mut data = Vec::new();
+
+                // Check if 2D or 1D
+                if let Value::List(_) = &rows[0] {
+                    // 2D
+                    let rows_cnt = rows.len();
+                    let mut cols_cnt = 0;
+                    for (i, row) in rows.iter().enumerate() {
+                        if let Value::List(cols) = row {
+                            if i == 0 {
+                                cols_cnt = cols.len();
+                            } else if cols.len() != cols_cnt {
+                                return Err("Ragged tensor".into());
+                            }
+                            for c in cols {
+                                if let Value::Num(n) = c {
+                                    data.push(*n);
+                                } else {
+                                    return Err("Tensor must contain numbers".into());
+                                }
+                            }
+                        } else {
+                            return Err("Expected 2D list".into());
+                        }
+                    }
+                    Ok(Tensor::new(&data, &[rows_cnt, cols_cnt]))
+                } else {
+                    // 1D
+                    for c in rows {
+                        if let Value::Num(n) = c {
+                            data.push(*n);
+                        } else {
+                            return Err("Tensor must contain numbers".into());
+                        }
+                    }
+                    Ok(Tensor::new(&data, &[rows.len()]))
+                }
+            }
+            _ => Err("Expected Tensor or List".into()),
+        }
     }
 
-    fn evaluate_method_call(&mut self, object_name: &String, method: &String, args: &[CallArg]) -> Result<Value, String> {
-        let val = if let Some(v) = self.variables.get(object_name) { v.clone() } else { return Err(format!("Object '{}' not found", object_name)); };
+    fn evaluate_method_call(
+        &mut self,
+        object_name: &String,
+        method: &String,
+        args: &[CallArg],
+    ) -> Result<Value, String> {
+        let val = if let Some(v) = self.variables.get(object_name) {
+            v.clone()
+        } else {
+            return Err(format!("Object '{}' not found", object_name));
+        };
         match val {
             Value::List(mut list) => {
                 let res = match method.as_str() {
@@ -1061,13 +1228,17 @@ impl Interpreter {
                         if let Some(CallArg::Positional(expr)) = args.first() {
                             let val = self.evaluate_expr(expr)?;
                             list.push(val);
-                            self.variables.insert(object_name.clone(), Value::List(list));
+                            self.variables
+                                .insert(object_name.clone(), Value::List(list));
                             Ok(Value::Unit)
-                        } else { Err(String::from("push requires 1 argument")) }
+                        } else {
+                            Err(String::from("push requires 1 argument"))
+                        }
                     }
                     "pop" => {
                         let val = list.pop().unwrap_or(Value::Unit);
-                        self.variables.insert(object_name.clone(), Value::List(list));
+                        self.variables
+                            .insert(object_name.clone(), Value::List(list));
                         Ok(val)
                     }
                     "len" => Ok(Value::Num(list.len() as f64)),
@@ -1078,21 +1249,21 @@ impl Interpreter {
             Value::Mlp(mut mlp) => {
                 match method.as_str() {
                     "add_layer" => {
-                         // input, output, activation key string
-                         // Default to Tanh if not string
-                         let input = self.get_arg_num(args, 0)? as usize;
-                         let output = self.get_arg_num(args, 1)? as usize;
-                         let act_str = self.get_arg_str(args, 2).unwrap_or("tanh".to_string());
-                         let act = match act_str.as_str() {
-                             "relu" => Activation::ReLU,
-                             "sigmoid" => Activation::Sigmoid,
-                             "softmax" => Activation::Softmax,
-                             _ => Activation::Tanh
-                         };
-                         mlp.add_layer(input, output, act, None);
-                         self.variables.insert(object_name.clone(), Value::Mlp(mlp)); // Update
-                         Ok(Value::Unit)
-                    },
+                        // input, output, activation key string
+                        // Default to Tanh if not string
+                        let input = self.get_arg_num(args, 0)? as usize;
+                        let output = self.get_arg_num(args, 1)? as usize;
+                        let act_str = self.get_arg_str(args, 2).unwrap_or("tanh".to_string());
+                        let act = match act_str.as_str() {
+                            "relu" => Activation::ReLU,
+                            "sigmoid" => Activation::Sigmoid,
+                            "softmax" => Activation::Softmax,
+                            _ => Activation::Tanh,
+                        };
+                        mlp.add_layer(input, output, act, None);
+                        self.variables.insert(object_name.clone(), Value::Mlp(mlp)); // Update
+                        Ok(Value::Unit)
+                    }
                     "train" => {
                         // inputs (List/Tensor), targets (List/Tensor), epochs
                         let input = self.get_tensor_arg(args, 0)?;
@@ -1100,56 +1271,71 @@ impl Interpreter {
                         let epochs = self.get_arg_num(args, 2).unwrap_or(1.0) as usize;
                         let res = mlp.fit(&[input], &[target], epochs); // fit expects slice of tensors
                         Ok(Value::Num(res.final_loss))
-                    },
+                    }
                     "forward" | "predict" => {
                         let input = self.get_tensor_arg(args, 0)?;
-                         let output = mlp.forward(&input);
-                         Ok(Value::Tensor(output))
-                    },
+                        let output = mlp.forward(&input);
+                        Ok(Value::Tensor(output))
+                    }
                     _ => Err(format!("Method '{}' not found on MLP", method)),
                 }
             }
-            Value::Module(mod_name) => {
-                 match (mod_name.as_str(), method.as_str()) {
-                     ("Ml", "MLP") => self.execute_native_fn(NativeFunction::MlpNew, args),
-                     ("Ml", "KMeans") => self.execute_native_fn(NativeFunction::KMeansNew, args),
-                     ("Ml", "Conv2D") => self.execute_native_fn(NativeFunction::Conv2DNew, args),
-                     ("Seal", "train") => self.execute_native_fn(NativeFunction::SealTrain, args),
-                     _ => Err(format!("Method '{}' not found in module '{}'", method, mod_name)),
-                 }
-            }
-            _ => Ok(Value::Unit), 
+            Value::Module(mod_name) => match (mod_name.as_str(), method.as_str()) {
+                ("Ml", "MLP") => self.execute_native_fn(NativeFunction::MlpNew, args),
+                ("Ml", "KMeans") => self.execute_native_fn(NativeFunction::KMeansNew, args),
+                ("Ml", "Conv2D") => self.execute_native_fn(NativeFunction::Conv2DNew, args),
+                ("Seal", "train") => self.execute_native_fn(NativeFunction::SealTrain, args),
+                _ => Err(format!(
+                    "Method '{}' not found in module '{}'",
+                    method, mod_name
+                )),
+            },
+            _ => Ok(Value::Unit),
         }
     }
 
     fn get_arg_num(&mut self, args: &[CallArg], index: usize) -> Result<f64, String> {
-         if let Some(CallArg::Positional(expr)) = args.get(index) {
-             let val = self.evaluate_expr(expr)?;
-             if let Value::Num(n) = val { Ok(n) } else { Err("Expected number".into()) }
-         } else { Err("Missing arg".into()) }
+        if let Some(CallArg::Positional(expr)) = args.get(index) {
+            let val = self.evaluate_expr(expr)?;
+            if let Value::Num(n) = val {
+                Ok(n)
+            } else {
+                Err("Expected number".into())
+            }
+        } else {
+            Err("Missing arg".into())
+        }
     }
-    
+
     fn get_arg_str(&mut self, args: &[CallArg], index: usize) -> Result<String, String> {
-          if let Some(CallArg::Positional(expr)) = args.get(index) {
-             let val = self.evaluate_expr(expr)?;
-             if let Value::Str(s) = val { Ok(s) } else { Err("Expected string".into()) }
-         } else { Err("Missing arg".into()) }
+        if let Some(CallArg::Positional(expr)) = args.get(index) {
+            let val = self.evaluate_expr(expr)?;
+            if let Value::Str(s) = val {
+                Ok(s)
+            } else {
+                Err("Expected string".into())
+            }
+        } else {
+            Err("Missing arg".into())
+        }
     }
 
     fn evaluate_field_access(&self, object: &String, field: &String) -> Result<Value, String> {
         if let Some(Value::Object(handle)) = self.variables.get(object) {
             if let Some(obj) = self.objects.get(handle.0) {
-                if let Some(val) = obj.fields.get(field) { return Ok(val.clone()); }
+                if let Some(val) = obj.fields.get(field) {
+                    return Ok(val.clone());
+                }
             }
         }
         if let Some(Value::Module(name)) = self.variables.get(object) {
-             match (name.as_str(), field.as_str()) {
-                 ("Seal", "train") => Ok(Value::NativeFn(NativeFunction::SealTrain)),
-                 ("Ml", "MLP") => Ok(Value::NativeFn(NativeFunction::MlpNew)),
-                 _ => Ok(Value::Unit),
-             }
+            match (name.as_str(), field.as_str()) {
+                ("Seal", "train") => Ok(Value::NativeFn(NativeFunction::SealTrain)),
+                ("Ml", "MLP") => Ok(Value::NativeFn(NativeFunction::MlpNew)),
+                _ => Ok(Value::Unit),
+            }
         } else {
-             Ok(Value::Unit)
+            Ok(Value::Unit)
         }
     }
 }
@@ -1158,14 +1344,4 @@ impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// Tests helper
-fn list_from_u8(bytes: &[u8]) -> Vec<f32> {
-    let mut data = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
-        let arr: [u8; 4] = chunk.try_into().unwrap();
-        data.push(f32::from_le_bytes(arr));
-    }
-    data
 }

@@ -15,8 +15,6 @@
 //! This gives us a mathematically principled "stop" condition.
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 use heapless::Vec as HVec;
 use libm::sqrt;
 
@@ -252,7 +250,7 @@ impl ConvergenceDetector {
 pub struct ResidualAnalyzer<const D: usize> {
     /// Residual values
     residuals: HVec<f64, 256>,
-    /// Connection threshold for epsilon-graph
+    #[allow(dead_code)]
     epsilon: f64,
 }
 

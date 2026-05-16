@@ -3,7 +3,7 @@ name = "epsilon-os"
 version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma"]
-license-file = "../../../../../LICENSE"
+license = "MIT"
 description = "Epsilon-Hollow Topological OS — episodic memory with O(1) Voronoi retrieval, SCM dynamics, and LLM bridge"
 
 [dependencies]

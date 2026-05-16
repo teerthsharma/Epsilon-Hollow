@@ -19,8 +19,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 use libm::sqrt;
 
 /// Maximum dimension for the manifold points
