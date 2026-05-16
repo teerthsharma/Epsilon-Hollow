@@ -20,21 +20,17 @@
 //!
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-#![allow(dead_code)]
-
 use libm::sqrt;
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Manifold Constants
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-/// Default embedding dimension for time-delay embedding
+#[allow(dead_code)]
 const DEFAULT_EMBED_DIM: usize = 3;
-
-/// Default time delay (Ï„) for embedding
+#[allow(dead_code)]
 const DEFAULT_TAU: usize = 1;
-
-/// Default neighborhood radius for sparse attention
+#[allow(dead_code)]
 const DEFAULT_EPSILON: f64 = 0.5;
 
 /// Maximum points to track (memory constraint for no_std)
@@ -163,8 +159,11 @@ pub struct SparseAttentionGraph<const D: usize> {
     /// Epsilon neighborhood radius
     epsilon: f64,
 
-    /// Sparse adjacency (bit-packed for memory efficiency)
-    /// adjacency[i] is bitmask of neighbors for point i
+    /// Sparse adjacency (bit-packed for memory efficiency).
+    /// adjacency[i] is bitmask of neighbors for point i.
+    ///
+    /// Bitmask adjacency supports up to 64 neighbors per point.
+    /// Points with index >= 64 fall outside the sparse attention window.
     adjacency: [u64; MAX_POINTS],
 }
 

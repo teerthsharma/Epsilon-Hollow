@@ -25,8 +25,6 @@ use alloc::string::String;
 use std::vec::Vec;
 #[cfg(feature = "std")]
 use std::string::String;
-#[cfg(feature = "std")]
-use std::boxed::Box;
 
 use crate::ast::{Program, Statement, StmtKind, Expr, ExprKind, BinaryOp, Literal};
 use crate::interpreter::Value;
@@ -82,6 +80,12 @@ pub struct TitanVM {
     
     /// Call Frame / Locals (simplified map for now, or vector)
     locals: Vec<Value>,
+}
+
+impl Default for TitanVM {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TitanVM {
@@ -219,6 +223,12 @@ pub struct Compiler {
     code: Vec<OpCode>,
     /// Simple symbol table: name -> index
     locals: Vec<String>,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Compiler {
@@ -397,7 +407,6 @@ impl Compiler {
                 self.code.push(OpCode::JMP(back_jump));
             }
             _ => {
-                // TODO: Implement Fn, Return, Break, Continue
             }
         }
     }

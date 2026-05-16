@@ -12,8 +12,6 @@
 //! - Topological convergence detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
@@ -51,11 +49,11 @@ use aether_core::ml::linalg::LossConfig;
 use aether_core::ml::convolution::Conv2D;
 use libm::{fabs, sqrt};
 
-#[cfg(feature = "std")]
+#[cfg(feature = "net")]
 use safetensors::SafeTensors;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "ml", feature = "std"))]
 use std::sync::Arc;
-#[cfg(not(feature = "std"))]
+#[cfg(all(feature = "ml", not(feature = "std")))]
 use alloc::sync::Arc;
 
 #[cfg(feature = "ml")]
@@ -296,11 +294,11 @@ pub enum RegressionModel {
 /// Escalating benchmark system
 pub struct EscalatingRegressor {
     /// Current model complexity
-    current_level: u32,
+    _current_level: u32,
     /// Target for regression
     target: Vec<f64>,
     /// Predictions
-    predictions: Vec<f64>,
+    _predictions: Vec<f64>,
     /// Convergence epsilon
     epsilon: f64,
     /// Betti stability window
@@ -310,9 +308,9 @@ pub struct EscalatingRegressor {
 impl EscalatingRegressor {
     pub fn new(epsilon: f64) -> Self {
         Self {
-            current_level: 0,
+            _current_level: 0,
             target: Vec::new(),
-            predictions: Vec::new(),
+            _predictions: Vec::new(),
             epsilon,
             betti_history: Vec::new(),
         }
@@ -444,21 +442,7 @@ impl EscalatingRegressor {
     }
 
     fn predict(&self, x: f64, coeffs: &[f64; 8], model: &RegressionModel) -> f64 {
-        match model {
-            RegressionModel::Linear => coeffs[0] + coeffs[1] * x,
-            RegressionModel::Polynomial { degree } => {
-                let mut y = coeffs[0];
-                let mut x_pow = x;
-                for coeff in coeffs.iter().take((*degree as usize).min(7) + 1).skip(1) {
-                    y += coeff * x_pow;
-                    x_pow *= x;
-                }
-                y
-            }
-            RegressionModel::Rbf { .. } => {
-                self.predict(x, coeffs, &RegressionModel::Polynomial { degree: 3 })
-            }
-        }
+        predict_value(x, coeffs, model)
     }
 
     fn compute_residual_betti(
@@ -501,6 +485,24 @@ impl EscalatingRegressor {
             if recent.iter().all(|b| **b == *current_betti) { return true; }
         }
         false
+    }
+}
+
+fn predict_value(x: f64, coeffs: &[f64; 8], model: &RegressionModel) -> f64 {
+    match model {
+        RegressionModel::Linear => coeffs[0] + coeffs[1] * x,
+        RegressionModel::Polynomial { degree } => {
+            let mut y = coeffs[0];
+            let mut x_pow = x;
+            for coeff in coeffs.iter().take((*degree as usize).min(7) + 1).skip(1) {
+                y += coeff * x_pow;
+                x_pow *= x;
+            }
+            y
+        }
+        RegressionModel::Rbf { .. } => {
+            predict_value(x, coeffs, &RegressionModel::Polynomial { degree: 3 })
+        }
     }
 }
 
@@ -920,7 +922,7 @@ impl Interpreter {
         Ok(Value::List(values))
     }
 
-    fn evaluate_call(&mut self, name: &Ident, args: &Vec<CallArg>) -> Result<Value, String> {
+    fn evaluate_call(&mut self, name: &Ident, args: &[CallArg]) -> Result<Value, String> {
         if let Some(val) = self.variables.get(name) {
             match val.clone() {
                 Value::NativeFn(func) => self.execute_native_fn(func, args),
@@ -1160,12 +1162,3 @@ impl Default for Interpreter {
     }
 }
 
-// Tests helper
-fn list_from_u8(bytes: &[u8]) -> Vec<f32> {
-    let mut data = Vec::with_capacity(bytes.len() / 4);
-    for chunk in bytes.chunks_exact(4) {
-        let arr: [u8; 4] = chunk.try_into().unwrap();
-        data.push(f32::from_le_bytes(arr));
-    }
-    data
-}

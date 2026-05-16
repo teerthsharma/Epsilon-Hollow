@@ -23,7 +23,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
 
 use libm::sqrt;
 
@@ -34,7 +33,7 @@ use libm::sqrt;
 /// Block sizes for hierarchical tree
 pub const BLOCK_LEVELS: [usize; 3] = [64, 256, 1024];
 
-/// Maximum embedding dimension
+#[allow(dead_code)]
 const MAX_DIM: usize = 64;
 
 /// Maximum blocks at finest level

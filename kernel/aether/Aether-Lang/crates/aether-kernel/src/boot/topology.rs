@@ -55,8 +55,8 @@ impl HardwareTopology {
         }
 
         Self {
-            cpu_cores: 1, // TODO: Parse MADT/ACPI for actual core count
-            numa_nodes: 1, // TODO: Parse SRAT
+            cpu_cores: 1,
+            numa_nodes: 1,
             total_memory: mem_total,
             io_capabilities: caps,
             cache_groups: Vec::new(),

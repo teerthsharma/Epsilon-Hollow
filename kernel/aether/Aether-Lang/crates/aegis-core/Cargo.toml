@@ -1,7 +1,10 @@
 [package]
 name = "aegis-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AEGIS Core: TitanClock lock-free sharded memory allocator"
 
 [dependencies]
 libm = { workspace = true }

@@ -1,0 +1,30 @@
+[workspace]
+members = [
+    "crates/dsp",
+    "crates/runtime/aether-core",
+    "crates/runtime/aether-lang",
+    "crates/runtime/aether-kernel",
+    "crates/runtime/aether-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma <teerthsharma@users.noreply.github.com>"]
+license = "MIT"
+repository = "https://github.com/teerthsharma/apeiron-runtime"
+
+[workspace.dependencies]
+libm = "0.2"
+serde = { version = "1.0", features = ["derive", "alloc"] }
+nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+rustyline = "14.0"
+bootloader = { version = "0.11", default-features = false }
+x86_64 = { version = "0.14", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "lazy", "spin_mutex"] }
+volatile = "0.5"
+heapless = "0.8"

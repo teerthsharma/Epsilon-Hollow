@@ -16,8 +16,6 @@
 //!   config_block → "{" (IDENT ":" expr ",")* "}"
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 extern crate alloc;
 use crate::ast::*;
 use crate::lexer::{Lexer, Token, TokenKind};
@@ -721,8 +719,8 @@ impl<'a> Parser<'a> {
                  },
                  "degree" => {
                       let expr = self.parse_expr()?;
-                      if let Ok(num) = self.expr_to_number(&expr) {
-                          if let Number::Int(n) = num { config.degree = Some(n as u8); }
+                      if let Ok(Number::Int(n)) = self.expr_to_number(&expr) {
+                          config.degree = Some(n as u8);
                       }
                  },
                  "target" => config.target = Some(self.parse_expr()?),

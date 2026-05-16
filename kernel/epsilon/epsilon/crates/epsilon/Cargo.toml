@@ -3,7 +3,7 @@ name = "epsilon"
 version = "0.1.0"
 edition = "2021"
 authors = ["Teerth Sharma"]
-license-file = "../../../../../LICENSE"
+license = "MIT"
 description = """
 Epsilon: Zero-Shot Context Context Transfer via Topological Surgery.
 
