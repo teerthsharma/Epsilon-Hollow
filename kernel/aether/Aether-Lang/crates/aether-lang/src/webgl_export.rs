@@ -9,8 +9,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 use heapless::String;
 
 /// WebGL exporter for 3D visualization

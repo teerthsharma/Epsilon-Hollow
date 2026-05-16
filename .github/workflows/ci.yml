@@ -51,7 +51,7 @@ jobs:
   miri:
     name: miri (UB detection)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    continue-on-error: false
     env:
       RUSTUP_TOOLCHAIN: nightly
     steps:

@@ -20,8 +20,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 // Core modules
 pub mod autograd;
 pub mod benchmark;

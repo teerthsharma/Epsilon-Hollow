@@ -1,61 +1,60 @@
 [workspace]
-resolver = "2"
 members = [
-    "kernel/epsilon/epsilon/crates/aether-core",
-    "kernel/epsilon/epsilon/crates/epsilon",
-    "kernel/epsilon/epsilon/crates/epsilon-os",
-    "kernel/aether/aether-link",
-    "kernel/aether/aether-verified",
-    "kernel/aether/Aether-Lang/crates/aether-lang",
-    "kernel/aether/Aether-Lang/crates/aether-cli",
-    "kernel/aether/Aether-Lang/crates/aegis-core",
-    "kernel/aether/Aether-Lang/crates/aegis-cli",
-    "kernel/aether/Aether-Lang/crates/repl-core",
+    "aether-core",
+    "aether-lang",
+    "aether-kernel",
+    "aether-cli",
+    "aegis-core",
 ]
-exclude = [
-    "kernel/aether/Aether-Lang/crates/aether-kernel",
-    "kernel/aether/aether-nexus",
-    "future/",
-]
+resolver = "2"
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Epsilon-Hollow — Unified Cargo Workspace
+# AEGIS Workspace
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# Members:
-#   - aether-core:     Math foundation (topology, manifolds, PD control, memory)
-#   - epsilon:         Context Teleportation research implementation
-#   - aether-link:     Ultra-fast I/O super-kernel
-#   - aether_verified: Lean 4 → C → Rust verified kernels
+# Cross-Platform Architecture:
+#   - aegis-core:   Platform-agnostic math, topology, manifold, ML (no_std + std)
+#   - aegis-lang:   Language compiler/interpreter (lexer, parser, AST)
+#   - aegis-kernel: Bare-metal x86_64 microkernel
+#   - aegis-cli:    Cross-platform CLI (Windows/Linux/macOS)
 #
-# Experimental tracks live under experiments/ and are NOT part of this workspace.
+# Build Commands:
+#   cargo build -p aegis-cli          # Native CLI for current platform
+#   cargo build -p aegis-kernel       # Bare-metal kernel (requires nightly)
+#   cargo test --workspace            # Run all tests
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Teerth Sharma"]
+authors = ["AEGIS Research Team"]
 license = "MIT"
-repository = "https://github.com/teerthsharma/epsilon"
+repository = "https://github.com/teerthsharma/aether"
 
 [workspace.dependencies]
+# Shared dependencies across workspace
 libm = "0.2"
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
-heapless = "0.8"
+
+# CLI-specific
 clap = { version = "4.0", features = ["derive"] }
 rustyline = "14.0"
 
+# Kernel-specific
+bootloader = { version = "0.11", default-features = false }
+x86_64 = { version = "0.14", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+spin = { version = "0.9", default-features = false, features = ["mutex", "lazy", "spin_mutex"] }
+volatile = "0.5"
+heapless = "0.8"
+
 [profile.dev]
 opt-level = 1
+panic = "abort"
 
 [profile.release]
+panic = "abort"
 lto = "fat"
 codegen-units = 1
 opt-level = 3
-panic = "abort"
-
-[profile.bench]
-lto = true
-codegen-units = 1

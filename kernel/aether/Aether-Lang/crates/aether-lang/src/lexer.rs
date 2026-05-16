@@ -10,12 +10,10 @@
 //! Token Categories:
 //! - Keywords: manifold, block, regress, render, until, escalate, embed
 //! - Control flow: seal (🦭), for, while, if, else, fn, return, break, continue
-//! - Operators: =, :, {, }, [, ], (, ), , +, -, *, /, <, >, ==, !=, &&, ||
+//! - Operators: `=, :, {, }, [, ], (, ), , +, -, *, /, <, >, ==, !=, &&, ||`
 //! - Literals: numbers, strings, identifiers
 //! - Comments: // single-line
 //!   ═══════════════════════════════════════════════════════════════════════════════
-
-#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::string::String;
@@ -136,13 +134,19 @@ pub struct Token {
 
 impl Token {
     pub fn new(kind: TokenKind, line: usize, column: usize, start: usize, end: usize) -> Self {
-        Self { kind, line, column, start, end }
+        Self {
+            kind,
+            line,
+            column,
+            start,
+            end,
+        }
     }
 }
 
 /// Lexer for AEGIS scripts
 pub struct Lexer<'a> {
-    source: &'a str,
+    _source: &'a str,
     chars: Peekable<Chars<'a>>,
     current_pos: usize,
     line: usize,
@@ -153,7 +157,7 @@ impl<'a> Lexer<'a> {
     /// Create a new lexer for the given source
     pub fn new(source: &'a str) -> Self {
         Self {
-            source,
+            _source: source,
             chars: source.chars().peekable(),
             current_pos: 0,
             line: 1,
