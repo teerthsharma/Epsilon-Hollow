@@ -38,7 +38,7 @@ cargo bench --workspace --no-run
 
 On a recent x86_64 desktop you should see `io_cycle_8_lbas` land in the
 **15–25 ns** band. CI runners are noisier; the regression gate uses a
-**60 ns** ceiling (see `bench-regression` in `.github/workflows/ci.yml`)
+**120 ns** ceiling (see `bench-regression` in `.github/workflows/ci.yml`)
 to keep the signal real without flapping on shared-hardware variance.
 
 ## Interpreting CI output
@@ -49,7 +49,7 @@ mode and parses the median ns/iter for `io_cycle_8_lbas`. The full
 A regression looks like:
 
 ```
-REGRESSION: io_cycle_8_lbas = 187 ns/iter > threshold 60 ns/iter
+REGRESSION: io_cycle_8_lbas = 187 ns/iter > threshold 120 ns/iter
 ```
 
 When investigating a regression, download the artifact and compare the

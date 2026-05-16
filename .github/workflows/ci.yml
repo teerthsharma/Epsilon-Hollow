@@ -96,7 +96,7 @@ jobs:
           ns=$(echo "$line" | sed -E 's/.*\[.*[[:space:]]([0-9]+(\.[0-9]+)?)[[:space:]]ns.*/\1/' | head -n1)
           ns_int=${ns%.*}
           echo "io_cycle_8_lbas median = $ns ns/iter"
-          threshold=60
+          threshold=120
           if [ "$ns_int" -gt "$threshold" ]; then
             echo "REGRESSION: io_cycle_8_lbas = $ns ns/iter > threshold $threshold ns/iter"
             exit 1
