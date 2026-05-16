@@ -15,8 +15,6 @@
 //! - Comments: // single-line
 //!   ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -142,7 +140,7 @@ impl Token {
 
 /// Lexer for AEGIS scripts
 pub struct Lexer<'a> {
-    source: &'a str,
+    _source: &'a str,
     chars: Peekable<Chars<'a>>,
     current_pos: usize,
     line: usize,
@@ -153,7 +151,7 @@ impl<'a> Lexer<'a> {
     /// Create a new lexer for the given source
     pub fn new(source: &'a str) -> Self {
         Self {
-            source,
+            _source: source,
             chars: source.chars().peekable(),
             current_pos: 0,
             line: 1,

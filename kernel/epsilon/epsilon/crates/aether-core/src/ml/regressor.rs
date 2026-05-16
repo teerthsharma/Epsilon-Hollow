@@ -12,7 +12,6 @@
 //! relationships because the manifold encodes the data's true shape.
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
 
 use heapless::Vec as HVec;
 use libm::{pow, sqrt};

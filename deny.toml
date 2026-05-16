@@ -18,8 +18,7 @@ ignore = [
 ]
 
 [licenses]
-# Workspace ships under LicenseRef-Epsilon-Hollow (custom attribution license).
-# Dependencies must use permissive licenses; GPL/AGPL/LGPL are blocked.
+# Workspace ships under MIT. Dependencies must use permissive licenses.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -37,8 +36,6 @@ confidence-threshold = 0.9
 exceptions = []
 
 [licenses.private]
-# Workspace crates use license-file (custom license) which cargo-deny cannot
-# resolve as SPDX. Skip license checks for unpublished workspace crates.
 ignore = true
 registries = []
 

@@ -25,14 +25,17 @@ description = "AETHER Language: Lexer, Parser, AST, and Interpreter"
 
 [features]
 default = ["std"]
-std = ["aether-core/std", "alloc", "dep:reqwest", "dep:safetensors", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
+std = ["aether-core/std", "alloc"]
+gpu = ["std", "dep:wgpu", "dep:pollster", "dep:bytemuck"]
+net = ["std", "dep:reqwest", "dep:safetensors"]
 ml = ["dep:candle-core", "dep:candle-transformers", "dep:tokenizers", "dep:hf-hub"]
 alloc = []
 no_std = ["aether-core/no_std", "alloc"]
 python = ["dep:pyo3", "std"]
+full = ["std", "gpu", "net", "ml"]
 
 [dependencies]
-aether-core = { path = "../aether-core", default-features = false }
+aether-core = { path = "../../../../epsilon/epsilon/crates/aether-core", default-features = false }
 libm = { workspace = true }
 heapless = { workspace = true }
 reqwest = { version = "0.11", features = ["blocking", "rustls-tls"], default-features = false, optional = true }

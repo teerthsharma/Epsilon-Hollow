@@ -9,8 +9,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
 use heapless::String;
 
 /// ASCII density characters (from sparse to dense)

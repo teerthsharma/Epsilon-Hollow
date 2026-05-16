@@ -7,8 +7,7 @@ for security-sensitive reports.
 
 - Preferred: GitHub Security Advisories ("Report a vulnerability" on the repo's
   Security tab).
-- Email fallback: `security@epsilon-hollow.invalid` (replace with the
-  maintainer's address before publishing).
+- Email fallback: `teerths57@gmail.com`.
 
 Include reproduction steps, affected version/commit, and impact. Expect an
 acknowledgement within a reasonable window; coordinated disclosure is

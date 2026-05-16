@@ -30,7 +30,7 @@ debug_topology = []
 profiling = []
 
 [dependencies]
-aether-core = { path = "../aether-core", default-features = false, features = ["no_std"] }
+aether-core = { path = "../../../../epsilon/epsilon/crates/aether-core", default-features = false, features = ["no_std"] }
 aether-lang = { path = "../aether-lang", default-features = false, features = ["no_std"] }
 bootloader = { workspace = true, optional = true }
 x86_64 = { workspace = true }

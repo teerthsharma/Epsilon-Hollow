@@ -9,9 +9,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
-
-// use heapless::Vec as HVec;
 use libm::{exp, fabs, log, sqrt};
 
 /// Maximum classes

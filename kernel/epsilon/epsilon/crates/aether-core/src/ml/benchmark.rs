@@ -15,13 +15,12 @@
 //! 5. Answer emerges when topology stabilizes
 //!    ═══════════════════════════════════════════════════════════════════════════════
 
-#![allow(dead_code)]
 
 use crate::ml::convergence::{Answer, BettiNumbers, ConvergenceDetector, ResidualAnalyzer};
 use crate::ml::regressor::{Coefficients, ManifoldRegressor, ModelType};
 use heapless::Vec as HVec;
 
-/// Maximum benchmark iterations
+#[allow(dead_code)]
 const MAX_EPOCHS: u32 = 1000;
 
 // ═══════════════════════════════════════════════════════════════════════════════

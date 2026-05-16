@@ -13,9 +13,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-#[cfg(feature = "std")]
-use std::thread;
-
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
@@ -33,11 +30,17 @@ pub struct Slot<T> {
     energy: AtomicBool,
 }
 
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> Slot<T> {
     pub fn new() -> Self {
         Self {
             data: UnsafeCell::new(None),
-            energy: AtomicBool::new(false), // Starts cold
+            energy: AtomicBool::new(false),
         }
     }
 }
@@ -62,6 +65,12 @@ pub struct TitanClock<T, const SIZE: usize> {
 
 unsafe impl<T: Send, const SIZE: usize> Send for TitanClock<T, SIZE> {}
 unsafe impl<T: Sync, const SIZE: usize> Sync for TitanClock<T, SIZE> {}
+
+impl<T, const SIZE: usize> Default for TitanClock<T, SIZE> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<T, const SIZE: usize> TitanClock<T, SIZE> {
     pub const STACK_SIZE: usize = SIZE / SHARDS;
@@ -177,8 +186,6 @@ impl<T, const SIZE: usize> TitanClock<T, SIZE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
     
     #[test]
     fn test_titan_genesis() {
@@ -211,32 +218,4 @@ mod tests {
         assert_eq!(*clock.access(idx_new).unwrap(), 100);
     }
     
-    /*
-    #[test]
-    fn test_multithreaded_stress() {
-        let clock = Arc::new(TitanClock::<usize, 1024>::new()); // 32 slots per shard
-        
-        let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new(); // Use Vec::new()
-        
-        // Spawn 10 Titan Threads
-        for t in 0..10 {
-            let c = clock.clone();
-            handles.push(thread::spawn(move || {
-                for i in 0..100 {
-                    // Alloc and immediately access to heat it up
-                    let idx = c.alloc(t * 1000 + i);
-                    c.access(idx);
-                }
-            }));
-        }
-        
-        for h in handles {
-            h.join().unwrap();
-        }
-        
-        // Verify manifold integrity
-        // Just checking we can read index 0 without panic
-        assert!(clock.access(0).is_some() || clock.access(0).is_none());
-    }
-    */
 }

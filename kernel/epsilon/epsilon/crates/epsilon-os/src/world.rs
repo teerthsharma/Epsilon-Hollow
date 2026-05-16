@@ -394,7 +394,6 @@ impl ManifoldMemory {
         }
     }
 
-    /// Reinforce an episode (boost retrieval priority).
     #[allow(dead_code)]
     pub fn reinforce(&mut self, idx: usize) {
         if let Some(ep) = self.episodes.get_mut(idx) {
