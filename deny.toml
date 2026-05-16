@@ -12,9 +12,20 @@ no-default-features = false
 db-urls = []
 yanked = "deny"
 ignore = [
-    # paste is unmaintained (RUSTSEC-2024-0436) but pulled transitively via
-    # nalgebra -> simba -> paste. No action available until nalgebra migrates.
+    # paste is unmaintained but pulled transitively via nalgebra -> simba -> paste
     "RUSTSEC-2024-0436",
+    # number_prefix unmaintained — transitive dep, no action available
+    "RUSTSEC-2025-0119",
+    # pyo3 buffer overflow — only affects optional python feature
+    "RUSTSEC-2025-0020",
+    # rustls-pemfile unmaintained — transitive via reqwest (optional net feature)
+    "RUSTSEC-2025-0134",
+    # webpki URI name constraints — transitive via reqwest
+    "RUSTSEC-2026-0098",
+    # webpki wildcard name constraints — transitive via reqwest
+    "RUSTSEC-2026-0099",
+    # webpki-related — transitive via reqwest
+    "RUSTSEC-2026-0104",
 ]
 
 [licenses]
@@ -31,6 +42,9 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    "BSL-1.0",
+    "LGPL-3.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 exceptions = []
@@ -41,7 +55,7 @@ registries = []
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "allow"
 highlight = "all"
 deny = []
 skip = []

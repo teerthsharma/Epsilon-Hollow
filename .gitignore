@@ -23,7 +23,7 @@ htmlcov/
 # --- Rust ---
 target/
 **/target/
-Cargo.lock
+# Cargo.lock is committed for reproducible CI builds
 **/*.rs.bk
 *.profraw
 *.profdata

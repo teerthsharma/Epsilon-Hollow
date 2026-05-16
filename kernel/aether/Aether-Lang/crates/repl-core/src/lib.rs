@@ -104,7 +104,11 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
     if let Some(ext) = path.extension() {
         let s = ext.to_string_lossy();
         if !config.extensions.contains(&s.as_ref()) {
-            let exts: Vec<_> = config.extensions.iter().map(|e| format!(".{}", e)).collect();
+            let exts: Vec<_> = config
+                .extensions
+                .iter()
+                .map(|e| format!(".{}", e))
+                .collect();
             println!(
                 "Warning: File extension '.{}' is not standard ({})",
                 s,
