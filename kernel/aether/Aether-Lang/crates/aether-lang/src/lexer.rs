@@ -10,7 +10,7 @@
 //! Token Categories:
 //! - Keywords: manifold, block, regress, render, until, escalate, embed
 //! - Control flow: seal (🦭), for, while, if, else, fn, return, break, continue
-//! - Operators: =, :, {, }, [, ], (, ), , +, -, *, /, <, >, ==, !=, &&, ||
+//! - Operators: `=, :, {, }, [, ], (, ), , +, -, *, /, <, >, ==, !=, &&, ||`
 //! - Literals: numbers, strings, identifiers
 //! - Comments: // single-line
 //!   ═══════════════════════════════════════════════════════════════════════════════

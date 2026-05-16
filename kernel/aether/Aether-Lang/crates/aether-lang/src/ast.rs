@@ -136,7 +136,7 @@ pub enum ExprKind {
         args: Vec<CallArg>,
     },
 
-    /// Index/slice: M[0:64]
+    /// Index/slice: `M[0:64]`
     Index { object: Ident, range: Range },
 
     /// Configuration block: { model: "rbf", escalate: true }
