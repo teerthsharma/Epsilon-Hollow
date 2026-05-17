@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "seal-os"
+version = "1.0.0-alpha"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+description = "Seal OS — The Geometrical Operating System. All data = geometry on S²."
+
+[dependencies]
+aether-core = { path = "../epsilon/epsilon/crates/aether-core", default-features = false, features = ["no_std"] }
+spin = "0.9"
+volatile = "0.4"
+x86_64 = "0.15"
+libm = { version = "0.2", default-features = false }
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"

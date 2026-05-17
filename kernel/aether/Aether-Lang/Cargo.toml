@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/aether-kernel",
+]
+exclude = [
+    "crates/aether-lang",
+    "crates/aether-cli",
+    "crates/aegis-core",
+    "crates/aegis-cli",
+    "crates/repl-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+
+[workspace.dependencies]
+libm = { version = "0.2", default-features = false }
+heapless = "0.8"
+spin = "0.9"
+volatile = "0.4"
+x86_64 = "0.15"
+nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
+clap = { version = "4.0", features = ["derive"] }
+rustyline = "14"
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"

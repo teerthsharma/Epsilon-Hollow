@@ -15,6 +15,7 @@ members = [
 exclude = [
     "kernel/aether/Aether-Lang/crates/aether-kernel",
     "kernel/aether/aether-nexus",
+    "kernel/seal-os",
     "future/",
 ]
 

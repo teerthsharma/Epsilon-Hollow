@@ -1,0 +1,20 @@
+version: "3.8"
+
+services:
+  epsilon-os:
+    build: .
+    image: ghcr.io/teerthsharma/epsilon-hollow:0.5
+    stdin_open: true
+    tty: true
+    volumes:
+      - vol_a:/data/vol_a
+      - vol_b:/data/vol_b
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-none}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_ENDPOINT=${LLM_ENDPOINT:-}
+
+volumes:
+  vol_a:
+  vol_b:
