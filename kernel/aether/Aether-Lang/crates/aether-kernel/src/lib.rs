@@ -29,7 +29,6 @@ pub mod serial;
 
 // Re-export core types
 pub use aether_core::*;
-pub use aether_lang::*;
 
 /// Kernel state dimension
 pub const STATE_DIMENSION: usize = 4;

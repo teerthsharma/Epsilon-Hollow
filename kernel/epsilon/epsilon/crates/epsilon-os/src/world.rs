@@ -14,18 +14,19 @@
 //! - [`LatentPredictor`]: Forward dynamics via spectral contraction (T2/SCM).
 //!   Steps state toward an attractor using [`aether_core::scm::SpectralContractionOperator`].
 //!
-//! - [`MinimaxBridge`]: Optional LLM reasoning via Minimax 2.7 API (curl subprocess).
+//! - [`LlmBridge`]: Multi-provider LLM reasoning (OpenAI, Gemini, offline).
 //!
 //! - [`World`]: Combines all three. The CLI shell in `main.rs` drives it.
 //!
 //! # Active Theorems
 //!
 //! T1 (TSS) drives retrieval. T2 (SCM) drives prediction.
-//! T3-T10 are verified at boot but not yet wired into control flow.
+//! T3-T5 drive ManifoldFS. T6-T10 verified at boot.
 
 use std::collections::{HashMap, VecDeque};
-use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use crate::llm::LlmBridge;
 
 use aether_core::scm::SpectralContractionOperator;
 use aether_core::tss::SphericalVoronoiIndex;
@@ -441,6 +442,7 @@ impl ManifoldMemory {
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.episodes.clear();
         self.voronoi = SphericalVoronoiIndex::<TSS_CELLS>::new(Self::default_centroids());
@@ -536,75 +538,8 @@ impl LatentPredictor {
     }
 }
 
-// ─── LLM Bridge (Minimax 2.7) ───────────────────────────────────────
-
-/// Minimax 2.7 API client.
-pub struct MinimaxBridge {
-    api_key: String,
-    endpoint: String,
-    model: String,
-}
-
-impl MinimaxBridge {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            api_key,
-            endpoint: "https://api.minimax.chat/v1/text/chatcompletion_v2".into(),
-            model: "MiniMax-Text-01".into(),
-        }
-    }
-
-    pub fn is_configured(&self) -> bool {
-        !self.api_key.is_empty()
-    }
-
-    /// Call Minimax 2.7 with a user prompt via curl subprocess. Returns the response text.
-    pub fn call(&self, system: &str, user: &str) -> Result<String, String> {
-        if !self.is_configured() {
-            return Err("API key not set".into());
-        }
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_tokens": 1024,
-        });
-
-        let output = Command::new("curl")
-            .args([
-                "-s",
-                "-X",
-                "POST",
-                &self.endpoint,
-                "-H",
-                "Content-Type: application/json",
-                "-H",
-                &format!("Authorization: Bearer {}", self.api_key),
-                "-d",
-                &body.to_string(),
-                "--max-time",
-                "30",
-            ])
-            .output()
-            .map_err(|e| format!("curl failed: {e}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("curl error: {stderr}"));
-        }
-
-        let text = String::from_utf8_lossy(&output.stdout).to_string();
-        let parsed: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| format!("JSON parse error: {e}"))?;
-        let content = parsed["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or(&text)
-            .to_string();
-        Ok(content)
-    }
-}
+// ─── LLM Bridge ─────────────────────────────────────────────────────
+// Multi-provider implementation in crate::llm module.
 
 // ─── Theorem Verification ────────────────────────────────────────────
 
@@ -708,7 +643,7 @@ pub fn verify_theorems() -> Vec<(&'static str, bool)> {
 pub struct World {
     pub memory: ManifoldMemory,
     pub predictor: LatentPredictor,
-    pub llm: MinimaxBridge,
+    pub llm: LlmBridge,
     pub history: Vec<String>,
     ingest_steps: u64,
 }
@@ -719,11 +654,11 @@ const SYSTEM_PROMPT: &str = "You are the reasoning cortex of Epsilon-Hollow, a t
      concise answer. If memories are empty, reason from first principles.";
 
 impl World {
-    pub fn new(api_key: String, dim: usize, capacity: usize) -> Self {
+    pub fn new(llm: LlmBridge, dim: usize, capacity: usize) -> Self {
         Self {
             memory: ManifoldMemory::new(dim, capacity),
             predictor: LatentPredictor::new(dim, 32, 42),
-            llm: MinimaxBridge::new(api_key),
+            llm,
             history: Vec::new(),
             ingest_steps: 0,
         }
@@ -763,14 +698,12 @@ impl World {
 
         // Build context for LLM
         let mut llm_response = None;
-        if self.llm.is_configured() {
-            let ctx = self.format_context(&top_k);
-            let prompt = format!("Query: {text}\n\nRetrieved context:\n{ctx}");
-            match self.llm.call(SYSTEM_PROMPT, &prompt) {
-                Ok(resp) => llm_response = Some(resp),
-                // Wrap errors as text so the CLI always has something to display.
-                Err(e) => llm_response = Some(format!("[LLM error: {e}]")),
-            }
+        let ctx = self.format_context(&top_k);
+        let prompt = format!("Query: {text}\n\nRetrieved context:\n{ctx}");
+        match self.llm.call(SYSTEM_PROMPT, &prompt) {
+            Ok(Some(resp)) => llm_response = Some(resp),
+            Ok(None) => {} // offline mode — no LLM synthesis
+            Err(e) => llm_response = Some(format!("[LLM error: {e}]")),
         }
 
         QueryResult {
@@ -839,7 +772,8 @@ impl World {
             ingest_steps: self.ingest_steps,
             memory: self.memory.stats(),
             history_len: self.history.len(),
-            api_key_set: self.llm.is_configured(),
+            llm_provider: self.llm.config.provider_name().to_string(),
+            llm_configured: self.llm.is_configured(),
         }
     }
 
@@ -917,7 +851,8 @@ pub struct WorldStatus {
     pub ingest_steps: u64,
     pub memory: MemoryStats,
     pub history_len: usize,
-    pub api_key_set: bool,
+    pub llm_provider: String,
+    pub llm_configured: bool,
 }
 
 #[cfg(test)]
@@ -1103,7 +1038,7 @@ mod tests {
 
     #[test]
     fn test_world_update() {
-        let mut w = World::new(String::new(), 64, 1000);
+        let mut w = World::new(LlmBridge::new(crate::llm::LlmConfig::offline()), 64, 1000);
         let r = w.update("observation one");
         assert_eq!(r.ingest_step, 1);
         assert_eq!(r.memory_size, 1);
@@ -1114,7 +1049,7 @@ mod tests {
 
     #[test]
     fn test_world_query_no_llm() {
-        let mut w = World::new(String::new(), 64, 1000);
+        let mut w = World::new(LlmBridge::new(crate::llm::LlmConfig::offline()), 64, 1000);
         w.update("the sky is blue");
         let r = w.query("sky color", 3);
         assert!(r.llm_response.is_none()); // no API key → no LLM call
@@ -1123,7 +1058,7 @@ mod tests {
 
     #[test]
     fn test_world_dream_trace_length() {
-        let mut w = World::new(String::new(), 64, 1000);
+        let mut w = World::new(LlmBridge::new(crate::llm::LlmConfig::offline()), 64, 1000);
         w.update("seed memory");
         let r = w.dream("future", 5);
         assert_eq!(r.trace.len(), 5);
