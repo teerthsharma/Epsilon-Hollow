@@ -168,6 +168,8 @@ jobs:
   kernel-build:
     name: Build Seal OS kernel (nightly)
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -203,6 +205,8 @@ jobs:
     name: Build Seal OS ISO
     runs-on: ubuntu-latest
     needs: kernel-build
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -316,6 +320,8 @@ jobs:
   kernel-clippy:
     name: Seal OS clippy (nightly)
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
