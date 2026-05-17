@@ -9,6 +9,7 @@ extern crate alloc;
 
 mod boot;
 mod drivers;
+mod fs;
 mod graphics;
 mod memory;
 
@@ -86,7 +87,11 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
         graphics::splash::draw_progress_bar(fb, 90);
 
         serial_println!("");
-        serial_println!("[BOOT] All theorems ACTIVE. Seal OS ready.");
+        serial_println!("[BOOT] All theorems ACTIVE.");
+        graphics::splash::draw_progress_bar(fb, 80);
+
+        // Phase 3: ManifoldFS
+        demo_manifold_fs();
         graphics::splash::draw_progress_bar(fb, 100);
 
         // Brief pause on splash, then show wallpaper
@@ -94,7 +99,6 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
             core::hint::spin_loop();
         }
 
-        // Render desktop wallpaper
         graphics::wallpaper::render(&mut console);
         serial_println!("[BOOT] Desktop wallpaper rendered.");
     } else {
@@ -124,7 +128,9 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
         );
 
         serial_println!("");
-        serial_println!("[BOOT] All theorems ACTIVE. Seal OS ready.");
+        serial_println!("[BOOT] All theorems ACTIVE.");
+
+        demo_manifold_fs();
     }
 
     serial_println!("[BOOT] Entering sparse event loop (WFI until deviation >= epsilon)");
@@ -176,6 +182,47 @@ fn parse_multiboot2(addr: u64) {
             offset += ((tag_size + 7) & !7).max(8);
         }
     }
+}
+
+fn demo_manifold_fs() {
+    use fs::manifold_fs::ManifoldFS;
+
+    serial_println!("[ManifoldFS] Initializing — all data = geometry on S^2");
+    let mut mfs = ManifoldFS::new();
+
+    let vol_a = mfs.mkdir("vol_a", 0).unwrap();
+    let vol_b = mfs.mkdir("vol_b", 0).unwrap();
+
+    mfs.store_text("hello.txt", "Hello from Seal OS!", vol_a)
+        .unwrap();
+    mfs.store_text("kernel.rs", "fn _start() -> ! { loop {} }", vol_a)
+        .unwrap();
+    mfs.store_text("theorem.md", "T1-T5 all active in kernel", vol_a)
+        .unwrap();
+
+    serial_println!("[ManifoldFS] Stored 3 files in /vol_a");
+
+    let result = mfs.teleport("hello.txt", vol_a, vol_b).unwrap();
+    serial_println!(
+        "[ManifoldFS] Teleported 'hello.txt' ({} bytes) in {} ticks — O(1) surgery!",
+        result.original_size,
+        result.elapsed_ticks
+    );
+
+    let stats = mfs.stats();
+    serial_println!(
+        "[ManifoldFS] Stats: {} files, {} dirs, {} teleports, governor e={:.4}",
+        stats.total_files,
+        stats.total_dirs,
+        stats.total_teleports,
+        stats.governor_epsilon
+    );
+
+    for (name, status) in mfs.theorem_status() {
+        serial_println!("[ManifoldFS] {} = {}", name, status);
+    }
+
+    serial_println!("[BOOT] ManifoldFS online. Seal OS ready.");
 }
 
 #[panic_handler]

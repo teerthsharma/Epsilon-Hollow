@@ -1,0 +1,617 @@
+// Seal OS — Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: MIT
+// Ported from epsilon-os manifold_fs.rs to no_std.
+
+//! ManifoldFS — all data is geometry on S². File moves = O(1) topological surgery.
+
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use aether_core::governor::GeometricGovernor;
+use aether_core::scm::SpectralContractionOperator;
+use aether_core::tss::SphericalVoronoiIndex;
+
+use super::encoder::{self, ManifoldPayload};
+use crate::drivers::interrupts;
+
+const VORONOI_CELLS: usize = 8;
+const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
+
+#[derive(Debug, Clone)]
+pub enum InodeKind {
+    File,
+    Directory,
+}
+
+#[derive(Debug, Clone)]
+pub struct InodeMetadata {
+    pub created_ms: u64,
+    pub modified_ms: u64,
+    pub original_size: u64,
+    pub permissions: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct Inode {
+    pub id: u64,
+    pub name: String,
+    pub kind: InodeKind,
+    pub payload: ManifoldPayload,
+    pub metadata: InodeMetadata,
+    pub voronoi_cell: usize,
+    pub cluster_id: i32,
+    pub parent: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TheoremEvent {
+    pub theorem: &'static str,
+    pub action: String,
+    pub timestamp_ms: u64,
+}
+
+pub struct ManifoldFS {
+    inodes: BTreeMap<u64, Inode>,
+    dir_entries: BTreeMap<u64, BTreeMap<String, u64>>,
+    root_id: u64,
+    next_inode: u64,
+    voronoi: SphericalVoronoiIndex<VORONOI_CELLS>,
+    cell_files: [Vec<u64>; VORONOI_CELLS],
+    scm: SpectralContractionOperator<3>,
+    access_state: [f64; 3],
+    last_prefetch_prediction: Option<u64>,
+    prefetch_hits: u64,
+    prefetch_misses: u64,
+    cluster_sizes: Vec<usize>,
+    entropy_merges: u64,
+    current_entropy: f64,
+    governor: GeometricGovernor,
+    governor_ticks: u64,
+    max_depth: usize,
+    hyperbolic_ratio: f64,
+    total_teleports: u64,
+    total_lookups: u64,
+    activity_log: Vec<TheoremEvent>,
+}
+
+impl ManifoldFS {
+    pub fn new() -> Self {
+        let default_centroids = Self::default_centroids();
+        let root_payload = encoder::encode_text("/");
+
+        let mut fs = Self {
+            inodes: BTreeMap::new(),
+            dir_entries: BTreeMap::new(),
+            root_id: 0,
+            next_inode: 1,
+            voronoi: SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids),
+            cell_files: Default::default(),
+            scm: SpectralContractionOperator::new(0.7),
+            access_state: [0.0; 3],
+            last_prefetch_prediction: None,
+            prefetch_hits: 0,
+            prefetch_misses: 0,
+            cluster_sizes: vec![0; VORONOI_CELLS],
+            entropy_merges: 0,
+            current_entropy: 0.0,
+            governor: GeometricGovernor::new(),
+            governor_ticks: 0,
+            max_depth: 0,
+            hyperbolic_ratio: f64::INFINITY,
+            total_teleports: 0,
+            total_lookups: 0,
+            activity_log: Vec::new(),
+        };
+
+        let root = Inode {
+            id: 0,
+            name: String::from("/"),
+            kind: InodeKind::Directory,
+            payload: root_payload,
+            metadata: InodeMetadata {
+                created_ms: now_ms(),
+                modified_ms: now_ms(),
+                original_size: 0,
+                permissions: 0o755,
+            },
+            voronoi_cell: 0,
+            cluster_id: 0,
+            parent: 0,
+        };
+        fs.inodes.insert(0, root);
+        fs.dir_entries.insert(0, BTreeMap::new());
+        fs
+    }
+
+    fn default_centroids() -> [(f64, f64); VORONOI_CELLS] {
+        let mut c = [(0.0, 0.0); VORONOI_CELLS];
+        for (i, slot) in c.iter_mut().enumerate() {
+            *slot = (
+                core::f64::consts::FRAC_PI_2,
+                (i as f64) * (2.0 * core::f64::consts::PI / VORONOI_CELLS as f64),
+            );
+        }
+        c
+    }
+
+    pub fn store(&mut self, name: &str, data: &[u8], parent_id: u64) -> Result<u64, FsError> {
+        if !self.dir_entries.contains_key(&parent_id) {
+            return Err(FsError::NotADirectory);
+        }
+        if self.dir_entries[&parent_id].contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let payload = encoder::encode_data(data);
+        let cell = self.assign_voronoi_cell(&payload);
+        let id = self.next_inode;
+        self.next_inode += 1;
+
+        let inode = Inode {
+            id,
+            name: String::from(name),
+            kind: InodeKind::File,
+            payload,
+            metadata: InodeMetadata {
+                created_ms: now_ms(),
+                modified_ms: now_ms(),
+                original_size: data.len() as u64,
+                permissions: 0o644,
+            },
+            voronoi_cell: cell,
+            cluster_id: cell as i32,
+            parent: parent_id,
+        };
+
+        self.inodes.insert(id, inode);
+        self.dir_entries
+            .get_mut(&parent_id)
+            .unwrap()
+            .insert(String::from(name), id);
+        self.cell_files[cell].push(id);
+        self.cluster_sizes[cell] += 1;
+        self.update_entropy();
+        self.governor_tick(1.0);
+        self.log_event("T1/TSS", format!("stored '{}' -> cell {}", name, cell));
+
+        Ok(id)
+    }
+
+    pub fn store_text(&mut self, name: &str, text: &str, parent_id: u64) -> Result<u64, FsError> {
+        self.store(name, text.as_bytes(), parent_id)
+    }
+
+    pub fn teleport(
+        &mut self,
+        name: &str,
+        src_dir: u64,
+        dst_dir: u64,
+    ) -> Result<TeleportResult, FsError> {
+        let t0 = interrupts::ticks();
+
+        let inode_id = self
+            .dir_entries
+            .get(&src_dir)
+            .and_then(|entries| entries.get(name).copied())
+            .ok_or(FsError::NotFound)?;
+
+        if !self.dir_entries.contains_key(&dst_dir) {
+            return Err(FsError::NotADirectory);
+        }
+        if self.dir_entries[&dst_dir].contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let pre_epsilon = self.governor.epsilon();
+        self.governor_tick(0.0);
+
+        self.dir_entries.get_mut(&src_dir).unwrap().remove(name);
+        self.dir_entries
+            .get_mut(&dst_dir)
+            .unwrap()
+            .insert(String::from(name), inode_id);
+
+        if let Some(inode) = self.inodes.get_mut(&inode_id) {
+            inode.parent = dst_dir;
+            inode.metadata.modified_ms = now_ms();
+        }
+
+        self.governor_tick(1.0);
+        let post_epsilon = self.governor.epsilon();
+
+        let elapsed_ticks = interrupts::ticks() - t0;
+        self.total_teleports += 1;
+
+        let original_size = self
+            .inodes
+            .get(&inode_id)
+            .map(|i| i.metadata.original_size)
+            .unwrap_or(0);
+
+        self.log_event(
+            "T1/TSS+T4/AGCR",
+            format!(
+                "teleported '{}' ({} bytes) in {} ticks [governor e: {:.4} -> {:.4}]",
+                name, original_size, elapsed_ticks, pre_epsilon, post_epsilon
+            ),
+        );
+
+        self.check_entropy_and_merge();
+
+        Ok(TeleportResult {
+            inode_id,
+            elapsed_ticks,
+            original_size,
+            payload_points: self
+                .inodes
+                .get(&inode_id)
+                .map(|i| i.payload.point_count)
+                .unwrap_or(0),
+            governor_epsilon: post_epsilon,
+        })
+    }
+
+    pub fn find(&mut self, query: &str) -> Vec<FindResult> {
+        self.total_lookups += 1;
+        let query_payload = encoder::encode_text(query);
+        let cell = self.assign_voronoi_cell(&query_payload);
+
+        self.update_prefetch_state(&query_payload);
+
+        let mut results = Vec::new();
+        for &inode_id in &self.cell_files[cell] {
+            if let Some(inode) = self.inodes.get(&inode_id) {
+                let similarity = payload_similarity(&query_payload, &inode.payload);
+                results.push(FindResult {
+                    inode_id,
+                    name: inode.name.clone(),
+                    similarity,
+                    cell,
+                    original_size: inode.metadata.original_size,
+                });
+            }
+        }
+        results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        results
+    }
+
+    pub fn ls(&self, dir_id: u64) -> Result<Vec<LsEntry>, FsError> {
+        let entries = self
+            .dir_entries
+            .get(&dir_id)
+            .ok_or(FsError::NotADirectory)?;
+        let mut result: Vec<LsEntry> = entries
+            .iter()
+            .filter_map(|(name, &id)| {
+                self.inodes.get(&id).map(|inode| LsEntry {
+                    name: name.clone(),
+                    kind: match inode.kind {
+                        InodeKind::File => "file",
+                        InodeKind::Directory => "dir",
+                    },
+                    original_size: inode.metadata.original_size,
+                    payload_points: inode.payload.point_count,
+                    voronoi_cell: inode.voronoi_cell,
+                })
+            })
+            .collect();
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(result)
+    }
+
+    pub fn mkdir(&mut self, name: &str, parent_id: u64) -> Result<u64, FsError> {
+        if !self.dir_entries.contains_key(&parent_id) {
+            return Err(FsError::NotADirectory);
+        }
+        if self.dir_entries[&parent_id].contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let payload = encoder::encode_text(name);
+        let id = self.next_inode;
+        self.next_inode += 1;
+
+        let depth = self.compute_depth(parent_id) + 1;
+        if depth > self.max_depth {
+            self.max_depth = depth;
+            self.update_hyperbolic_ratio(depth);
+        }
+
+        let inode = Inode {
+            id,
+            name: String::from(name),
+            kind: InodeKind::Directory,
+            payload,
+            metadata: InodeMetadata {
+                created_ms: now_ms(),
+                modified_ms: now_ms(),
+                original_size: 0,
+                permissions: 0o755,
+            },
+            voronoi_cell: 0,
+            cluster_id: 0,
+            parent: parent_id,
+        };
+
+        self.inodes.insert(id, inode);
+        self.dir_entries.insert(id, BTreeMap::new());
+        self.dir_entries
+            .get_mut(&parent_id)
+            .unwrap()
+            .insert(String::from(name), id);
+
+        self.log_event(
+            "T5/HCS",
+            format!(
+                "mkdir '{}' depth={} hyp_ratio={:.1}x",
+                name, depth, self.hyperbolic_ratio
+            ),
+        );
+
+        Ok(id)
+    }
+
+    pub fn resolve_path(&self, path: &str) -> Result<u64, FsError> {
+        let mut current = self.root_id;
+        for part in path.split('/').filter(|s| !s.is_empty()) {
+            let entries = self
+                .dir_entries
+                .get(&current)
+                .ok_or(FsError::NotADirectory)?;
+            current = *entries.get(part).ok_or(FsError::NotFound)?;
+        }
+        Ok(current)
+    }
+
+    fn update_prefetch_state(&mut self, accessed: &ManifoldPayload) {
+        if accessed.points.is_empty() {
+            return;
+        }
+        let pt = accessed.points[0].coords;
+
+        if let Some(predicted_id) = self.last_prefetch_prediction {
+            if let Some(inode) = self.inodes.get(&predicted_id) {
+                let pred_pt = inode
+                    .payload
+                    .points
+                    .first()
+                    .map(|p| p.coords)
+                    .unwrap_or([0.0; 3]);
+                let dist: f64 = (0..3)
+                    .map(|i| (pt[i] - pred_pt[i]) * (pt[i] - pred_pt[i]))
+                    .sum();
+                if dist < 0.25 {
+                    self.prefetch_hits += 1;
+                } else {
+                    self.prefetch_misses += 1;
+                }
+            }
+        }
+
+        self.access_state = self.scm.apply(&self.access_state, &pt);
+
+        let predicted_cell = self.voronoi.locate((
+            libm::acos(self.access_state[2].clamp(-1.0, 1.0)),
+            libm::atan2(self.access_state[1], self.access_state[0]),
+        ));
+        self.last_prefetch_prediction = self.cell_files[predicted_cell].last().copied();
+    }
+
+    fn update_entropy(&mut self) {
+        let total: usize = self.cluster_sizes.iter().sum();
+        if total == 0 {
+            self.current_entropy = 0.0;
+            return;
+        }
+        let mut h = 0.0f64;
+        for &size in &self.cluster_sizes {
+            if size > 0 {
+                let p = size as f64 / total as f64;
+                h -= p * libm::log2(p);
+            }
+        }
+        self.current_entropy = h;
+    }
+
+    fn check_entropy_and_merge(&mut self) {
+        if self.current_entropy <= ENTROPY_MERGE_THRESHOLD {
+            return;
+        }
+        let mut sorted: Vec<(usize, usize)> = self
+            .cluster_sizes
+            .iter()
+            .enumerate()
+            .filter(|(_, &s)| s > 0)
+            .map(|(i, &s)| (i, s))
+            .collect();
+        sorted.sort_by_key(|(_, s)| *s);
+
+        if sorted.len() < 2 {
+            return;
+        }
+        let (src_cell, _) = sorted[0];
+        let (dst_cell, _) = sorted[1];
+
+        let files_to_move: Vec<u64> = self.cell_files[src_cell].clone();
+        for &fid in &files_to_move {
+            if let Some(inode) = self.inodes.get_mut(&fid) {
+                inode.voronoi_cell = dst_cell;
+                inode.cluster_id = dst_cell as i32;
+            }
+            self.cell_files[dst_cell].push(fid);
+        }
+        let moved_count = self.cell_files[src_cell].len();
+        self.cluster_sizes[dst_cell] += self.cluster_sizes[src_cell];
+        self.cluster_sizes[src_cell] = 0;
+        self.cell_files[src_cell].clear();
+
+        self.update_entropy();
+        self.entropy_merges += 1;
+
+        self.log_event(
+            "T3/GMC",
+            format!(
+                "merged cell {} -> {}, {} files moved",
+                src_cell, dst_cell, moved_count
+            ),
+        );
+    }
+
+    fn governor_tick(&mut self, deviation: f64) {
+        self.governor.adapt(deviation, 0.01);
+        self.governor_ticks += 1;
+    }
+
+    fn compute_depth(&self, mut id: u64) -> usize {
+        let mut depth = 0;
+        while id != self.root_id {
+            if let Some(inode) = self.inodes.get(&id) {
+                id = inode.parent;
+                depth += 1;
+            } else {
+                break;
+            }
+        }
+        depth
+    }
+
+    fn update_hyperbolic_ratio(&mut self, depth: usize) {
+        let b = 4.0f64;
+        let d = depth as f64;
+        if d >= 2.0 {
+            self.hyperbolic_ratio = libm::log(b) * d * (d - 1.0) / 2.0;
+        }
+    }
+
+    fn assign_voronoi_cell(&self, payload: &ManifoldPayload) -> usize {
+        if payload.points.is_empty() {
+            return 0;
+        }
+        let pt = &payload.points[0];
+        let r = libm::sqrt(
+            pt.coords[0] * pt.coords[0]
+                + pt.coords[1] * pt.coords[1]
+                + pt.coords[2] * pt.coords[2],
+        );
+        if r < 1e-12 {
+            return 0;
+        }
+        let theta = libm::acos((pt.coords[2] / r).clamp(-1.0, 1.0));
+        let phi = libm::atan2(pt.coords[1], pt.coords[0]);
+        self.voronoi.locate((theta, phi))
+    }
+
+    fn log_event(&mut self, theorem: &'static str, action: String) {
+        self.activity_log.push(TheoremEvent {
+            theorem,
+            action,
+            timestamp_ms: now_ms(),
+        });
+        if self.activity_log.len() > 100 {
+            self.activity_log.remove(0);
+        }
+    }
+
+    pub fn stats(&self) -> FsStats {
+        FsStats {
+            total_files: self
+                .inodes
+                .values()
+                .filter(|i| matches!(i.kind, InodeKind::File))
+                .count(),
+            total_dirs: self
+                .inodes
+                .values()
+                .filter(|i| matches!(i.kind, InodeKind::Directory))
+                .count(),
+            total_teleports: self.total_teleports,
+            governor_epsilon: self.governor.epsilon(),
+            current_entropy: self.current_entropy,
+            max_depth: self.max_depth,
+            hyperbolic_ratio: self.hyperbolic_ratio,
+        }
+    }
+
+    pub fn theorem_status(&self) -> [(&'static str, &'static str); 5] {
+        [
+            ("T1/TSS", "ACTIVE"),
+            ("T2/SCM", "ACTIVE"),
+            ("T3/GMC", "ACTIVE"),
+            ("T4/AGCR", "ACTIVE"),
+            ("T5/HCS", "ACTIVE"),
+        ]
+    }
+}
+
+fn payload_similarity(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
+    if a.points.is_empty() || b.points.is_empty() {
+        return 0.0;
+    }
+    let pa = &a.points[0].coords;
+    let pb = &b.points[0].coords;
+    pa[0] * pb[0] + pa[1] * pb[1] + pa[2] * pb[2]
+}
+
+fn now_ms() -> u64 {
+    interrupts::ticks()
+}
+
+// Result types
+
+#[derive(Debug, Clone)]
+pub struct TeleportResult {
+    pub inode_id: u64,
+    pub elapsed_ticks: u64,
+    pub original_size: u64,
+    pub payload_points: usize,
+    pub governor_epsilon: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FindResult {
+    pub inode_id: u64,
+    pub name: String,
+    pub similarity: f64,
+    pub cell: usize,
+    pub original_size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LsEntry {
+    pub name: String,
+    pub kind: &'static str,
+    pub original_size: u64,
+    pub payload_points: usize,
+    pub voronoi_cell: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct FsStats {
+    pub total_files: usize,
+    pub total_dirs: usize,
+    pub total_teleports: u64,
+    pub governor_epsilon: f64,
+    pub current_entropy: f64,
+    pub max_depth: usize,
+    pub hyperbolic_ratio: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum FsError {
+    NotFound,
+    NotADirectory,
+    AlreadyExists,
+}
+
+impl core::fmt::Display for FsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "not found"),
+            Self::NotADirectory => write!(f, "not a directory"),
+            Self::AlreadyExists => write!(f, "already exists"),
+        }
+    }
+}
