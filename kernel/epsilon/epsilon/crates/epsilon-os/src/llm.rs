@@ -251,9 +251,7 @@ impl LlmBridge {
         parsed["candidates"][0]["content"]["parts"][0]["text"]
             .as_str()
             .map(|s| s.to_string())
-            .ok_or_else(|| {
-                LlmError::ParseError(format!("unexpected Gemini response: {response}"))
-            })
+            .ok_or_else(|| LlmError::ParseError(format!("unexpected Gemini response: {response}")))
     }
 
     fn curl_post(&self, endpoint: &str, body: &serde_json::Value) -> Result<String, LlmError> {

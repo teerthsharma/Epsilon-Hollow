@@ -100,7 +100,12 @@ struct Xoshiro256 {
 impl Xoshiro256 {
     fn new(seed: u64) -> Self {
         let mut s = Self {
-            state: [seed, seed ^ 0x6a09e667, seed.wrapping_mul(3), seed ^ 0xbb67ae85],
+            state: [
+                seed,
+                seed ^ 0x6a09e667,
+                seed.wrapping_mul(3),
+                seed ^ 0xbb67ae85,
+            ],
         };
         for _ in 0..8 {
             s.next_u64();
@@ -240,8 +245,7 @@ fn block_to_hash_vector(block: &[u8]) -> [f64; HASH_DIM] {
     let mut vec = [0.0f64; HASH_DIM];
     // Trigram hashing
     for i in 0..block.len().saturating_sub(2) {
-        let h = (block[i] as u64)
-            .wrapping_mul(31)
+        let h = (block[i] as u64).wrapping_mul(31)
             ^ (block[i + 1] as u64).wrapping_mul(37)
             ^ (block[i + 2] as u64).wrapping_mul(41);
         let idx = (h as usize) % HASH_DIM;
