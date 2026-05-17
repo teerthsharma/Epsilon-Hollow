@@ -38,7 +38,7 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
 
     // Layer 1: Memory
     memory::init_heap();
-    serial_println!("[BOOT] Heap initialized (4 MB)");
+    serial_println!("[BOOT] Heap initialized (16 MB)");
 
     // Layer 2: Interrupts
     drivers::interrupts::init();

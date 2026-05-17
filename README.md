@@ -35,7 +35,7 @@ Layer 5   │ ManifoldScheduler: T1 Voronoi task groups, T4 adaptive timeslice
 Layer 4   │ ManifoldFS: THE filesystem — all data = 64 pts on S²
 Layer 3   │ Framebuffer: 1024x768x32, 8x16 font, boot splash
 Layer 2   │ Interrupts: IDT, PIC, timer (IRQ0), keyboard, mouse
-Layer 1   │ Memory: 4MB heap, bump allocator
+Layer 1   │ Memory: 16MB heap, bump allocator
 Layer 0   │ Boot: Multiboot2, 32→64 trampoline, GRUB ISO
           └────── ALL LAYERS DRIVEN BY T1-T5 THEOREMS ──────
 ```

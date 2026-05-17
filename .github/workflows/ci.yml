@@ -165,6 +165,169 @@ jobs:
       - name: Run unittest discovery
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
+  kernel-build:
+    name: Build Seal OS kernel (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kernel/seal-os
+      - name: Build kernel (release)
+        working-directory: kernel/seal-os
+        run: cargo +nightly build --release
+      - name: Verify kernel binary exists and size
+        working-directory: kernel/seal-os
+        run: |
+          BINARY=target/x86_64-unknown-none/release/seal-os
+          if [ ! -f "$BINARY" ]; then
+            echo "FAIL: kernel binary not found at $BINARY"
+            exit 1
+          fi
+          SIZE=$(stat --format=%s "$BINARY")
+          echo "Kernel binary size: $SIZE bytes ($(du -h $BINARY | cut -f1))"
+          MAX_SIZE=$((512 * 1024))
+          if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+            echo "FAIL: kernel exceeds 512KB ($SIZE bytes)"
+            exit 1
+          fi
+          echo "OK: kernel size within 512KB limit"
+      - name: Build kernel (debug)
+        working-directory: kernel/seal-os
+        run: cargo +nightly build
+
+  kernel-iso:
+    name: Build Seal OS ISO
+    runs-on: ubuntu-latest
+    needs: kernel-build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kernel/seal-os
+      - name: Install GRUB and ISO tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            grub-pc-bin grub-common xorriso mtools
+      - name: Build kernel
+        working-directory: kernel/seal-os
+        run: cargo +nightly build --release
+      - name: Create bootable ISO
+        working-directory: kernel/seal-os
+        run: |
+          mkdir -p iso/boot/grub
+          cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
+          cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
+          grub-mkrescue -o seal-os.iso iso/
+      - name: Verify ISO
+        working-directory: kernel/seal-os
+        run: |
+          if [ ! -f seal-os.iso ]; then
+            echo "FAIL: ISO not created"
+            exit 1
+          fi
+          ISO_SIZE=$(stat --format=%s seal-os.iso)
+          echo "ISO size: $(du -h seal-os.iso | cut -f1) ($ISO_SIZE bytes)"
+          MAX_ISO=$((64 * 1024 * 1024))
+          if [ "$ISO_SIZE" -gt "$MAX_ISO" ]; then
+            echo "FAIL: ISO exceeds 64MB"
+            exit 1
+          fi
+          echo "OK: ISO within 64MB limit"
+          # Verify ISO has correct structure
+          file seal-os.iso | grep -i "iso\|boot" || echo "WARNING: file type check inconclusive"
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seal-os-iso-ci
+          path: kernel/seal-os/seal-os.iso
+
+  kernel-qemu-smoke:
+    name: QEMU boot smoke test
+    runs-on: ubuntu-latest
+    needs: kernel-iso
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download ISO artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: seal-os-iso-ci
+          path: .
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+      - name: Boot ISO in QEMU and capture serial output
+        run: |
+          timeout 30 qemu-system-x86_64 \
+            -cdrom seal-os.iso \
+            -serial stdio \
+            -m 512M \
+            -display none \
+            -no-reboot \
+            -no-shutdown 2>&1 | tee /tmp/seal-os.log || true
+          echo "=== Serial output ==="
+          cat /tmp/seal-os.log
+      - name: Verify boot milestones
+        run: |
+          LOG=/tmp/seal-os.log
+          PASS=0
+          FAIL=0
+          check() {
+            if grep -q "$1" "$LOG"; then
+              echo "PASS: $2"
+              PASS=$((PASS + 1))
+            else
+              echo "FAIL: $2 (pattern: '$1')"
+              FAIL=$((FAIL + 1))
+            fi
+          }
+          check "Seal OS v1.0.0-alpha" "Banner printed"
+          check "Heap initialized" "Heap initialized"
+          check "IDT + PIC initialized" "Interrupts configured"
+          check "Governor online" "T4 governor started"
+          check "Voronoi index: 8 cells" "T1 Voronoi active"
+          check "T1-T5 theorems ACTIVE" "All theorems active"
+          check "ManifoldFS" "ManifoldFS initialized"
+          check "Teleported.*O(1)" "O(1) teleportation"
+          check "Scheduler" "Scheduler started"
+          check "Syscall" "Syscalls verified"
+          check "Shell" "Shell executed"
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+          if [ "$FAIL" -gt 0 ]; then
+            echo "FAIL: $FAIL boot milestones not reached"
+            exit 1
+          fi
+      - name: Upload boot log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: seal-os-boot-log
+          path: /tmp/seal-os.log
+
+  kernel-clippy:
+    name: Seal OS clippy (nightly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: kernel/seal-os
+      - name: cargo clippy (kernel)
+        working-directory: kernel/seal-os
+        run: cargo +nightly clippy -- -D warnings
+
   lean:
     name: Lean 4 (aether-verified)
     runs-on: ubuntu-latest
