@@ -211,7 +211,10 @@ fn repl(world: &mut World, fs: &mut ManifoldFS) {
             let text = text.trim();
             if !text.is_empty() {
                 let result = world.update(text);
-                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
             }
         } else if let Some(text) = line.strip_prefix("/query ") {
             let text = text.trim();
@@ -225,14 +228,20 @@ fn repl(world: &mut World, fs: &mut ManifoldFS) {
                         result.retrieval_ms
                     );
                 } else {
-                    println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&result).unwrap_or_default()
+                    );
                 }
             }
         } else if let Some(text) = line.strip_prefix("/dream ") {
             let text = text.trim();
             if !text.is_empty() {
                 let result = world.dream(text, 5);
-                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
             }
         } else if line.starts_with("/status") {
             let ws = world.status();
@@ -253,7 +262,10 @@ fn repl(world: &mut World, fs: &mut ManifoldFS) {
             if let Some(ref resp) = result.llm_response {
                 println!("\n{resp}\n");
             } else {
-                println!("{}", serde_json::to_string_pretty(&result).unwrap_or_default());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
             }
         }
     }
@@ -468,8 +480,11 @@ fn handle_theorems(world: &World, fs: &ManifoldFS) {
     for (name, ok) in &results {
         let tag = if *ok { "PASS" } else { "FAIL" };
         // T1-T5 already shown as ACTIVE above
-        if !name.starts_with("T1") && !name.starts_with("T2") && !name.starts_with("T3")
-            && !name.starts_with("T4") && !name.starts_with("T5")
+        if !name.starts_with("T1")
+            && !name.starts_with("T2")
+            && !name.starts_with("T3")
+            && !name.starts_with("T4")
+            && !name.starts_with("T5")
         {
             println!("  [{tag}] {name}");
         }

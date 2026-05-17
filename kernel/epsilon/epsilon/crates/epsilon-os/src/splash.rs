@@ -32,15 +32,9 @@ const BOX_BOT: &str = "    ╚════════════════�
 pub fn print_splash(config: &LlmConfig, dim: usize, capacity: usize, theorems_passed: usize) {
     print!("{SEAL_ART}");
     println!("{BOX_TOP}");
-    println!(
-        "    ║  EPSILON-HOLLOW v0.5.0                        ║"
-    );
-    println!(
-        "    ║  Geometrical Scientific Rust OS                ║"
-    );
-    println!(
-        "    ║                                               ║"
-    );
+    println!("    ║  EPSILON-HOLLOW v0.5.0                        ║");
+    println!("    ║  Geometrical Scientific Rust OS                ║");
+    println!("    ║                                               ║");
     println!(
         "    ║  Theorems: T1-T10 verified ({}/10)    ║",
         if theorems_passed == 10 {

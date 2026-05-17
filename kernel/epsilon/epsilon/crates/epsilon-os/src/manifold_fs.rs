@@ -339,7 +339,10 @@ impl ManifoldFS {
     // ─── List directory ──────────────────────────────────────────────���──
 
     pub fn ls(&self, dir_id: u64) -> Result<Vec<LsEntry>, FsError> {
-        let entries = self.dir_entries.get(&dir_id).ok_or(FsError::NotADirectory)?;
+        let entries = self
+            .dir_entries
+            .get(&dir_id)
+            .ok_or(FsError::NotADirectory)?;
         let mut result: Vec<LsEntry> = entries
             .iter()
             .filter_map(|(name, &id)| {
@@ -419,7 +422,10 @@ impl ManifoldFS {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut current = self.root_id;
         for part in parts {
-            let entries = self.dir_entries.get(&current).ok_or(FsError::NotADirectory)?;
+            let entries = self
+                .dir_entries
+                .get(&current)
+                .ok_or(FsError::NotADirectory)?;
             current = *entries.get(part).ok_or(FsError::NotFound)?;
         }
         Ok(current)
@@ -436,7 +442,12 @@ impl ManifoldFS {
         // Check if last prediction was correct
         if let Some(predicted_id) = self.last_prefetch_prediction {
             if let Some(inode) = self.inodes.get(&predicted_id) {
-                let pred_pt = inode.payload.points.first().map(|p| p.coords).unwrap_or([0.0; 3]);
+                let pred_pt = inode
+                    .payload
+                    .points
+                    .first()
+                    .map(|p| p.coords)
+                    .unwrap_or([0.0; 3]);
                 let dist = (0..3)
                     .map(|i| (pt[i] - pred_pt[i]) * (pt[i] - pred_pt[i]))
                     .sum::<f64>();
@@ -584,9 +595,7 @@ impl ManifoldFS {
         }
         let pt = &payload.points[0];
         let r = libm::sqrt(
-            pt.coords[0] * pt.coords[0]
-                + pt.coords[1] * pt.coords[1]
-                + pt.coords[2] * pt.coords[2],
+            pt.coords[0] * pt.coords[0] + pt.coords[1] * pt.coords[1] + pt.coords[2] * pt.coords[2],
         );
         if r < 1e-12 {
             return 0;
@@ -613,7 +622,11 @@ impl ManifoldFS {
 
     pub fn stats(&self) -> FsStats {
         FsStats {
-            total_files: self.inodes.values().filter(|i| matches!(i.kind, InodeKind::File)).count(),
+            total_files: self
+                .inodes
+                .values()
+                .filter(|i| matches!(i.kind, InodeKind::File))
+                .count(),
             total_dirs: self
                 .inodes
                 .values()
