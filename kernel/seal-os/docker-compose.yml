@@ -1,0 +1,12 @@
+services:
+  seal-os:
+    build:
+      context: ../..
+      dockerfile: kernel/seal-os/Dockerfile
+    environment:
+      - DISPLAY=${DISPLAY:-host.docker.internal:0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    network_mode: host
+    stdin_open: true
+    tty: true
