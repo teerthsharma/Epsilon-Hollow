@@ -14,7 +14,7 @@
 use alloc::vec::Vec;
 
 #[cfg(not(feature = "std"))]
-use libm::{exp, log}; // Keep only what's not redefined locally or needed
+use libm::log;
 #[cfg(feature = "std")]
 use std::f64;
 
