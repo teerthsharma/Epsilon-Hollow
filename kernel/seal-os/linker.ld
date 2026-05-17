@@ -1,11 +1,15 @@
-/* Seal OS Linker Script — places Multiboot2 header at the start */
-ENTRY(_start)
+/* Seal OS Linker Script — kernel loaded at 1MB by GRUB */
+ENTRY(_boot)
 
 SECTIONS {
     . = 1M;
 
     .multiboot_header : ALIGN(8) {
         KEEP(*(.multiboot_header))
+    }
+
+    .multiboot_boot : ALIGN(4K) {
+        KEEP(*(.multiboot_boot))
     }
 
     .text : ALIGN(4K) {
