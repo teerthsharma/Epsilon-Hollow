@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! USB subsystem — xHCI host controller, HID, mass storage.
+//! NOTE: This is a simulated subsystem. No real USB hardware is accessed.
 
 pub mod xhci;
 pub mod descriptor;
@@ -78,6 +79,7 @@ impl UsbSubsystem {
     }
 
     pub fn enumerate_ports(&mut self) {
+        // [Sim] No real port enumeration — no xHCI hardware present
     }
 
     pub fn device_count(&self) -> usize {
@@ -90,4 +92,5 @@ impl UsbSubsystem {
 }
 
 pub fn init() {
+    // [Sim] USB subsystem init is a no-op — no real hardware to initialize
 }
