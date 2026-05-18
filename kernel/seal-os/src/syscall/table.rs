@@ -23,6 +23,15 @@ pub const SYS_STAT: u64 = 10;
 pub const SYS_MANIFOLD_QUERY: u64 = 100;
 pub const SYS_TELEPORT: u64 = 101;
 pub const SYS_THEOREM_STATUS: u64 = 102;
+pub const SYS_PKG_INSTALL: u64 = 103;
+pub const SYS_PKG_REMOVE: u64 = 104;
+pub const SYS_PKG_LIST: u64 = 105;
+pub const SYS_WIFI_SCAN: u64 = 106;
+pub const SYS_WIFI_CONNECT: u64 = 107;
+pub const SYS_BT_SCAN: u64 = 108;
+pub const SYS_BT_PAIR: u64 = 109;
+pub const SYS_SETTING_GET: u64 = 110;
+pub const SYS_SETTING_SET: u64 = 111;
 
 #[derive(Debug)]
 pub struct SyscallResult {

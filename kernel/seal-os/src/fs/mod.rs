@@ -5,3 +5,4 @@
 
 pub mod encoder;
 pub mod manifold_fs;
+pub mod prefetch;
