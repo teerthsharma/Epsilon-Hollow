@@ -13,8 +13,6 @@
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-#[cfg(not(feature = "std"))]
-use libm::fabs; // Adjust based on usage
 #[cfg(feature = "std")]
 use std::f64;
 

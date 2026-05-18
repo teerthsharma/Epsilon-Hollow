@@ -18,7 +18,7 @@ BIOS/UEFI → GRUB2 → Multiboot2 header → boot.S (32-bit)
 ### _start() initialization order
 
 1. **Serial** — COM1 at 115200 baud for debug output
-2. **Heap** — 4MB static buffer with bump allocator
+2. **Heap** — 16MB static buffer with bump allocator
 3. **IDT + PIC** — 256-entry IDT, 8259A PIC remapped to IRQ 32+
 4. **Framebuffer** — Parse Multiboot2 info for RGB framebuffer tag
 5. **Boot splash** — ASCII seal art + progress bar
@@ -36,13 +36,13 @@ Physical Memory Layout:
 0x00000000 - 0x000FFFFF  Reserved (BIOS, VGA, etc.)
 0x00100000 - 0x00100xxx  Kernel .text (loaded by GRUB at 1MB)
 0x00xxxxxx - ...         Kernel .rodata, .data
-0x00xxxxxx - ...         Kernel .bss (includes 4MB heap buffer)
+0x00xxxxxx - ...         Kernel .bss (includes 16MB heap buffer)
 0xFD000000 - ...         Framebuffer (mapped by GRUB/VBE)
 
 Virtual = Physical (identity mapped via 2MB pages in boot.S)
 ```
 
-The 4MB heap uses a simple bump allocator. All `alloc` types (Vec, String, BTreeMap) allocate from this pool. No deallocation — acceptable for a demo OS, but a slab allocator is needed for production.
+The 16MB heap uses a simple bump allocator. All `alloc` types (Vec, String, BTreeMap) allocate from this pool. No deallocation — acceptable for a demo OS, but a slab allocator is needed for production.
 
 ## Interrupt Architecture
 

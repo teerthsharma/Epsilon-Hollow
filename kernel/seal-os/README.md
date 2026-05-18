@@ -58,7 +58,7 @@ Layer 5   │ ManifoldScheduler: T1 Voronoi task groups, T4 adaptive timeslice
 Layer 4   │ ManifoldFS: THE filesystem — all data = 64 pts on S²
 Layer 3   │ Framebuffer: 1024x768x32, 8x16 font, boot splash
 Layer 2   │ Interrupts: IDT, PIC, timer (IRQ0), keyboard, mouse
-Layer 1   │ Memory: 4MB heap, bump allocator
+Layer 1   │ Memory: 16MB heap, bump allocator
 Layer 0   │ Boot: Multiboot2, 32→64 trampoline, GRUB ISO
           └────── ALL LAYERS DRIVEN BY T1-T5 THEOREMS ──────
 ```
@@ -166,7 +166,7 @@ Real-time dashboard:
 | Target | `x86_64-unknown-none` |
 | Kernel size | ~260KB |
 | ISO size | < 10MB |
-| Heap | 4MB static bump allocator |
+| Heap | 16MB static bump allocator |
 | Display | 1024x768x32bpp (Multiboot2 framebuffer) |
 | Font | Embedded 8x16 bitmap (full printable ASCII) |
 | Dependencies | `aether-core` (T1-T5), `x86_64`, `spin`, `libm` |
@@ -190,7 +190,7 @@ kernel/seal-os/
     │   ├── mod.rs           # global_asm! include
     │   └── multiboot2.rs    # Multiboot2 header + FB request tag
     ├── memory/
-    │   └── mod.rs           # 4MB bump allocator
+    │   └── mod.rs           # 16MB bump allocator
     ├── drivers/
     │   ├── serial.rs        # COM1 UART (115200 baud)
     │   └── interrupts.rs    # IDT, PIC, timer, keyboard, mouse
