@@ -311,7 +311,7 @@ jobs:
               FAIL=$((FAIL + 1))
             fi
           }
-          check "Seal OS v1.0.0-alpha" "Banner printed"
+          check "Seal OS v0.1.0" "Banner printed"
           check "Heap initialized" "Heap initialized"
           check "IDT + PIC initialized" "Interrupts configured"
           check "Governor online" "T4 governor started"
@@ -321,7 +321,16 @@ jobs:
           check "Teleported.*O(1)" "O(1) teleportation"
           check "Scheduler" "Scheduler started"
           check "Syscall" "Syscalls verified"
-          check "Shell" "Shell executed"
+          check "SealShell" "SealShell loaded"
+          check "ManifoldPkg" "ManifoldPkg initialized"
+          check "Aether-Lang" "Aether-Lang runtime ready"
+          check "WiFi" "WiFi driver loaded"
+          check "Bluetooth" "Bluetooth driver loaded"
+          check "USB" "USB subsystem loaded"
+          check "aether-link" "Aether-Link prefetch active"
+          check "AsyncRT" "Async runtime ready"
+          check "Snake" "Games available"
+          check "Desktop" "Desktop rendered"
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
           if [ "$FAIL" -gt 0 ]; then
