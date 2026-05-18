@@ -274,7 +274,6 @@ jobs:
   kernel-qemu-smoke:
     name: QEMU boot smoke test
     runs-on: ubuntu-latest
-    continue-on-error: true
     needs: kernel-iso
     steps:
       - uses: actions/checkout@v4
@@ -292,7 +291,7 @@ jobs:
           timeout 45 qemu-system-x86_64 \
             -cdrom seal-os.iso \
             -nographic \
-            -m 512M \
+            -m 4G \
             -no-reboot \
             -no-shutdown 2>&1 | tee /tmp/seal-os.log || true
           echo "=== Serial output ==="
