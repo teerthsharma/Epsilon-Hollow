@@ -20,20 +20,10 @@ impl HttpClient {
     }
 
     pub fn get(&self, url: &str) -> Result<HttpResponse, String> {
-        Ok(HttpResponse {
-            status: 200,
-            headers: Vec::new(),
-            body: alloc::format!("HTTP/1.1 200 OK (simulated response for {})", url)
-                .into_bytes(),
-        })
+        Err(alloc::format!("[Sim] No network hardware — simulated GET for {}", url))
     }
 
     pub fn post(&self, url: &str, body: &[u8]) -> Result<HttpResponse, String> {
-        Ok(HttpResponse {
-            status: 200,
-            headers: Vec::new(),
-            body: alloc::format!("HTTP/1.1 200 OK (posted {} bytes to {})", body.len(), url)
-                .into_bytes(),
-        })
+        Err(alloc::format!("[Sim] No network hardware — simulated POST of {} bytes to {}", body.len(), url))
     }
 }

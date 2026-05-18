@@ -165,4 +165,12 @@ impl Compositor {
             .filter(|w| w.state != WindowState::Closed)
             .count()
     }
+
+    pub fn focused_window_id(&self) -> u32 {
+        self.windows
+            .iter()
+            .find(|w| w.focused && w.state != WindowState::Closed)
+            .map(|w| w.id)
+            .unwrap_or(0)
+    }
 }

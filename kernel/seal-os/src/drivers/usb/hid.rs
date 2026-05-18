@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! USB HID class driver — keyboards and mice via interrupt transfers.
+//! NOTE: This is a simulated driver. No real HID hardware is accessed.
 
 pub const HID_CLASS: u8 = 3;
 pub const HID_BOOT_KEYBOARD: u8 = 1;
@@ -34,7 +35,7 @@ impl HidDriver {
     }
 
     pub fn process_report(&self, _report: &[u8]) {
-        // Parse HID report descriptor and extract key/button events
+        // [Sim] No real interrupt transfers — HID report processing is simulated
     }
 
     pub fn device_type(&self) -> HidDeviceType {

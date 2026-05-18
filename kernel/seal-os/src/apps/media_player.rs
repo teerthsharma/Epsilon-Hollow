@@ -241,6 +241,46 @@ impl MediaPlayer {
         format!("[SealPlayer] Volume: {}%", self.volume)
     }
 
+    pub fn key_press(&mut self, ch: u8) {
+        match ch {
+            b' ' => {
+                if self.state == PlaybackState::Playing {
+                    self.pause();
+                } else {
+                    self.play();
+                }
+            }
+            b'n' => {
+                if !self.playlist.is_empty() {
+                    self.playlist_index = (self.playlist_index + 1) % self.playlist.len();
+                    let name = self.playlist[self.playlist_index].clone();
+                    let _ = self.open(&name);
+                }
+            }
+            b'p' => {
+                if !self.playlist.is_empty() {
+                    self.playlist_index = if self.playlist_index == 0 {
+                        self.playlist.len() - 1
+                    } else {
+                        self.playlist_index - 1
+                    };
+                    let name = self.playlist[self.playlist_index].clone();
+                    let _ = self.open(&name);
+                }
+            }
+            b's' => { self.stop(); }
+            b'+' => {
+                let v = (self.volume + 5).min(100);
+                self.volume_set(v);
+            }
+            b'-' => {
+                let v = self.volume.saturating_sub(5);
+                self.volume_set(v);
+            }
+            _ => {}
+        }
+    }
+
     pub fn status(&self) -> String {
         let state_str = match self.state {
             PlaybackState::Stopped => "Stopped",
@@ -334,45 +374,127 @@ impl MediaPlayer {
     }
 
     pub fn render_to_window(&self, win: &mut crate::wm::window::Window) {
-        use crate::apps::game_engine;
-        game_engine::clear_window(win);
+        use crate::graphics::htek;
 
-        game_engine::render_text(win, 10, 10, "SealPlayer", 0x00D4AA);
+        let cw = win.client_width();
+        let ch = win.client_height();
+        let m = 10u32;
+
+        // Gradient background
+        htek::fill_gradient_v(win, 0, 0, cw, ch, 0x00101018, 0x00080810);
+
+        // Title bar area
+        htek::fill_rounded_rect_gradient(win, m, m, cw - m * 2, 36, 8, 0x001A1A30, 0x00121224);
+        htek::render_text_glow(win, m + 10, m + 4, "SealPlayer", 0x0000DDAA, 0x00004433);
+
+        // Volume indicator (top right)
+        let vol_str = format!("Vol {}%", self.volume);
+        let vol_x = cw - m - (vol_str.len() as u32 * htek::TEXT_CHAR_W) - 8;
+        htek::render_text_small(win, vol_x, m + 10, &vol_str, 0x00888899);
 
         if let (Some(name), Some(info)) = (&self.current_file, &self.current_info) {
-            game_engine::render_text(win, 10, 40, name, 0xFFFFFF);
-            game_engine::render_text(win, 10, 60,
-                &format!("{} | {}", info.container.name(), info.video_codec.name()), 0x888888);
+            // File info
+            htek::render_text_small(win, m + 8, m + 42, name, 0x00CCCCDD);
+            let codec_str = format!("{} | {}", info.container.name(), info.video_codec.name());
+            htek::render_text_small(win, m + 8, m + 60, &codec_str, 0x00666688);
 
+            // Video viewport
             if info.container.is_video() {
-                let vw = win.width.min(640);
-                let vh = (vw * info.height) / info.width.max(1);
-                let x0 = (win.width - vw) / 2;
-                let y0 = 90;
-                game_engine::fill_rect(win, x0, y0, vw, vh.min(300), 0x1A1A1A);
-                game_engine::render_text(win, x0 + vw / 2 - 30, y0 + vh.min(300) / 2,
-                    match self.state {
-                        PlaybackState::Playing => "▶ Playing",
-                        PlaybackState::Paused => "⏸ Paused",
-                        PlaybackState::Stopped => "⏹ Stopped",
-                    }, 0xFFFFFF);
+                let vp_y = m + 80;
+                let vp_w = cw - m * 2;
+                let vp_h = ch.saturating_sub(vp_y + 80).min(300);
+
+                htek::fill_rounded_rect_gradient(win, m, vp_y, vp_w, vp_h, 6, 0x000A0A12, 0x00060608);
+                htek::stroke_rounded_rect(win, m, vp_y, vp_w, vp_h, 6, 1, 0x00303050);
+
+                // State icon in center
+                let state_str = match self.state {
+                    PlaybackState::Playing => "Playing",
+                    PlaybackState::Paused => "Paused",
+                    PlaybackState::Stopped => "Stopped",
+                };
+                let sw = state_str.len() as u32 * htek::HTEXT_CHAR_W;
+                htek::render_text_glow(
+                    win,
+                    m + (vp_w.saturating_sub(sw)) / 2,
+                    vp_y + (vp_h.saturating_sub(htek::HTEXT_CHAR_H)) / 2,
+                    state_str,
+                    0x00FFFFFF,
+                    0x00444466,
+                );
+
+                // Resolution badge
+                let res_str = format!("{}x{} {}fps", info.width, info.height, info.fps);
+                htek::render_text_small(win, m + 8, vp_y + vp_h - 18, &res_str, 0x00445566);
             }
 
-            let bar_y = win.height.saturating_sub(50);
-            let bar_w = win.width.saturating_sub(20);
-            game_engine::fill_rect(win, 10, bar_y, bar_w, 4, 0x333333);
+            // Transport controls area (bottom)
+            let ctrl_y = ch.saturating_sub(60);
+
+            // Progress bar background
+            let bar_x = m + 4;
+            let bar_w = cw - m * 2 - 8;
+            htek::fill_rounded_rect(win, bar_x, ctrl_y, bar_w, 6, 3, 0x00252538);
+
+            // Progress fill
             if info.duration_secs > 0 {
                 let progress = ((self.position_secs as u32) * bar_w) / (info.duration_secs as u32).max(1);
-                game_engine::fill_rect(win, 10, bar_y, progress, 4, 0x00D4AA);
+                if progress > 0 {
+                    htek::fill_rounded_rect(win, bar_x, ctrl_y, progress.max(6), 6, 3, 0x0000CCAA);
+                    // Playhead dot
+                    let dot_x = bar_x + progress;
+                    if dot_x + 4 < cw {
+                        htek::draw_circle_filled(win, dot_x, ctrl_y + 3, 5, 0x0000FFCC);
+                    }
+                }
             }
 
-            let time_y = bar_y + 10;
-            game_engine::render_text(win, 10, time_y,
-                &format!("{} / {}", format_time(self.position_secs), format_time(info.duration_secs)),
-                0xAAAAAA);
+            // Time display
+            let time_str = format!("{} / {}", format_time(self.position_secs), format_time(info.duration_secs));
+            htek::render_text_small(win, m + 4, ctrl_y + 12, &time_str, 0x00AAAABB);
+
+            // Bitrate info (right)
+            let br_str = format!("{} kbps", info.bitrate_kbps);
+            let br_x = cw - m - (br_str.len() as u32 * htek::TEXT_CHAR_W) - 4;
+            htek::render_text_small(win, br_x, ctrl_y + 12, &br_str, 0x00666688);
+
+            // Audio info
+            let audio_str = format!("{} {}Hz {}ch", info.audio_codec.name(), info.sample_rate, info.channels);
+            let aw = audio_str.len() as u32 * htek::TEXT_CHAR_W;
+            htek::render_text_small(win, (cw - aw) / 2, ctrl_y + 12, &audio_str, 0x00555577);
+
         } else {
-            game_engine::render_text(win, 10, 60, "No media loaded", 0x666666);
-            game_engine::render_text(win, 10, 80, "Use: play <file.mp4>", 0x444444);
+            // No media loaded — show placeholder
+            let center_y = ch / 2 - 40;
+            htek::fill_rounded_rect_gradient(win, m, m + 50, cw - m * 2, ch - m * 2 - 100, 10, 0x000E0E1A, 0x00080810);
+            htek::stroke_rounded_rect(win, m, m + 50, cw - m * 2, ch - m * 2 - 100, 10, 1, 0x00252540);
+
+            // Big play icon (triangle via lines)
+            let icon_cx = cw / 2;
+            let icon_cy = center_y;
+            htek::draw_circle_filled(win, icon_cx, icon_cy, 30, 0x00202038);
+            htek::draw_circle_filled(win, icon_cx, icon_cy, 28, 0x00181828);
+
+            let msg = "No media loaded";
+            let mw = msg.len() as u32 * htek::HTEXT_CHAR_W;
+            htek::render_text_smooth(win, (cw - mw) / 2, icon_cy + 40, msg, 0x00556677);
+
+            let hint = "Use: play <file>";
+            let hw = hint.len() as u32 * htek::TEXT_CHAR_W;
+            htek::render_text_small(win, (cw - hw) / 2, icon_cy + 76, hint, 0x00334455);
+
+            // Format badges
+            let fmts = ["MP4", "MKV", "AVI", "WebM", "MP3", "FLAC"];
+            let badge_y = icon_cy + 100;
+            let total_w = fmts.len() as u32 * 52;
+            let start_x = (cw.saturating_sub(total_w)) / 2;
+            for (i, fmt) in fmts.iter().enumerate() {
+                let bx = start_x + i as u32 * 52;
+                htek::fill_rounded_rect(win, bx, badge_y, 48, 20, 4, 0x001A1A2E);
+                htek::stroke_rounded_rect(win, bx, badge_y, 48, 20, 4, 1, 0x00303050);
+                let fw = fmt.len() as u32 * htek::TEXT_CHAR_W;
+                htek::render_text_small(win, bx + (48 - fw) / 2, badge_y + 2, fmt, 0x006688AA);
+            }
         }
     }
 }
