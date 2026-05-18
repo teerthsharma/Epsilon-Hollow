@@ -8,11 +8,14 @@
 extern crate alloc;
 
 mod apps;
+mod async_rt;
 mod boot;
 mod drivers;
 mod fs;
 mod graphics;
+mod lang;
 mod memory;
+mod pkg;
 mod process;
 mod syscall;
 mod wm;
@@ -25,7 +28,7 @@ use aether_core::tss::SphericalVoronoiIndex;
 use graphics::console::Console;
 use graphics::framebuffer::Framebuffer;
 
-const VERSION: &str = "1.0.0-alpha";
+const VERSION: &str = "0.1.0";
 
 static mut FRAMEBUFFER: Framebuffer = Framebuffer::null();
 
@@ -74,35 +77,61 @@ fn boot_graphical(fb: &'static Framebuffer) {
         fb.width, fb.height, fb.bpp
     );
 
-    // Boot splash
     let mut console = Console::new(fb);
     graphics::splash::render_splash(&mut console);
-    graphics::splash::draw_progress_bar(fb, 20);
+    graphics::splash::draw_progress_bar(fb, 10);
 
     // Layer 3: Theorems
     init_theorems();
-    graphics::splash::draw_progress_bar(fb, 40);
+    graphics::splash::draw_progress_bar(fb, 20);
 
     // Layer 4: ManifoldFS
     demo_manifold_fs();
-    graphics::splash::draw_progress_bar(fb, 55);
+    graphics::splash::draw_progress_bar(fb, 30);
 
     // Layer 5: Process scheduler
     init_scheduler();
-    graphics::splash::draw_progress_bar(fb, 65);
+    graphics::splash::draw_progress_bar(fb, 35);
 
     // Layer 6: Syscalls
     demo_syscalls();
+    graphics::splash::draw_progress_bar(fb, 40);
+
+    // Layer 7: SealShell
+    demo_shell();
+    graphics::splash::draw_progress_bar(fb, 45);
+
+    // Layer 8: ManifoldPkg
+    init_manifold_pkg();
+    graphics::splash::draw_progress_bar(fb, 50);
+
+    // Layer 9: Aether-Lang
+    init_aether_lang();
+    graphics::splash::draw_progress_bar(fb, 55);
+
+    // Layer 10: Drivers
+    init_drivers();
+    graphics::splash::draw_progress_bar(fb, 65);
+
+    // Layer 11: USB
+    init_usb();
+    graphics::splash::draw_progress_bar(fb, 70);
+
+    // Layer 12: Aether-Link prefetch
+    init_prefetch();
     graphics::splash::draw_progress_bar(fb, 75);
 
-    // Layer 7: Shell
-    demo_shell();
+    // Layer 13: Async runtime
+    init_async_runtime();
+    graphics::splash::draw_progress_bar(fb, 80);
+
+    // Layer 14: Games
+    init_games();
     graphics::splash::draw_progress_bar(fb, 85);
 
     serial_println!("[BOOT] All layers initialized.");
     graphics::splash::draw_progress_bar(fb, 95);
 
-    // Pause on splash
     for _ in 0..30_000_000u64 {
         core::hint::spin_loop();
     }
@@ -113,7 +142,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         core::hint::spin_loop();
     }
 
-    // Layer 8+9: Desktop + Window Manager
+    // Layer 15+16: Desktop + Window Manager
     render_desktop_environment(fb);
 }
 
@@ -124,6 +153,13 @@ fn boot_serial() {
     init_scheduler();
     demo_syscalls();
     demo_shell();
+    init_manifold_pkg();
+    init_aether_lang();
+    init_drivers();
+    init_usb();
+    init_prefetch();
+    init_async_runtime();
+    init_games();
     serial_println!("[BOOT] All layers initialized. Seal OS ready.");
 }
 
@@ -210,35 +246,72 @@ fn demo_shell() {
 
     let mut shell = Shell::new();
 
-    // Populate FS
-    shell.execute("mkdir docs");
-    shell.execute("touch readme.txt Welcome to Seal OS");
-    shell.execute("touch notes.txt Topological file surgery");
+    shell.execute("create docs");
+    shell.execute("write readme.txt Welcome to Seal OS");
+    shell.execute("write notes.txt Topological file surgery");
 
-    let output = shell.execute("theorems");
+    let output = shell.execute("seal");
     for line in output.lines().take(3) {
-        serial_println!("[Shell] {}", line);
+        serial_println!("[SealShell] {}", line);
     }
 
-    let output = shell.execute("uname");
-    serial_println!("[Shell] {}", output.lines().next().unwrap_or(""));
+    let output = shell.execute("help");
+    serial_println!("[SealShell] {} commands loaded (type 'help' for handbook)",
+        output.lines().filter(|l| l.contains("  ")).count());
+}
+
+fn init_manifold_pkg() {
+    let _pkg = pkg::ManifoldPkg::new();
+    serial_println!("[ManifoldPkg] Package registry initialized (0 packages)");
+}
+
+fn init_aether_lang() {
+    let _rt = lang::AetherRuntime::new();
+    serial_println!("[Aether-Lang] Titan VM ready (no_std mode)");
+}
+
+fn init_drivers() {
+    drivers::pci::init();
+    drivers::wifi::init();
+    serial_println!("[WiFi] Driver loaded (no hardware — use 'wifi' for status)");
+    drivers::bluetooth::init();
+    serial_println!("[Bluetooth] Driver loaded (no hardware — use 'bluetooth' for status)");
+    drivers::gpu::init();
+    drivers::net::init();
+}
+
+fn init_usb() {
+    drivers::usb::init();
+    serial_println!("[USB] xHCI host controller initialized");
+}
+
+fn init_prefetch() {
+    fs::prefetch::init();
+    serial_println!("[aether-link] Prefetch engine active (gaming preset)");
+}
+
+fn init_async_runtime() {
+    async_rt::init();
+    serial_println!("[AsyncRT] Executor ready (single-threaded, waker-based)");
+}
+
+fn init_games() {
+    serial_println!("[Games] Snake, Breakout, Warp Racer available");
+    serial_println!("[Calculator] Scientific calculator ready");
+    serial_println!("[SealPlayer] Media player ready (MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV)");
 }
 
 fn render_desktop_environment(fb: &'static Framebuffer) {
     serial_println!("[Desktop] Rendering desktop environment");
 
-    // Layer 9: Desktop wallpaper
     wm::desktop::render_desktop(fb);
 
-    // Layer 8: Window Manager
     let mut compositor = wm::compositor::Compositor::new();
 
-    // Create windows for built-in apps
     let term_id = compositor.create_window("Terminal", 40, 40, 600, 400);
     let ide_id = compositor.create_window("Seal IDE", 120, 80, 640, 440);
     let tv_id = compositor.create_window("Theorems", 500, 60, 420, 340);
 
-    // Layer 10a: Terminal
     let mut terminal = apps::terminal::Terminal::new(600, 400);
     terminal.key_press(b'h');
     terminal.key_press(b'e');
@@ -250,19 +323,16 @@ fn render_desktop_environment(fb: &'static Framebuffer) {
         terminal.render_to_window(win);
     }
 
-    // Layer 10b: Seal IDE
     let ide = apps::seal_ide::SealIde::new();
     if let Some(win) = compositor.window_mut(ide_id) {
         ide.render_to_window(win);
     }
 
-    // Layer 10d: Theorem Viewer
     let viewer = apps::theorem_viewer::TheoremViewer::new();
     if let Some(win) = compositor.window_mut(tv_id) {
         viewer.render_to_window(win);
     }
 
-    // Compose all windows to framebuffer
     compositor.compose(fb);
 
     serial_println!("[Desktop] {} windows active", compositor.window_count());

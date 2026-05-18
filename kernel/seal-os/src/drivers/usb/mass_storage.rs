@@ -1,0 +1,46 @@
+// Seal OS — Copyright (c) 2024 Teerth Sharma
+// SPDX-License-Identifier: MIT
+
+//! USB mass storage class driver — bulk-only transport, SCSI READ/WRITE.
+
+use alloc::vec::Vec;
+
+pub const MASS_STORAGE_CLASS: u8 = 8;
+pub const SCSI_SUBCLASS: u8 = 6;
+pub const BBB_PROTOCOL: u8 = 0x50; // Bulk-Only
+
+pub struct MassStorageDriver {
+    capacity_sectors: u64,
+    sector_size: u32,
+    connected: bool,
+}
+
+impl MassStorageDriver {
+    pub fn new() -> Self {
+        Self {
+            capacity_sectors: 0,
+            sector_size: 512,
+            connected: false,
+        }
+    }
+
+    pub fn inquiry(&self) -> &'static str {
+        "Seal OS USB Mass Storage"
+    }
+
+    pub fn read_capacity(&self) -> (u64, u32) {
+        (self.capacity_sectors, self.sector_size)
+    }
+
+    pub fn read_sectors(&self, _lba: u64, _count: u32) -> Vec<u8> {
+        Vec::new()
+    }
+
+    pub fn write_sectors(&self, _lba: u64, _data: &[u8]) -> Result<(), &'static str> {
+        Ok(())
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+}

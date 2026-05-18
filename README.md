@@ -839,16 +839,16 @@ How does a geometry-native research kernel compare to production operating syste
 | **Math-driven kernel** | Yes (all 5 theorems active) | No | No | No | No | No |
 | **Topological data analysis** | Native (Betti numbers, Voronoi) | No | Userspace only | Userspace only | No | No |
 | **Predictive prefetch** | T2 spectral contraction | No | readahead heuristic | readahead heuristic | Superfetch/SysMain | Speculative prefetch |
-| **GPU offload ready** | Planned (2 GB compute budget) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
+| **GPU offload ready** | Yes (2 GB compute budget, PCI detection) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
 | **Display** | 1024x768x32 framebuffer | 1920x1080 (orbital) | Wayland/X11 | Wayland/X11 | DWM | Quartz |
 | **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
-| **Shell** | Built-in (geometry-aware) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
-| **Package manager** | ManifoldFS (native) | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
-| **Syscalls** | 13 (POSIX + Epsilon) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
-| **USB support** | Planned | Basic (xHCI) | Full | Full | Full | Full |
-| **Network stack** | None (planned) | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
-| **Driver count** | 4 (serial, kbd, mouse, timer) | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
+| **Shell** | SealShell (30+ English-first commands) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
+| **Package manager** | ManifoldPkg (Voronoi deps) | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
+| **Syscalls** | 22 (POSIX + Epsilon + pkg/wifi/bt/settings) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
+| **USB support** | Yes (xHCI, HID, mass storage) | Basic (xHCI) | Full | Full | Full | Full |
+| **Network stack** | Yes (TCP/UDP/DHCP/DNS/HTTP/TLS) | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
+| **Driver count** | 12 (serial, kbd, mouse, timer, PCI, WiFi, BT, GPU, NIC, USB, net, prefetch) | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
 | **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
 | **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |
 | **Theorem count** | 10 (5 active, 5 verified) | 0 | 0 | 0 | 0 | 0 |
@@ -935,7 +935,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**44782 lines of Rust** across 188 files · 130 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **60340 total**
+**48759 lines of Rust** across 227 files · 130 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **64317 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>

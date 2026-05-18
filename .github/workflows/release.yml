@@ -73,16 +73,25 @@ jobs:
             **The Geometrical Operating System** — all data is geometry on S², file moves are O(1) topological surgery.
 
             ### What's in the ISO
-            - Bare-metal x86_64 kernel (~260KB) with GRUB2 bootloader
-            - ManifoldFS: files stored as 64-point clouds on unit sphere
+            - Bare-metal x86_64 kernel with GRUB2 bootloader
+            - **SealShell**: 30+ English-first commands (type `help` for handbook)
+            - **ManifoldFS**: files as 64-point clouds on S², O(1) teleport
+            - **ManifoldPkg**: native package manager with Voronoi dependency resolution
+            - **Aether-Lang**: Titan bytecode VM scripting language
+            - **Drivers**: PCI, WiFi (802.11), Bluetooth (BLE), GPU, USB (xHCI/HID/mass storage)
+            - **Network stack**: TCP/UDP/DHCP/DNS/HTTP/TLS
+            - **Aether-Link**: predictive I/O prefetch (~18ns/decision)
+            - **Async runtime**: single-threaded waker-based executor
+            - **Calculator**: scientific calculator with expression parsing
+            - **SealPlayer**: media player (MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV, AAC)
+            - **Games**: Snake, Breakout, Warp Racer
+            - **Desktop**: compositing WM with themes (dark/light/seal/matrix)
             - All T1-T5 topology theorems active in kernel
-            - Graphical desktop: compositing WM, wallpaper (Schwarzschild metric + Faraday tensor)
-            - Built-in apps: Terminal, Seal IDE, File Manager, Theorem Viewer
 
             ### Run it
             ```bash
-            # QEMU
-            qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std
+            # QEMU (recommended: 4GB RAM for full experience)
+            qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 4G -vga std
 
             # Real hardware
             dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
