@@ -25,6 +25,7 @@ use core::panic::PanicInfo;
 use aether_core::governor::GeometricGovernor;
 use aether_core::tss::SphericalVoronoiIndex;
 
+use boot::boot_info::BootInfo;
 use graphics::console::Console;
 use graphics::framebuffer::Framebuffer;
 
@@ -32,11 +33,12 @@ const VERSION: &str = "0.1.0";
 
 static mut FRAMEBUFFER: Framebuffer = Framebuffer::null();
 
-#[no_mangle]
-pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
-    drivers::serial::init();
+/// Kernel entry point — called by the UEFI boot stub after exit_boot_services().
+/// Serial port is already initialized by the UEFI entry.
+pub fn kernel_main(info: &BootInfo) -> ! {
     serial_println!("Seal OS v{} — The Geometrical Operating System", VERSION);
     serial_println!("All data = geometry on S^2. File moves = O(1) topological surgery.");
+    serial_println!("Boot: UEFI (pure Rust, zero assembly)");
     serial_println!("");
 
     // Layer 1: Memory
@@ -47,12 +49,14 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
     drivers::interrupts::init();
     serial_println!("[BOOT] IDT + PIC initialized (keyboard + mouse IRQ active)");
 
-    // Layer 3: Framebuffer
-    serial_println!("[BOOT] Multiboot info at {:#X}", multiboot_info_addr);
-    if multiboot_info_addr != 0 {
-        parse_multiboot2(multiboot_info_addr);
+    // Layer 3: Framebuffer (from UEFI GOP)
+    if info.fb_addr != 0 {
+        unsafe {
+            FRAMEBUFFER = Framebuffer::new(
+                info.fb_addr, info.fb_width, info.fb_height, info.fb_pitch, info.fb_bpp,
+            );
+        }
     }
-    serial_println!("[BOOT] Multiboot parsing complete");
 
     let fb = unsafe { &*core::ptr::addr_of!(FRAMEBUFFER) };
 
@@ -64,7 +68,6 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
         boot_serial();
     }
 
-    // This point is never reached — boot_graphical enters the event loop
     loop {
         x86_64::instructions::hlt();
     }
@@ -310,43 +313,6 @@ fn init_games() {
     serial_println!("[Games] Snake, Breakout, Warp Racer available");
     serial_println!("[Calculator] Scientific calculator ready");
     serial_println!("[SealPlayer] Media player ready (MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV)");
-}
-
-fn parse_multiboot2(addr: u64) {
-    unsafe {
-        let ptr = addr as *const u8;
-        let total_size = *(ptr as *const u32) as usize;
-        let mut offset = 8usize;
-
-        while offset < total_size {
-            let tag_ptr = ptr.add(offset);
-            let tag_type = *(tag_ptr as *const u32);
-            let tag_size = *(tag_ptr.add(4) as *const u32) as usize;
-
-            if tag_type == 0 {
-                break;
-            }
-
-            if tag_type == 8 && tag_size >= 32 {
-                let fb_addr = *(tag_ptr.add(8) as *const u64);
-                let fb_pitch = *(tag_ptr.add(16) as *const u32);
-                let fb_width = *(tag_ptr.add(20) as *const u32);
-                let fb_height = *(tag_ptr.add(24) as *const u32);
-                let fb_bpp = *(tag_ptr.add(28) as *const u8);
-                let fb_type = *(tag_ptr.add(29) as *const u8);
-
-                if fb_type == 1 {
-                    serial_println!(
-                        "[FB] {}x{} @ {:#X}, pitch={}, bpp={}",
-                        fb_width, fb_height, fb_addr, fb_pitch, fb_bpp
-                    );
-                    FRAMEBUFFER = Framebuffer::new(fb_addr, fb_width, fb_height, fb_pitch, fb_bpp);
-                }
-            }
-
-            offset += ((tag_size + 7) & !7).max(8);
-        }
-    }
 }
 
 #[panic_handler]
