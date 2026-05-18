@@ -20,7 +20,7 @@ _boot:
     /* Zero out page tables */
     lea pml4, %edi
     xor %eax, %eax
-    mov $4096, %ecx          /* 4 pages * 512 entries * 8 bytes = 16384, but 4096 dwords */
+    mov $6144, %ecx          /* 6 pages (pml4+pdpt+pd0-3) * 4096 bytes / 4 = 6144 dwords */
     rep stosl
 
     /* PML4[0] -> PDPT */
@@ -29,16 +29,25 @@ _boot:
     or $0x3, %eax            /* present + writable */
     mov %eax, (%edi)
 
-    /* PDPT[0] -> PD */
+    /* PDPT[0..3] -> PD0..PD3 (identity map first 4GB for MMIO framebuffers) */
     lea pdpt, %edi
-    lea pd, %eax
+    lea pd0, %eax
     or $0x3, %eax
     mov %eax, (%edi)
+    lea pd1, %eax
+    or $0x3, %eax
+    mov %eax, 8(%edi)
+    lea pd2, %eax
+    or $0x3, %eax
+    mov %eax, 16(%edi)
+    lea pd3, %eax
+    or $0x3, %eax
+    mov %eax, 24(%edi)
 
-    /* PD: 512 entries, each mapping 2MB (covers 1GB) */
-    lea pd, %edi
+    /* PD0..PD3: 4×512 entries, each mapping 2MB (covers 4GB) */
+    lea pd0, %edi
     mov $0x83, %eax          /* present + writable + huge (2MB page) */
-    mov $512, %ecx
+    mov $2048, %ecx          /* 4 × 512 entries */
 1:
     mov %eax, (%edi)
     add $0x200000, %eax      /* next 2MB */
@@ -100,7 +109,10 @@ long_mode_entry:
 .align 4096
 pml4:   .skip 4096
 pdpt:   .skip 4096
-pd:     .skip 4096
+pd0:    .skip 4096
+pd1:    .skip 4096
+pd2:    .skip 4096
+pd3:    .skip 4096
 
 .align 16
 boot_stack_bottom:

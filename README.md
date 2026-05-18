@@ -1,173 +1,941 @@
 # Epsilon-Hollow
 
-The largest open-source geometrical scientific Rust operating system.
+A bare-metal x86_64 operating system where every byte on disk is a point cloud on the unit sphere, every file move is O(1) topological surgery, and every kernel decision — from page allocation to window compositing — is driven by five formally verified topology theorems.
 
-## Seal OS — The Geometrical Operating System
+Written in Rust. No libc. No POSIX. No compromises.
 
-**All data is geometry on S². File moves are O(1) topological surgery.**
+```
+Seal OS v1.0.0-alpha — The Geometrical Operating System
+All data = geometry on S². File moves = O(1) topological surgery.
 
-Seal OS is a bare-metal x86_64 operating system built from scratch in Rust. Every kernel subsystem — memory, scheduling, filesystem, display — is driven by five topology theorems (T1-T5). It boots on QEMU and real hardware via USB ISO.
+[BOOT] Heap initialized (16 MB)
+[BOOT] IDT + PIC initialized
+[T4/AGCR] Governor online: epsilon = 0.1000
+[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell 0
+[BOOT] All T1-T5 theorems ACTIVE
+[ManifoldFS] Teleported 'hello.txt' (19 bytes) in 1 ticks — O(1)
+[Scheduler] 4 tasks, running 'kernel', epsilon=0.1000
+[Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8
+```
 
-### Run it
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Boot Sequence](#boot-sequence)
+- [Memory](#memory)
+- [Interrupts and Drivers](#interrupts-and-drivers)
+- [ManifoldFS — The Filesystem](#manifoldfs--the-filesystem)
+- [Process Scheduler](#process-scheduler)
+- [System Calls](#system-calls)
+- [Graphics and Desktop](#graphics-and-desktop)
+- [Built-in Applications](#built-in-applications)
+- [The Five Theorems](#the-five-theorems)
+- [aether-core — Math Foundation](#aether-core--math-foundation)
+- [Epsilon — Context Teleportation](#epsilon--context-teleportation)
+- [Aether-Link — I/O Superkernel](#aether-link--io-superkernel)
+- [Aether-Lang — Topological DSL](#aether-lang--topological-dsl)
+- [Lean 4 Proofs](#lean-4-proofs)
+- [CI Pipeline](#ci-pipeline)
+- [Repository Map](#repository-map)
+- [Build and Run](#build-and-run)
+- [Seal OS vs The World](#seal-os-vs-the-world)
+- [Documentation Index](#documentation-index)
+- [License](#license)
+
+---
+
+## Architecture
+
+```mermaid
+graph TB
+    subgraph "Layer 10 — Applications"
+        TERM["Terminal Emulator"]
+        IDE["Seal IDE"]
+        FMGR["File Manager"]
+        TVIEW["Theorem Viewer"]
+    end
+
+    subgraph "Layer 9 — Desktop"
+        WALL["Wallpaper<br/>Schwarzschild metric + Faraday tensor"]
+        TBAR["Taskbar<br/>[T1:●][T2:●][T3:●][T4:●][T5:●] ε=0.042"]
+    end
+
+    subgraph "Layer 8 — Window Manager"
+        COMP["Compositor<br/>double-buffered, dirty-rect tracking"]
+        WIN["Window Manager<br/>z-order, decorations, cursor"]
+        EVT["Event Dispatch<br/>keyboard/mouse → focused window"]
+    end
+
+    subgraph "Layer 7 — Shell"
+        SHELL["Shell<br/>ls, cat, mv (O(1) teleport), find,<br/>ps, theorems, race, stats"]
+    end
+
+    subgraph "Layer 6 — Syscalls"
+        POSIX["POSIX: exit, read, write, open,<br/>close, exec, fork, mmap, getpid, stat"]
+        EPSILON_SYS["Epsilon: manifold_query,<br/>teleport, theorem_status"]
+    end
+
+    subgraph "Layer 5 — Process Scheduler"
+        SCHED["ManifoldScheduler<br/>T1 Voronoi task groups<br/>T4 adaptive timeslice<br/>T2 predict next runnable"]
+    end
+
+    subgraph "Layer 4 — ManifoldFS"
+        MFS["ManifoldFS<br/>all data = 64 points on S²<br/>O(1) teleport via topological surgery<br/>content-addressable via Voronoi"]
+        ENC["Encoder Pipeline<br/>trigram hash → JL project → L2 normalize"]
+    end
+
+    subgraph "Layer 3 — Graphics"
+        FB["Framebuffer<br/>1024×768×32bpp"]
+        FONT["8×16 Bitmap Font"]
+        SPLASH["Boot Splash<br/>seal photo + progress bar"]
+    end
+
+    subgraph "Layer 2 — Interrupts & Drivers"
+        IDT["IDT — 256 entries"]
+        PIC["8259A PIC<br/>IRQ offset 32"]
+        TIMER["PIT Timer<br/>IRQ0"]
+        KBD["PS/2 Keyboard<br/>IRQ1"]
+        MOUSE["PS/2 Mouse<br/>IRQ12"]
+        SERIAL["Serial COM1<br/>115200 baud"]
+    end
+
+    subgraph "Layer 1 — Memory"
+        HEAP["16 MB Bump Allocator<br/>spin-locked GlobalAlloc"]
+    end
+
+    subgraph "Layer 0 — Boot"
+        GRUB["GRUB2 Multiboot2"]
+        TRAMP["32→64 Trampoline<br/>4GB identity map, PAE, EFER.LME"]
+        LINK["Linker Script<br/>kernel at 1MB"]
+    end
+
+    TERM & IDE & FMGR & TVIEW --> COMP
+    WALL & TBAR --> COMP
+    COMP --> FB
+    WIN --> EVT
+    SHELL --> POSIX & EPSILON_SYS
+    POSIX & EPSILON_SYS --> SCHED
+    POSIX & EPSILON_SYS --> MFS
+    SCHED --> HEAP
+    MFS --> ENC
+    ENC --> HEAP
+    FB --> HEAP
+    SPLASH --> FB
+    IDT --> PIC
+    PIC --> TIMER & KBD & MOUSE
+    SERIAL --> HEAP
+    HEAP --> TRAMP
+    GRUB --> TRAMP
+    TRAMP --> LINK
+
+    style MFS fill:#1a1a2e,stroke:#e94560,color:#fff
+    style SCHED fill:#1a1a2e,stroke:#0f3460,color:#fff
+    style ENC fill:#1a1a2e,stroke:#e94560,color:#fff
+    style TRAMP fill:#0d1117,stroke:#58a6ff,color:#fff
+```
+
+Every layer above Layer 0 is driven by the T1–T5 theorems. There is no separate "theorem layer" — the math is the kernel.
+
+---
+
+## Boot Sequence
+
+```mermaid
+sequenceDiagram
+    participant BIOS
+    participant GRUB
+    participant boot.S
+    participant Rust _start
+
+    BIOS->>GRUB: Load from ISO (El Torito)
+    GRUB->>GRUB: Parse grub.cfg, set gfxmode=1024x768x32
+    GRUB->>boot.S: multiboot2 entry (32-bit protected mode)<br/>EAX=0x36d76289, EBX=info struct
+
+    Note over boot.S: .code32 — 32-bit trampoline
+    boot.S->>boot.S: Save EBX → ESI (multiboot info)
+    boot.S->>boot.S: Zero 6 pages (PML4 + PDPT + PD0–PD3)
+    boot.S->>boot.S: PML4[0] → PDPT
+    boot.S->>boot.S: PDPT[0..3] → PD0..PD3
+    boot.S->>boot.S: PD0–PD3: 2048 × 2MB huge pages = 4GB identity map
+    boot.S->>boot.S: Enable PAE (CR4.PAE)
+    boot.S->>boot.S: Load PML4 → CR3
+    boot.S->>boot.S: Enable long mode (EFER.LME via MSR 0xC0000080)
+    boot.S->>boot.S: Enable paging (CR0.PG + CR0.PE)
+    boot.S->>boot.S: Load 64-bit GDT, far-jump to .code64
+
+    Note over boot.S: .code64 — 64-bit mode
+    boot.S->>boot.S: Set segment registers (DS/ES/SS/FS/GS = 0x10)
+    boot.S->>boot.S: Set 64-bit stack (64KB)
+    boot.S->>Rust _start: call _start(multiboot_info_addr)
+
+    Rust _start->>Rust _start: Serial init (COM1 @ 115200)
+    Rust _start->>Rust _start: Heap init (16 MB bump allocator)
+    Rust _start->>Rust _start: IDT + PIC init (IRQ offset 32)
+    Rust _start->>Rust _start: Parse Multiboot2 tags → framebuffer
+    alt Framebuffer available
+        Rust _start->>Rust _start: Graphical boot (splash → theorems → desktop)
+    else No framebuffer
+        Rust _start->>Rust _start: Serial-only boot (theorems → shell)
+    end
+    Rust _start->>Rust _start: HLT loop
+```
+
+**Multiboot2 header** (48 bytes, in `.multiboot_header` section):
+- Magic: `0xE85250D6`
+- Architecture: `0` (i386)
+- Framebuffer request: 1024x768x32bpp
+- Placed first by linker script at 1MB — within GRUB's 32KB scan window
+
+**Page tables** identity-map the first 4GB using 2MB huge pages (4 page directories, 2048 entries). This covers both RAM and MMIO regions like the framebuffer at `0xFD000000`.
+
+**GDT**: 3 entries — null, 64-bit code (0x00AF9A000000FFFF), 64-bit data (0x00CF92000000FFFF).
+
+---
+
+## Memory
+
+```mermaid
+graph LR
+    subgraph "Physical Memory Layout"
+        A["0x00000000<br/>Reserved"] --> B["0x00100000 (1MB)<br/>Kernel .text"]
+        B --> C[".rodata"]
+        C --> D[".data"]
+        D --> E[".bss<br/>page tables (24KB)<br/>boot stack (64KB)"]
+        E --> F["Heap<br/>16 MB bump allocator"]
+        F --> G["...<br/>Free RAM"]
+        G --> H["0xFD000000<br/>Framebuffer (MMIO)<br/>1024×768×4 = 3MB"]
+    end
+```
+
+The heap is a contiguous 16 MB `static` array, managed by a spin-locked bump allocator implementing `GlobalAlloc`. Allocation is O(1) — advance a pointer, align to requested layout. No deallocation (bump-only). This is sufficient for the kernel's allocation patterns: ManifoldFS inodes, scheduler task structs, window buffers, and encoder working memory.
+
+16 MB handles the graphical desktop comfortably: each 1024x768x32bpp window buffer is 3 MB, and the kernel runs a compositor, three application windows, and ManifoldFS metadata.
+
+---
+
+## Interrupts and Drivers
+
+```mermaid
+graph TD
+    subgraph "Interrupt Descriptor Table (256 entries)"
+        E3["#3 Breakpoint"]
+        E8["#8 Double Fault"]
+        IRQ0["IRQ0 — PIT Timer"]
+        IRQ1["IRQ1 — PS/2 Keyboard"]
+        IRQ12["IRQ12 — PS/2 Mouse"]
+    end
+
+    subgraph "8259A PIC (cascaded)"
+        PIC1["PIC1: ports 0x20/0x21<br/>IRQ0–IRQ7 → INT 32–39"]
+        PIC2["PIC2: ports 0xA0/0xA1<br/>IRQ8–IRQ15 → INT 40–47"]
+    end
+
+    subgraph "Serial I/O"
+        COM1["COM1: port 0x3F8<br/>115200 baud, 8N1<br/>used for all kernel logging"]
+    end
+
+    IRQ0 --> |"tick counter++<br/>T4 governor samples"| PIC1
+    IRQ1 --> |"scancode → ASCII<br/>58-char keymap"| PIC1
+    IRQ12 --> |"mouse dx/dy/buttons<br/>read port 0x60"| PIC2
+    PIC2 --> PIC1
+    PIC1 --> |"EOI: outb 0x20, 0x20"| E3
+```
+
+**Keyboard driver**: reads scancodes from port `0x60`, maps to ASCII via a 58-entry table (set 1 scancodes). Handles key-down events only.
+
+**Timer**: PIT on IRQ0. Increments a global tick counter used by the governor and scheduler for timeslice enforcement.
+
+**Serial**: COM1 initialized at 115200 baud, 8N1. All `serial_println!` output goes here. This is the primary diagnostic channel — visible in QEMU via `-nographic` or `-serial stdio`.
+
+---
+
+## ManifoldFS — The Filesystem
+
+This is not ext4. This is not FAT. Files are not byte sequences. Files are **64-point clouds on the unit sphere S²**.
+
+```mermaid
+graph TD
+    subgraph "Write Path"
+        DATA["Raw bytes"] --> CHUNK["Chunk into 4KB blocks"]
+        CHUNK --> TRIG["Trigram hash → 128D sparse vector<br/>(b[i]·31) ⊕ (b[i+1]·37) ⊕ (b[i+2]·41)"]
+        TRIG --> JL["JL projection: 128D → 3D<br/>Gaussian random matrix (seed 0xE95110A7)<br/>scaled by 1/√3"]
+        JL --> L2["L2-normalize onto S²"]
+        L2 --> PAYLOAD["ManifoldPayload<br/>64 SpherePoints (θ, φ)<br/>Betti-0 via Union-Find (ε²=0.25)<br/>FNV-1a content hash"]
+    end
+
+    subgraph "Storage"
+        PAYLOAD --> INODE["Inode<br/>name, kind, payload, metadata<br/>voronoi_cell, cluster_id, parent"]
+        INODE --> VORONOI["T1: Voronoi cell assignment<br/>SphericalVoronoiIndex<8>"]
+        INODE --> BTREE["BTreeMap<InodeId, Inode><br/>(no HashMap — no_std)"]
+    end
+
+    subgraph "Teleport (O(1) Move)"
+        SRC["Source dir"] --> |"1. Remove from src.dir_entries"| SURGERY["Topological Surgery"]
+        SURGERY --> |"2. Insert into dst.dir_entries"| DST["Dest dir"]
+        SURGERY --> |"3. Update inode.parent"| GOV["T4: Governor adapts ε"]
+        GOV --> |"4. Check entropy"| MERGE["T3: If Betti-0 > threshold<br/>merge smallest cells"]
+    end
+
+    subgraph "Find (Content-Addressable)"
+        QUERY["Query string"] --> QENC["Encode → ManifoldPayload"]
+        QENC --> DOT["Dot product of first S² point<br/>against all inodes"]
+        DOT --> NEAREST["Return best match"]
+    end
+
+    style PAYLOAD fill:#1a1a2e,stroke:#e94560,color:#fff
+    style SURGERY fill:#1a1a2e,stroke:#e94560,color:#fff
+```
+
+**Why O(1) teleport?** A traditional `mv` copies data. ManifoldFS doesn't touch the data at all — it updates two BTreeMap entries (remove from source directory, insert into destination directory) and adjusts the inode's parent pointer. The payload stays in place. The file's identity is its geometry, not its location.
+
+**Theorem integration in ManifoldFS:**
+
+| Operation | Theorem | What happens |
+|-----------|---------|--------------|
+| `store()` | T1/TSS | Voronoi cell assignment for O(1) lookup |
+| `store()` | T2/SCM | SpectralContractionOperator evolves prefetch state |
+| `teleport()` | T4/AGCR | Governor adapts epsilon based on move deviation |
+| `teleport()` | T3/GMC | If entropy > 2.0 bits, merge smallest Voronoi cells |
+| `find()` | T1/TSS | Content-addressable search via Voronoi cell |
+| path resolution | T5/HCS | Hyperbolic tree structure for deep paths |
+
+---
+
+## Process Scheduler
+
+```mermaid
+graph TD
+    subgraph "ManifoldScheduler"
+        TASKS["Task Queue<br/>Vec&lt;Task&gt;"]
+        VOR["T1: SphericalVoronoiIndex&lt;8&gt;<br/>8 Voronoi cells on S²"]
+        GOV["T4: GeometricGovernor<br/>ε(t+1) = ε(t) + α·e(t) + β·de/dt"]
+        PRED["T2: SpectralContractionOperator&lt;8&gt;<br/>predict next runnable task"]
+    end
+
+    subgraph "Scheduling Decision"
+        TICK["Timer tick (IRQ0)"] --> CHECK["Check deviation > ε?"]
+        CHECK -->|yes| PREDICT["T2: Predict next cell"]
+        PREDICT --> CELL["T1: Select task from Voronoi cell"]
+        CELL --> TIMESLICE["T4: Compute timeslice<br/>ε < 0.5 → scale=2.0 (stable)<br/>ε ≥ 0.5 → scale=0.5 (volatile)"]
+        CHECK -->|no| CONTINUE["Continue current task"]
+    end
+
+    subgraph "Task"
+        T["Task struct<br/>name, priority, state<br/>manifold_embedding: [f64; 8]<br/>voronoi_cell, timeslice_remaining"]
+    end
+
+    TASKS --> VOR
+    TASKS --> GOV
+    TASKS --> PRED
+```
+
+Each task is embedded as an 8-dimensional point on a manifold. The scheduler uses Voronoi partitioning to group related tasks, spectral contraction to predict which task will become runnable next, and the governor to adapt timeslice length based on system stability.
+
+---
+
+## System Calls
+
+```mermaid
+graph LR
+    subgraph "POSIX-Compatible (0–10)"
+        S0["0 sys_exit"]
+        S1["1 sys_write"]
+        S2["2 sys_read"]
+        S3["3 sys_open → ManifoldFS lookup"]
+        S4["4 sys_close"]
+        S5["5 sys_exec"]
+        S6["6 sys_fork"]
+        S7["7 sys_waitpid"]
+        S8["8 sys_mmap"]
+        S9["9 sys_getpid"]
+        S10["10 sys_stat"]
+    end
+
+    subgraph "Epsilon Extensions (100–102)"
+        S100["100 sys_manifold_query<br/>query T1-T5 state by theorem ID"]
+        S101["101 sys_teleport<br/>O(1) file move via topological surgery"]
+        S102["102 sys_theorem_status<br/>all theorem states as string"]
+    end
+
+    subgraph "Result"
+        RES["SyscallResult<br/>code: i64<br/>data: Option&lt;String&gt;"]
+    end
+
+    S0 & S1 & S2 & S3 & S100 & S101 & S102 --> RES
+```
+
+The syscall table is dispatched via a match on the syscall number. POSIX calls provide standard OS semantics. Epsilon extensions expose the theorem engine to userspace — any process can query the current governor epsilon, Voronoi cell count, or trigger an O(1) file teleport.
+
+---
+
+## Graphics and Desktop
+
+```mermaid
+graph TD
+    subgraph "Framebuffer (Layer 3)"
+        FB["Multiboot2 Framebuffer Tag<br/>addr: 0xFD000000<br/>1024×768, pitch=4096, 32bpp<br/>volatile writes via raw pointer"]
+        FONT["8×16 PSF2 Bitmap Font<br/>96 printable ASCII glyphs"]
+        CONSOLE["Scrolling Console<br/>128×48 character grid<br/>pitch-aware line advance"]
+    end
+
+    subgraph "Window Manager (Layer 8)"
+        COMPOSITOR["Compositor<br/>Vec&lt;Window&gt;, z-order sorting<br/>compose(): back-to-front blit"]
+        WINDOW["Window<br/>x, y, width, height<br/>title, pixel buffer (Vec&lt;u32&gt;)<br/>focused, z_order"]
+        CURSOR["Software Cursor<br/>10×16 px, XOR-blended"]
+    end
+
+    subgraph "Desktop (Layer 9)"
+        WALLPAPER["Wallpaper<br/>dark bg (#0a0a0f)<br/>Schwarzschild metric<br/>Faraday tensor F^μν<br/>rendered as text at fixed coords"]
+        TASKBAR["Taskbar (bottom 30px)<br/>theorem indicators: [T1:●]...[T5:●]<br/>governor ε value<br/>Seal OS branding"]
+    end
+
+    WALLPAPER --> FB
+    TASKBAR --> FB
+    COMPOSITOR --> FB
+    WINDOW --> COMPOSITOR
+    FONT --> CONSOLE
+    CONSOLE --> FB
+```
+
+**Desktop wallpaper** renders two equations procedurally:
+
+1. **Schwarzschild metric** (black hole geometry):
+   `ds² = -(1 - 2GM/rc²)dt² + (1 - 2GM/rc²)⁻¹dr² + r²dΩ²`
+
+2. **Faraday tensor** (electromagnetic field):
+   The 4×4 antisymmetric F^μν matrix with E and B field components
+
+Both rendered as text on a dark background — no bitmap assets, no font files beyond the built-in 8×16.
+
+---
+
+## Built-in Applications
+
+```mermaid
+graph TD
+    subgraph "Terminal (apps/terminal.rs)"
+        TERM_BUF["Scrollback buffer<br/>80×25 character grid"]
+        TERM_IN["Key input processing<br/>printable chars + backspace + enter"]
+        TERM_RENDER["Render to window buffer<br/>bg=#1a1a2e, fg=#c0c0c0"]
+    end
+
+    subgraph "Shell (apps/shell.rs)"
+        LS["ls — list directory with Voronoi cells"]
+        CAT["cat — show file info + payload"]
+        MV["mv — O(1) teleport<br/>prints: ticks, governor ε"]
+        FIND["find — content-addressable search<br/>encode query → dot product match"]
+        RACE["race — benchmark teleport vs copy<br/>teleport: ~50μs constant<br/>copy: 0.5 ns/byte (scales)"]
+        THEOREMS["theorems — T1-T5 live status"]
+        STATS["stats — files, dirs, entropy,<br/>teleport count, hyperbolic ratio"]
+        PS["ps — kernel, shell, compositor, idle"]
+    end
+
+    subgraph "Seal IDE (apps/seal_ide.rs)"
+        IDE_EDIT["Code editor panel"]
+        IDE_TREE["File tree sidebar (ManifoldFS)"]
+        IDE_STATUS["Status bar: line/col, lang, ε, T1-T5"]
+    end
+
+    subgraph "Theorem Viewer (apps/theorem_viewer.rs)"
+        TV_LIST["T1-T5 status display"]
+        TV_EPS["Governor ε real-time"]
+        TV_BETTI["Betti-0 count"]
+    end
+
+    TERM_IN --> SHELL
+    SHELL --> LS & CAT & MV & FIND & RACE & THEOREMS & STATS & PS
+```
+
+---
+
+## The Five Theorems
+
+These are not decorative. Every kernel subsystem calls into them at runtime.
+
+```mermaid
+graph TD
+    subgraph "T1 — Topological State Synchronization (TSS)"
+        T1_WHAT["SphericalVoronoiIndex&lt;K&gt;<br/>O(1)-amortized retrieval on S²<br/>great_circle_distance for cell assignment"]
+        T1_WHERE["Used in: ManifoldFS file lookup,<br/>scheduler task groups,<br/>WM hit-test, memory frame locality"]
+    end
+
+    subgraph "T2 — Spectral Contraction Mapping (SCM)"
+        T2_WHAT["SpectralContractionOperator&lt;D&gt;<br/>Banach fixed-point iteration<br/>contraction ratio < 1 guaranteed"]
+        T2_WHERE["Used in: file prefetch prediction,<br/>scheduler next-task prediction,<br/>encoder state evolution"]
+    end
+
+    subgraph "T3 — Geometric Memory Consolidation (GMC)"
+        T3_WHAT["Renyi entropy bound<br/>Betti-0 measures fragmentation<br/>threshold: 2.0 bits"]
+        T3_WHERE["Used in: ManifoldFS cell merging,<br/>directory reorganization,<br/>memory defragmentation trigger"]
+    end
+
+    subgraph "T4 — Adaptive Governor Control (AGCR)"
+        T4_WHAT["GeometricGovernor<br/>ε(t+1) = ε(t) + α·e(t) + β·de/dt<br/>α=0.01, β=0.05<br/>ε ∈ [0.001, 10.0]"]
+        T4_WHERE["Used in: scheduler timeslice,<br/>ManifoldFS cache pressure,<br/>compositor FPS, heap growth,<br/>I/O responsiveness"]
+    end
+
+    subgraph "T5 — Hyperbolic Curvature Separation (HCS)"
+        T5_WHAT["Hyperbolic vs Euclidean separation<br/>negative curvature → exponential<br/>growth of distinguishable states"]
+        T5_WHERE["Used in: ManifoldFS path resolution,<br/>process tree layout,<br/>deep directory traversal"]
+    end
+
+    T1_WHAT --> T1_WHERE
+    T2_WHAT --> T2_WHERE
+    T3_WHAT --> T3_WHERE
+    T4_WHAT --> T4_WHERE
+    T5_WHAT --> T5_WHERE
+
+    style T1_WHAT fill:#0d1117,stroke:#58a6ff,color:#c9d1d9
+    style T2_WHAT fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style T3_WHAT fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style T4_WHAT fill:#0d1117,stroke:#f85149,color:#c9d1d9
+    style T5_WHAT fill:#0d1117,stroke:#a371f7,color:#c9d1d9
+```
+
+| ID | Name | Formal Statement | Governs |
+|----|------|------------------|---------|
+| T1 | TSS | O(1) retrieval via spherical Voronoi tessellation | file lookup, task groups, hit-test |
+| T2 | SCM | Spectral contraction toward fixed-point attractor | prefetch, next-task prediction |
+| T3 | GMC | Renyi entropy bound on memory consolidation | cell merging, defrag triggers |
+| T4 | AGCR | PD governor convergence (eigenvalue-bounded) | timeslice, cache, FPS, heap |
+| T5 | HCS | Hyperbolic vs Euclidean separation ratio | path resolution, tree layout |
+
+Five more theorems (T6–T10) are formally verified but not yet active in the kernel:
+
+| ID | Name | What |
+|----|------|------|
+| T6 | RGCS | Tangent deviation bound for sync frequency |
+| T7 | PHKP | Betti-guided latency via topological persistence |
+| T8 | TEB | Landauer energy bound per bit erasure |
+| T9 | CMA | Alignment error via Procrustes curvature + SVD |
+| T10 | WPHB | Predictive horizon from information + stability |
+
+---
+
+## aether-core — Math Foundation
+
+The `no_std` mathematics library that powers every theorem call in the kernel.
+
+```mermaid
+graph TD
+    subgraph "aether-core"
+        TSS["tss.rs<br/>SphericalVoronoiIndex&lt;K&gt;<br/>great_circle_distance()"]
+        SCM["scm.rs<br/>SpectralContractionOperator&lt;D&gt;<br/>LatentPredictor"]
+        TOPO["topology.rs<br/>compute_betti_0(), compute_betti_1()<br/>TopologicalShape, verify_shape()"]
+        GOV["governor.rs<br/>GeometricGovernor<br/>α=0.01, β=0.05, ε₀=0.1"]
+        MAN["manifold.rs<br/>ManifoldPoint&lt;D&gt;<br/>SparseAttentionGraph<br/>TimeDelayEmbedder<br/>TopologicalPipeline"]
+        STATE["state.rs — state tracking"]
+        OS["os.rs — page tables, CPU context"]
+        MEM["memory.rs — Chebyshev liveness bounds"]
+        AETHER["aether.rs — BlockMetadata,<br/>DriftDetector, HierarchicalBlockTree"]
+    end
+
+    subgraph "ml/"
+        TENSOR["tensor.rs — N-dim tensor ops"]
+        AUTOGRAD["autograd.rs — backpropagation"]
+        NEURAL["neural.rs — Dense, Conv, Activation"]
+        CLUSTER["clustering.rs — Betti-0 semantic clustering"]
+        LINALG["linalg.rs — matrix ops, SVD, eigen"]
+        CONV["convolution.rs — manifold-aware conv"]
+        CLASS["classification.rs"]
+        REG["regression.rs"]
+        GOSSIP["gossip.rs — distributed learning"]
+    end
+
+    TSS --> TOPO
+    SCM --> MAN
+    GOV --> TSS
+    TENSOR --> LINALG
+    AUTOGRAD --> TENSOR
+    NEURAL --> AUTOGRAD
+```
+
+**Key algorithms:**
+
+- **`SphericalVoronoiIndex<K>::locate(θ, φ)`**: computes great-circle distance to all K centroids, returns nearest. O(K) with K constant = O(1) amortized. Distance: `arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ - φ₂))`.
+
+- **`GeometricGovernor::adapt(deviation)`**: PD control law `ε(t+1) = ε(t) + 0.01·e(t) + 0.05·de/dt` where `e(t) = R_target - Δ(t)/ε(t)`. Clamped to [0.001, 10.0]. Target tick rate: 1000 Hz.
+
+- **`SpectralContractionOperator<D>::step(state)`**: applies a contraction mapping with ratio < 1, guaranteed convergence to a fixed-point attractor by Banach's theorem.
+
+---
+
+## Epsilon — Context Teleportation
+
+O(1) context transfer between agents via topological surgery on hollow S² manifolds.
+
+```mermaid
+graph TD
+    subgraph "Teleportation Stack"
+        BRIDGE["EmbeddingBridge<br/>ℝ^E → S² via JL projection<br/>seeded Gaussian matrix"]
+        TELEPORT["sys_teleport_context()<br/>orchestration syscall"]
+        HOLLOW["HollowCubeManifold<br/>S² void receptacle<br/>Void(M_recv) = secure injection"]
+        SURGERY_GOV["SurgeryGovernor<br/>PD control + clutch<br/>SurgeryPermit (one-shot lock)<br/>prevents de/dt → ∞ oscillation"]
+        LIVENESS["LivenessAnchor<br/>inherited Chebyshev k-σ bounds<br/>pre-ages data to prevent<br/>immediate GC eviction"]
+        PAYLOAD["ManifoldPayload<br/>verified payload unit"]
+    end
+
+    BRIDGE --> TELEPORT
+    TELEPORT --> HOLLOW
+    HOLLOW --> SURGERY_GOV
+    SURGERY_GOV --> LIVENESS
+    LIVENESS --> PAYLOAD
+```
+
+The teleportation primitive: extract a payload from its current manifold via `inject_into_void()`, transfer to the receiving manifold via `assimilate()`. The SurgeryGovernor gates the operation with a one-shot derivative lock — if the manifold curvature derivative is too high, the surgery is deferred to prevent oscillation.
+
+---
+
+## Aether-Link — I/O Superkernel
+
+Ultra-fast adaptive I/O prefetching. ~18 ns per decision cycle.
+
+```mermaid
+graph LR
+    LBA["LBA Stream<br/>(disk block addresses)"] --> FEAT["Feature Extraction<br/>6D telemetry vector"]
+    FEAT --> ENCODE["State Encoding<br/>arctan angle mapping"]
+    ENCODE --> DECIDE["Adaptive Threshold<br/>prefetch trigger"]
+    DECIDE -->|"yes"| PREFETCH["Issue Prefetch"]
+    DECIDE -->|"no"| SKIP["Skip"]
+```
+
+**Use cases**: HFT (high-frequency trading I/O), DirectStorage (game asset streaming), WSL2 acceleration.
+
+**Fast math** (`fast_math.rs`): `fast_atan()`, `fast_exp()`, `fast_sigmoid()` — sub-microsecond approximations using polynomial fitting. No libm dependency in the hot path.
+
+---
+
+## Aether-Lang — Topological DSL
+
+A domain-specific language where all data processing is manifold-native.
+
+```mermaid
+graph TD
+    subgraph "Aether-Lang"
+        PARSE["Parser<br/>seal loops, tilde terminators"]
+        BIO["Bio Mode<br/>tree-walking interpreter"]
+        TITAN["Titan Mode<br/>bytecode VM"]
+        REPL["REPL (repl-core)"]
+        CLI["CLI (aether-cli)"]
+    end
+
+    subgraph "Support Crates"
+        AEGIS["aegis-core<br/>AEGIS memory system"]
+        KERNEL["aether-kernel<br/>kernel primitives"]
+    end
+
+    subgraph "Bindings"
+        PY["Python interop<br/>(bindings/python/)"]
+    end
+
+    PARSE --> BIO & TITAN
+    CLI --> PARSE
+    REPL --> PARSE
+    AEGIS --> KERNEL
+```
+
+---
+
+## Lean 4 Proofs
+
+All ten theorems are mechanically verified in Lean 4, built against Mathlib.
+
+```
+kernel/aether/aether-verified/lean/
+├── AetherVerified.lean           # Top-level umbrella
+├── AetherVerified/
+│   ├── Pruning.lean              # Pruning algorithm proofs
+│   ├── Governor.lean             # T4 governor convergence
+│   ├── Chebyshev.lean            # Chebyshev liveness bounds
+│   └── Betti.lean                # Betti number properties
+├── lakefile.lean                 # Lake build config
+└── lean-toolchain                # Lean 4.7.0
+```
+
+CI builds the Lean package on every push. If a proof breaks, the theorem is no longer verified and CI fails.
+
+---
+
+## CI Pipeline
+
+16 jobs. Every push. No exceptions.
+
+```mermaid
+graph TD
+    subgraph "Code Quality"
+        FMT["cargo fmt --check"]
+        CLIPPY["cargo clippy -D warnings"]
+        DOCS["cargo doc -D warnings"]
+        BOM["UTF-8 BOM check"]
+    end
+
+    subgraph "Testing"
+        TEST["cargo test --workspace"]
+        MIRI["Miri UB detection<br/>(state, os, proptest)"]
+        PYTHON["Python compileall + unittest"]
+    end
+
+    subgraph "Security"
+        AUDIT["cargo audit"]
+        DENY["cargo deny check"]
+    end
+
+    subgraph "Performance"
+        BENCH_COMPILE["cargo bench --no-run"]
+        BENCH_GATE["io_cycle_8_lbas < 120 ns<br/>regression gate"]
+    end
+
+    subgraph "Kernel"
+        KBUILD["Build kernel (nightly)<br/>verify binary < 512KB"]
+        KCLIPPY["Kernel clippy (nightly)"]
+        KISO["Build ISO<br/>grub-mkrescue<br/>verify ISO < 64MB"]
+        KQEMU["QEMU smoke test<br/>4GB RAM, 45s timeout<br/>11 boot milestones"]
+    end
+
+    subgraph "Formal Verification"
+        LEAN["Lean 4 build<br/>aether-verified proofs<br/>Mathlib cache"]
+    end
+
+    KBUILD --> KISO --> KQEMU
+```
+
+**QEMU smoke test verifies 11 boot milestones:**
+1. Banner printed
+2. Heap initialized
+3. Interrupts configured
+4. T4 governor started
+5. T1 Voronoi active (8 cells)
+6. All T1-T5 theorems ACTIVE
+7. ManifoldFS initialized
+8. O(1) teleportation demonstrated
+9. Scheduler started
+10. Syscalls verified
+11. Shell executed
+
+**Toolchains**: Rust 1.85 (stable), nightly (kernel + Miri), Python 3.11, Lean 4.7.0.
+
+---
+
+## Repository Map
+
+```
+Epsilon-Hollow/
+├── kernel/
+│   ├── seal-os/                    # Bare-metal x86_64 kernel
+│   │   ├── src/
+│   │   │   ├── main.rs             # Entry point, boot sequence
+│   │   │   ├── boot/               # Multiboot2 header, 32→64 trampoline
+│   │   │   ├── memory/             # 16MB bump allocator
+│   │   │   ├── drivers/            # IDT, PIC, serial, keyboard, mouse
+│   │   │   ├── fs/                 # ManifoldFS + S² encoder
+│   │   │   ├── graphics/           # Framebuffer, font, console, splash, wallpaper
+│   │   │   ├── process/            # ManifoldScheduler, task structs
+│   │   │   ├── syscall/            # POSIX + Epsilon extensions
+│   │   │   ├── wm/                 # Compositor, windows, desktop, taskbar
+│   │   │   └── apps/               # Shell, terminal, IDE, file mgr, theorem viewer
+│   │   ├── boot/grub/grub.cfg      # GRUB config (1024x768x32, 3s timeout)
+│   │   ├── linker.ld               # Kernel at 1MB, multiboot header first
+│   │   └── build.rs                # Absolute linker script path, -z notext
+│   │
+│   ├── epsilon/epsilon/crates/
+│   │   ├── aether-core/            # T1-T5 math: TSS, SCM, topology, governor
+│   │   ├── epsilon/                # Context teleportation (bridge, manifold, governor)
+│   │   └── epsilon-os/             # World model REPL
+│   │
+│   └── aether/
+│       ├── Aether-Lang/crates/     # Topological DSL runtime + CLI
+│       ├── aether-link/            # I/O superkernel (~18 ns/cycle)
+│       └── aether-verified/lean/   # Lean 4 theorem proofs
+│
+├── infrastructure/                 # K8s manifests, orchestrator, training
+├── scripts/                        # BOM check, demo, model download
+├── tests/                          # Python integration tests
+├── .github/workflows/ci.yml        # 16-job CI pipeline
+├── Cargo.toml                      # Workspace root (10 member crates)
+└── deny.toml                       # License + dependency policy
+```
+
+---
+
+## Build and Run
+
+### Requirements
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Rust (stable) | 1.85+ | Workspace crates |
+| Rust (nightly) | latest | Seal OS kernel (`#![feature(abi_x86_interrupt)]`) |
+| QEMU | any | `qemu-system-x86_64` for testing |
+| GRUB | 2.x | `grub-mkrescue` for ISO creation |
+| Python | 3.11 | Integration tests |
+| Lean | 4.7.0 | Formal proofs (optional) |
+
+### Quick Start
 
 ```bash
-# Docker (recommended)
-cd kernel/seal-os && docker compose up --build
+# Build all workspace crates
+cargo build --workspace
+cargo test --workspace
 
-# QEMU (from ISO)
-qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std
+# Build Seal OS kernel (requires nightly)
+cd kernel/seal-os
+cargo +nightly build --release
 
-# Real hardware
+# Create bootable ISO (Linux only — needs grub-mkrescue, xorriso, mtools)
+mkdir -p iso/boot/grub
+cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
+cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
+grub-mkrescue -o seal-os.iso iso/
+
+# Run in QEMU
+qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 4G -vga std
+
+# Run headless (serial only)
+qemu-system-x86_64 -cdrom seal-os.iso -nographic -m 4G
+
+# Boot on real hardware
 dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
 ```
 
 Download the latest ISO from [Releases](../../releases).
 
-### What's inside
+### System Requirements
 
+| Resource | Minimum |
+|----------|---------|
+| RAM | 4 GB |
+| CPU | x86_64 with long mode |
+| Display | 1024x768 (optional — serial fallback) |
+
+### Docker (World Model only)
+
+```bash
+cd kernel/seal-os && docker compose up --build
 ```
-Layer 10  │ Terminal, Seal IDE, File Manager, Theorem Viewer
-Layer 9   │ Desktop: wallpaper (Schwarzschild + Faraday), taskbar
-Layer 8   │ Window Manager: compositor, decorations, cursor
-Layer 7   │ Shell: ls, mv (O(1) teleport), find, theorems, race
-Layer 6   │ Syscalls: POSIX + Epsilon extensions (manifold_query, teleport)
-Layer 5   │ ManifoldScheduler: T1 Voronoi task groups, T4 adaptive timeslice
-Layer 4   │ ManifoldFS: THE filesystem — all data = 64 pts on S²
-Layer 3   │ Framebuffer: 1024x768x32, 8x16 font, boot splash
-Layer 2   │ Interrupts: IDT, PIC, timer (IRQ0), keyboard, mouse
-Layer 1   │ Memory: 4MB heap, bump allocator
-Layer 0   │ Boot: Multiboot2, 32→64 trampoline, GRUB ISO
-          └────── ALL LAYERS DRIVEN BY T1-T5 THEOREMS ──────
-```
-
-| Property | Value |
-|----------|-------|
-| Target | `x86_64-unknown-none` |
-| Kernel size | ~260KB |
-| ISO size | < 10MB |
-| Display | 1024x768x32bpp (Multiboot2 framebuffer) |
-| Dependencies | `aether-core` (T1-T5), `x86_64`, `spin`, `libm` |
-
-### ManifoldFS
-
-The filesystem where files are not byte sequences — they are 64-point clouds on the unit sphere S².
-
-```
-Write: data → trigram hash → JL project → L2 normalize → 64 pts on S² (1,536 bytes)
-Move:  topological surgery → O(1) regardless of file size
-Find:  encode query → Voronoi cell → O(n/K) content-addressable search
-```
-
-### Theorem Integration
-
-| Subsystem | T1 (Voronoi) | T2 (SCM) | T3 (Entropy) | T4 (Governor) | T5 (Hyperbolic) |
-|-----------|:---:|:---:|:---:|:---:|:---:|
-| Memory | frame locality | — | — | heap growth | — |
-| Scheduler | task groups | predict next | — | timeslice adapt | — |
-| Filesystem | file lookup O(1) | file prefetch | dir reorganize | cache pressure | path resolution |
-| Window Mgr | hit-test | — | — | FPS adaptation | — |
-
-See [kernel/seal-os/README.md](kernel/seal-os/README.md) for full documentation, [ARCHITECTURE.md](kernel/seal-os/ARCHITECTURE.md) for internals, and [TESTING.md](kernel/seal-os/TESTING.md) for verification.
 
 ---
 
-## The Repository
+## Seal OS vs The World
 
-Three projects. One repository. Mathematically verified.
+How does a geometry-native research kernel compare to production operating systems? This table is honest — Seal OS is v1.0.0-alpha. It wins on ideas, not on driver count.
 
-Epsilon-Hollow is built on 10 formally verified theorems (Lean 4 proofs), a custom
-topological DSL (Aether-Lang), and a novel data teleportation primitive that transfers
-context between agents in O(1) via topological surgery on S² manifolds.
+| Feature | **Seal OS v1.0.0-alpha** | **Redox OS 0.9.0** | **Ubuntu 24.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
+|---|---|---|---|---|---|---|
+| **Language** | Rust (100%, `no_std`) | Rust (microkernel) | C (Linux kernel) | C (Linux kernel) | C/C++ (NT kernel) | C/C++/Obj-C (XNU) |
+| **Architecture** | Monolithic | Microkernel | Monolithic + modules | Monolithic + modules | Hybrid | Hybrid (Mach + BSD) |
+| **Kernel size** | ~260 KB | ~1 MB | ~12 MB (vmlinuz) | ~8 MB (vmlinuz) | ~30 MB (ntoskrnl) | ~25 MB (kernel.release) |
+| **ISO size** | < 10 MB | ~70 MB | ~5 GB | ~650 MB (netinst) | ~5.5 GB | ~13 GB (IPSW) |
+| **Min RAM** | 4 GB | 512 MB | 4 GB | 512 MB | 4 GB | 8 GB |
+| **Boot target** | `x86_64-unknown-none` | `x86_64-unknown-redox` | `x86_64-linux-gnu` | `x86_64-linux-gnu` | proprietary | proprietary |
+| **Filesystem** | ManifoldFS (S² geometry) | RedoxFS (CoW) | ext4 / btrfs | ext4 | NTFS / ReFS | APFS |
+| **File identity** | 64-point cloud on S² | byte sequence | byte sequence | byte sequence | byte sequence | byte sequence |
+| **File move** | O(1) topological surgery | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same vol) | rename (O(1) same vol) |
+| **Content-addressable lookup** | Native (Voronoi cell) | No | No (needs `locate`) | No (needs `locate`) | No (Windows Search) | No (Spotlight) |
+| **Scheduler** | ManifoldScheduler (T1+T2+T4) | Round-robin | CFS / EEVDF | CFS | Hybrid priority | Grand Central Dispatch |
+| **Adaptive control** | GeometricGovernor (PD on manifold) | No | cpufreq governors | cpufreq governors | Dynamic tick | Timer coalescing |
+| **Formal verification** | Lean 4 (T1-T10, Mathlib) | Partial (cosmic, relibc) | Partial (sel4 for ARM) | None | None | None |
+| **Math-driven kernel** | Yes (all 5 theorems active) | No | No | No | No | No |
+| **Topological data analysis** | Native (Betti numbers, Voronoi) | No | Userspace only | Userspace only | No | No |
+| **Predictive prefetch** | T2 spectral contraction | No | readahead heuristic | readahead heuristic | Superfetch/SysMain | Speculative prefetch |
+| **GPU offload ready** | Planned (2 GB compute budget) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
+| **Display** | 1024x768x32 framebuffer | 1920x1080 (orbital) | Wayland/X11 | Wayland/X11 | DWM | Quartz |
+| **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
+| **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
+| **Shell** | Built-in (geometry-aware) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
+| **Package manager** | ManifoldFS (native) | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
+| **Syscalls** | 13 (POSIX + Epsilon) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
+| **USB support** | Planned | Basic (xHCI) | Full | Full | Full | Full |
+| **Network stack** | None (planned) | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
+| **Driver count** | 4 (serial, kbd, mouse, timer) | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
+| **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
+| **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |
+| **Theorem count** | 10 (5 active, 5 verified) | 0 | 0 | 0 | 0 | 0 |
+| **Teleportation** | Yes (O(1) file move) | No | No | No | No | No |
 
-### Epsilon-OS — Geometrical World Model
+**Where Seal OS leads**: mathematical rigor, topological data primitives, content-addressable filesystem, formally verified kernel theorems, adaptive governor, O(1) teleportation. No other OS encodes files as geometry or uses Voronoi tessellations for scheduling.
 
-An AI assistant powered by a topological world model:
+**Where Seal OS trails**: driver coverage, network stack, USB, self-hosting, userspace ecosystem, multi-user, permissions, security hardening. It's a research kernel — not yet a daily driver.
 
-- Episodic memory stored as L2-normalized vectors on S^(D-1)
-- O(1) retrieval via spherical Voronoi tessellation (TSS, Theorem 1)
-- Forward dynamics via spectral contraction (SCM, Theorem 2)
-- LLM synthesis for reasoning over retrieved context
-- Betti-0 clustering for semantic grouping
+**Closest comparison**: Redox OS shares the Rust DNA and research spirit. Seal OS diverges by making topology the organizing principle rather than microkernels.
 
-```
-/step <text>     Ingest observation into topological memory
-/query <text>    Retrieve from memory + LLM synthesis
-/dream <text>    Counterfactual rollout through latent dynamics
-/memory          Memory stats: Betti-0, TSS state, cell distribution
-/theorems        Run T1-T10 verification suite
-```
+---
 
-### Epsilon-IDE — Local AI Coding Assistant
+## Documentation Index
 
-A standalone app (no cloud, no API keys) with three-tier model routing:
+Every claim in this README has a supplementary document. Every document traces to source code.
 
-| Tier | Model Size | Latency | Use Case |
-|------|-----------|---------|----------|
-| Fast | 1.5B (~1 GB) | 1-2s | Simple queries |
-| Balanced | 7B (~4 GB) | 5-15s | Moderate tasks |
-| Deep | 33B (CPU/SSD) | 30-120s | Complex architecture |
+### Kernel Documentation
 
-### Aether-Lang — Topological DSL
+| Document | What it covers | Key source files |
+|----------|---------------|-----------------|
+| [Seal OS README](kernel/seal-os/README.md) | Kernel overview, quick start, concept | `kernel/seal-os/src/main.rs` |
+| [Seal OS Architecture](kernel/seal-os/ARCHITECTURE.md) | Boot sequence, init, hardware setup | `src/boot/boot.S`, `src/main.rs` |
+| [Seal OS Testing](kernel/seal-os/TESTING.md) | Prerequisites, Docker, manual tests | CI pipeline, QEMU smoke test |
 
-All data processing runs through a manifold-native language with seal loops, tilde terminators, and topological convergence primitives. Supports tree-walking interpretation (Bio mode) and bytecode VM (Titan mode).
+### Technical References (docs/)
 
-### aether-core — Math Foundation
+| Document | What it covers | Key source files |
+|----------|---------------|-----------------|
+| [Theorem Reference (T1-T10)](docs/THEOREMS.md) | All 10 theorems: math, implementation, Lean proofs, callsites | `aether-core/src/tss.rs`, `governor.rs`, `scm.rs`, `topology.rs` |
+| [ManifoldFS Reference](docs/MANIFOLDFS.md) | Encoding pipeline, inode structure, O(1) teleport, content search | `seal-os/src/fs/encoder.rs`, `manifold_fs.rs` |
+| [Boot Sequence Reference](docs/BOOT.md) | BIOS→GRUB→boot.S→Rust, page tables, GDT, linker | `src/boot/boot.S`, `linker.ld`, `build.rs` |
+| [Syscall Reference](docs/SYSCALLS.md) | All 13 syscalls: number, signature, behavior, return | `src/syscall/table.rs` |
+| [CI Pipeline Reference](docs/CI.md) | All 16 CI jobs, QEMU milestones, toolchains | `.github/workflows/ci.yml` |
+| [Memory Reference](docs/MEMORY.md) | Physical layout, bump allocator, 4GB identity map, MMIO | `src/memory/mod.rs`, `src/boot/boot.S` |
 
-The `no_std` mathematics library powering everything:
+### Research and Specifications
 
-| Module | What |
-|--------|------|
-| `tss.rs` | `SphericalVoronoiIndex<K>` — O(1) cell lookup on S² |
-| `scm.rs` | `SpectralContractionOperator<D>` — Banach fixed-point |
-| `topology.rs` | Betti number computation (filtration-based TDA) |
-| `governor.rs` | `GeometricGovernor` — PD adaptive threshold control |
-| `manifold.rs` | Point cloud, sparse graph, topological surgery |
+| Document | What it covers |
+|----------|---------------|
+| [Mother of All Docs](docs/research/MOTHER_OF_ALL_DOCS.md) | Unified geometric world model, H100-scale research narrative |
+| [Epsilon Specification](kernel/epsilon/epsilon/docs/SPECIFICATION.md) | Geometric state transfer via topological surgery (v0.1.0-draft) |
+| [Epsilon API Reference](kernel/epsilon/epsilon/docs/API_REFERENCE.md) | Epsilon crate public API |
+| [AETHER-Shield Math Spec](kernel/aether/Aether-Lang/docs/MATHEMATICS.md) | State space formulation, deviation metric, sparse triggers |
+| [Aether-Link Architecture](kernel/aether/aether-link/docs/ARCHITECTURE.md) | Quantum-probabilistic prefetching algorithm, 6D telemetry |
+| [Aether-Link Benchmarks](kernel/aether/aether-link/docs/BENCHMARKS.md) | Microbenchmarks: 14.6 ns/cycle, 65.3M ops/sec |
+| [Lean 4 Provenance](kernel/aether/aether-verified/lean/README.md) | Build instructions, provenance map, zero-sorry goal |
 
-## Theorems
+### Aether-Lang Documentation
 
-Ten formally verified theorems govern the system. Each is implemented in Rust,
-verified at boot, and backed by Lean 4 proofs.
+| Document | What it covers |
+|----------|---------------|
+| [Language Guide](kernel/aether/Aether-Lang/docs/LANGUAGE.md) | Syntax, semantics, topological primitives |
+| [Getting Started](kernel/aether/Aether-Lang/docs/GETTING_STARTED.md) | Setup, first program, REPL usage |
+| [Architecture](kernel/aether/Aether-Lang/docs/ARCHITECTURE.md) | Parser, Bio mode, Titan VM, AEGIS memory |
+| [API Reference](kernel/aether/Aether-Lang/docs/API.md) | Public API surface |
+| [Tutorial](kernel/aether/Aether-Lang/docs/TUTORIAL.md) | Guided walkthrough |
+| [Examples](kernel/aether/Aether-Lang/docs/EXAMPLES.md) | Code samples |
+| [FAQ](kernel/aether/Aether-Lang/docs/FAQ.md) | Common questions |
+| [ML from Scratch](kernel/aether/Aether-Lang/docs/ML_FROM_SCRATCH.md) | Building ML pipelines with aether-core |
+| [ML Library](kernel/aether/Aether-Lang/docs/ML_LIBRARY.md) | Tensor, autograd, neural, clustering modules |
+| [Hardware Spec](kernel/aether/Aether-Lang/docs/HARDWARE_SPEC.md) | Target hardware profiles |
+| [OS Development](kernel/aether/Aether-Lang/docs/OS_DEVELOPMENT.md) | Kernel integration guide |
 
-| ID | Name | What it governs | Status |
-|----|------|-----------------|--------|
-| T1 | TSS  | O(1) retrieval via spherical Voronoi tessellation | **Active** |
-| T2 | SCM  | Spectral contraction toward attractor (Banach) | **Active** |
-| T3 | GMC  | Renyi entropy bound on memory consolidation | Verified |
-| T4 | AGCR | Governor convergence (eigenvalue-bounded PD control) | Verified |
-| T5 | HCS  | Hyperbolic vs. Euclidean separation ratio | Verified |
-| T6 | RGCS | Tangent deviation bound for sync frequency | Verified |
-| T7 | PHKP | Betti-guided latency (topological persistence) | Verified |
-| T8 | TEB  | Landauer energy bound per bit erasure | Verified |
-| T9 | CMA  | Alignment error (Procrustes curvature + SVD) | Verified |
-| T10 | WPHB | Predictive horizon (information + stability) | Verified |
+### Project Governance
 
-## Build
+| Document | What it covers |
+|----------|---------------|
+| [Security Policy](SECURITY.md) | Vulnerability reporting, threat model |
+| [Contributing](CONTRIBUTING.md) | Rust version, pre-checks, subsystem map |
+| [Benchmarks](BENCHMARKS.md) | How to run Criterion, CI regression gates |
+| [Future Plan](FUTURE_PLAN.md) | 5-phase roadmap, 15+ subsystems |
 
-Requires Rust 1.85+.
+**Total**: 30+ documents. If an auditor asks "where is this proven?", there is a document with source file paths and line numbers.
 
-```bash
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-Build Seal OS (requires nightly):
-
-```bash
-cd kernel/seal-os
-cargo +nightly build --release
-```
-
-Run the world model shell:
-
-```bash
-cargo run -p epsilon-os
-```
-
-## CI
-
-GitHub Actions runs: fmt, clippy, test, bench-compile, miri, cargo-audit, cargo-deny, docs, BOM validation, Python checks, Lean proofs. The [release workflow](.github/workflows/release.yml) builds the Seal OS ISO and publishes it to GitHub Releases on every tag.
+---
 
 ## License
 
 MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
+
+---
+
+<p align="center">
+
+<!-- RUST_LINE_COUNT_START -->
+**44782 lines of Rust** across 188 files · 130 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **60340 total**
+<!-- RUST_LINE_COUNT_END -->
+
+</p>

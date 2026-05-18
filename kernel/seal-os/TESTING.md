@@ -26,7 +26,7 @@ This builds the kernel, creates `seal-os.iso`, and runs it in QEMU. On Linux, X1
 Seal OS v1.0.0-alpha — The Geometrical Operating System
 All data = geometry on S^2. File moves = O(1) topological surgery.
 
-[BOOT] Heap initialized (4 MB)
+[BOOT] Heap initialized (16 MB)
 [BOOT] IDT + PIC initialized
 [FB] 1024x768 @ 0xFD000000, pitch=4096, bpp=32
 [BOOT] Framebuffer: 1024x768x32bpp
@@ -77,7 +77,7 @@ qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std -no-reboot
 
 ### Boot Verification (Serial Output)
 - [ ] "Seal OS v1.0.0-alpha" banner appears
-- [ ] "Heap initialized (4 MB)" — memory works
+- [ ] "Heap initialized (16 MB)" — memory works
 - [ ] "IDT + PIC initialized" — interrupts work
 - [ ] "Governor online: epsilon = 0.1000" — T4 active
 - [ ] "Voronoi index: 8 cells" — T1 active

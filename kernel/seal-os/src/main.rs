@@ -38,22 +38,26 @@ pub extern "C" fn _start(multiboot_info_addr: u64) -> ! {
 
     // Layer 1: Memory
     memory::init_heap();
-    serial_println!("[BOOT] Heap initialized (4 MB)");
+    serial_println!("[BOOT] Heap initialized (16 MB)");
 
     // Layer 2: Interrupts
     drivers::interrupts::init();
     serial_println!("[BOOT] IDT + PIC initialized");
 
     // Layer 3: Framebuffer
+    serial_println!("[BOOT] Multiboot info at {:#X}", multiboot_info_addr);
     if multiboot_info_addr != 0 {
         parse_multiboot2(multiboot_info_addr);
     }
+    serial_println!("[BOOT] Multiboot parsing complete");
 
     let fb = unsafe { &*core::ptr::addr_of!(FRAMEBUFFER) };
 
     if fb.is_available() {
+        serial_println!("[BOOT] Framebuffer available — graphical mode");
         boot_graphical(fb);
     } else {
+        serial_println!("[BOOT] No framebuffer — serial mode");
         boot_serial();
     }
 
