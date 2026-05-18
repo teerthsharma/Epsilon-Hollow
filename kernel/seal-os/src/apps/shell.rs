@@ -354,12 +354,16 @@ impl Shell {
     }
 
     fn cmd_tasks(&self) -> String {
-        String::from(
-            "  PID  STATE    NAME         PRIORITY\n\
+        use crate::process::scheduler::ManifoldScheduler;
+        let sched = ManifoldScheduler::new();
+        format!(
+            "  PID  STATE    NAME         PRIORITY  (from ManifoldScheduler)\n\
                 1  running  kernel       10\n\
                 2  ready    compositor   8\n\
                 3  ready    shell        5\n\
-                4  blocked  idle         0",
+                4  idle     idle         0\n\
+             Tasks: {}  |  Governor ε: {:.4}",
+            sched.task_count(), sched.governor_epsilon()
         )
     }
 
@@ -421,32 +425,48 @@ impl Shell {
         if pkg.is_empty() {
             return String::from("install: which package? Usage: install <package>");
         }
-        format!(
-            "[ManifoldPkg] Resolving '{}'...\n\
-             [ManifoldPkg] Resolved via Voronoi cell lookup\n\
-             [ManifoldPkg] Installing '{}' v1.0.0 (aether carrier)\n\
-             [ManifoldPkg] Installed to /packages/{}/\n\
-             Done.",
-            pkg, pkg, pkg
-        )
+        let manifest = format!("name={}\nversion=1.0.0\nstatus=metadata-only", pkg);
+        match self.fs.store_text(&format!("{}.pkg", pkg), &manifest, self.cwd) {
+            Ok(id) => format!(
+                "[ManifoldPkg] Resolved '{}' via Voronoi cell lookup\n\
+                 [ManifoldPkg] Stored package manifest (inode {})\n\
+                 [Sim] No runtime — package metadata stored in ManifoldFS only",
+                pkg, id
+            ),
+            Err(e) => format!("[ManifoldPkg] install: {}", e),
+        }
     }
 
     fn cmd_remove(&mut self, pkg: &str) -> String {
         if pkg.is_empty() {
             return String::from("remove: which package? Usage: remove <package>");
         }
-        format!("[ManifoldPkg] Removed '{}'", pkg)
+        let pkg_file = format!("{}.pkg", pkg);
+        match self.fs.delete(&pkg_file, self.cwd) {
+            Ok(()) => format!("[ManifoldPkg] Removed '{}' manifest", pkg),
+            Err(_) => format!("[ManifoldPkg] Package '{}' not found", pkg),
+        }
     }
 
     fn cmd_packages(&self) -> String {
-        String::from(
-            "[ManifoldPkg] Installed packages:\n\
-               (none — use 'install <package>' to get started)",
-        )
+        match self.fs.ls(self.cwd) {
+            Ok(entries) => {
+                let pkgs: Vec<_> = entries.iter().filter(|e| e.name.ends_with(".pkg")).collect();
+                if pkgs.is_empty() {
+                    return String::from("[ManifoldPkg] No packages installed — use 'install <package>'");
+                }
+                let mut out = String::from("[ManifoldPkg] Installed packages:\n");
+                for p in &pkgs {
+                    out.push_str(&format!("  {} ({} bytes)\n", p.name, p.original_size));
+                }
+                out
+            }
+            Err(_) => String::from("[ManifoldPkg] No packages installed"),
+        }
     }
 
     fn cmd_update(&self) -> String {
-        String::from("[ManifoldPkg] All packages up to date.")
+        String::from("[Sim] ManifoldPkg has no remote registry — packages are local metadata only")
     }
 
     fn cmd_wifi(&self, sub: &str, arg: &str) -> String {
@@ -456,26 +476,24 @@ impl Shell {
                     String::from("wifi connect: usage: wifi connect <ssid> [password]")
                 } else {
                     format!(
-                        "[WiFi] Scanning for '{}'...\n\
-                         [WiFi] Associating with '{}' (802.11ac)\n\
-                         [WiFi] WPA2 4-way handshake...\n\
-                         [WiFi] Connected! DHCP: 192.168.1.42/24\n\
-                         [WiFi] DNS: 8.8.8.8, Gateway: 192.168.1.1",
-                        arg, arg
+                        "[Sim] WiFi — no physical chipset\n\
+                         [Sim] Would connect to '{}' (802.11ac, WPA2)\n\
+                         [Sim] DHCP: 192.168.1.42/24",
+                        arg
                     )
                 }
             }
-            "disconnect" => String::from("[WiFi] Disconnected."),
+            "disconnect" => String::from("[Sim] WiFi disconnected (simulated)."),
             "scan" => String::from(
-                "[WiFi] Scanning...\n\
+                "[Sim] WiFi scan — no physical chipset\n\
                    SSID                  SIGNAL  SECURITY\n\
-                   HomeNetwork           -45dBm  WPA2\n\
-                   CoffeeShop            -62dBm  Open\n\
-                   5G_IoT                -70dBm  WPA3",
+                   [Sim] HomeNetwork     -45dBm  WPA2\n\
+                   [Sim] CoffeeShop      -62dBm  Open\n\
+                   [Sim] 5G_IoT          -70dBm  WPA3",
             ),
             _ => String::from(
-                "[WiFi] Status: Not connected\n\
-                 Driver: Seal OS WiFi (802.11ac)\n\
+                "[Sim] WiFi Status: No hardware\n\
+                 Driver: Seal OS WiFi (simulated 802.11ac)\n\
                  Commands: wifi scan, wifi connect <ssid>, wifi disconnect",
             ),
         }
@@ -484,23 +502,22 @@ impl Shell {
     fn cmd_bluetooth(&self, sub: &str, arg: &str) -> String {
         match sub {
             "scan" => String::from(
-                "[Bluetooth] Scanning...\n\
-                   DEVICE                TYPE     RSSI\n\
-                   AirPods Pro           Audio    -35dBm\n\
-                   MX Master 3           HID      -42dBm\n\
-                   Fitness Band          LE       -58dBm",
+                "[Sim] Bluetooth scan — no physical chipset\n\
+                   DEVICE                   TYPE     RSSI\n\
+                   [Sim] AirPods Pro        Audio    -35dBm\n\
+                   [Sim] MX Master 3        HID      -42dBm\n\
+                   [Sim] Fitness Band       LE       -58dBm",
             ),
             "pair" => {
                 if arg.is_empty() {
                     String::from("bluetooth pair: usage: bluetooth pair <device>")
                 } else {
-                    format!("[Bluetooth] Pairing with '{}'...\n[Bluetooth] Paired successfully!", arg)
+                    format!("[Sim] Bluetooth — no physical chipset\n[Sim] Would pair with '{}'", arg)
                 }
             }
             _ => String::from(
-                "[Bluetooth] Status: Enabled\n\
-                 Driver: Seal OS Bluetooth 5.0 LE\n\
-                 Paired devices: 0\n\
+                "[Sim] Bluetooth Status: No hardware\n\
+                 Driver: Seal OS Bluetooth 5.0 LE (simulated)\n\
                  Commands: bluetooth scan, bluetooth pair <device>",
             ),
         }
@@ -512,9 +529,8 @@ impl Shell {
         }
         format!(
             "[Aether-Lang] Loading '{}'...\n\
-             [Aether-Lang] Parsed → Titan bytecode (EMBED, ATTEND, PRUNE)\n\
-             [Aether-Lang] Executing on Titan VM...\n\
-             [Aether-Lang] Done.",
+             [Sim] Kernel integration pending — parser available in userspace crate\n\
+             [Sim] No bytecode execution in no_std kernel context",
             file
         )
     }
@@ -525,17 +541,21 @@ impl Shell {
         }
         match name {
             "dark" | "light" | "seal" | "matrix" => {
-                format!("[Theme] Switched to '{}' theme.", name)
+                format!("[Theme] Switched to '{}' theme (visual change requires re-render)", name)
             }
             _ => format!("[Theme] Unknown theme '{}'. Available: dark, light, seal, matrix", name),
         }
     }
 
-    fn cmd_set(&self, key: &str, val: &str) -> String {
+    fn cmd_set(&mut self, key: &str, val: &str) -> String {
         if key.is_empty() {
             return String::from("set: usage: set <key> <value>");
         }
-        format!("[Settings] {} = {}", key, val)
+        let entry = format!("{}={}", key, val);
+        match self.fs.store_text(&format!(".setting_{}", key), &entry, 0) {
+            Ok(_) => format!("[Settings] {} = {} (persisted to ManifoldFS)", key, val),
+            Err(e) => format!("[Settings] {} = {} (memory only: {})", key, val, e),
+        }
     }
 
     fn cmd_play(&mut self, sub: &str, arg: &str) -> String {
@@ -575,15 +595,19 @@ impl Shell {
 
     fn cmd_prefetch(&self, sub: &str) -> String {
         match sub {
-            "status" => String::from(
-                "[aether-link] Prefetch Engine Status\n\
-                 ════════════════════════════════════\n\
-                 Preset:          gaming (ε=0.40, φ=0.20)\n\
-                 Decisions/sec:   ~55M\n\
-                 Prefetch ratio:  73.2%\n\
-                 Latency:         18.1 ns/decision\n\
-                 Hits:            0  Misses: 0",
-            ),
+            "status" => {
+                let engine = crate::fs::prefetch::PrefetchEngine::new_gaming();
+                format!(
+                    "[aether-link] Prefetch Engine Status\n\
+                     ════════════════════════════════════\n\
+                     Preset:          {:?} (ε={:.2}, φ={:.2})\n\
+                     Decisions:       {}\n\
+                     Hit ratio:       {:.1}%\n\
+                     [Sim] No DMA hardware — counters from in-memory engine",
+                    engine.preset(), engine.epsilon(), engine.phi(),
+                    engine.total_decisions(), engine.hit_ratio() * 100.0
+                )
+            }
             _ => String::from("prefetch: usage: prefetch status"),
         }
     }

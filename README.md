@@ -55,6 +55,9 @@ graph TB
         IDE["Seal IDE"]
         FMGR["File Manager"]
         TVIEW["Theorem Viewer"]
+        CALC["Calculator"]
+        SPLAYER["SealPlayer"]
+        GAMES["Snake / Breakout / Warp Racer"]
     end
 
     subgraph "Layer 9 — Desktop"
@@ -88,8 +91,9 @@ graph TB
 
     subgraph "Layer 3 — Graphics"
         FB["Framebuffer<br/>1024×768×32bpp"]
-        FONT["8×16 Bitmap Font"]
+        FONT["8×16 Bitmap Font + High-Tech Engine"]
         SPLASH["Boot Splash<br/>seal photo + progress bar"]
+        HTEK["htek.rs — AA text, gradients,<br/>rounded rects, glow, alpha blend"]
     end
 
     subgraph "Layer 2 — Interrupts & Drivers"
@@ -111,7 +115,7 @@ graph TB
         LINK["Linker Script<br/>kernel at 1MB"]
     end
 
-    TERM & IDE & FMGR & TVIEW --> COMP
+    TERM & IDE & FMGR & TVIEW & CALC & SPLAYER & GAMES --> COMP
     WALL & TBAR --> COMP
     COMP --> FB
     WIN --> EVT
@@ -211,7 +215,7 @@ graph LR
 
 The heap is a contiguous 16 MB `static` array, managed by a spin-locked bump allocator implementing `GlobalAlloc`. Allocation is O(1) — advance a pointer, align to requested layout. No deallocation (bump-only). This is sufficient for the kernel's allocation patterns: ManifoldFS inodes, scheduler task structs, window buffers, and encoder working memory.
 
-16 MB handles the graphical desktop comfortably: each 1024x768x32bpp window buffer is 3 MB, and the kernel runs a compositor, three application windows, and ManifoldFS metadata.
+16 MB handles the graphical desktop comfortably: each window buffer is sized per-window (not full-screen), and the kernel runs a compositor, five application windows (Terminal, IDE, Theorems, Calculator, SealPlayer), and ManifoldFS metadata.
 
 ---
 
@@ -376,8 +380,16 @@ The syscall table is dispatched via a match on the syscall number. POSIX calls p
 graph TD
     subgraph "Framebuffer (Layer 3)"
         FB["Multiboot2 Framebuffer Tag<br/>addr: 0xFD000000<br/>1024×768, pitch=4096, 32bpp<br/>volatile writes via raw pointer"]
-        FONT["8×16 PSF2 Bitmap Font<br/>96 printable ASCII glyphs"]
+        FONT["8×16 Bitmap Font + 16×32 AA Scaled"]
         CONSOLE["Scrolling Console<br/>128×48 character grid<br/>pitch-aware line advance"]
+    end
+
+    subgraph "High-Tech Graphics Engine (graphics/htek.rs)"
+        HTEK_AA["Anti-Aliased Text<br/>2x supersampled with neighbor-aware<br/>fringe blending for smooth edges"]
+        HTEK_GRAD["Gradient Fills<br/>vertical + horizontal linear interpolation<br/>per-scanline color lerp"]
+        HTEK_ROUND["Rounded Rectangles<br/>corner distance field with<br/>sub-pixel anti-aliasing"]
+        HTEK_GLOW["Glow + Shadow Effects<br/>multi-pass radial blur<br/>alpha-composited halos"]
+        HTEK_BLEND["Alpha Blending Engine<br/>per-pixel compositing<br/>full 8-bit alpha channel"]
     end
 
     subgraph "Window Manager (Layer 8)"
@@ -387,17 +399,37 @@ graph TD
     end
 
     subgraph "Desktop (Layer 9)"
-        WALLPAPER["Wallpaper<br/>dark bg (#0a0a0f)<br/>Schwarzschild metric<br/>Faraday tensor F^μν<br/>rendered as text at fixed coords"]
-        TASKBAR["Taskbar (bottom 30px)<br/>theorem indicators: [T1:●]...[T5:●]<br/>governor ε value<br/>Seal OS branding"]
+        WALLPAPER["Wallpaper<br/>dark bg (#0a0a0f)<br/>Schwarzschild metric<br/>Faraday tensor F^μν"]
+        TASKBAR["Taskbar (bottom 30px)<br/>theorem indicators: [T1:●]...[T5:●]<br/>governor ε value"]
     end
 
     WALLPAPER --> FB
     TASKBAR --> FB
     COMPOSITOR --> FB
     WINDOW --> COMPOSITOR
+    HTEK_AA & HTEK_GRAD & HTEK_ROUND & HTEK_GLOW --> HTEK_BLEND
+    HTEK_BLEND --> WINDOW
+    FONT --> HTEK_AA
     FONT --> CONSOLE
     CONSOLE --> FB
+
+    style HTEK_AA fill:#1a1a2e,stroke:#00ffaa,color:#fff
+    style HTEK_GRAD fill:#1a1a2e,stroke:#00ffaa,color:#fff
+    style HTEK_ROUND fill:#1a1a2e,stroke:#00ffaa,color:#fff
+    style HTEK_GLOW fill:#1a1a2e,stroke:#00ffaa,color:#fff
+    style HTEK_BLEND fill:#1a1a2e,stroke:#00ffaa,color:#fff
 ```
+
+### High-Tech Rendering Engine (`graphics/htek.rs`)
+
+Seal OS uses a custom software rendering engine that produces modern, high-tech UI — not the pixelated bitmap look typical of hobby OSes. All rendering is done in software on the framebuffer with zero GPU or external font dependencies:
+
+- **Anti-aliased text**: 2x supersampled font rendering with neighbor-aware fringe blending. Adjacent glyph pixels generate sub-pixel alpha halos for smooth edges
+- **Gradient fills**: Per-scanline linear interpolation (vertical and horizontal) with 256-step color lerping
+- **Rounded rectangles**: Corner distance field evaluation with sub-pixel anti-aliasing at edges. Supports both solid and gradient fills
+- **Glow effects**: Multi-offset radial blur passes with alpha compositing. Text glow uses 12-directional sampling
+- **Alpha blending**: Full 8-bit per-pixel compositing engine. Every primitive supports transparency
+- **Stroke rendering**: Anti-aliased rounded rectangle outlines via inner/outer distance field subtraction
 
 **Desktop wallpaper** renders two equations procedurally:
 
@@ -406,8 +438,6 @@ graph TD
 
 2. **Faraday tensor** (electromagnetic field):
    The 4×4 antisymmetric F^μν matrix with E and B field components
-
-Both rendered as text on a dark background — no bitmap assets, no font files beyond the built-in 8×16.
 
 ---
 
@@ -421,15 +451,26 @@ graph TD
         TERM_RENDER["Render to window buffer<br/>bg=#1a1a2e, fg=#c0c0c0"]
     end
 
-    subgraph "Shell (apps/shell.rs)"
-        LS["ls — list directory with Voronoi cells"]
-        CAT["cat — show file info + payload"]
-        MV["mv — O(1) teleport<br/>prints: ticks, governor ε"]
-        FIND["find — content-addressable search<br/>encode query → dot product match"]
+    subgraph "SealShell (apps/shell.rs)"
+        LS["look — list directory with Voronoi cells"]
+        CAT["peek — show file info + payload"]
+        MV["move — O(1) teleport<br/>prints: ticks, governor ε"]
+        FIND["search — content-addressable search<br/>encode query → dot product match"]
         RACE["race — benchmark teleport vs copy<br/>teleport: ~50μs constant<br/>copy: 0.5 ns/byte (scales)"]
-        THEOREMS["theorems — T1-T5 live status"]
-        STATS["stats — files, dirs, entropy,<br/>teleport count, hyperbolic ratio"]
-        PS["ps — kernel, shell, compositor, idle"]
+        THEOREMS["seal — system info + T1-T5 status"]
+        CALC_CMD["calc — scientific calculator"]
+        PLAY_CMD["play — media playback"]
+    end
+
+    subgraph "Calculator (apps/calculator.rs)"
+        CALC_PARSE["Recursive descent parser<br/>operator precedence, trig, sqrt,<br/>log, power, modulo, constants"]
+        CALC_UI["High-tech UI<br/>gradient buttons, glow display,<br/>rounded corners, AA text"]
+    end
+
+    subgraph "SealPlayer (apps/media_player.rs)"
+        PLAYER_FMT["12 container formats<br/>MP4, MKV, AVI, MOV, WebM,<br/>FLV, WMV, OGG, MP3, WAV, FLAC, AAC"]
+        PLAYER_CODEC["8 video + 7 audio codecs<br/>H.264, H.265, VP9, AV1, AAC, Opus"]
+        PLAYER_UI["High-tech UI<br/>gradient viewport, glow playhead,<br/>rounded progress bar, format badges"]
     end
 
     subgraph "Seal IDE (apps/seal_ide.rs)"
@@ -444,9 +485,38 @@ graph TD
         TV_BETTI["Betti-0 count"]
     end
 
+    subgraph "Games"
+        SNAKE["Snake — classic grid game"]
+        BREAKOUT["Breakout — paddle + bricks"]
+        WARP["Warp Racer — aether-link demo"]
+    end
+
     TERM_IN --> SHELL
-    SHELL --> LS & CAT & MV & FIND & RACE & THEOREMS & STATS & PS
+    SHELL --> LS & CAT & MV & FIND & RACE & THEOREMS & CALC_CMD & PLAY_CMD
+    CALC_CMD --> CALC_PARSE
+    CALC_PARSE --> CALC_UI
+    PLAY_CMD --> PLAYER_FMT
+    PLAYER_FMT --> PLAYER_CODEC --> PLAYER_UI
+
+    style CALC_UI fill:#1a1a2e,stroke:#00ffaa,color:#fff
+    style PLAYER_UI fill:#1a1a2e,stroke:#00ddaa,color:#fff
 ```
+
+### Calculator (`apps/calculator.rs`)
+
+Full scientific calculator with recursive descent expression parser:
+- **Operator precedence**: additive → multiplicative → power → unary → atom
+- **Functions**: sin, cos, tan, sqrt, abs, ln, log, exp, ceil, floor
+- **Constants**: pi, e, ans (last result)
+- **UI**: High-tech rendering with gradient buttons, glowing LED display, rounded corners, anti-aliased text
+
+### SealPlayer (`apps/media_player.rs`)
+
+Native media player supporting 12 container formats and 15 codecs:
+- **Video**: MP4, AVI, MKV, MOV, WebM, FLV, WMV, OGG (H.264, H.265, VP8, VP9, AV1, MPEG-4, Theora, WMV3)
+- **Audio**: MP3, WAV, FLAC, AAC (AAC, MP3, Vorbis, Opus, FLAC, PCM, WMA)
+- **Features**: playlist management, seek, volume control, codec detection
+- **UI**: High-tech rendering with gradient viewport, glowing playhead, rounded progress bar, format badges
 
 ---
 
@@ -730,11 +800,11 @@ Epsilon-Hollow/
 │   │   │   ├── memory/             # 16MB bump allocator
 │   │   │   ├── drivers/            # IDT, PIC, serial, keyboard, mouse
 │   │   │   ├── fs/                 # ManifoldFS + S² encoder
-│   │   │   ├── graphics/           # Framebuffer, font, console, splash, wallpaper
+│   │   │   ├── graphics/           # Framebuffer, font, console, splash, wallpaper, htek (high-tech engine)
 │   │   │   ├── process/            # ManifoldScheduler, task structs
 │   │   │   ├── syscall/            # POSIX + Epsilon extensions
 │   │   │   ├── wm/                 # Compositor, windows, desktop, taskbar
-│   │   │   └── apps/               # Shell, terminal, IDE, file mgr, theorem viewer
+│   │   │   └── apps/               # Shell, terminal, IDE, calculator, SealPlayer, games
 │   │   ├── boot/grub/grub.cfg      # GRUB config (1024x768x32, 3s timeout)
 │   │   ├── linker.ld               # Kernel at 1MB, multiboot header first
 │   │   └── build.rs                # Absolute linker script path, -z notext
@@ -935,7 +1005,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**48759 lines of Rust** across 227 files · 130 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **64317 total**
+**50215 lines of Rust** across 231 files · 0 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **65643 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>

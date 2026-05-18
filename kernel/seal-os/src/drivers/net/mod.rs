@@ -36,6 +36,7 @@ impl NetworkStack {
         }
     }
 
+    /// [Sim] No network hardware — stores config locally but no NIC is programmed.
     pub fn configure(&mut self, ip: [u8; 4], gateway: [u8; 4], dns: [u8; 4]) {
         self.ip = ip;
         self.gateway = gateway;

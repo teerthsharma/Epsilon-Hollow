@@ -1,4 +1,4 @@
-name: Release ISO
+name: Release UEFI Image
 
 on:
   push:
@@ -17,8 +17,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-iso:
-    name: Build Seal OS ISO
+  build-image:
+    name: Build Seal OS UEFI Image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,52 +28,46 @@ jobs:
         with:
           components: rust-src, llvm-tools-preview
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: kernel/seal-os
-
-      - name: Install GRUB and ISO tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            grub-pc-bin grub-common xorriso mtools
+          workspaces: |
+            kernel/seal-os
+            kernel/seal-mkimage
 
       - name: Build kernel
         working-directory: kernel/seal-os
         run: cargo +nightly build --release
 
-      - name: Create bootable ISO
-        working-directory: kernel/seal-os
-        run: |
-          mkdir -p iso/boot/grub
-          cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
-          cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
-          grub-mkrescue -o seal-os.iso iso/
+      - name: Build mkimage and create UEFI disk image
+        working-directory: kernel/seal-mkimage
+        run: cargo +stable run --release
 
       - name: Report sizes
         working-directory: kernel/seal-os
         run: |
-          echo "Kernel: $(du -h target/x86_64-unknown-none/release/seal-os | cut -f1)"
-          echo "ISO:    $(du -h seal-os.iso | cut -f1)"
+          echo "Kernel: $(du -h target/x86_64-unknown-uefi/release/seal-os.efi | cut -f1)"
+          echo "Image:  $(du -h target/x86_64-unknown-uefi/release/seal-os.img | cut -f1)"
 
-      - name: Upload ISO artifact
+      - name: Upload image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: seal-os-iso
-          path: kernel/seal-os/seal-os.iso
+          name: seal-os-img
+          path: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: kernel/seal-os/seal-os.iso
+          files: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
           body: |
             ## Seal OS ${{ github.ref_name }}
 
             **The Geometrical Operating System** — all data is geometry on S², file moves are O(1) topological surgery.
 
-            ### What's in the ISO
-            - Bare-metal x86_64 kernel with GRUB2 bootloader
+            ### What's in the image
+            - Bare-metal x86_64 UEFI kernel (pure Rust, zero assembly, zero GNU dependencies)
             - **SealShell**: 30+ English-first commands (type `help` for handbook)
             - **ManifoldFS**: files as 64-point clouds on S², O(1) teleport
             - **ManifoldPkg**: native package manager with Voronoi dependency resolution
@@ -90,16 +84,11 @@ jobs:
 
             ### Run it
             ```bash
-            # QEMU (recommended: 4GB RAM for full experience)
-            qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 4G -vga std
+            # QEMU with UEFI firmware
+            qemu-system-x86_64 -bios OVMF.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
 
-            # Real hardware
-            dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
-            ```
-
-            ### Docker (with display)
-            ```bash
-            cd kernel/seal-os && docker compose up --build
+            # Real UEFI hardware
+            dd if=seal-os.img of=/dev/sdX bs=4M status=progress
             ```
           generate_release_notes: true
 
@@ -108,13 +97,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || 'latest' }}
-          files: kernel/seal-os/seal-os.iso
+          files: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
           body: |
             ## Seal OS (dev build)
 
             Built from `main` branch at ${{ github.sha }}.
 
             ```bash
-            qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std
+            qemu-system-x86_64 -bios OVMF.fd -drive file=seal-os.img,format=raw -serial stdio -m 512M -vga std
             ```
           prerelease: true

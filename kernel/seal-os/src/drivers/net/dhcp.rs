@@ -35,9 +35,10 @@ impl DhcpClient {
         }
     }
 
+    /// [Sim] No network hardware — assigns hardcoded IP without real DHCP exchange.
     pub fn discover(&mut self) {
         self.state = DhcpState::Discover;
-        // Broadcast DHCP DISCOVER on UDP port 67
+        // [Sim] No NIC present — skipping real DHCP DISCOVER broadcast on UDP port 67
         self.offered_ip = [192, 168, 1, 42];
         self.gateway = [192, 168, 1, 1];
         self.state = DhcpState::Bound;
