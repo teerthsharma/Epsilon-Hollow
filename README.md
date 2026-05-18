@@ -922,7 +922,7 @@ Every claim in this README has a supplementary document. Every document traces t
 | [Benchmarks](BENCHMARKS.md) | How to run Criterion, CI regression gates |
 | [Future Plan](FUTURE_PLAN.md) | 5-phase roadmap, 15+ subsystems |
 
-**Total**: 30+ documents. If an auditor asks "where is this proven?", there is a document with source file paths and line numbers.
+
 
 ---
 
