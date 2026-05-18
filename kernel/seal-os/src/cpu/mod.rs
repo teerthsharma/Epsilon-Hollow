@@ -3,7 +3,8 @@
 
 //! Per-CPU data structures and accessors.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::gdt::SegmentSelector;
@@ -44,10 +45,25 @@ struct PerCpuStorage {
     bytes: [u8; core::mem::size_of::<PerCpu>()],
 }
 
-static mut PER_CPU_ARRAY: [PerCpuStorage; MAX_CPUS] =
-    [PerCpuStorage { bytes: [0; core::mem::size_of::<PerCpu>()] }; MAX_CPUS];
+// SAFETY: Each slot is written exactly once by the BSP before the corresponding
+// CPU starts. After that, only that CPU accesses its own slot via gsbase.
+struct PerCpuArray(UnsafeCell<[PerCpuStorage; MAX_CPUS]>);
+unsafe impl Sync for PerCpuArray {}
 
-static mut PER_CPU_INITIALIZED: [bool; MAX_CPUS] = [false; MAX_CPUS];
+static PER_CPU_ARRAY: PerCpuArray = PerCpuArray(UnsafeCell::new(
+    [PerCpuStorage { bytes: [0; core::mem::size_of::<PerCpu>()] }; MAX_CPUS]
+));
+
+static PER_CPU_INITIALIZED: [AtomicBool; MAX_CPUS] = [
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+];
 
 pub static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static BSP_CPU_NUM: AtomicUsize = AtomicUsize::new(0);
@@ -60,7 +76,8 @@ pub unsafe fn init_bsp() {
     let cpu_num = 0;
     BSP_CPU_NUM.store(cpu_num, Ordering::SeqCst);
 
-    let ptr = PER_CPU_ARRAY[cpu_num].bytes.as_mut_ptr() as *mut PerCpu;
+    let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
+    let ptr = unsafe { (*base.add(cpu_num)).bytes.as_mut_ptr() as *mut PerCpu };
     ptr.write(PerCpu {
         apic_id: 0,
         cpu_num: cpu_num as u32,
@@ -83,7 +100,7 @@ pub unsafe fn init_bsp() {
 
     // GS base -> PerCpu
     Msr::new(0xC000_0101).write(ptr as u64);
-    PER_CPU_INITIALIZED[cpu_num] = true;
+    PER_CPU_INITIALIZED[cpu_num].store(true, Ordering::SeqCst);
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -97,12 +114,13 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
 
     unsafe {
         assert!(
-            !PER_CPU_INITIALIZED[cpu_num as usize],
+            !PER_CPU_INITIALIZED[cpu_num as usize].load(Ordering::SeqCst),
             "AP CPU {} already allocated",
             cpu_num
         );
 
-        let ptr = PER_CPU_ARRAY[cpu_num as usize].bytes.as_mut_ptr() as *mut PerCpu;
+        let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
+        let ptr = unsafe { (*base.add(cpu_num as usize)).bytes.as_mut_ptr() as *mut PerCpu };
         ptr.write(PerCpu {
             apic_id,
             cpu_num,
@@ -123,7 +141,7 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
         let per_cpu = &mut *ptr;
         crate::memory::gdt::init_tss_for_cpu(per_cpu);
 
-        PER_CPU_INITIALIZED[cpu_num as usize] = true;
+        PER_CPU_INITIALIZED[cpu_num as usize].store(true, Ordering::SeqCst);
         CPU_COUNT.fetch_add(1, Ordering::SeqCst);
 
         per_cpu
@@ -150,18 +168,20 @@ pub fn current_cpu_num() -> u32 {
 /// The CPU must have been initialized.
 pub unsafe fn per_cpu(cpu_num: u32) -> Option<&'static mut PerCpu> {
     let idx = cpu_num as usize;
-    if idx >= MAX_CPUS || !PER_CPU_INITIALIZED[idx] {
+    if idx >= MAX_CPUS || !PER_CPU_INITIALIZED[idx].load(Ordering::SeqCst) {
         return None;
     }
-    Some(&mut *(PER_CPU_ARRAY[idx].bytes.as_mut_ptr() as *mut PerCpu))
+    let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
+    Some(&mut *(unsafe { (*base.add(idx)).bytes.as_mut_ptr() as *mut PerCpu }))
 }
 
 /// Return the APIC ID for a given logical CPU number, if initialized.
 pub fn apic_id_for_cpu(cpu_num: u32) -> Option<u32> {
     unsafe {
         let idx = cpu_num as usize;
-        if idx < MAX_CPUS && PER_CPU_INITIALIZED[idx] {
-            let ptr = PER_CPU_ARRAY[idx].bytes.as_ptr() as *const PerCpu;
+        if idx < MAX_CPUS && PER_CPU_INITIALIZED[idx].load(Ordering::SeqCst) {
+            let base = PER_CPU_ARRAY.0.get() as *const PerCpuStorage;
+            let ptr = unsafe { (*base.add(idx)).bytes.as_ptr() as *const PerCpu };
             Some((*ptr).apic_id)
         } else {
             None

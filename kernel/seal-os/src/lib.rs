@@ -43,7 +43,7 @@ use graphics::framebuffer::Framebuffer;
 pub const VERSION: &str = "0.1.0";
 
 #[cfg(not(test))]
-static mut FRAMEBUFFER: Framebuffer = Framebuffer::null();
+static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
 
 #[cfg(not(test))]
 #[no_mangle]
@@ -93,16 +93,14 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(not(feature = "test-mode"))]
     {
         if info.fb_addr != 0 {
-            unsafe {
-                FRAMEBUFFER = Framebuffer::new(
+            FRAMEBUFFER.call_once(|| unsafe {
+                Framebuffer::new(
                     info.fb_addr, info.fb_width, info.fb_height, info.fb_pitch, info.fb_bpp,
-                );
-            }
+                )
+            });
         }
 
-        let fb = unsafe { &*core::ptr::addr_of!(FRAMEBUFFER) };
-
-        if fb.is_available() {
+        if let Some(fb) = FRAMEBUFFER.get() {
             serial_println!("[BOOT] Framebuffer available — graphical mode");
             boot_graphical(fb);
         } else {
