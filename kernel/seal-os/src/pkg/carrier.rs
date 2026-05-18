@@ -36,7 +36,9 @@ impl CarrierType {
         }
     }
 
+    /// All carriers are metadata-only; no real runtime is available.
     pub fn is_available(&self) -> bool {
+        // [Sim] No actual runtimes — all carriers store metadata only
         matches!(self, Self::Aether | Self::Rust | Self::Python)
     }
 }
@@ -54,7 +56,10 @@ impl Carrier for AetherCarrier {
     }
 
     fn execute(&self, entry: &str) -> Result<String, String> {
-        Ok(alloc::format!("[Aether] Executed '{}'", entry))
+        Ok(alloc::format!(
+            "[Sim] No runtime — package metadata stored only (aether entry: '{}')",
+            entry
+        ))
     }
 }
 
@@ -67,7 +72,7 @@ impl Carrier for PipCarrier {
 
     fn execute(&self, entry: &str) -> Result<String, String> {
         Ok(alloc::format!(
-            "[pip] Transpiled '{}' → Aether-Lang bytecode → Titan VM",
+            "[Sim] No runtime — package metadata stored only (pip entry: '{}')",
             entry
         ))
     }

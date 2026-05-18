@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! USB mass storage class driver — bulk-only transport, SCSI READ/WRITE.
+//! NOTE: This is a simulated driver. No real USB mass storage hardware is accessed.
 
 use alloc::vec::Vec;
 
@@ -25,19 +26,21 @@ impl MassStorageDriver {
     }
 
     pub fn inquiry(&self) -> &'static str {
-        "Seal OS USB Mass Storage"
+        "[Sim] Seal OS USB Mass Storage"
     }
 
     pub fn read_capacity(&self) -> (u64, u32) {
+        // [Sim] Returns stored values; no real SCSI READ CAPACITY command issued
         (self.capacity_sectors, self.sector_size)
     }
 
     pub fn read_sectors(&self, _lba: u64, _count: u32) -> Vec<u8> {
+        // [Sim] No real bulk transfer — cannot read from simulated device
         Vec::new()
     }
 
     pub fn write_sectors(&self, _lba: u64, _data: &[u8]) -> Result<(), &'static str> {
-        Ok(())
+        Err("[Sim] write_sectors: no real USB mass storage hardware present")
     }
 
     pub fn is_connected(&self) -> bool {

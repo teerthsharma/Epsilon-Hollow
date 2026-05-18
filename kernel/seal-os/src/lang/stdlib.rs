@@ -22,16 +22,16 @@ impl SealStdlib {
 
     pub fn call(module: &str, func: &str) -> Result<String, String> {
         match (module, func) {
-            ("fs", "ls") => Ok(String::from("[fs.ls] ManifoldFS directory listing")),
-            ("fs", "read") => Ok(String::from("[fs.read] ManifoldFS file read")),
-            ("fs", "write") => Ok(String::from("[fs.write] ManifoldFS file write")),
-            ("fs", "teleport") => Ok(String::from("[fs.teleport] O(1) topological surgery")),
-            ("process", "spawn") => Ok(String::from("[process.spawn] ManifoldScheduler task")),
-            ("process", "pid") => Ok(String::from("1")),
+            ("fs", "ls") => Ok(String::from("[Sim] fs.ls — requires ManifoldFS runtime")),
+            ("fs", "read") => Ok(String::from("[Sim] fs.read — requires ManifoldFS runtime")),
+            ("fs", "write") => Ok(String::from("[Sim] fs.write — requires ManifoldFS runtime")),
+            ("fs", "teleport") => Ok(String::from("[Sim] fs.teleport — requires ManifoldFS runtime")),
+            ("process", "spawn") => Ok(String::from("[Sim] process.spawn — requires ManifoldScheduler runtime")),
+            ("process", "pid") => Ok(String::from("[Sim] process.pid — stub value")),
             ("math", "pi") => Ok(String::from("3.14159265358979")),
             ("math", "e") => Ok(String::from("2.71828182845905")),
-            ("net", "status") => Ok(String::from("[net] Not connected")),
-            ("theorem", "status") => Ok(String::from("T1:ACTIVE T2:ACTIVE T3:ACTIVE T4:ACTIVE T5:ACTIVE")),
+            ("net", "status") => Ok(String::from("[Sim] net.status — network stack not implemented")),
+            ("theorem", "status") => Ok(String::from("[Sim] theorem.status — proof engine not connected")),
             _ => Err(alloc::format!("Unknown: {}.{}", module, func)),
         }
     }

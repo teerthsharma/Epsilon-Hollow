@@ -15,6 +15,7 @@ impl DependencyResolver {
         Self { _cell_count: 8 }
     }
 
+    /// [Sim] No real dependency graph — returns empty deps list.
     pub fn resolve(&self, _name: &str) -> Vec<String> {
         Vec::new()
     }

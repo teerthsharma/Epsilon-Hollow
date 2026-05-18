@@ -84,6 +84,110 @@ impl SealIde {
         }
     }
 
+    pub fn key_press(&mut self, ch: u8) {
+        let file = match self.files.get_mut(self.active_file) {
+            Some(f) => f,
+            None => return,
+        };
+
+        match ch {
+            b'\n' => {
+                let line = file.lines.get(self.cursor_line).cloned().unwrap_or_default();
+                let (before, after) = if self.cursor_col <= line.len() {
+                    (String::from(&line[..self.cursor_col]), String::from(&line[self.cursor_col..]))
+                } else {
+                    (line.clone(), String::new())
+                };
+                file.lines[self.cursor_line] = before;
+                self.cursor_line += 1;
+                file.lines.insert(self.cursor_line, after);
+                self.cursor_col = 0;
+            }
+            0x08 => {
+                // Backspace
+                if self.cursor_col > 0 {
+                    if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                        if self.cursor_col <= line.len() {
+                            line.remove(self.cursor_col - 1);
+                        }
+                    }
+                    self.cursor_col -= 1;
+                } else if self.cursor_line > 0 {
+                    let removed = file.lines.remove(self.cursor_line);
+                    self.cursor_line -= 1;
+                    self.cursor_col = file.lines[self.cursor_line].len();
+                    file.lines[self.cursor_line].push_str(&removed);
+                }
+            }
+            b'\t' => {
+                if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                    line.insert_str(self.cursor_col, "    ");
+                    self.cursor_col += 4;
+                }
+            }
+            ch if ch >= 0x20 && ch < 0x7F => {
+                if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                    if self.cursor_col > line.len() {
+                        self.cursor_col = line.len();
+                    }
+                    line.insert(self.cursor_col, ch as char);
+                    self.cursor_col += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn handle_special_key(&mut self, key: crate::drivers::interrupts::SpecialKey) {
+        use crate::drivers::interrupts::SpecialKey;
+        let line_count = self.files.get(self.active_file).map(|f| f.lines.len()).unwrap_or(0);
+
+        match key {
+            SpecialKey::Up => {
+                if self.cursor_line > 0 {
+                    self.cursor_line -= 1;
+                    let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                    self.cursor_col = self.cursor_col.min(len);
+                }
+            }
+            SpecialKey::Down => {
+                if self.cursor_line + 1 < line_count {
+                    self.cursor_line += 1;
+                    let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                    self.cursor_col = self.cursor_col.min(len);
+                }
+            }
+            SpecialKey::Left => {
+                if self.cursor_col > 0 {
+                    self.cursor_col -= 1;
+                }
+            }
+            SpecialKey::Right => {
+                let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                if self.cursor_col < len {
+                    self.cursor_col += 1;
+                }
+            }
+            SpecialKey::Home => self.cursor_col = 0,
+            SpecialKey::End => {
+                self.cursor_col = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+            }
+            SpecialKey::Delete => {
+                if let Some(file) = self.files.get_mut(self.active_file) {
+                    if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                        if self.cursor_col < line.len() {
+                            line.remove(self.cursor_col);
+                        } else if self.cursor_line + 1 < file.lines.len() {
+                            let next = file.lines.remove(self.cursor_line + 1);
+                            file.lines[self.cursor_line].push_str(&next);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn render_to_window(&self, win: &mut Window) {
         let cw = win.client_width();
         let ch = win.client_height();
