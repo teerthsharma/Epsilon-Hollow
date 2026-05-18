@@ -10,6 +10,8 @@ use spin::Lazy;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 use x86_64::registers::control::Cr2;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::serial_println;
 #[cfg(not(test))]
 use crate::wm::event::InputEvent;
@@ -45,7 +47,7 @@ pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     idt
 });
 
-static TICKS: spin::Mutex<u64> = spin::Mutex::new(0);
+static TICKS: AtomicU64 = AtomicU64::new(0);
 
 // Fixed-size ring buffer for input events — no heap allocation in IRQ context
 #[cfg(not(test))]
@@ -257,17 +259,21 @@ fn send_eoi(_irq: u8) {
 }
 
 pub fn ticks() -> u64 {
-    *TICKS.lock()
+    TICKS.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
 pub fn mock_advance_ticks(delta: u64) {
-    *TICKS.lock() += delta;
+    TICKS.fetch_add(delta, Ordering::Relaxed);
 }
 
 #[cfg(not(test))]
 pub fn poll_event() -> Option<InputEvent> {
-    EVENT_QUEUE.lock().pop()
+    if let Some(mut queue) = EVENT_QUEUE.try_lock() {
+        queue.pop()
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -277,7 +283,7 @@ pub fn poll_event() -> Option<crate::wm::event::InputEvent> {
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
-    *TICKS.lock() += 1;
+    TICKS.fetch_add(1, Ordering::Relaxed);
     crate::process::scheduler::scheduler_tick();
     // Legacy PIC EOI (fallback only)
     unsafe {
@@ -287,7 +293,7 @@ extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
-    *TICKS.lock() += 1;
+    TICKS.fetch_add(1, Ordering::Relaxed);
     crate::process::scheduler::scheduler_tick();
     unsafe {
         crate::drivers::apic::LOCAL_APIC.eoi();
@@ -298,12 +304,14 @@ extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     let scancode: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
 
-    // Key release scancodes have bit 7 set
-    if scancode & 0x80 != 0 {
-        let release_code = scancode & 0x7F;
-        EVENT_QUEUE.lock().push(InputEvent::KeyRelease(release_code));
-    } else {
-        EVENT_QUEUE.lock().push(InputEvent::KeyPress(scancode));
+    if let Some(mut queue) = EVENT_QUEUE.try_lock() {
+        // Key release scancodes have bit 7 set
+        if scancode & 0x80 != 0 {
+            let release_code = scancode & 0x7F;
+            queue.push(InputEvent::KeyRelease(release_code));
+        } else {
+            queue.push(InputEvent::KeyPress(scancode));
+        }
     }
 
     send_eoi(1);
@@ -313,29 +321,38 @@ extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
     let byte: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
 
-    if let Some((dx, dy, buttons)) = MOUSE_STATE.lock().feed(byte) {
-        if dx != 0 || dy != 0 {
-            EVENT_QUEUE.lock().push(InputEvent::MouseMove { dx, dy });
-        }
-        // Track button state changes
-        static LAST_BUTTONS: spin::Mutex<u8> = spin::Mutex::new(0);
-        let mut last = LAST_BUTTONS.lock();
-        if buttons != *last {
-            // Left button
-            if (buttons & 1) != (*last & 1) {
-                EVENT_QUEUE.lock().push(InputEvent::MouseButton {
-                    button: 0,
-                    pressed: buttons & 1 != 0,
-                });
+    let mouse_event = if let Some(mut state) = MOUSE_STATE.try_lock() {
+        state.feed(byte)
+    } else {
+        None
+    };
+
+    if let Some((dx, dy, buttons)) = mouse_event {
+        if let Some(mut queue) = EVENT_QUEUE.try_lock() {
+            if dx != 0 || dy != 0 {
+                queue.push(InputEvent::MouseMove { dx, dy });
             }
-            // Right button
-            if (buttons & 2) != (*last & 2) {
-                EVENT_QUEUE.lock().push(InputEvent::MouseButton {
-                    button: 1,
-                    pressed: buttons & 2 != 0,
-                });
+            // Track button state changes
+            static LAST_BUTTONS: spin::Mutex<u8> = spin::Mutex::new(0);
+            if let Some(mut last) = LAST_BUTTONS.try_lock() {
+                if buttons != *last {
+                    // Left button
+                    if (buttons & 1) != (*last & 1) {
+                        queue.push(InputEvent::MouseButton {
+                            button: 0,
+                            pressed: buttons & 1 != 0,
+                        });
+                    }
+                    // Right button
+                    if (buttons & 2) != (*last & 2) {
+                        queue.push(InputEvent::MouseButton {
+                            button: 1,
+                            pressed: buttons & 2 != 0,
+                        });
+                    }
+                    *last = buttons;
+                }
             }
-            *last = buttons;
         }
     }
 

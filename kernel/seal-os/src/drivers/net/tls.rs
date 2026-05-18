@@ -28,20 +28,20 @@ impl TlsSession {
         }
     }
 
-    /// [Sim] No network hardware — handshake is a no-op.
+    /// No network hardware — handshake is a no-op.
     pub fn handshake(&mut self) -> Result<(), &'static str> {
-        Err("[Sim] No network hardware — TLS handshake requires a NIC")
+        Err("No network hardware — TLS handshake requires a NIC")
     }
 
-    /// [Sim] No real encryption — returns plaintext unchanged.
+    /// No real encryption — returns plaintext unchanged.
     pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        // [Sim] No network hardware — AES-256-GCM not performed
+        // No network hardware — AES-256-GCM not performed
         plaintext.to_vec()
     }
 
-    /// [Sim] No real decryption — returns ciphertext unchanged.
+    /// No real decryption — returns ciphertext unchanged.
     pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        // [Sim] No network hardware — decryption not performed
+        // No network hardware — decryption not performed
         ciphertext.to_vec()
     }
 

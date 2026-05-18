@@ -18,12 +18,12 @@ impl UdpSocket {
         }
     }
 
-    /// [Sim] No network hardware — packet is silently dropped.
+    /// No network hardware — packet is silently dropped.
     pub fn send_to(&self, _data: &[u8], _ip: [u8; 4], _port: u16) {
-        // [Sim] No NIC present — packet assembly skipped, datagram dropped
+        // No NIC present — packet assembly skipped, datagram dropped
     }
 
-    /// [Sim] No network hardware — always returns None; no packets arrive.
+    /// No network hardware — always returns None; no packets arrive.
     pub fn recv_from(&mut self) -> Option<(([u8; 4], u16), Vec<u8>)> {
         self.recv_buffer.pop()
     }

@@ -54,40 +54,13 @@ impl BluetoothDriver {
         }
     }
 
-    // Hardware simulation — real driver requires physical chipset
     pub fn scan(&self) -> Vec<BtDevice> {
-        alloc::vec![
-            BtDevice {
-                name: String::from("[Sim] AirPods Pro"),
-                device_type: BtDeviceType::Audio,
-                rssi_dbm: -35,
-                paired: false,
-            },
-            BtDevice {
-                name: String::from("[Sim] MX Master 3"),
-                device_type: BtDeviceType::Hid,
-                rssi_dbm: -42,
-                paired: false,
-            },
-            BtDevice {
-                name: String::from("[Sim] Fitness Band"),
-                device_type: BtDeviceType::Le,
-                rssi_dbm: -58,
-                paired: false,
-            },
-        ]
+        // No Bluetooth adapter detected — return empty list
+        Vec::new()
     }
 
-    // Hardware simulation — real driver requires physical chipset
-    pub fn pair(&mut self, name: &str) -> Result<(), String> {
-        let device = BtDevice {
-            name: String::from(name),
-            device_type: BtDeviceType::Unknown,
-            rssi_dbm: -50,
-            paired: true,
-        };
-        self.paired_devices.push(device);
-        Ok(()) // Simulated pairing — no actual Bluetooth handshake
+    pub fn pair(&mut self, _name: &str) -> Result<(), String> {
+        Err(String::from("Bluetooth: no adapter detected"))
     }
 
     pub fn state(&self) -> BtState {

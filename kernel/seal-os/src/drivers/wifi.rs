@@ -62,36 +62,13 @@ impl WifiDriver {
         self.state = WifiState::Disconnected;
     }
 
-    // Hardware simulation — real driver requires physical chipset
     pub fn scan(&self) -> Vec<WifiNetwork> {
-        alloc::vec![
-            WifiNetwork {
-                ssid: String::from("[Sim] HomeNetwork"),
-                signal_dbm: -45,
-                security: WifiSecurity::Wpa2,
-                channel: 6,
-            },
-            WifiNetwork {
-                ssid: String::from("[Sim] CoffeeShop"),
-                signal_dbm: -62,
-                security: WifiSecurity::Open,
-                channel: 11,
-            },
-            WifiNetwork {
-                ssid: String::from("[Sim] 5G_IoT"),
-                signal_dbm: -70,
-                security: WifiSecurity::Wpa3,
-                channel: 36,
-            },
-        ]
+        // No wireless chipset detected — return empty list
+        Vec::new()
     }
 
-    // Hardware simulation — real driver requires physical chipset
-    pub fn connect(&mut self, ssid: &str, _password: &str) -> Result<(), String> {
-        self.state = WifiState::Connected;
-        self.connected_ssid = Some(String::from(ssid));
-        self.ip_addr = Some([192, 168, 1, 42]);
-        Ok(()) // Simulated connection — no actual network traffic
+    pub fn connect(&mut self, _ssid: &str, _password: &str) -> Result<(), String> {
+        Err(String::from("WiFi: no wireless hardware detected"))
     }
 
     pub fn disconnect(&mut self) {

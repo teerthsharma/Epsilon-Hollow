@@ -35,7 +35,7 @@ impl HidDriver {
     }
 
     pub fn process_report(&self, _report: &[u8]) {
-        // [Sim] No real interrupt transfers — HID report processing is simulated
+        // No real interrupt transfers — HID report processing is simulated
     }
 
     pub fn device_type(&self) -> HidDeviceType {

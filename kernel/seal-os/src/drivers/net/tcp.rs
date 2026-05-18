@@ -47,20 +47,18 @@ impl TcpSocket {
         }
     }
 
-    /// [Sim] No network hardware — sets state but no SYN packet is transmitted.
     pub fn connect(&mut self, ip: [u8; 4], port: u16) {
         self.remote_ip = ip;
         self.remote_port = port;
         self.state = TcpState::SynSent;
     }
 
-    /// [Sim] No network hardware — data is buffered locally but never transmitted.
     pub fn send(&mut self, data: &[u8]) {
         self.send_buffer.extend_from_slice(data);
         self.seq_num += data.len() as u32;
     }
 
-    /// [Sim] No network hardware — always returns empty; no packets are received.
+    /// No network hardware — always returns empty; no packets are received.
     pub fn recv(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.recv_buffer)
     }

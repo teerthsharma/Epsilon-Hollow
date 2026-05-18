@@ -1,0 +1,59 @@
+name: Kernel Tests
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kernel-tests:
+    name: Seal OS kernel integration tests (QEMU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly (kernel)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools-preview
+
+      - name: Install Rust stable (mkimage)
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            kernel/seal-os
+            kernel/seal-mkimage
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+
+      - name: Run kernel tests
+        shell: bash
+        run: |
+          chmod +x scripts/test_kernel.sh
+          scripts/test_kernel.sh 2>&1 | tee kernel-test-log.txt || true
+
+      - name: Check test result
+        shell: bash
+        run: |
+          if grep -q "ALL TESTS PASSED" kernel-test-log.txt; then
+            echo "PASS: Kernel tests succeeded"
+            exit 0
+          else
+            echo "FAIL: Kernel tests did not report success"
+            cat kernel-test-log.txt
+            exit 1
+          fi
+
+      - name: Upload test log artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-test-log
+          path: kernel-test-log.txt

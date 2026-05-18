@@ -7,7 +7,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::drivers::bluetooth::BluetoothDriver;
+use crate::drivers::wifi::WifiDriver;
 use crate::fs::manifold_fs::{ManifoldFS, InodeKind};
+use crate::lang::AetherRuntime;
 
 use super::calculator::Calculator;
 use super::clipboard::Clipboard;
@@ -430,7 +433,7 @@ impl Shell {
             Ok(id) => format!(
                 "[ManifoldPkg] Resolved '{}' via Voronoi cell lookup\n\
                  [ManifoldPkg] Stored package manifest (inode {})\n\
-                 [Sim] No runtime — package metadata stored in ManifoldFS only",
+                 Note: no remote registry — package metadata stored in ManifoldFS only",
                 pkg, id
             ),
             Err(e) => format!("[ManifoldPkg] install: {}", e),
@@ -466,58 +469,70 @@ impl Shell {
     }
 
     fn cmd_update(&self) -> String {
-        String::from("[Sim] ManifoldPkg has no remote registry — packages are local metadata only")
+        String::from("ManifoldPkg: no remote registry — packages are local metadata only")
     }
 
     fn cmd_wifi(&self, sub: &str, arg: &str) -> String {
+        let mut driver = WifiDriver::new();
         match sub {
             "connect" => {
                 if arg.is_empty() {
                     String::from("wifi connect: usage: wifi connect <ssid> [password]")
                 } else {
-                    format!(
-                        "[Sim] WiFi — no physical chipset\n\
-                         [Sim] Would connect to '{}' (802.11ac, WPA2)\n\
-                         [Sim] DHCP: 192.168.1.42/24",
-                        arg
-                    )
+                    match driver.connect(arg, "") {
+                        Ok(()) => format!("WiFi: connected to '{}'", arg),
+                        Err(e) => e,
+                    }
                 }
             }
-            "disconnect" => String::from("[Sim] WiFi disconnected (simulated)."),
-            "scan" => String::from(
-                "[Sim] WiFi scan — no physical chipset\n\
-                   SSID                  SIGNAL  SECURITY\n\
-                   [Sim] HomeNetwork     -45dBm  WPA2\n\
-                   [Sim] CoffeeShop      -62dBm  Open\n\
-                   [Sim] 5G_IoT          -70dBm  WPA3",
-            ),
+            "disconnect" => {
+                driver.disconnect();
+                String::from("WiFi: disconnected")
+            }
+            "scan" => {
+                let networks = driver.scan();
+                if networks.is_empty() {
+                    return String::from("WiFi: no wireless networks found");
+                }
+                let mut out = String::from("WiFi Networks:\n  SSID              SIGNAL  SECURITY\n");
+                for n in &networks {
+                    out.push_str(&format!("  {:<18}  {:>4}dBm  {}\n", n.ssid, n.signal_dbm, n.security.name()));
+                }
+                out
+            }
             _ => String::from(
-                "[Sim] WiFi Status: No hardware\n\
-                 Driver: Seal OS WiFi (simulated 802.11ac)\n\
+                "WiFi Status: no hardware detected\n\
                  Commands: wifi scan, wifi connect <ssid>, wifi disconnect",
             ),
         }
     }
 
     fn cmd_bluetooth(&self, sub: &str, arg: &str) -> String {
+        let mut driver = BluetoothDriver::new();
         match sub {
-            "scan" => String::from(
-                "[Sim] Bluetooth scan — no physical chipset\n\
-                   DEVICE                   TYPE     RSSI\n\
-                   [Sim] AirPods Pro        Audio    -35dBm\n\
-                   [Sim] MX Master 3        HID      -42dBm\n\
-                   [Sim] Fitness Band       LE       -58dBm",
-            ),
+            "scan" => {
+                let devices = driver.scan();
+                if devices.is_empty() {
+                    return String::from("Bluetooth: no devices found");
+                }
+                let mut out = String::from("Bluetooth Devices:\n  NAME                 TYPE   RSSI\n");
+                for d in &devices {
+                    out.push_str(&format!("  {:<20}  {:<6}  {:>4}dBm\n", d.name, d.device_type.name(), d.rssi_dbm));
+                }
+                out
+            }
             "pair" => {
                 if arg.is_empty() {
                     String::from("bluetooth pair: usage: bluetooth pair <device>")
                 } else {
-                    format!("[Sim] Bluetooth — no physical chipset\n[Sim] Would pair with '{}'", arg)
+                    match driver.pair(arg) {
+                        Ok(()) => format!("Bluetooth: paired with '{}'", arg),
+                        Err(e) => e,
+                    }
                 }
             }
             _ => String::from(
-                "[Sim] Bluetooth Status: No hardware\n\
-                 Driver: Seal OS Bluetooth 5.0 LE (simulated)\n\
+                "Bluetooth Status: no adapter detected\n\
                  Commands: bluetooth scan, bluetooth pair <device>",
             ),
         }
@@ -527,12 +542,11 @@ impl Shell {
         if file.is_empty() {
             return String::from("run: which script? Usage: run <file.aether>");
         }
-        format!(
-            "[Aether-Lang] Loading '{}'...\n\
-             [Sim] Kernel integration pending — parser available in userspace crate\n\
-             [Sim] No bytecode execution in no_std kernel context",
-            file
-        )
+        let runtime = AetherRuntime::new();
+        match runtime.execute_file(file, "") {
+            Ok(output) => output,
+            Err(e) => format!("[Aether-Lang] {}: {}", file, e),
+        }
     }
 
     fn cmd_theme(&self, name: &str) -> String {
@@ -603,7 +617,7 @@ impl Shell {
                      Preset:          {:?} (ε={:.2}, φ={:.2})\n\
                      Decisions:       {}\n\
                      Hit ratio:       {:.1}%\n\
-                     [Sim] No DMA hardware — counters from in-memory engine",
+                     Note: prefetch counters are in-memory only (no DMA hardware)",
                     engine.preset(), engine.epsilon(), engine.phi(),
                     engine.total_decisions(), engine.hit_ratio() * 100.0
                 )

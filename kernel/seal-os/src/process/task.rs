@@ -68,6 +68,53 @@ impl Task {
         }
     }
 
+    /// Create a userspace task from a loaded ELF.
+    pub fn new_user(
+        id: u64,
+        name: &str,
+        priority: u8,
+        entry_point: u64,
+        user_stack_top: u64,
+        page_table: u64,
+    ) -> Self {
+        let embedding = Self::compute_embedding(id);
+        let mut kernel_stack = Vec::with_capacity(KERNEL_STACK_SIZE);
+        // SAFETY: we just allocated capacity, and we're writing zeros to initialize
+        unsafe {
+            kernel_stack.set_len(KERNEL_STACK_SIZE);
+        }
+
+        let stack_top = kernel_stack.as_ptr() as u64 + kernel_stack.len() as u64;
+        let stack_top = stack_top & !0xF;
+
+        let mut context = TaskContext::zero();
+        // When first scheduled, jump to enter_userspace_trampoline(entry, stack, pt)
+        context.rip = super::userspace::enter_userspace_trampoline as *const () as u64;
+        context.rdi = entry_point;
+        context.rsi = user_stack_top;
+        context.rdx = page_table;
+        context.rsp = stack_top;
+        context.rflags = 0x202; // IF set
+
+        Self {
+            id,
+            name: String::from(name),
+            state: TaskState::Ready,
+            manifold_embedding: embedding,
+            voronoi_cell: (id as usize) % 8,
+            priority,
+            ticks_used: 0,
+            entry: || {}, // dummy — userspace uses entry_point instead
+            is_userspace: true,
+            user_stack: Vec::new(),
+            page_table,
+            context,
+            kernel_stack,
+            uid: 1000,
+            gid: 1000,
+        }
+    }
+
     fn compute_embedding(id: u64) -> [f64; 8] {
         let mut e = [0.0f64; 8];
         let mut hash = id.wrapping_mul(0x517cc1b727220a95);
