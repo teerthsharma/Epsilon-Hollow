@@ -4,18 +4,21 @@
 //! IDT + PIC initialization, keyboard/mouse interrupt handlers,
 //! and global input event queue for routing to the window manager.
 
+#[cfg(not(test))]
 use spin::Lazy;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+#[cfg(not(test))]
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
+use x86_64::registers::control::Cr2;
 
 use crate::serial_println;
+#[cfg(not(test))]
 use crate::wm::event::InputEvent;
 
-const PIC1_CMD: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_CMD: u16 = 0xA0;
-const PIC2_DATA: u16 = 0xA1;
-
 const IRQ_OFFSET: u8 = 32;
+
+const VECTOR_TIMER_APIC: u8 = 48;
+const VECTOR_IPI_TLB_SHOOTDOWN: u8 = 0xFD;
+const VECTOR_IPI_RESCHEDULE: u8 = 0xFE;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -25,22 +28,32 @@ pub enum Irq {
     Mouse = IRQ_OFFSET + 12,
 }
 
-static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
+#[cfg(not(test))]
+pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.breakpoint.set_handler_fn(breakpoint_handler);
     idt.double_fault.set_handler_fn(double_fault_handler);
-    idt[Irq::Timer as u8].set_handler_fn(timer_handler);
+    idt.page_fault.set_handler_fn(page_fault_handler);
+    idt[VECTOR_TIMER_APIC].set_handler_fn(timer_handler_apic);
     idt[Irq::Keyboard as u8].set_handler_fn(keyboard_handler);
     idt[Irq::Mouse as u8].set_handler_fn(mouse_handler);
+    idt[VECTOR_IPI_RESCHEDULE].set_handler_fn(crate::cpu::smp::reschedule_ipi_handler);
+    #[cfg(feature = "test-mode")]
+    idt[0xFD].set_handler_fn(crate::drivers::apic::apic_test_handler);
+    #[cfg(not(feature = "test-mode"))]
+    idt[VECTOR_IPI_TLB_SHOOTDOWN].set_handler_fn(crate::cpu::smp::tlb_shootdown_ipi_handler);
     idt
 });
 
 static TICKS: spin::Mutex<u64> = spin::Mutex::new(0);
 
 // Fixed-size ring buffer for input events — no heap allocation in IRQ context
+#[cfg(not(test))]
 const EVENT_QUEUE_SIZE: usize = 256;
+#[cfg(not(test))]
 static EVENT_QUEUE: spin::Mutex<RingBuffer> = spin::Mutex::new(RingBuffer::new());
 
+#[cfg(not(test))]
 struct RingBuffer {
     buf: [Option<InputEvent>; EVENT_QUEUE_SIZE],
     head: usize,
@@ -48,6 +61,7 @@ struct RingBuffer {
     count: usize,
 }
 
+#[cfg(not(test))]
 impl RingBuffer {
     const fn new() -> Self {
         Self {
@@ -78,13 +92,16 @@ impl RingBuffer {
 }
 
 // PS/2 mouse state machine for 3-byte packet accumulation
+#[cfg(not(test))]
 static MOUSE_STATE: spin::Mutex<MousePacketState> = spin::Mutex::new(MousePacketState::new());
 
+#[cfg(not(test))]
 struct MousePacketState {
     bytes: [u8; 3],
     index: u8,
 }
 
+#[cfg(not(test))]
 impl MousePacketState {
     const fn new() -> Self {
         Self {
@@ -135,39 +152,36 @@ impl MousePacketState {
     }
 }
 
+#[cfg(not(test))]
 pub fn init() {
-    init_pic();
+    unsafe {
+        if !crate::drivers::apic::local_apic_init_done() {
+            crate::drivers::apic::local_apic().init();
+        }
+        crate::drivers::apic::ioapic().init();
+
+        let bsp_id = crate::drivers::apic::bsp_apic_id();
+        crate::drivers::apic::ioapic().redirect_irq(1, Irq::Keyboard as u8, bsp_id);
+        crate::drivers::apic::ioapic().redirect_irq(12, Irq::Mouse as u8, bsp_id);
+        crate::drivers::apic::ioapic().set_mask(1, false);
+        crate::drivers::apic::ioapic().set_mask(12, false);
+    }
+
     init_mouse();
     IDT.load();
     x86_64::instructions::interrupts::enable();
 }
 
-fn init_pic() {
-    unsafe {
-        use x86_64::instructions::port::Port;
-        let mut cmd1 = Port::<u8>::new(PIC1_CMD);
-        let mut data1 = Port::<u8>::new(PIC1_DATA);
-        let mut cmd2 = Port::<u8>::new(PIC2_CMD);
-        let mut data2 = Port::<u8>::new(PIC2_DATA);
-
-        // ICW1: begin init
-        cmd1.write(0x11);
-        cmd2.write(0x11);
-        // ICW2: IRQ offset
-        data1.write(IRQ_OFFSET);
-        data2.write(IRQ_OFFSET + 8);
-        // ICW3: cascade
-        data1.write(4);
-        data2.write(2);
-        // ICW4: 8086 mode
-        data1.write(0x01);
-        data2.write(0x01);
-        // Unmask: timer (0), keyboard (1), cascade (2), mouse (12)
-        data1.write(0b1111_1000);
-        data2.write(0b1110_1111);
-    }
+#[cfg(not(test))]
+/// Reload the IDT (used by APs after they enter long mode).
+pub unsafe fn reload_idt() {
+    IDT.load();
 }
 
+#[cfg(test)]
+pub fn init() {}
+
+#[cfg(not(test))]
 fn init_mouse() {
     unsafe {
         use x86_64::instructions::port::Port;
@@ -198,6 +212,7 @@ fn init_mouse() {
     }
 }
 
+#[cfg(not(test))]
 unsafe fn wait_write() {
     use x86_64::instructions::port::Port;
     let mut status = Port::<u8>::new(0x64);
@@ -206,6 +221,7 @@ unsafe fn wait_write() {
     }
 }
 
+#[cfg(not(test))]
 unsafe fn wait_read() {
     use x86_64::instructions::port::Port;
     let mut status = Port::<u8>::new(0x64);
@@ -214,6 +230,7 @@ unsafe fn wait_read() {
     }
 }
 
+#[cfg(not(test))]
 unsafe fn mouse_write(cmd: u8) {
     use x86_64::instructions::port::Port;
     let mut port_cmd = Port::<u8>::new(0x64);
@@ -224,6 +241,7 @@ unsafe fn mouse_write(cmd: u8) {
     port_data.write(cmd);
 }
 
+#[cfg(not(test))]
 unsafe fn mouse_read() -> u8 {
     use x86_64::instructions::port::Port;
     let mut data = Port::<u8>::new(0x60);
@@ -231,13 +249,10 @@ unsafe fn mouse_read() -> u8 {
     data.read()
 }
 
-fn send_eoi(irq: u8) {
+#[cfg(not(test))]
+fn send_eoi(_irq: u8) {
     unsafe {
-        use x86_64::instructions::port::Port;
-        if irq >= 8 {
-            Port::<u8>::new(PIC2_CMD).write(0x20);
-        }
-        Port::<u8>::new(PIC1_CMD).write(0x20);
+        crate::drivers::apic::LOCAL_APIC.eoi();
     }
 }
 
@@ -245,15 +260,41 @@ pub fn ticks() -> u64 {
     *TICKS.lock()
 }
 
+#[cfg(test)]
+pub fn mock_advance_ticks(delta: u64) {
+    *TICKS.lock() += delta;
+}
+
+#[cfg(not(test))]
 pub fn poll_event() -> Option<InputEvent> {
     EVENT_QUEUE.lock().pop()
 }
 
-extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
-    *TICKS.lock() += 1;
-    send_eoi(0);
+#[cfg(test)]
+pub fn poll_event() -> Option<crate::wm::event::InputEvent> {
+    None
 }
 
+#[cfg(not(test))]
+extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
+    *TICKS.lock() += 1;
+    crate::process::scheduler::scheduler_tick();
+    // Legacy PIC EOI (fallback only)
+    unsafe {
+        x86_64::instructions::port::Port::<u8>::new(0x20).write(0x20);
+    }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
+    *TICKS.lock() += 1;
+    crate::process::scheduler::scheduler_tick();
+    unsafe {
+        crate::drivers::apic::LOCAL_APIC.eoi();
+    }
+}
+
+#[cfg(not(test))]
 extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     let scancode: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
 
@@ -268,6 +309,7 @@ extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
     send_eoi(1);
 }
 
+#[cfg(not(test))]
 extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
     let byte: u8 = unsafe { x86_64::instructions::port::Port::new(0x60).read() };
 
@@ -300,8 +342,17 @@ extern "x86-interrupt" fn mouse_handler(_frame: InterruptStackFrame) {
     send_eoi(12);
 }
 
+#[cfg(not(test))]
 extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
     serial_println!("[INT] BREAKPOINT\n{:#?}", frame);
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
+    let addr = Cr2::read_raw();
+    serial_println!("[FAULT] Page fault at {:#x}, error code: {:?}", addr, error_code);
+    serial_println!("{:#?}", frame);
+    loop { x86_64::instructions::hlt(); }
 }
 
 extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _code: u64) -> ! {
@@ -310,7 +361,7 @@ extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _code
 }
 
 pub fn scancode_to_char(code: u8) -> u8 {
-    const MAP: &[u8; 58] = b"\0\x1b1234567890-=\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
+    const MAP: &[u8; 59] = b"\0\x1b1234567890-==\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
     if (code as usize) < MAP.len() { MAP[code as usize] } else { 0 }
 }
 

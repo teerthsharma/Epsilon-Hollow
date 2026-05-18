@@ -3,5 +3,6 @@
 
 //! Boot infrastructure: UEFI entry point (pure Rust, zero assembly).
 
+pub mod ap_trampoline;
 pub mod boot_info;
 pub mod uefi_entry;

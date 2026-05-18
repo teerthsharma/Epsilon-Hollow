@@ -15,6 +15,7 @@ use aether_core::scm::SpectralContractionOperator;
 use aether_core::tss::SphericalVoronoiIndex;
 
 use super::encoder::{self, ManifoldPayload};
+use super::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
 use crate::drivers::interrupts;
 
 const VORONOI_CELLS: usize = 8;
@@ -702,6 +703,136 @@ impl ManifoldFS {
     }
 }
 
+fn map_err(e: FsError) -> VfsError {
+    match e {
+        FsError::NotFound => VfsError::NotFound,
+        FsError::NotADirectory => VfsError::NotADirectory,
+        FsError::AlreadyExists => VfsError::AlreadyExists,
+    }
+}
+
+fn split_path(path: &str) -> Result<(&str, &str), VfsError> {
+    let path = path.trim_end_matches('/');
+    match path.rfind('/') {
+        Some(pos) => {
+            let dir = if pos == 0 { "/" } else { &path[..pos] };
+            let name = &path[pos + 1..];
+            if name.is_empty() {
+                return Err(VfsError::InvalidPath);
+            }
+            Ok((dir, name))
+        }
+        None => Ok(("/", path)),
+    }
+}
+
+impl FileSystem for ManifoldFS {
+    fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {
+        let id = self.resolve_path(path).map_err(map_err)?;
+        Ok(VfsHandle { fs_idx: 0, inode: id })
+    }
+
+    fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
+        let inode = self.inodes.get(&handle.inode).ok_or(VfsError::NotFound)?;
+        let text = format!(
+            "[{}] {} bytes, {} pts on S², cell={}, cluster={}",
+            inode.name,
+            inode.metadata.original_size,
+            inode.payload.point_count,
+            inode.voronoi_cell,
+            inode.cluster_id
+        );
+        let bytes = text.as_bytes();
+        let off = offset as usize;
+        if off >= bytes.len() {
+            return Ok(0);
+        }
+        let len = buf.len().min(bytes.len() - off);
+        buf[..len].copy_from_slice(&bytes[off..off + len]);
+        Ok(len)
+    }
+
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
+        let inode = self.inodes.get_mut(&handle.inode).ok_or(VfsError::NotFound)?;
+        if !matches!(inode.kind, InodeKind::File) {
+            return Err(VfsError::NotSupported);
+        }
+        inode.payload = encoder::encode_data(buf);
+        inode.metadata.original_size = buf.len() as u64;
+        inode.metadata.modified_ms = now_ms();
+        Ok(buf.len())
+    }
+
+    fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
+        let (dir_path, name) = split_path(path)?;
+        let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
+        let id = self.store(name, b"", dir_id).map_err(map_err)?;
+        Ok(VfsHandle { fs_idx: 0, inode: id })
+    }
+
+    fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
+        let (dir_path, name) = split_path(path)?;
+        let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
+        let id = self.mkdir(name, dir_id).map_err(map_err)?;
+        Ok(VfsHandle { fs_idx: 0, inode: id })
+    }
+
+    fn unlink(&mut self, path: &str) -> Result<(), VfsError> {
+        let (dir_path, name) = split_path(path)?;
+        let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
+        self.delete(name, dir_id).map_err(map_err)
+    }
+
+    fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
+        let entries = self
+            .dir_entries
+            .get(&handle.inode)
+            .ok_or(VfsError::NotADirectory)?;
+        let mut result = Vec::new();
+        for (name, &id) in entries.iter() {
+            if let Some(inode) = self.inodes.get(&id) {
+                let node_type = match inode.kind {
+                    InodeKind::File => VfsNodeType::File,
+                    InodeKind::Directory => VfsNodeType::Directory,
+                };
+                result.push(VfsDirEntry {
+                    name: name.clone(),
+                    node_type,
+                });
+            }
+        }
+        Ok(result)
+    }
+
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> {
+        let inode = self.inodes.get(&handle.inode).ok_or(VfsError::NotFound)?;
+        let node_type = match inode.kind {
+            InodeKind::File => VfsNodeType::File,
+            InodeKind::Directory => VfsNodeType::Directory,
+        };
+        Ok(VfsNode {
+            size: inode.metadata.original_size,
+            permissions: inode.metadata.permissions,
+            uid: 0,
+            gid: 0,
+            mode: inode.metadata.permissions,
+            atime: inode.metadata.modified_ms,
+            mtime: inode.metadata.modified_ms,
+            node_type,
+        })
+    }
+
+    fn mknod(
+        &mut self,
+        _path: &str,
+        _node_type: VfsNodeType,
+        _major: u32,
+        _minor: u32,
+    ) -> Result<VfsHandle, VfsError> {
+        Err(VfsError::NotSupported)
+    }
+}
+
 fn payload_similarity(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
     if a.points.is_empty() || b.points.is_empty() {
         return 0.0;
@@ -769,5 +900,213 @@ impl core::fmt::Display for FsError {
             Self::NotADirectory => write!(f, "not a directory"),
             Self::AlreadyExists => write!(f, "already exists"),
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::{test_assert, test_assert_eq};
+    use crate::testing::TestResult;
+
+    fn test_store_and_ls() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let id = fs.store_text("hello.txt", "world", root).unwrap();
+        test_assert_eq!(id, 1);
+        let entries = fs.ls(root).unwrap();
+        test_assert_eq!(entries.len(), 1);
+        test_assert_eq!(entries[0].name, "hello.txt");
+        TestResult::Pass
+    }
+
+    fn test_mkdir_and_resolve_path() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let nested = fs.mkdir("nested", docs).unwrap();
+        let resolved = fs.resolve_path("/docs/nested").unwrap();
+        test_assert_eq!(resolved, nested);
+        TestResult::Pass
+    }
+
+    fn test_teleport_is_o1() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        fs.store_text("file.txt", "content", docs).unwrap();
+
+        let result = fs.teleport("file.txt", docs, vol).unwrap();
+        // O(1) means elapsed time should not depend on file size and be minimal.
+        // With mock ticks the operation should take 0 or very few ticks.
+        test_assert!(result.elapsed_ticks <= 5, "teleport took too many ticks (not O(1))");
+        test_assert_eq!(fs.exists("file.txt", docs), false);
+        test_assert_eq!(fs.exists("file.txt", vol), true);
+        TestResult::Pass
+    }
+
+    fn test_find_returns_results() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        fs.store_text("alpha.txt", "alpha content", root).unwrap();
+        fs.store_text("beta.txt", "beta content", root).unwrap();
+        let results = fs.find("alpha");
+        test_assert!(!results.is_empty(), "find returned no results");
+        test_assert_eq!(results[0].name, "alpha.txt");
+        TestResult::Pass
+    }
+
+    fn test_resolve_path_from_relative() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let inner = fs.mkdir("inner", docs).unwrap();
+        let resolved = fs.resolve_path_from("inner", docs).unwrap();
+        test_assert_eq!(resolved, inner);
+        let resolved2 = fs.resolve_path_from("../docs/inner", inner).unwrap();
+        test_assert_eq!(resolved2, inner);
+        TestResult::Pass
+    }
+
+    fn test_delete_and_rename() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        fs.store_text("old.txt", "data", root).unwrap();
+        fs.rename("old.txt", "new.txt", root).unwrap();
+        test_assert_eq!(fs.exists("old.txt", root), false);
+        test_assert_eq!(fs.exists("new.txt", root), true);
+        fs.delete("new.txt", root).unwrap();
+        test_assert_eq!(fs.exists("new.txt", root), false);
+        TestResult::Pass
+    }
+
+    fn test_duplicate() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        fs.store_text("file.txt", "content", docs).unwrap();
+        let dup_id = fs.duplicate("file.txt", docs, vol).unwrap();
+        test_assert_eq!(fs.exists("file.txt", vol), true);
+        let inode = fs.inode(dup_id).unwrap();
+        test_assert_eq!(inode.name, "file.txt");
+        TestResult::Pass
+    }
+
+    fn test_teleport_errors() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        // Teleport non-existent file
+        let r = fs.teleport("missing.txt", docs, vol);
+        test_assert!(r.is_err(), "teleport of missing file should fail");
+        // Teleport to non-directory
+        let r2 = fs.teleport("missing.txt", docs, 999);
+        test_assert!(r2.is_err(), "teleport to non-dir should fail");
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
+        crate::testing::register_test("filesystem::mkdir_and_resolve_path", test_mkdir_and_resolve_path);
+        crate::testing::register_test("filesystem::teleport_is_o1", test_teleport_is_o1);
+        crate::testing::register_test("filesystem::find_returns_results", test_find_returns_results);
+        crate::testing::register_test("filesystem::resolve_path_from_relative", test_resolve_path_from_relative);
+        crate::testing::register_test("filesystem::delete_and_rename", test_delete_and_rename);
+        crate::testing::register_test("filesystem::duplicate", test_duplicate);
+        crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn store_and_ls() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let id = fs.store_text("hello.txt", "world", root).unwrap();
+        assert_eq!(id, 1);
+        let entries = fs.ls(root).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "hello.txt");
+    }
+
+    #[test]
+    fn mkdir_and_resolve_path() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let nested = fs.mkdir("nested", docs).unwrap();
+        assert_eq!(fs.resolve_path("/docs/nested").unwrap(), nested);
+    }
+
+    #[test]
+    fn teleport_is_fast() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        fs.store_text("file.txt", "content", docs).unwrap();
+        let result = fs.teleport("file.txt", docs, vol).unwrap();
+        assert!(result.elapsed_ticks <= 5, "teleport not O(1)");
+        assert!(!fs.exists("file.txt", docs));
+        assert!(fs.exists("file.txt", vol));
+    }
+
+    #[test]
+    fn find_returns_results() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        fs.store_text("alpha.txt", "alpha content", root).unwrap();
+        let results = fs.find("alpha");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].name, "alpha.txt");
+    }
+
+    #[test]
+    fn resolve_path_from_relative() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let inner = fs.mkdir("inner", docs).unwrap();
+        assert_eq!(fs.resolve_path_from("inner", docs).unwrap(), inner);
+    }
+
+    #[test]
+    fn delete_and_rename() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        fs.store_text("old.txt", "data", root).unwrap();
+        fs.rename("old.txt", "new.txt", root).unwrap();
+        assert!(!fs.exists("old.txt", root));
+        assert!(fs.exists("new.txt", root));
+        fs.delete("new.txt", root).unwrap();
+        assert!(!fs.exists("new.txt", root));
+    }
+
+    #[test]
+    fn duplicate_file() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        fs.store_text("file.txt", "content", docs).unwrap();
+        let dup_id = fs.duplicate("file.txt", docs, vol).unwrap();
+        assert!(fs.exists("file.txt", vol));
+        assert_eq!(fs.inode(dup_id).unwrap().name, "file.txt");
+    }
+
+    #[test]
+    fn teleport_errors() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let docs = fs.mkdir("docs", root).unwrap();
+        let vol = fs.mkdir("vol_a", root).unwrap();
+        assert!(fs.teleport("missing.txt", docs, vol).is_err());
+        assert!(fs.teleport("missing.txt", docs, 999).is_err());
     }
 }

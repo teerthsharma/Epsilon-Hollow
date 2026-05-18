@@ -4,10 +4,13 @@
 //! PCI bus enumeration — config space at 0xCF8/0xCFC.
 
 use alloc::vec::Vec;
+use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;
+
+static PCI_DEVICES: Mutex<Vec<PciDevice>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone)]
 pub struct PciDevice {
@@ -38,9 +41,28 @@ impl PciDevice {
     pub fn is_wifi(&self) -> bool {
         self.class == 0x02 && self.subclass == 0x80
     }
+
+    pub fn is_ahci(&self) -> bool {
+        self.class == 0x01 && self.subclass == 0x06 && self.prog_if == 0x01
+    }
+
+    pub fn bar_address(&self, bar: u8) -> u64 {
+        let val = pci_read32(self.bus, self.device, self.function, 0x10 + bar * 4);
+        if val & 1 == 0 {
+            let typ = (val >> 1) & 0x03;
+            if typ == 0x02 && bar < 5 {
+                let high = pci_read32(self.bus, self.device, self.function, 0x10 + (bar + 1) * 4);
+                ((val & !0x0F) as u64) | ((high as u64) << 32)
+            } else {
+                (val & !0x0F) as u64
+            }
+        } else {
+            (val & !0x03) as u64
+        }
+    }
 }
 
-fn pci_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+pub fn pci_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     let addr: u32 = 0x80000000
         | ((bus as u32) << 16)
         | ((device as u32) << 11)
@@ -92,5 +114,16 @@ pub fn enumerate() -> Vec<PciDevice> {
 }
 
 pub fn init() {
-    let _devices = enumerate();
+    let devices = enumerate();
+    *PCI_DEVICES.lock() = devices;
+}
+
+pub fn get_devices() -> Vec<PciDevice> {
+    PCI_DEVICES.lock().clone()
+}
+
+pub fn get_device_by_class(class: u8, subclass: u8, prog_if: u8) -> Option<PciDevice> {
+    PCI_DEVICES.lock().iter().find(|d| {
+        d.class == class && d.subclass == subclass && d.prog_if == prog_if
+    }).cloned()
 }
