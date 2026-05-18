@@ -535,6 +535,162 @@ impl ManifoldFS {
         }
     }
 
+    pub fn inode(&self, id: u64) -> Option<&Inode> {
+        self.inodes.get(&id)
+    }
+
+    pub fn is_dir(&self, id: u64) -> bool {
+        self.inodes
+            .get(&id)
+            .map(|i| matches!(i.kind, InodeKind::Directory))
+            .unwrap_or(false)
+    }
+
+    pub fn exists(&self, name: &str, dir_id: u64) -> bool {
+        self.dir_entries
+            .get(&dir_id)
+            .map(|e| e.contains_key(name))
+            .unwrap_or(false)
+    }
+
+    pub fn read_text(&self, name: &str, dir_id: u64) -> Option<String> {
+        let inode_id = self.dir_entries.get(&dir_id)?.get(name)?;
+        let inode = self.inodes.get(inode_id)?;
+        Some(format!(
+            "[{}] {} bytes, {} pts on S², cell={}, cluster={}",
+            inode.name, inode.metadata.original_size,
+            inode.payload.point_count, inode.voronoi_cell, inode.cluster_id
+        ))
+    }
+
+    pub fn file_info(&self, name: &str, dir_id: u64) -> Option<String> {
+        let inode_id = self.dir_entries.get(&dir_id)?.get(name)?;
+        let inode = self.inodes.get(inode_id)?;
+        Some(format!(
+            "Name:           {}\n\
+             Type:           {}\n\
+             Size:           {} bytes\n\
+             Payload:        {} points on S²\n\
+             Voronoi cell:   {}\n\
+             Cluster ID:     {}\n\
+             Permissions:    {:o}\n\
+             Inode:          {}",
+            inode.name,
+            match inode.kind { InodeKind::File => "file", InodeKind::Directory => "directory" },
+            inode.metadata.original_size,
+            inode.payload.point_count,
+            inode.voronoi_cell,
+            inode.cluster_id,
+            inode.metadata.permissions,
+            inode.id
+        ))
+    }
+
+    pub fn delete(&mut self, name: &str, dir_id: u64) -> Result<(), FsError> {
+        let inode_id = self.dir_entries
+            .get(&dir_id)
+            .and_then(|e| e.get(name).copied())
+            .ok_or(FsError::NotFound)?;
+
+        if let Some(inode) = self.inodes.get(&inode_id) {
+            let cell = inode.voronoi_cell;
+            self.cell_files[cell].retain(|&id| id != inode_id);
+            if self.cluster_sizes[cell] > 0 {
+                self.cluster_sizes[cell] -= 1;
+            }
+        }
+
+        self.inodes.remove(&inode_id);
+        self.dir_entries.remove(&inode_id);
+        self.dir_entries.get_mut(&dir_id).unwrap().remove(name);
+        self.update_entropy();
+        self.log_event("T1/TSS", format!("deleted '{}'", name));
+        Ok(())
+    }
+
+    pub fn rename(&mut self, old: &str, new: &str, dir_id: u64) -> Result<(), FsError> {
+        let inode_id = self.dir_entries
+            .get(&dir_id)
+            .and_then(|e| e.get(old).copied())
+            .ok_or(FsError::NotFound)?;
+
+        if self.exists(new, dir_id) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        if let Some(inode) = self.inodes.get_mut(&inode_id) {
+            inode.name = String::from(new);
+            inode.metadata.modified_ms = now_ms();
+        }
+
+        let entries = self.dir_entries.get_mut(&dir_id).unwrap();
+        entries.remove(old);
+        entries.insert(String::from(new), inode_id);
+        self.log_event("T1/TSS", format!("renamed '{}' -> '{}'", old, new));
+        Ok(())
+    }
+
+    pub fn duplicate(&mut self, name: &str, src_dir: u64, dst_dir: u64) -> Result<u64, FsError> {
+        let src_id = self.dir_entries
+            .get(&src_dir)
+            .and_then(|e| e.get(name).copied())
+            .ok_or(FsError::NotFound)?;
+
+        if !self.dir_entries.contains_key(&dst_dir) {
+            return Err(FsError::NotADirectory);
+        }
+        if self.dir_entries[&dst_dir].contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let src_inode = self.inodes.get(&src_id).ok_or(FsError::NotFound)?.clone();
+        let id = self.next_inode;
+        self.next_inode += 1;
+
+        let new_inode = Inode {
+            id,
+            name: String::from(name),
+            kind: src_inode.kind,
+            payload: src_inode.payload,
+            metadata: InodeMetadata {
+                created_ms: now_ms(),
+                modified_ms: now_ms(),
+                original_size: src_inode.metadata.original_size,
+                permissions: src_inode.metadata.permissions,
+            },
+            voronoi_cell: src_inode.voronoi_cell,
+            cluster_id: src_inode.cluster_id,
+            parent: dst_dir,
+        };
+
+        let cell = new_inode.voronoi_cell;
+        self.inodes.insert(id, new_inode);
+        self.dir_entries.get_mut(&dst_dir).unwrap().insert(String::from(name), id);
+        self.cell_files[cell].push(id);
+        self.cluster_sizes[cell] += 1;
+        self.update_entropy();
+        self.log_event("T1/TSS", format!("duplicated '{}' -> dir {}", name, dst_dir));
+        Ok(id)
+    }
+
+    pub fn resolve_path_from(&self, path: &str, from: u64) -> Result<u64, FsError> {
+        if path.starts_with('/') {
+            return self.resolve_path(path);
+        }
+        let mut current = from;
+        for part in path.split('/').filter(|s| !s.is_empty()) {
+            if part == ".." {
+                if let Some(inode) = self.inodes.get(&current) {
+                    current = inode.parent;
+                }
+                continue;
+            }
+            let entries = self.dir_entries.get(&current).ok_or(FsError::NotADirectory)?;
+            current = *entries.get(part).ok_or(FsError::NotFound)?;
+        }
+        Ok(current)
+    }
+
     pub fn theorem_status(&self) -> [(&'static str, &'static str); 5] {
         [
             ("T1/TSS", "ACTIVE"),
