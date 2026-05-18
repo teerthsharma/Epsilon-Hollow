@@ -1,0 +1,10 @@
+[workspace]
+
+[package]
+name = "seal-mkimage"
+version = "0.1.0"
+edition = "2021"
+description = "Creates a bootable UEFI disk image for Seal OS"
+
+[dependencies]
+fatfs = "0.3"
