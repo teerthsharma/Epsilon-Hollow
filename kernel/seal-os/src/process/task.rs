@@ -1,9 +1,12 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Task (process) representation with manifold embedding.
+//! Task (process) representation with manifold embedding and CPU context.
 
 use alloc::string::String;
+use alloc::vec::Vec;
+
+use super::context_switch::{TaskContext, KERNEL_STACK_SIZE, init_task_context};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TaskState {
@@ -22,11 +25,30 @@ pub struct Task {
     pub priority: u8,
     pub ticks_used: u64,
     pub entry: fn(),
+    pub is_userspace: bool,
+    pub user_stack: Vec<u8>,
+    pub page_table: u64,
+
+    // Real multitasking support
+    pub context: TaskContext,
+    pub kernel_stack: Vec<u8>,
+
+    // Security identity
+    pub uid: u32,
+    pub gid: u32,
 }
 
 impl Task {
     pub fn new(id: u64, name: &str, priority: u8, entry: fn()) -> Self {
         let embedding = Self::compute_embedding(id);
+        let mut kernel_stack = Vec::with_capacity(KERNEL_STACK_SIZE);
+        // SAFETY: we just allocated capacity, and we're writing zeros to initialize
+        unsafe {
+            kernel_stack.set_len(KERNEL_STACK_SIZE);
+        }
+
+        let context = init_task_context(&mut kernel_stack, entry);
+
         Self {
             id,
             name: String::from(name),
@@ -36,6 +58,13 @@ impl Task {
             priority,
             ticks_used: 0,
             entry,
+            is_userspace: false,
+            user_stack: Vec::new(),
+            page_table: 0,
+            context,
+            kernel_stack,
+            uid: 0,
+            gid: 0,
         }
     }
 

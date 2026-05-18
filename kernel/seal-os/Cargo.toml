@@ -8,6 +8,10 @@ authors = ["Teerth Sharma"]
 license = "MIT"
 description = "Seal OS — The Geometrical Operating System. All data = geometry on S²."
 
+[features]
+default = []
+test-mode = []
+
 [dependencies]
 aether-core = { path = "../epsilon/epsilon/crates/aether-core", default-features = false, features = ["no_std"] }
 spin = "0.9"

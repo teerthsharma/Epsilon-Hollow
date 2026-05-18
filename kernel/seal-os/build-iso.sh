@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
-# Build Seal OS kernel and create bootable ISO
+# Build Seal OS kernel and create bootable UEFI disk image
 set -e
 
-echo "=== Building Seal OS Kernel ==="
-cargo build --release
+echo "=== Building Seal OS Kernel (UEFI) ==="
+cargo +nightly build --release
 
-echo "=== Creating ISO structure ==="
-mkdir -p iso/boot/grub
-cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
-cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
-
-echo "=== Creating bootable ISO ==="
-grub-mkrescue -o seal-os.iso iso/ 2>/dev/null
+echo "=== Creating UEFI disk image ==="
+cd ../seal-mkimage
+cargo +stable run --release
 
 echo "=== Done ==="
-echo "ISO: seal-os.iso ($(du -h seal-os.iso | cut -f1))"
+echo "Image: target/x86_64-unknown-uefi/release/seal-os.img"
 echo ""
-echo "Run with: qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M"
+echo "Run with: ./run-qemu.sh"

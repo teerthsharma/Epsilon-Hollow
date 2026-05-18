@@ -1,53 +1,63 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Kernel heap allocator (static 4MB bump allocator for Phase 1).
+//! Memory subsystem — physical allocator, virtual memory manager, slab allocator,
+//! and global heap allocator.
 
-use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
-use spin::Mutex;
+use x86_64::PhysAddr;
 
-const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MB
+use crate::boot::boot_info::BootInfo;
 
-#[repr(C, align(4096))]
-struct HeapStorage([u8; HEAP_SIZE]);
+pub mod gdt;
+pub mod heap;
+pub mod phys;
+pub mod slab;
+pub mod virt;
 
-static mut HEAP: HeapStorage = HeapStorage([0; HEAP_SIZE]);
-
-struct BumpAllocator {
-    next: usize,
-}
-
-impl BumpAllocator {
-    const fn new() -> Self {
-        Self { next: 0 }
-    }
-
-    fn alloc(&mut self, layout: Layout) -> *mut u8 {
-        let start = (self.next + layout.align() - 1) & !(layout.align() - 1);
-        let end = start + layout.size();
-        if end > HEAP_SIZE {
-            return null_mut();
-        }
-        self.next = end;
-        unsafe { (core::ptr::addr_of_mut!(HEAP) as *mut u8).add(start) }
-    }
-}
-
-static ALLOCATOR: Mutex<BumpAllocator> = Mutex::new(BumpAllocator::new());
-
-struct SealAllocator;
-
-unsafe impl GlobalAlloc for SealAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATOR.lock().alloc(layout)
-    }
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-}
+pub use heap::SealAllocator;
 
 #[global_allocator]
 static GLOBAL: SealAllocator = SealAllocator;
 
-pub fn init_heap() {
-    // Static buffer — nothing to init, but this marks the milestone
+/// One-time initialisation of the entire memory subsystem.
+///
+/// # Safety
+/// Must be called exactly once, early in kernel boot, with valid `BootInfo`.
+pub unsafe fn init(boot_info: &BootInfo) {
+    let kernel_start = PhysAddr::new(boot_info.kernel_base);
+    let kernel_end = PhysAddr::new(boot_info.kernel_base + boot_info.kernel_size);
+
+    let fb_start = PhysAddr::new(boot_info.fb_addr);
+    let fb_size = boot_info.fb_pitch as u64 * boot_info.fb_height as u64;
+    let fb_end = PhysAddr::new(boot_info.fb_addr + fb_size);
+
+    phys::init(
+        &boot_info.memory_map[..boot_info.memory_map_len],
+        kernel_start,
+        kernel_end,
+        fb_start,
+        fb_end,
+    );
+
+    virt::init(kernel_start, boot_info.kernel_size);
+    gdt::init_gdt();
+}
+
+/// Return heap diagnostics `(allocated_bytes, total_reserved_bytes)`.
+///
+/// `total_reserved_bytes` is currently a best-effort estimate based on the
+/// free-frame count plus allocated bytes.
+pub fn heap_stats() -> (usize, usize) {
+    let allocated = heap::total_allocated();
+    let free_frames = phys::free_count();
+    // total = allocated + free frames * 4096 (approximate)
+    let total = allocated + free_frames * 4096;
+    (allocated, total)
+}
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    pub fn register_all() {
+        // Memory tests will be registered here once implemented
+    }
 }

@@ -1,18 +1,43 @@
 #!/usr/bin/env bash
-# Run Seal OS in QEMU
+# Run Seal OS in QEMU with UEFI firmware (OVMF)
 set -e
 
-ISO="seal-os.iso"
+IMG="../seal-mkimage/target/x86_64-unknown-uefi/release/seal-os.img"
 
-if [ ! -f "$ISO" ]; then
-    echo "No ISO found. Building..."
-    ./build-iso.sh
+if [ ! -f "$IMG" ]; then
+    echo "No disk image found. Building..."
+    (cd ../seal-mkimage && cargo +stable run --release)
 fi
 
-qemu-system-x86_64 \
-    -cdrom "$ISO" \
-    -serial stdio \
-    -m 512M \
-    -vga std \
-    -no-reboot \
-    -no-shutdown
+# Default OVMF paths on common Linux distros
+OVMF_CODE=""
+for path in \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/qemu/OVMF_CODE.fd \
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+    /usr/share/edk2/x64/OVMF_CODE.fd; do
+    if [ -f "$path" ]; then
+        OVMF_CODE="$path"
+        break
+    fi
+done
+
+if [ -z "$OVMF_CODE" ]; then
+    echo "WARNING: OVMF firmware not found. Trying without -bios (may fail for UEFI .efi)."
+    qemu-system-x86_64 \
+        -cdrom "$IMG" \
+        -serial stdio \
+        -m 4G \
+        -vga std \
+        -no-reboot \
+        -no-shutdown
+else
+    qemu-system-x86_64 \
+        -bios "$OVMF_CODE" \
+        -drive file="$IMG",format=raw \
+        -serial stdio \
+        -m 4G \
+        -vga std \
+        -no-reboot \
+        -no-shutdown
+fi
