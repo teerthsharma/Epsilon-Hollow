@@ -79,7 +79,7 @@ impl UsbSubsystem {
     }
 
     pub fn enumerate_ports(&mut self) {
-        // [Sim] No real port enumeration — no xHCI hardware present
+        // No real port enumeration — no xHCI hardware present
     }
 
     pub fn device_count(&self) -> usize {
@@ -92,5 +92,5 @@ impl UsbSubsystem {
 }
 
 pub fn init() {
-    // [Sim] USB subsystem init is a no-op — no real hardware to initialize
+    // USB subsystem init is a no-op — no real hardware to initialize
 }

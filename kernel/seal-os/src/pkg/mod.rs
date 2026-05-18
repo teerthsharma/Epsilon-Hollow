@@ -46,7 +46,7 @@ impl ManifoldPkg {
         self.registry.install(manifest);
 
         Ok(format!(
-            "[Sim] Installed '{}' v1.0.0 — metadata stored ({} deps resolved)",
+            "Installed '{}' v1.0.0 — metadata stored ({} deps resolved)",
             name,
             deps.len()
         ))
@@ -57,7 +57,7 @@ impl ManifoldPkg {
             return Err(format!("'{}' is not installed", name));
         }
         self.registry.remove(name);
-        Ok(format!("[Sim] Removed '{}' — metadata cleared", name))
+        Ok(format!("Removed '{}' — metadata cleared", name))
     }
 
     pub fn list(&self) -> Vec<&PackageManifest> {

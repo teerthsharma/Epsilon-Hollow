@@ -209,11 +209,12 @@ impl ManifoldFS {
         let pre_epsilon = self.governor.epsilon();
         self.governor_tick(0.0);
 
-        self.dir_entries.get_mut(&src_dir).unwrap().remove(name);
-        self.dir_entries
-            .get_mut(&dst_dir)
-            .unwrap()
-            .insert(String::from(name), inode_id);
+        if let Some(src_entries) = self.dir_entries.get_mut(&src_dir) {
+            src_entries.remove(name);
+        }
+        if let Some(dst_entries) = self.dir_entries.get_mut(&dst_dir) {
+            dst_entries.insert(String::from(name), inode_id);
+        }
 
         if let Some(inode) = self.inodes.get_mut(&inode_id) {
             inode.parent = dst_dir;
@@ -275,7 +276,7 @@ impl ManifoldFS {
                 });
             }
         }
-        results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        results.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
         results
     }
 
@@ -339,10 +340,9 @@ impl ManifoldFS {
 
         self.inodes.insert(id, inode);
         self.dir_entries.insert(id, BTreeMap::new());
-        self.dir_entries
-            .get_mut(&parent_id)
-            .unwrap()
-            .insert(String::from(name), id);
+        if let Some(parent_entries) = self.dir_entries.get_mut(&parent_id) {
+            parent_entries.insert(String::from(name), id);
+        }
 
         self.log_event(
             "T5/HCS",
@@ -603,7 +603,9 @@ impl ManifoldFS {
 
         self.inodes.remove(&inode_id);
         self.dir_entries.remove(&inode_id);
-        self.dir_entries.get_mut(&dir_id).unwrap().remove(name);
+        if let Some(entries) = self.dir_entries.get_mut(&dir_id) {
+            entries.remove(name);
+        }
         self.update_entropy();
         self.log_event("T1/TSS", format!("deleted '{}'", name));
         Ok(())
@@ -624,9 +626,10 @@ impl ManifoldFS {
             inode.metadata.modified_ms = now_ms();
         }
 
-        let entries = self.dir_entries.get_mut(&dir_id).unwrap();
-        entries.remove(old);
-        entries.insert(String::from(new), inode_id);
+        if let Some(entries) = self.dir_entries.get_mut(&dir_id) {
+            entries.remove(old);
+            entries.insert(String::from(new), inode_id);
+        }
         self.log_event("T1/TSS", format!("renamed '{}' -> '{}'", old, new));
         Ok(())
     }

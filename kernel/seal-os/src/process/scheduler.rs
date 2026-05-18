@@ -63,9 +63,34 @@ impl ManifoldScheduler {
         id
     }
 
-    pub fn spawn_user(&mut self, _name: &str, _priority: u8, _elf_data: &[u8]) -> Result<u64, super::elf::ElfError> {
-        // Userspace spawn temporarily disabled until ELF loader integration is complete.
-        Err(super::elf::ElfError::LoadFailed)
+    pub fn spawn_user(&mut self, name: &str, priority: u8, elf_data: &[u8]) -> Result<u64, super::elf::ElfError> {
+        let aslr_base = crate::security::aslr::randomize_mmap_base();
+        let loaded = super::elf::load(elf_data, aslr_base)?;
+
+        // Allocate user stack (64 KiB).
+        let user_stack_size = 65536usize;
+        let mut user_stack = alloc::vec::Vec::with_capacity(user_stack_size);
+        // SAFETY: capacity just allocated; zero-initialize for safety
+        unsafe {
+            user_stack.set_len(user_stack_size);
+        }
+        let user_stack_top = user_stack.as_ptr() as u64 + user_stack_size as u64;
+        let user_stack_top = user_stack_top & !0xF;
+
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let mut task = super::task::Task::new_user(
+            id,
+            name,
+            priority,
+            loaded.entry_point,
+            user_stack_top,
+            loaded.page_table,
+        );
+        task.user_stack = user_stack;
+        self.tasks.push(task);
+        Ok(id)
     }
 
     pub fn tick(&mut self) {

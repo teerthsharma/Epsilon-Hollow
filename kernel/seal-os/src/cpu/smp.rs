@@ -3,7 +3,7 @@
 
 //! SMP bring-up: INIT-SIPI-SIPI protocol and AP idle loop.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -21,7 +21,7 @@ use crate::serial_println;
 // ---------------------------------------------------------------------------
 
 pub static AP_READY_FLAG: AtomicBool = AtomicBool::new(false);
-pub static mut AP_PER_CPU_PTR: u64 = 0;
+pub static AP_PER_CPU_PTR: AtomicU64 = AtomicU64::new(0);
 
 pub static TLB_SHOOTDOWN_ADDR: spin::Mutex<u64> = spin::Mutex::new(0);
 pub static TLB_SHOOTDOWN_ACK: spin::Mutex<bool> = spin::Mutex::new(false);
@@ -58,7 +58,7 @@ pub fn smp_init() {
         let per_cpu = alloc_ap_cpu(apic_id, cpu_num);
 
         unsafe {
-            AP_PER_CPU_PTR = per_cpu as *mut _ as u64;
+            AP_PER_CPU_PTR.store(per_cpu as *mut _ as u64, Ordering::SeqCst);
             // Patch the trampoline page so the AP gets the correct pointer.
             ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64)
                 .write_unaligned(per_cpu as *mut _ as u64);
@@ -115,7 +115,7 @@ pub fn smp_init() {
 /// AP entry point after the trampoline.
 pub extern "C" fn ap_main() {
     unsafe {
-        let per_cpu = &mut *(AP_PER_CPU_PTR as *mut PerCpu);
+        let per_cpu = &mut *(AP_PER_CPU_PTR.load(Ordering::SeqCst) as *mut PerCpu);
 
         // Set GS base
         Msr::new(0xC000_0101).write(per_cpu as *mut _ as u64);
@@ -251,7 +251,7 @@ fn prepare_trampoline_page() {
         ((TRAMPOLINE_PAGE + OFF_BSP_PML4) as *mut u64).write_unaligned(pml4);
 
         // AP per-cpu pointer (filled per-AP at runtime)
-        ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64).write_unaligned(0);
+        ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64).write_unaligned(AP_PER_CPU_PTR.load(Ordering::SeqCst));
 
         // ap_main address
         ((TRAMPOLINE_PAGE + OFF_AP_MAIN_ADDR) as *mut u64).write_unaligned(ap_main as *const () as u64);

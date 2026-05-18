@@ -26,21 +26,21 @@ impl MassStorageDriver {
     }
 
     pub fn inquiry(&self) -> &'static str {
-        "[Sim] Seal OS USB Mass Storage"
+        "Seal OS USB Mass Storage"
     }
 
     pub fn read_capacity(&self) -> (u64, u32) {
-        // [Sim] Returns stored values; no real SCSI READ CAPACITY command issued
+        // Returns stored values; no real SCSI READ CAPACITY command issued
         (self.capacity_sectors, self.sector_size)
     }
 
     pub fn read_sectors(&self, _lba: u64, _count: u32) -> Vec<u8> {
-        // [Sim] No real bulk transfer — cannot read from simulated device
+        // No real bulk transfer — cannot read from simulated device
         Vec::new()
     }
 
     pub fn write_sectors(&self, _lba: u64, _data: &[u8]) -> Result<(), &'static str> {
-        Err("[Sim] write_sectors: no real USB mass storage hardware present")
+        Err("write_sectors: no real USB mass storage hardware present")
     }
 
     pub fn is_connected(&self) -> bool {

@@ -174,14 +174,15 @@ impl MediaPlayer {
         let ext = filename.rsplit('.').next().unwrap_or("");
         let container = ContainerFormat::from_extension(ext);
 
-        if container == ContainerFormat::Unknown {
+        // Only WAV/PCM is supported; all other formats are honestly rejected.
+        if container != ContainerFormat::Wav {
             return Err(format!(
-                "Unsupported format '.{}'\nSupported: mp4, avi, mkv, mov, webm, flv, wmv, ogg, mp3, wav, flac, aac",
+                "Unsupported format '.{}'\nSupported: wav (PCM)",
                 ext
             ));
         }
 
-        let info = probe_media(filename, container);
+        let info = probe_wav(filename);
         let summary = format_media_info(filename, &info);
 
         self.current_file = Some(String::from(filename));
@@ -499,36 +500,47 @@ impl MediaPlayer {
     }
 }
 
-fn probe_media(filename: &str, container: ContainerFormat) -> MediaInfo {
-    let (video_codec, audio_codec) = match container {
-        ContainerFormat::Mp4 | ContainerFormat::Mov => (VideoCodec::H264, AudioCodec::Aac),
-        ContainerFormat::Avi => (VideoCodec::Mpeg4, AudioCodec::Mp3),
-        ContainerFormat::Mkv => (VideoCodec::H265, AudioCodec::Opus),
-        ContainerFormat::Webm => (VideoCodec::Vp9, AudioCodec::Opus),
-        ContainerFormat::Flv => (VideoCodec::H264, AudioCodec::Aac),
-        ContainerFormat::Wmv => (VideoCodec::WmvV3, AudioCodec::Wma),
-        ContainerFormat::Ogg => (VideoCodec::Theora, AudioCodec::Vorbis),
-        ContainerFormat::Mp3 => (VideoCodec::None, AudioCodec::Mp3),
-        ContainerFormat::Wav => (VideoCodec::None, AudioCodec::Pcm),
-        ContainerFormat::Flac => (VideoCodec::None, AudioCodec::Flac),
-        ContainerFormat::Aac => (VideoCodec::None, AudioCodec::Aac),
-        ContainerFormat::Unknown => (VideoCodec::None, AudioCodec::None),
-    };
+fn probe_wav(filename: &str) -> MediaInfo {
+    // Try to read the file from ManifoldFS and parse the WAV header.
+    let mut sample_rate = 44100u32;
+    let mut channels = 2u8;
+    let mut bits_per_sample = 16u16;
+    let mut duration_secs = 0u64;
 
-    let name_hash = filename.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    let duration = 60 + (name_hash % 7200);
+    if let Ok(data) = crate::fs::vfs::with_vfs(|vfs| {
+        if let Ok(handle) = vfs.lookup_follow(filename) {
+            let mut buf = alloc::vec![0u8; 65536];
+            if let Ok(n) = vfs.read(handle, &mut buf, 0) {
+                buf.truncate(n);
+                return Ok(buf);
+            }
+        }
+        Err(())
+    }) {
+        if data.len() >= 44 && &data[0..4] == b"RIFF" && &data[8..12] == b"WAVE" {
+            // Parse fmt chunk (offset 22 = channels, 24 = sample rate, 34 = bits per sample)
+            channels = u16::from_le_bytes([data[22], data[23]]) as u8;
+            sample_rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+            bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
+            let data_size = u32::from_le_bytes([data[40], data[41], data[42], data[43]]) as u64;
+            let byte_rate = (sample_rate as u64) * (channels as u64) * (bits_per_sample as u64 / 8);
+            if byte_rate > 0 {
+                duration_secs = data_size / byte_rate;
+            }
+        }
+    }
 
     MediaInfo {
-        container,
-        video_codec,
-        audio_codec,
-        width: if container.is_video() { 1920 } else { 0 },
-        height: if container.is_video() { 1080 } else { 0 },
-        fps: if container.is_video() { 30 } else { 0 },
-        duration_secs: duration,
-        bitrate_kbps: if container.is_video() { 8000 } else { 320 },
-        sample_rate: 48000,
-        channels: 2,
+        container: ContainerFormat::Wav,
+        video_codec: VideoCodec::None,
+        audio_codec: AudioCodec::Pcm,
+        width: 0,
+        height: 0,
+        fps: 0,
+        duration_secs,
+        bitrate_kbps: ((sample_rate as u32) * (channels as u32) * (bits_per_sample as u32)) / 1000,
+        sample_rate,
+        channels,
     }
 }
 

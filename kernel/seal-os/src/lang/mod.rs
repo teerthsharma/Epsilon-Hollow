@@ -16,23 +16,21 @@ impl AetherRuntime {
         Self { initialized: true }
     }
 
-    pub fn execute_source(&self, source: &str) -> Result<String, String> {
-        let _ = source;
+    pub fn execute_source(&self, _source: &str) -> Result<String, String> {
         if !self.initialized {
             return Err(String::from("Aether-Lang runtime not initialized"));
         }
-        Ok(String::from(
-            "[Sim] Aether-Lang kernel integration pending — parser available in userspace crate",
+        Err(String::from(
+            "Aether-Lang: interpreter not yet integrated into kernel runtime",
         ))
     }
 
-    pub fn execute_file(&self, name: &str, source: &str) -> Result<String, String> {
+    pub fn execute_file(&self, _name: &str, _source: &str) -> Result<String, String> {
         if !self.initialized {
             return Err(String::from("Aether-Lang runtime not initialized"));
         }
-        let _ = (name, source);
-        Ok(String::from(
-            "[Sim] Aether-Lang kernel integration pending — parser available in userspace crate",
+        Err(String::from(
+            "Aether-Lang: interpreter not yet integrated into kernel runtime",
         ))
     }
 
