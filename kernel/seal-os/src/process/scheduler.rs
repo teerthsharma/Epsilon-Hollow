@@ -3,8 +3,10 @@
 
 //! ManifoldScheduler — T1/T2/T4 driven preemptive process scheduling.
 //!
-//! This scheduler now performs real x86_64 context switches between kernel tasks.
-//! SMP-aware: each CPU has its own scheduler instance and runqueue.
+//! Scheduling is O(1) amortized and independent of total task count.
+//! Tasks are routed to Voronoi cell queues at spawn time; selection
+//! performs at most 8 cell probes + 256 priority bucket pops — all
+//! bounded by compile-time constants.
 
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -16,11 +18,131 @@ use aether_core::tss::SphericalVoronoiIndex;
 use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE};
 use super::task::{Task, TaskState};
 
+const VORONOI_CELLS: usize = 8;
+
+// ---------------------------------------------------------------------------
+// TaskSlab — stable-index task storage
+// ---------------------------------------------------------------------------
+
+struct TaskSlot {
+    task: Option<Task>,
+}
+
+struct TaskSlab {
+    slots: Vec<TaskSlot>,
+    free_list: Vec<usize>,
+    allocated: usize,
+}
+
+impl TaskSlab {
+    fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            allocated: 0,
+        }
+    }
+
+    fn alloc(&mut self, task: Task) -> usize {
+        self.allocated += 1;
+        if let Some(idx) = self.free_list.pop() {
+            self.slots[idx].task = Some(task);
+            idx
+        } else {
+            let idx = self.slots.len();
+            self.slots.push(TaskSlot { task: Some(task) });
+            idx
+        }
+    }
+
+    fn get(&self, idx: usize) -> Option<&Task> {
+        self.slots.get(idx)?.task.as_ref()
+    }
+
+    fn get_mut(&mut self, idx: usize) -> Option<&mut Task> {
+        self.slots.get_mut(idx)?.task.as_mut()
+    }
+
+    fn remove(&mut self, idx: usize) -> Option<Task> {
+        let slot = self.slots.get_mut(idx)?;
+        let task = slot.task.take()?;
+        self.allocated -= 1;
+        self.free_list.push(idx);
+        Some(task)
+    }
+
+    fn len(&self) -> usize {
+        self.allocated
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CellQueue — per-Voronoi-cell ready queue
+// ---------------------------------------------------------------------------
+
+struct CellQueue {
+    buckets: [Vec<usize>; 256],
+    highest: Option<u8>,
+    ready_count: usize,
+}
+
+impl CellQueue {
+    fn new() -> Self {
+        // Use MaybeUninit to safely initialize [Vec<usize>; 256] without
+        // requiring Default for large arrays (which is unavailable in some
+        // no_std toolchain revisions).
+        let mut buckets: [core::mem::MaybeUninit<Vec<usize>>; 256] =
+            unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+        for b in buckets.iter_mut() {
+            b.write(Vec::new());
+        }
+        Self {
+            buckets: unsafe { core::mem::transmute(buckets) },
+            highest: None,
+            ready_count: 0,
+        }
+    }
+
+    fn push(&mut self, idx: usize, priority: u8) {
+        self.buckets[priority as usize].push(idx);
+        self.ready_count += 1;
+        if self.highest.map(|h| priority > h).unwrap_or(true) {
+            self.highest = Some(priority);
+        }
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let priority = self.highest?;
+        let bucket = &mut self.buckets[priority as usize];
+        let idx = bucket.pop()?;
+        self.ready_count -= 1;
+        if bucket.is_empty() {
+            // Scan down to find next non-empty priority bucket.
+            // O(256) = O(1) since priority is a u8.
+            let mut new_highest = None;
+            for p in (0..=priority).rev() {
+                if !self.buckets[p as usize].is_empty() {
+                    new_highest = Some(p);
+                    break;
+                }
+            }
+            self.highest = new_highest;
+        }
+        Some(idx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ManifoldScheduler
+// ---------------------------------------------------------------------------
+
 pub struct ManifoldScheduler {
-    tasks: Vec<Task>,
+    slab: TaskSlab,
     next_id: u64,
     current: Option<usize>,
     voronoi: SphericalVoronoiIndex<8>,
+    cell_queues: [CellQueue; VORONOI_CELLS],
+    cell_bitmap: u8,
     governor: GeometricGovernor,
     predictor: SpectralContractionOperator<8>,
     predict_state: [f64; 8],
@@ -42,10 +164,15 @@ impl ManifoldScheduler {
             (1.57, 3.14),
         ];
         Self {
-            tasks: Vec::new(),
+            slab: TaskSlab::new(),
             next_id: 1,
             current: None,
             voronoi: SphericalVoronoiIndex::<8>::new(centroids),
+            cell_queues: [
+                CellQueue::new(), CellQueue::new(), CellQueue::new(), CellQueue::new(),
+                CellQueue::new(), CellQueue::new(), CellQueue::new(), CellQueue::new(),
+            ],
+            cell_bitmap: 0,
             governor: GeometricGovernor::new(),
             predictor: SpectralContractionOperator::new(0.7),
             predict_state: [0.0; 8],
@@ -55,22 +182,49 @@ impl ManifoldScheduler {
         }
     }
 
+    /// Project the first three components of an 8-D embedding onto S²
+    /// and locate the nearest Voronoi centroid.  This is the geometric
+    /// "routing" that assigns a task to its tile coordinate at spawn time.
+    fn compute_voronoi_cell(embedding: &[f64; 8], voronoi: &SphericalVoronoiIndex<8>) -> usize {
+        let x = embedding[0];
+        let y = embedding[1];
+        let z = embedding[2];
+        let r = libm::sqrt(x * x + y * y + z * z);
+        if r < 1e-12 {
+            return 0;
+        }
+        let theta = libm::acos((z / r).clamp(-1.0, 1.0));
+        let phi = libm::atan2(y, x);
+        voronoi.locate((theta, phi))
+    }
+
     pub fn spawn(&mut self, name: &str, priority: u8, entry: fn()) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let task = Task::new(id, name, priority, entry);
-        self.tasks.push(task);
+        let idx = self.slab.alloc(task);
+        {
+            let task_ref = self.slab.get_mut(idx).unwrap();
+            task_ref.voronoi_cell =
+                Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+        }
+        let cell = self.slab.get(idx).unwrap().voronoi_cell;
+        self.cell_queues[cell].push(idx, priority);
+        self.cell_bitmap |= 1 << cell;
         id
     }
 
-    pub fn spawn_user(&mut self, name: &str, priority: u8, elf_data: &[u8]) -> Result<u64, super::elf::ElfError> {
+    pub fn spawn_user(
+        &mut self,
+        name: &str,
+        priority: u8,
+        elf_data: &[u8],
+    ) -> Result<u64, super::elf::ElfError> {
         let aslr_base = crate::security::aslr::randomize_mmap_base();
         let loaded = super::elf::load(elf_data, aslr_base)?;
 
-        // Allocate user stack (64 KiB).
         let user_stack_size = 65536usize;
         let mut user_stack = alloc::vec::Vec::with_capacity(user_stack_size);
-        // SAFETY: capacity just allocated; zero-initialize for safety
         unsafe {
             user_stack.set_len(user_stack_size);
         }
@@ -89,17 +243,25 @@ impl ManifoldScheduler {
             loaded.page_table,
         );
         task.user_stack = user_stack;
-        self.tasks.push(task);
+        let idx = self.slab.alloc(task);
+        {
+            let task_ref = self.slab.get_mut(idx).unwrap();
+            task_ref.voronoi_cell =
+                Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+        }
+        let cell = self.slab.get(idx).unwrap().voronoi_cell;
+        self.cell_queues[cell].push(idx, priority);
+        self.cell_bitmap |= 1 << cell;
         Ok(id)
     }
 
     pub fn tick(&mut self) {
         self.ticks_in_slice += 1;
-
         if let Some(idx) = self.current {
-            self.tasks[idx].ticks_used += 1;
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.ticks_used += 1;
+            }
         }
-
         let timeslice = self.adaptive_timeslice();
         if self.ticks_in_slice >= timeslice {
             self.schedule();
@@ -121,8 +283,14 @@ impl ManifoldScheduler {
 
         let old_idx = self.current;
         if let Some(idx) = old_idx {
-            if self.tasks[idx].state == TaskState::Running {
-                self.tasks[idx].state = TaskState::Ready;
+            if let Some(task) = self.slab.get_mut(idx) {
+                if task.state == TaskState::Running {
+                    task.state = TaskState::Ready;
+                    let cell = task.voronoi_cell;
+                    let priority = task.priority;
+                    self.cell_queues[cell].push(idx, priority);
+                    self.cell_bitmap |= 1 << cell;
+                }
             }
         }
 
@@ -134,7 +302,19 @@ impl ManifoldScheduler {
             for i in 1..cpu_count {
                 let target = ((cpu_num as usize + i) % cpu_count) as u32;
                 if let Some(task) = steal_task(target) {
-                    self.tasks.push(task);
+                    let cell = task.voronoi_cell;
+                    let priority = task.priority;
+                    let idx = self.slab.alloc(task);
+                    {
+                        let task_ref = self.slab.get_mut(idx).unwrap();
+                        task_ref.voronoi_cell = Self::compute_voronoi_cell(
+                            &task_ref.manifold_embedding,
+                            &self.voronoi,
+                        );
+                    }
+                    let cell = self.slab.get(idx).unwrap().voronoi_cell;
+                    self.cell_queues[cell].push(idx, priority);
+                    self.cell_bitmap |= 1 << cell;
                     next = self.select_next_task();
                     break;
                 }
@@ -143,40 +323,46 @@ impl ManifoldScheduler {
 
         if let Some(next_idx) = next {
             if old_idx == Some(next_idx) {
-                self.tasks[next_idx].state = TaskState::Running;
+                if let Some(task) = self.slab.get_mut(next_idx) {
+                    task.state = TaskState::Running;
+                }
                 drop(guard);
                 cpu.switching = false;
                 return;
             }
 
-            self.tasks[next_idx].state = TaskState::Running;
+            let old_task_dead = old_idx
+                .map(|i| self.slab.get(i).map(|t| t.state == TaskState::Dead).unwrap_or(false))
+                .unwrap_or(false);
+
+            let old_ctx = match old_idx {
+                Some(idx) if !old_task_dead => {
+                    let t = self.slab.get_mut(idx).unwrap();
+                    &mut t.context as *mut TaskContext
+                }
+                _ => &mut cpu.idle_context as *mut TaskContext,
+            };
+
+            let next_task = self.slab.get_mut(next_idx).unwrap();
+            next_task.state = TaskState::Running;
             self.current = Some(next_idx);
-            cpu.current_task = &mut self.tasks[next_idx] as *mut Task;
+            cpu.current_task = next_task as *mut Task;
             cpu.is_idle = false;
 
             // T2: Update prediction state
             self.predict_state = self
                 .predictor
-                .apply(&self.predict_state, &self.tasks[next_idx].manifold_embedding);
+                .apply(&self.predict_state, &next_task.manifold_embedding);
 
             // T4: Governor adapts based on scheduling deviation
             let deviation = if self.schedule_count % 2 == 0 { 0.5 } else { 1.5 };
             self.governor.adapt(deviation, 0.01);
 
-            let old_task_dead = old_idx
-                .map(|i| self.tasks[i].state == TaskState::Dead)
-                .unwrap_or(false);
-
-            let old_ctx = if old_task_dead || old_idx.is_none() {
-                &mut cpu.idle_context as *mut TaskContext
-            } else {
-                &mut self.tasks[old_idx.unwrap()].context as *mut TaskContext
-            };
+            let next_ctx = &next_task.context as *const TaskContext;
 
             // Update TSS RSP0 if switching to a userspace task
-            if self.tasks[next_idx].is_userspace {
-                let stack_top = self.tasks[next_idx].kernel_stack.as_ptr() as u64
-                    + KERNEL_STACK_SIZE as u64;
+            if next_task.is_userspace {
+                let stack_top = next_task.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
                 unsafe {
                     crate::memory::gdt::set_kernel_stack(stack_top);
                 }
@@ -188,7 +374,7 @@ impl ManifoldScheduler {
 
             x86_64::instructions::interrupts::disable();
             unsafe {
-                switch_context(old_ctx, &self.tasks[next_idx].context as *const TaskContext);
+                switch_context(old_ctx, next_ctx);
             }
             x86_64::instructions::interrupts::enable();
 
@@ -203,43 +389,49 @@ impl ManifoldScheduler {
         cpu.switching = false;
     }
 
-    fn select_next_task(&self) -> Option<usize> {
-        // Find task in predicted Voronoi cell first (T1+T2)
+    /// O(1) task selection: predicted Voronoi cell first, then highest-priority
+    /// fallback across all cells.  Work is bounded by compile-time constants
+    /// (8 cells, 256 priorities) and is independent of total task count.
+    fn select_next_task(&mut self) -> Option<usize> {
+        // T2: Predict cell from predictor state
         let predicted_cell = self.voronoi.locate((
             libm::acos(self.predict_state[2].clamp(-1.0, 1.0)),
             libm::atan2(self.predict_state[1], self.predict_state[0]),
         ));
 
-        let mut best: Option<(usize, u8)> = None;
-        for (i, task) in self.tasks.iter().enumerate() {
-            if task.state != TaskState::Ready {
-                continue;
+        // Try predicted cell first
+        if self.cell_bitmap & (1 << predicted_cell) != 0 {
+            if let Some(idx) = self.cell_queues[predicted_cell].pop() {
+                if self.cell_queues[predicted_cell].ready_count == 0 {
+                    self.cell_bitmap &= !(1 << predicted_cell);
+                }
+                return Some(idx);
             }
-            if task.voronoi_cell == predicted_cell {
-                match best {
-                    None => best = Some((i, task.priority)),
-                    Some((_, bp)) if task.priority > bp => best = Some((i, task.priority)),
-                    _ => {}
+        }
+
+        // Fallback: find the cell with the highest-priority ready task.
+        // O(VORONOI_CELLS) = O(1) because the cell count is a compile-time constant.
+        let mut best_cell = None;
+        let mut best_priority = 0u8;
+        for cell in 0..VORONOI_CELLS {
+            if self.cell_bitmap & (1 << cell) != 0 {
+                if let Some(p) = self.cell_queues[cell].highest {
+                    if best_cell.is_none() || p > best_priority {
+                        best_cell = Some(cell);
+                        best_priority = p;
+                    }
                 }
             }
         }
-        if best.is_some() {
-            return best.map(|(i, _)| i);
+        if let Some(cell) = best_cell {
+            let idx = self.cell_queues[cell].pop().unwrap();
+            if self.cell_queues[cell].ready_count == 0 {
+                self.cell_bitmap &= !(1 << cell);
+            }
+            return Some(idx);
         }
 
-        // Fallback: any ready task with highest priority
-        let mut best: Option<(usize, u8)> = None;
-        for (i, task) in self.tasks.iter().enumerate() {
-            if task.state != TaskState::Ready {
-                continue;
-            }
-            match best {
-                None => best = Some((i, task.priority)),
-                Some((_, bp)) if task.priority > bp => best = Some((i, task.priority)),
-                _ => {}
-            }
-        }
-        best.map(|(i, _)| i)
+        None
     }
 
     fn adaptive_timeslice(&self) -> u64 {
@@ -249,33 +441,33 @@ impl ManifoldScheduler {
     }
 
     pub fn task_count(&self) -> usize {
-        self.tasks.len()
+        self.slab.len()
     }
 
     pub fn current_task_name(&self) -> &str {
         self.current
-            .and_then(|i| self.tasks.get(i))
+            .and_then(|i| self.slab.get(i))
             .map(|t| t.name.as_str())
             .unwrap_or("idle")
     }
 
     pub fn current_task_id(&self) -> u64 {
         self.current
-            .and_then(|i| self.tasks.get(i))
+            .and_then(|i| self.slab.get(i))
             .map(|t| t.id)
             .unwrap_or(0)
     }
 
     pub fn current_uid(&self) -> u32 {
         self.current
-            .and_then(|i| self.tasks.get(i))
+            .and_then(|i| self.slab.get(i))
             .map(|t| t.uid)
             .unwrap_or(0)
     }
 
     pub fn set_current_uid(&mut self, uid: u32) {
         if let Some(idx) = self.current {
-            if let Some(task) = self.tasks.get_mut(idx) {
+            if let Some(task) = self.slab.get_mut(idx) {
                 task.uid = uid;
             }
         }
@@ -283,14 +475,14 @@ impl ManifoldScheduler {
 
     pub fn current_gid(&self) -> u32 {
         self.current
-            .and_then(|i| self.tasks.get(i))
+            .and_then(|i| self.slab.get(i))
             .map(|t| t.gid)
             .unwrap_or(0)
     }
 
     pub fn set_current_gid(&mut self, gid: u32) {
         if let Some(idx) = self.current {
-            if let Some(task) = self.tasks.get_mut(idx) {
+            if let Some(task) = self.slab.get_mut(idx) {
                 task.gid = gid;
             }
         }
@@ -298,7 +490,7 @@ impl ManifoldScheduler {
 
     pub fn current_page_table(&self) -> Option<u64> {
         let idx = self.current?;
-        Some(self.tasks[idx].page_table)
+        Some(self.slab.get(idx)?.page_table)
     }
 
     pub fn governor_epsilon(&self) -> f64 {
@@ -311,7 +503,9 @@ impl ManifoldScheduler {
 
     pub fn mark_current_dead(&mut self) {
         if let Some(idx) = self.current {
-            self.tasks[idx].state = TaskState::Dead;
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.state = TaskState::Dead;
+            }
         }
     }
 }
@@ -337,7 +531,11 @@ pub fn spawn(name: &'static str, priority: u8, entry: fn()) -> u64 {
 }
 
 /// Spawn a userspace task from an ELF blob on the current CPU.
-pub fn spawn_user(name: &'static str, priority: u8, elf_data: &[u8]) -> Result<u64, super::elf::ElfError> {
+pub fn spawn_user(
+    name: &'static str,
+    priority: u8,
+    elf_data: &[u8],
+) -> Result<u64, super::elf::ElfError> {
     unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
@@ -452,12 +650,7 @@ pub fn reschedule(cpu_num: u32) {
     unsafe {
         if let Some(per_cpu) = crate::cpu::per_cpu(cpu_num) {
             let apic_id = per_cpu.apic_id;
-            unsafe {
-                (&raw mut crate::drivers::apic::LOCAL_APIC)
-                    .as_mut()
-                    .unwrap()
-                    .send_ipi(apic_id, 0xFE);
-            }
+            crate::drivers::apic::local_apic().send_ipi(apic_id, 0xFE);
         }
     }
 }
@@ -468,11 +661,16 @@ pub fn steal_task(from_cpu: u32) -> Option<Task> {
         let per_cpu = crate::cpu::per_cpu(from_cpu)?;
         let _guard = per_cpu.scheduler_lock.try_lock()?;
         let sched = &mut per_cpu.scheduler;
-        for i in 0..sched.tasks.len() {
-            if sched.tasks[i].state == TaskState::Ready {
-                let task = sched.tasks.remove(i);
-                return Some(task);
+        let mut bitmap = sched.cell_bitmap;
+        while bitmap != 0 {
+            let cell = bitmap.trailing_zeros() as usize;
+            if let Some(idx) = sched.cell_queues[cell].pop() {
+                if sched.cell_queues[cell].ready_count == 0 {
+                    sched.cell_bitmap &= !(1 << cell);
+                }
+                return sched.slab.remove(idx);
             }
+            bitmap &= bitmap - 1;
         }
         None
     }

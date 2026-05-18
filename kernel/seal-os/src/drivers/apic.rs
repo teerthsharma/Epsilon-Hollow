@@ -5,6 +5,7 @@
 //!
 //! Replaces the legacy 8259 PIC with memory-mapped APIC controllers.
 
+use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -52,12 +53,12 @@ impl LocalApic {
     }
 
     /// Write a 32-bit Local APIC register.
-    pub unsafe fn write_reg(&mut self, offset: u32, val: u32) {
+    pub unsafe fn write_reg(&self, offset: u32, val: u32) {
         write_volatile((self.base + offset as usize) as *mut u32, val);
     }
 
     /// Enable the Local APIC and set task priority to accept all interrupts.
-    pub unsafe fn init(&mut self) {
+    pub unsafe fn init(&self) {
         // Software enable APIC (bit 8), vector 0xFF for spurious
         self.write_reg(SIV, self.read_reg(SIV) | 0x1FF);
         // Task Priority Register = 0
@@ -65,12 +66,12 @@ impl LocalApic {
     }
 
     /// Send End-Of-Interrupt.
-    pub unsafe fn eoi(&mut self) {
+    pub unsafe fn eoi(&self) {
         self.write_reg(EOI, 0);
     }
 
     /// Send an Inter-Processor Interrupt.
-    pub unsafe fn send_ipi(&mut self, apic_id: u32, vector: u8) {
+    pub unsafe fn send_ipi(&self, apic_id: u32, vector: u8) {
         // Wait for delivery status idle (bit 12)
         while self.read_reg(ICR_LOW) & 0x1000 != 0 {}
         self.write_reg(ICR_HIGH, apic_id << 24);
@@ -78,7 +79,7 @@ impl LocalApic {
     }
 
     /// Initialise the Local APIC timer in periodic mode.
-    pub unsafe fn init_timer(&mut self, divide: u32, initial_count: u32, vector: u8) {
+    pub unsafe fn init_timer(&self, divide: u32, initial_count: u32, vector: u8) {
         self.write_reg(TIMER_DIV, divide);
         // Periodic mode (bit 17), unmasked, vector
         self.write_reg(TIMER_LVT, (1 << 17) | vector as u32);
@@ -94,7 +95,7 @@ impl LocalApic {
     ///
     /// `pit_ticks_for_100ms` is the PIT reload value for a ~100 ms delay.
     /// Returns the `initial_count` value to program for a ~1000 Hz tick rate.
-    pub unsafe fn calibrate_timer(&mut self, pit_ticks_for_100ms: u32) -> u32 {
+    pub unsafe fn calibrate_timer(&self, pit_ticks_for_100ms: u32) -> u32 {
         use x86_64::instructions::port::Port;
 
         // Temporarily configure PIT channel 0 as one-shot
@@ -154,13 +155,13 @@ impl IoApic {
         read_volatile((self.base + IOAPIC_IOWIN as usize) as *const u32)
     }
 
-    unsafe fn write_reg(&mut self, reg: u8, val: u32) {
+    unsafe fn write_reg(&self, reg: u8, val: u32) {
         write_volatile((self.base + IOAPIC_IOREGSEL as usize) as *mut u32, reg as u32);
         write_volatile((self.base + IOAPIC_IOWIN as usize) as *mut u32, val);
     }
 
     /// Read ID and version registers.
-    pub unsafe fn init(&mut self) {
+    pub unsafe fn init(&self) {
         let id = self.read_reg(0x00);
         let ver = self.read_reg(0x01);
         let _max_redir = ((ver >> 16) & 0xFF) as u8;
@@ -168,7 +169,7 @@ impl IoApic {
     }
 
     /// Route an IRQ to a vector on a specific Local APIC.
-    pub unsafe fn redirect_irq(&mut self, irq: u8, vector: u8, destination_apic_id: u32) {
+    pub unsafe fn redirect_irq(&self, irq: u8, vector: u8, destination_apic_id: u32) {
         let reg_low = 0x10 + irq * 2;
         let reg_high = reg_low + 1;
 
@@ -180,7 +181,7 @@ impl IoApic {
     }
 
     /// Mask or unmask an IRQ line.
-    pub unsafe fn set_mask(&mut self, irq: u8, masked: bool) {
+    pub unsafe fn set_mask(&self, irq: u8, masked: bool) {
         let reg_low = 0x10 + irq * 2;
         let mut low = self.read_reg(reg_low);
         if masked {
@@ -197,10 +198,10 @@ impl IoApic {
 // ---------------------------------------------------------------------------
 
 #[cfg(not(test))]
-pub(crate) static mut LOCAL_APIC: LocalApic = LocalApic::new(0xFEE00000);
+pub(crate) static LOCAL_APIC: LocalApic = LocalApic::new(0xFEE00000);
 
 #[cfg(not(test))]
-pub(crate) static mut IO_APIC: IoApic = IoApic::new(0xFEC00000);
+pub(crate) static IO_APIC: IoApic = IoApic::new(0xFEC00000);
 
 static LOCAL_APIC_INIT: AtomicBool = AtomicBool::new(false);
 static IOAPIC_INIT: AtomicBool = AtomicBool::new(false);
@@ -209,15 +210,22 @@ static BSP_APIC_ID: AtomicU32 = AtomicU32::new(0);
 const PIT_100MS_TICKS: u32 = 119318; // ~100 ms at 1.193182 MHz
 
 /// Access the global Local APIC instance.
+///
+/// # Safety
+/// All operations are volatile MMIO reads/writes to hardware registers.
+/// The hardware itself serializes these operations, so `&self` is sufficient.
 #[cfg(not(test))]
-pub unsafe fn local_apic() -> &'static mut LocalApic {
-    &mut LOCAL_APIC
+pub unsafe fn local_apic() -> &'static LocalApic {
+    &LOCAL_APIC
 }
 
 /// Access the global I/O APIC instance.
+///
+/// # Safety
+/// Same as `local_apic` — volatile MMIO only.
 #[cfg(not(test))]
-pub unsafe fn ioapic() -> &'static mut IoApic {
-    &mut IO_APIC
+pub unsafe fn ioapic() -> &'static IoApic {
+    &IO_APIC
 }
 
 /// Whether the Local APIC has already been initialised.

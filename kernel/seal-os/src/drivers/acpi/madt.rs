@@ -3,16 +3,25 @@
 
 //! MADT parser — collects Local APIC IDs and IO APIC base address.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use super::rsdp::SdtHeader;
 
 const MAX_CPUS: usize = 32;
 
-static mut APIC_IDS: [u32; MAX_CPUS] = [0; MAX_CPUS];
-static mut APIC_COUNT: usize = 0;
-static mut AP_APIC_IDS: [u32; MAX_CPUS] = [0; MAX_CPUS];
-static mut AP_APIC_COUNT: usize = 0;
+// APIC ID arrays are written exactly once during early boot and read-only
+// thereafter.  We use UnsafeCell so the static is Sync; all writes happen
+// before any other CPU reads the data.
+struct ApicIdArray(UnsafeCell<[u32; MAX_CPUS]>);
+unsafe impl Sync for ApicIdArray {}
+
+static APIC_IDS: ApicIdArray = ApicIdArray(UnsafeCell::new([0; MAX_CPUS]));
+static APIC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+static AP_APIC_IDS: ApicIdArray = ApicIdArray(UnsafeCell::new([0; MAX_CPUS]));
+static AP_APIC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 static IOAPIC_BASE: AtomicU64 = AtomicU64::new(0);
 static BSP_APIC_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -119,8 +128,14 @@ pub unsafe fn parse_madt(madt_phys: u64) {
         offset += entry_len;
     }
 
-    APIC_COUNT = count;
-    APIC_IDS = ids;
+    // Commit discovered IDs to the global arrays.
+    unsafe {
+        let ptr = APIC_IDS.0.get();
+        for i in 0..count {
+            (*ptr)[i] = ids[i];
+        }
+    }
+    APIC_COUNT.store(count, Ordering::SeqCst);
 
     // If BSP wasn't matched, default to the first ID.
     if BSP_APIC_ID.load(Ordering::SeqCst) == 0 && count > 0 {
@@ -130,18 +145,21 @@ pub unsafe fn parse_madt(madt_phys: u64) {
     // Build AP-only list.
     let bsp = BSP_APIC_ID.load(Ordering::SeqCst);
     let mut ap_count = 0;
-    for i in 0..count {
-        if ids[i] != bsp {
-            AP_APIC_IDS[ap_count] = ids[i];
-            ap_count += 1;
+    unsafe {
+        let ptr = AP_APIC_IDS.0.get();
+        for i in 0..count {
+            if ids[i] != bsp {
+                (*ptr)[ap_count] = ids[i];
+                ap_count += 1;
+            }
         }
     }
-    AP_APIC_COUNT = ap_count;
+    AP_APIC_COUNT.store(ap_count, Ordering::SeqCst);
 }
 
 /// Number of enabled CPUs discovered.
 pub fn cpu_count() -> usize {
-    unsafe { APIC_COUNT }
+    APIC_COUNT.load(Ordering::SeqCst)
 }
 
 /// APIC ID of the Bootstrap Processor.
@@ -151,12 +169,16 @@ pub fn bsp_apic_id() -> u32 {
 
 /// All enabled APIC IDs, including the BSP.
 pub fn apic_ids() -> &'static [u32] {
-    unsafe { &APIC_IDS[..APIC_COUNT] }
+    let count = APIC_COUNT.load(Ordering::SeqCst);
+    let array = unsafe { &*APIC_IDS.0.get() };
+    &array[..count]
 }
 
 /// APIC IDs of application processors (all except BSP).
 pub fn ap_apic_ids() -> &'static [u32] {
-    unsafe { &AP_APIC_IDS[..AP_APIC_COUNT] }
+    let count = AP_APIC_COUNT.load(Ordering::SeqCst);
+    let array = unsafe { &*AP_APIC_IDS.0.get() };
+    &array[..count]
 }
 
 /// Physical base address of the first I/O APIC.
