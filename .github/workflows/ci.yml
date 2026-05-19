@@ -271,12 +271,13 @@ jobs:
       - name: Boot UEFI image in QEMU and capture serial output
         run: |
           timeout 45 qemu-system-x86_64 \
-            -bios /usr/share/OVMF/OVMF_CODE.fd \
+            -machine q35 \
+            -pflash /usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive file=seal-os.img,format=raw \
             -nographic \
             -m 4G \
             -no-reboot \
-            -no-shutdown 2>&1 | tee /tmp/seal-os.log || true
+            -no-shutdown 2>&1 | tee /tmp/seal-os.log
           echo "=== Serial output ==="
           cat /tmp/seal-os.log
           echo "=== Log size: $(wc -c < /tmp/seal-os.log) bytes ==="

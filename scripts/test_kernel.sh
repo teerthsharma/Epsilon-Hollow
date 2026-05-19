@@ -25,7 +25,8 @@ echo "[test_kernel] Running kernel tests in QEMU..."
 LOGFILE=$(mktemp)
 QEMU_EXIT=0
 qemu-system-x86_64 \
-    -bios /usr/share/OVMF/OVMF_CODE.fd \
+    -machine q35 \
+    -pflash /usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive file="$IMG",format=raw \
     -nographic \
     -m 4G \
