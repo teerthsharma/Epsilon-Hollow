@@ -165,7 +165,7 @@ pub fn help_for(cmd: &str) -> String {
             "memory\n  Show memory usage statistics.\n  Includes: allocated bytes, total bytes, free bytes.",
         ),
         "ml" => String::from(
-            "ml <subcommand>\n  ML runtime control.\n  Subcommands: status, devices, train, infer",
+            "ml <subcommand>\n  ML runtime control.\n  Subcommands: status, devices, train, save, load, tensor, matmul",
         ),
         _ => alloc::format!("No help available for '{}'.\nType 'help' for the full handbook.", cmd),
     }
