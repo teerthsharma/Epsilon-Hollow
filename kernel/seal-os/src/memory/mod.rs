@@ -55,6 +55,19 @@ pub fn heap_stats() -> (usize, usize) {
     (allocated, total)
 }
 
+/// Compute total conventional RAM from the UEFI memory map.
+pub fn total_ram(boot_info: &BootInfo) -> u64 {
+    let mut total = 0u64;
+    for i in 0..boot_info.memory_map_len {
+        let desc = &boot_info.memory_map[i];
+        // UEFI MemoryType::CONVENTIONAL == 7
+        if desc.ty == 7 {
+            total += desc.page_count * 4096;
+        }
+    }
+    total
+}
+
 #[cfg(feature = "test-mode")]
 pub mod tests {
     pub fn register_all() {
