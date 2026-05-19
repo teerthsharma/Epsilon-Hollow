@@ -152,4 +152,7 @@ impl WifiDriver {
 }
 
 pub fn init() {
+    let mut driver = WifiDriver::new();
+    driver.probe_pci();
+    crate::serial_println!("{}", driver.status_string());
 }

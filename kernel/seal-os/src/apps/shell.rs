@@ -394,27 +394,56 @@ impl Shell {
     }
 
     fn cmd_race(&self, arg: &str) -> String {
-        let size: u64 = arg.parse().unwrap_or(1_000_000_000);
+        let size: usize = arg.parse().unwrap_or(1_000_000);
         let label = if size >= 1_000_000_000 {
             format!("{}GB", size / 1_000_000_000)
         } else if size >= 1_000_000 {
             format!("{}MB", size / 1_000_000)
+        } else if size >= 1_000 {
+            format!("{}KB", size / 1_000)
         } else {
-            format!("{}KB", size / 1000)
+            format!("{}B", size)
         };
-        let trad_ns = (size as f64 * 0.5) as u64;
-        let teleport_ns = 50_000u64;
-        let speedup = trad_ns as f64 / teleport_ns as f64;
+
+        // Real benchmark: create file, measure duplicate vs teleport
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let src_dir = fs.mkdir("race_src", root).unwrap_or(1);
+        let dst_dir = fs.mkdir("race_dst", root).unwrap_or(2);
+
+        let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+        let _file = fs.store("race_file", &data, src_dir);
+
+        // Warm-up
+        let _ = fs.duplicate("race_file", src_dir, dst_dir);
+        let _ = fs.teleport("race_file", dst_dir, src_dir);
+
+        // Benchmark duplicate (traditional copy)
+        let dup_start = crate::drivers::interrupts::ticks();
+        let _ = fs.duplicate("race_file", src_dir, dst_dir);
+        let dup_ticks = crate::drivers::interrupts::ticks().saturating_sub(dup_start);
+
+        // Benchmark teleport (O(1) move)
+        let tel_start = crate::drivers::interrupts::ticks();
+        let _ = fs.teleport("race_file", dst_dir, src_dir);
+        let tel_ticks = crate::drivers::interrupts::ticks().saturating_sub(tel_start);
+
+        let speedup = if tel_ticks > 0 {
+            dup_ticks as f64 / tel_ticks as f64
+        } else {
+            9999.0
+        };
+
         format!(
-            "Race: {} transfer\n\
-             ═══════════════════\n\
-             Traditional copy:   {} ms\n\
-             Manifold teleport:  {} μs (O(1) topological surgery)\n\
-             Speedup:            {:.0}x\n\
+            "Race: {} payload\n\
+             ════════════════════════\n\
+             Traditional duplicate:  {} ticks\n\
+             Manifold teleport:      {} ticks (O(1) topological surgery)\n\
+             Speedup:                {:.1}x\n\
              \n\
-             Payload: 64 pts × 3 coords × 8 bytes = 1,536 bytes\n\
-             Regardless of original file size!",
-            label, trad_ns / 1_000_000, teleport_ns / 1_000, speedup
+             The teleport rewrites one BTreeMap entry.\n\
+             The duplicate clones geometry metadata + raw bytes.",
+            label, dup_ticks, tel_ticks, speedup
         )
     }
 
