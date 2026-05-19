@@ -468,6 +468,14 @@ impl Shell {
                     Err(e) => format!("Error: {}", e),
                 }
             }
+            "generate" => {
+                let seed = if arg.is_empty() { "Seal" } else { arg };
+                let text = crate::ml_engine::demo_generate_text(seed, 120);
+                format!("Markov Generation (seed: '{}')\n\
+                         ══════════════════════════════════\n\
+                         {}",
+                    seed, text)
+            }
             "tensor" => {
                 // Create a simple 2x3 tensor for demo
                 let t = crate::ml_engine::tensor_from_data(
@@ -501,13 +509,14 @@ impl Shell {
             }
             _ => String::from(
                 "ML Subcommands:\n\
-                 ml status   — Show ML runtime status\n\
-                 ml devices  — List compute devices\n\
-                 ml train    — Train MLP on XOR dataset\n\
-                 ml save     — Save trained model to ManifoldFS\n\
-                 ml load     — Load model from ManifoldFS\n\
-                 ml tensor   — Create a demo tensor\n\
-                 ml matmul   — Demo matrix multiply",
+                 ml status    — Show ML runtime status\n\
+                 ml devices   — List compute devices\n\
+                 ml train     — Train MLP on XOR dataset\n\
+                 ml save      — Save trained model to ManifoldFS\n\
+                 ml load      — Load model from ManifoldFS\n\
+                 ml generate  — Generate text with Markov chain\n\
+                 ml tensor    — Create a demo tensor\n\
+                 ml matmul    — Demo matrix multiply",
             ),
         }
     }
