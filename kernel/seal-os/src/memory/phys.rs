@@ -57,7 +57,7 @@ pub unsafe fn init(
         for page in 0..desc.page_count {
             let addr = desc.phys_start + page * 4096;
             if addr as usize >= USABLE_FRAMES * 4096 {
-                continue;
+                break;
             }
             if overlaps(PhysAddr::new(addr), kernel_start, kernel_end)
                 || overlaps(PhysAddr::new(addr), fb_start, fb_end)

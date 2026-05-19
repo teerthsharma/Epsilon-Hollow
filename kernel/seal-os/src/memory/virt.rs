@@ -22,7 +22,7 @@ use x86_64::{
 };
 
 const KERNEL_HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
-const IDENTITY_MAP_SIZE: u64 = 4 * 1024 * 1024 * 1024; // 4 GiB
+const IDENTITY_MAP_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
 
 const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
@@ -59,8 +59,8 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) {
     let pml4 = &mut *(pml4_frame.as_u64() as *mut PageTable);
     pml4.zero();
 
-    // Identity-map first 4 GiB with 2 MiB huge pages.
-    let id_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+    // Identity-map first 16 GiB with 2 MiB huge pages.
+    let id_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     for phys in (0..IDENTITY_MAP_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
         map_huge_page_2m(
             VirtAddr::new(phys),

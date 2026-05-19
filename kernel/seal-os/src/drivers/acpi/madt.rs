@@ -127,7 +127,6 @@ pub unsafe fn parse_madt(madt_phys: u64) {
 
         offset += entry_len;
     }
-
     // Commit discovered IDs to the global arrays.
     unsafe {
         let ptr = APIC_IDS.0.get();
