@@ -420,6 +420,10 @@ impl Shell {
         match subcmd {
             "status" => {
                 let status = crate::ml_engine::MlStatus::detect();
+                let gpu_line = match &status.gpu_detected {
+                    Some((name, _, _)) => format!("GPU:          {} (detected)", name),
+                    None => String::from("GPU:          not detected (PCI probe done)"),
+                };
                 format!(
                     "ML Runtime Status\n\
                      ══════════════════\n\
@@ -428,11 +432,13 @@ impl Shell {
                      Neural nets:  {}\n\
                      AVX2:         {}\n\
                      AVX-512:      {}\n\
+                     {}\n\
                      Use: ml train [epochs] | ml matmul | ml tensor",
                     if status.tensor_ops_available { "available" } else { "unavailable" },
                     if status.neural_net_available { "available" } else { "unavailable" },
                     if status.avx2_detected { "detected" } else { "not detected" },
                     if status.avx512_detected { "detected" } else { "not detected" },
+                    gpu_line,
                 )
             }
             "devices" => {

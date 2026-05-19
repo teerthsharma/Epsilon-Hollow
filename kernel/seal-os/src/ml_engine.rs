@@ -17,6 +17,7 @@ pub struct MlStatus {
     pub neural_net_available: bool,
     pub avx2_detected: bool,
     pub avx512_detected: bool,
+    pub gpu_detected: Option<(String, u16, u16)>,
 }
 
 impl MlStatus {
@@ -26,6 +27,7 @@ impl MlStatus {
             neural_net_available: true,
             avx2_detected: detect_avx2(),
             avx512_detected: detect_avx512(),
+            gpu_detected: detect_gpu(),
         }
     }
 }
@@ -44,6 +46,28 @@ fn detect_avx2() -> bool {
         let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
         (leaf7.ebx & (1 << 5)) != 0
     }
+}
+
+/// Probe PCI for GPU presence.
+fn detect_gpu() -> Option<(String, u16, u16)> {
+    let devices = crate::drivers::pci::enumerate();
+    for dev in &devices {
+        if dev.class == 0x03 {
+            let vendor_name = match dev.vendor_id {
+                0x10DE => "NVIDIA",
+                0x1002 => "AMD",
+                0x8086 => "Intel",
+                0x1AF4 => "VirtIO",
+                _ => "Unknown",
+            };
+            return Some((
+                format!("{} {:04X}:{:04X}", vendor_name, dev.vendor_id, dev.device_id),
+                dev.vendor_id,
+                dev.device_id,
+            ));
+        }
+    }
+    None
 }
 
 /// Detect AVX-512 support via CPUID.
