@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-const DEFAULT_CAPACITY: usize = 256;
+const DEFAULT_CAPACITY: usize = 8;
 
 struct CacheEntry {
     path_hash: u64,

@@ -122,7 +122,7 @@ impl ManifoldFS {
         let mut fs = Self {
             inodes,
             dirs,
-            path_cache: PathCache::new(),
+            path_cache: PathCache::with_capacity(8),
             store: BlockStore::new(),
             voronoi: VoronoiCap::new(),
             root_id,
