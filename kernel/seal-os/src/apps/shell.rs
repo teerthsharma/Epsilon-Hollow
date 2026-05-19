@@ -25,6 +25,7 @@ pub struct Shell {
     clipboard: Clipboard,
     calculator: Calculator,
     media_player: MediaPlayer,
+    last_model: Option<Vec<u8>>,
 }
 
 impl Shell {
@@ -37,6 +38,7 @@ impl Shell {
             clipboard: Clipboard::new(),
             calculator: Calculator::new(),
             media_player: MediaPlayer::new(),
+            last_model: None,
         }
     }
 
@@ -417,7 +419,7 @@ impl Shell {
         )
     }
 
-    fn cmd_ml(&self, subcmd: &str, arg: &str) -> String {
+    fn cmd_ml(&mut self, subcmd: &str, arg: &str) -> String {
         match subcmd {
             "status" => {
                 let status = crate::ml_engine::MlStatus::detect();
@@ -453,19 +455,24 @@ impl Shell {
             }
             "train" => {
                 let epochs: usize = arg.parse().unwrap_or(1000);
-                crate::ml_engine::demo_train_mlp(epochs)
+                let (report, bytes) = crate::ml_engine::demo_train_mlp(epochs);
+                self.last_model = Some(bytes);
+                report
             }
             "save" => {
                 let name = if arg.is_empty() { "model.sealml" } else { arg };
-                match crate::ml_engine::save_model(name) {
-                    Ok(msg) => msg,
-                    Err(e) => format!("Error: {}", e),
+                match &self.last_model {
+                    Some(bytes) => match crate::ml_engine::save_model_bytes(name, bytes) {
+                        Ok(msg) => msg,
+                        Err(e) => format!("Error: {}", e),
+                    },
+                    None => String::from("No model to save. Run 'ml train' first."),
                 }
             }
             "load" => {
                 let name = if arg.is_empty() { "model.sealml" } else { arg };
                 match crate::ml_engine::load_model(name) {
-                    Ok(msg) => msg,
+                    Ok(_mlp) => format!("Model '{}' loaded successfully", name),
                     Err(e) => format!("Error: {}", e),
                 }
             }

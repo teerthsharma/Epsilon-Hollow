@@ -64,7 +64,7 @@ monitor.log
 debug.log
 error.log
 memory_journal.jsonl
-memory/
+/memory/
 state/
 cache/
 .cache/
