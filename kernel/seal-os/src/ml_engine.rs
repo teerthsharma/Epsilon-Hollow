@@ -358,3 +358,90 @@ pub fn load_model(name: &str) -> Result<String, String> {
     *LAST_MLP.lock() = Some(mlp);
     Ok(format!("Model '{}' loaded ({} bytes)", name, bytes.len()))
 }
+
+// ── Simple Markov Text Generator ────────────────────────────────────────────
+
+use alloc::collections::BTreeMap;
+
+/// A simple character-level Markov chain for text generation.
+pub struct MarkovChain {
+    order: usize,
+    transitions: BTreeMap<String, BTreeMap<char, usize>>,
+    total_counts: BTreeMap<String, usize>,
+}
+
+impl MarkovChain {
+    pub fn new(order: usize) -> Self {
+        Self {
+            order,
+            transitions: BTreeMap::new(),
+            total_counts: BTreeMap::new(),
+        }
+    }
+
+    /// Train on a text corpus.
+    pub fn train(&mut self, text: &str) {
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() <= self.order {
+            return;
+        }
+        for i in 0..chars.len() - self.order {
+            let key: String = chars[i..i + self.order].iter().collect();
+            let next = chars[i + self.order];
+            *self.transitions.entry(key.clone()).or_default().entry(next).or_insert(0) += 1;
+            *self.total_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    /// Generate text of given length from a seed.
+    pub fn generate(&self, seed: &str, length: usize) -> String {
+        let mut result = String::from(seed);
+        for _ in 0..length {
+            let window = if result.len() >= self.order {
+                &result[result.len() - self.order..]
+            } else {
+                &result
+            };
+            match self.sample_next(window) {
+                Some(ch) => result.push(ch),
+                None => break,
+            }
+        }
+        result
+    }
+
+    fn sample_next(&self, key: &str) -> Option<char> {
+        let counts = self.transitions.get(key)?;
+        let total = self.total_counts.get(key)?;
+        // Deterministic: pick the most likely next char
+        let mut best_char = ' ';
+        let mut best_count = 0;
+        for (&ch, &count) in counts.iter() {
+            if count > best_count {
+                best_count = count;
+                best_char = ch;
+            }
+        }
+        Some(best_char)
+    }
+}
+
+/// Built-in corpus for Markov training.
+const DEFAULT_CORPUS: &str =
+    "Seal OS is the geometrical operating system. \
+     All data is geometry on the unit sphere. \
+     File moves are O(1) topological surgery. \
+     The governor controls epsilon with a PID controller. \
+     Voronoi cells partition tasks across CPUs. \
+     ManifoldFS stores files as point clouds. \
+     Aether-Lang is the language of topology. \
+     The scheduler uses work stealing across cells. \
+     Teleportation is instant and lossless. \
+     Seal OS runs on bare metal with no libc.";
+
+/// Train a Markov chain and generate text.
+pub fn demo_generate_text(seed: &str, length: usize) -> String {
+    let mut chain = MarkovChain::new(3);
+    chain.train(DEFAULT_CORPUS);
+    chain.generate(seed, length)
+}
