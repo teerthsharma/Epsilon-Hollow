@@ -32,14 +32,32 @@ impl MlStatus {
 
 /// Detect AVX2 support via CPUID.
 fn detect_avx2() -> bool {
-    // TODO: implement proper CPUID check
-    false
+    unsafe {
+        // CPUID leaf 1: check ECX bit 28 (AVX) and bit 27 (OSXSAVE)
+        let leaf1 = core::arch::x86_64::__cpuid(1);
+        let avx_available = (leaf1.ecx & (1 << 28)) != 0;
+        let osxsave = (leaf1.ecx & (1 << 27)) != 0;
+        if !avx_available || !osxsave {
+            return false;
+        }
+        // CPUID leaf 7 subleaf 0: check EBX bit 5 (AVX2)
+        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+        (leaf7.ebx & (1 << 5)) != 0
+    }
 }
 
 /// Detect AVX-512 support via CPUID.
 fn detect_avx512() -> bool {
-    // TODO: implement proper CPUID check
-    false
+    unsafe {
+        // CPUID leaf 1: check ECX bit 28 (AVX)
+        let leaf1 = core::arch::x86_64::__cpuid(1);
+        if (leaf1.ecx & (1 << 28)) == 0 {
+            return false;
+        }
+        // CPUID leaf 7 subleaf 0: check EBX bit 16 (AVX-512F)
+        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+        (leaf7.ebx & (1 << 16)) != 0
+    }
 }
 
 /// Create a tensor from raw data.
