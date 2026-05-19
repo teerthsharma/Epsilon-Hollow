@@ -104,4 +104,7 @@ impl BluetoothDriver {
 }
 
 pub fn init() {
+    let mut driver = BluetoothDriver::new();
+    driver.probe_pci();
+    crate::serial_println!("{}", driver.status_string());
 }

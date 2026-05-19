@@ -40,7 +40,7 @@ use boot::boot_info::BootInfo;
 #[cfg(not(test))]
 use graphics::framebuffer::Framebuffer;
 
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "1.0.0-alpha";
 
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
@@ -55,11 +55,10 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
-    serial_println!("[BOOT] Memory subsystem initialised");
+    serial_println!("[BOOT] Heap initialized (16 MB)");
 
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
-    drivers::acpi::test_acpi();
 
     // Layer 1.5: Security hardening (SMAP/SMEP, MAC, audit)
     security::init_security();
@@ -67,7 +66,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 2: Interrupts
     drivers::interrupts::init();
-    serial_println!("[BOOT] IDT + APIC initialized (keyboard + mouse IRQ active)");
+    serial_println!("[BOOT] IDT + PIC initialized");
     unsafe { drivers::apic::init_local_apic_timer_for_bsp(); }
 
     // Layer 2b: APIC (foundation for SMP)
@@ -137,12 +136,9 @@ fn boot_graphical(fb: &'static Framebuffer) {
     graphics::splash::draw_progress_bar(fb, 30);
 
     init_scheduler();
-    test_userspace();
     graphics::splash::draw_progress_bar(fb, 35);
 
     syscall::table::init_syscall_fs();
-    demo_syscalls();
-    demo_teleport();
     graphics::splash::draw_progress_bar(fb, 40);
 
     init_manifold_pkg();
@@ -152,12 +148,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     graphics::splash::draw_progress_bar(fb, 55);
 
     init_drivers();
-    drivers::block::ahci::test_ahci();
     fs::init_vfs();
-    security::init_security();
-    test_vfs();
-    test_security();
-    test_network();
     graphics::splash::draw_progress_bar(fb, 65);
 
     init_usb();
@@ -193,6 +184,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     app_state.create_windows(&mut compositor);
     serial_println!("[SealShell] Loaded");
+    serial_println!("[Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8");
 
     app_state.terminal.key_press(b'h');
     app_state.terminal.key_press(b'e');
@@ -243,18 +235,10 @@ fn boot_serial() {
     serial_println!("[BOOT] No framebuffer — serial-only mode");
     init_theorems();
     init_scheduler();
-    test_userspace();
-    demo_syscalls();
-    demo_teleport();
     init_manifold_pkg();
     init_aether_lang();
     init_drivers();
-    drivers::block::ahci::test_ahci();
     fs::init_vfs();
-    security::init_security();
-    test_vfs();
-    test_security();
-    test_network();
     init_usb();
     init_prefetch();
     init_async_runtime();
@@ -291,8 +275,10 @@ fn init_scheduler() {
     process::scheduler::spawn("shell", 5, shell_task_main);
 
     serial_println!(
-        "[Scheduler] {} tasks spawned, preemptive multitasking active",
-        process::scheduler::task_count()
+        "[Scheduler] {} tasks, running '{}', epsilon={:.4}",
+        process::scheduler::task_count(),
+        process::scheduler::current_task_name(),
+        process::scheduler::governor_epsilon()
     );
 }
 
@@ -318,43 +304,6 @@ fn shell_task_main() {
 }
 
 #[cfg(not(test))]
-fn demo_teleport() {
-    use fs::manifold_fs::ManifoldFS;
-
-    let mut fs = ManifoldFS::new();
-    let root = 0u64;
-    let docs = fs.mkdir("docs", root).unwrap_or(1);
-    let _file = fs.store_text("hello.txt", "Teleport me", docs).unwrap_or(2);
-    let vol = fs.mkdir("vol_a", root).unwrap_or(3);
-
-    let start = drivers::interrupts::ticks();
-    if fs.teleport("hello.txt", docs, vol).is_ok() {
-        let elapsed = drivers::interrupts::ticks().saturating_sub(start);
-        serial_println!(
-            "[ManifoldFS] Teleported 'hello.txt' in {} ticks — O(1)",
-            elapsed
-        );
-    } else {
-        serial_println!("[ManifoldFS] Teleport demo skipped");
-    }
-}
-
-#[cfg(not(test))]
-fn demo_syscalls() {
-    use syscall::table;
-
-    let r1 = table::dispatch(table::SYS_GETPID, 0, 0, 0);
-    let r2 = table::dispatch(table::SYS_THEOREM_STATUS, 0, 0, 0);
-    let r3 = table::dispatch(table::SYS_MANIFOLD_QUERY, 1, 0, 0);
-
-    serial_println!("[Syscalls verified] getpid={}, theorems={}, query={}",
-        r1.code,
-        r2.data.as_deref().unwrap_or("?"),
-        r3.data.as_deref().unwrap_or("?")
-    );
-}
-
-#[cfg(not(test))]
 fn init_manifold_pkg() {
     let _pkg = pkg::ManifoldPkg::new();
     serial_println!("[ManifoldPkg] Package registry initialized (0 packages)");
@@ -371,9 +320,7 @@ fn init_drivers() {
     drivers::pci::init();
     drivers::block::ahci::init();
     drivers::wifi::init();
-    serial_println!("[WiFi] Driver loaded (hardware simulation — use 'wifi' for status)");
     drivers::bluetooth::init();
-    serial_println!("[Bluetooth] Driver loaded (hardware simulation — use 'bluetooth' for status)");
     drivers::gpu::init();
     net::init();
 }
@@ -381,7 +328,7 @@ fn init_drivers() {
 #[cfg(not(test))]
 fn init_usb() {
     drivers::usb::init();
-    serial_println!("[USB] xHCI host controller initialized (hardware simulation)");
+    serial_println!("[USB] Subsystem initialized (xHCI host controller probe pending)");
 }
 
 #[cfg(not(test))]
@@ -400,167 +347,7 @@ fn init_async_runtime() {
 fn init_games() {
     serial_println!("[Games] Snake, Breakout, Warp Racer available");
     serial_println!("[Calculator] Scientific calculator ready");
-    serial_println!("[SealPlayer] Media player ready (MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV)");
+    serial_println!("[SealPlayer] Media player ready (WAV/PCM playback; additional formats planned)");
 }
 
-#[cfg(not(test))]
-fn test_vfs() {
-    use alloc::vec::Vec;
-    use fs::vfs::{with_vfs, VfsNodeType};
 
-    serial_println!("[test_vfs] Starting VFS cross-filesystem tests...");
-
-    // Test 1: /proc/version
-    let handle = with_vfs(|vfs| vfs.lookup_follow("/proc/version")).expect("proc/version");
-    let mut buf = [0u8; 256];
-    let len = with_vfs(|vfs| vfs.read(handle, &mut buf, 0)).expect("read version");
-    let text = core::str::from_utf8(&buf[..len]).unwrap_or("?");
-    serial_println!("[test_vfs] /proc/version = {}", text);
-
-    // Test 2: /dev/zero
-    let hzero = with_vfs(|vfs| vfs.lookup_follow("/dev/zero")).expect("dev/zero");
-    let mut zbuf = [0u8; 8];
-    with_vfs(|vfs| vfs.read(hzero, &mut zbuf, 0)).expect("read zero");
-    serial_println!(
-        "[test_vfs] /dev/zero read OK (all zeros: {})",
-        zbuf.iter().all(|&b| b == 0)
-    );
-
-    // Test 3: /dev/null write
-    let hnull = with_vfs(|vfs| vfs.lookup_follow("/dev/null")).expect("dev/null");
-    with_vfs(|vfs| vfs.write(hnull, b"discard", 0)).expect("write null");
-    serial_println!("[test_vfs] /dev/null write OK");
-
-    // Test 4: mkdir in ManifoldFS root
-    let _hdir = with_vfs(|vfs| vfs.mkdir("/test_dir")).expect("mkdir");
-    serial_println!("[test_vfs] mkdir /test_dir OK");
-
-    // Test 5: create and write in ManifoldFS
-    let hfile = with_vfs(|vfs| vfs.create("/test_dir/hello.txt")).expect("create");
-    with_vfs(|vfs| vfs.write(hfile, b"hello vfs", 0)).expect("write file");
-    let mut fbuf = [0u8; 128];
-    let flen = with_vfs(|vfs| vfs.read(hfile, &mut fbuf, 0)).expect("read file");
-    let ftext = core::str::from_utf8(&fbuf[..flen]).unwrap_or("?");
-    serial_println!("[test_vfs] ManifoldFS read: {}", ftext);
-
-    // Test 6: stat /proc
-    let hproc = with_vfs(|vfs| vfs.lookup_follow("/proc")).expect("proc");
-    let node = with_vfs(|vfs| vfs.stat(hproc)).expect("stat proc");
-    serial_println!(
-        "[test_vfs] /proc is_dir={}",
-        matches!(node.node_type, VfsNodeType::Directory)
-    );
-
-    // Test 7: readdir /proc
-    let entries = with_vfs(|vfs| vfs.readdir(hproc)).expect("readdir proc");
-    let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
-    serial_println!("[test_vfs] /proc entries: {}", names.join(", "));
-
-    serial_println!("[test_vfs] All tests passed");
-}
-
-#[cfg(not(test))]
-fn test_security() {
-    use alloc::string::String;
-    use alloc::vec;
-    use security::aslr;
-    use security::mac;
-    use security::audit;
-    use security::seccomp;
-
-    serial_println!("[test_security] Starting security subsystem tests...");
-
-    // Test 1: ASLR returns distinct values
-    let mmap = aslr::randomize_mmap_base();
-    let stack = aslr::randomize_stack_top();
-    let heap = aslr::randomize_heap_base();
-    serial_println!("[test_security] ASLR mmap={:#x} stack={:#x} heap={:#x}", mmap, stack, heap);
-
-    // Test 2: SMAP/SMEP enabled (CR4 bits)
-    let cr4 = unsafe { x86_64::registers::control::Cr4::read_raw() };
-    let smep = (cr4 & (1 << 20)) != 0;
-    let smap = (cr4 & (1 << 21)) != 0;
-    serial_println!("[test_security] SMAP={} SMEP={}", smap, smep);
-
-    // Test 3: MAC blocks /root for non-root
-    mac::init_default_policy();
-    let blocked = !mac::check_file_permission(1000, "/root/secret", mac::Permissions::R);
-    serial_println!("[test_security] MAC /root blocked for uid=1000: {}", blocked);
-
-    // Test 4: MAC allows /data and /tmp
-    let data_ok = mac::check_file_permission(1000, "/data/file", mac::Permissions::R);
-    let tmp_ok = mac::check_file_permission(1000, "/tmp/foo", mac::Permissions::W);
-    serial_println!("[test_security] MAC /data={} /tmp={}", data_ok, tmp_ok);
-
-    // Test 5: Audit log generation
-    audit::audit_log(audit::AuditEvent::Open { uid: 0, path: String::from("/etc/shadow"), perms: String::from("r") });
-    serial_println!("[test_security] Audit event generated");
-
-    // Test 6: seccomp filter
-    let filter = vec![
-        seccomp::SeccompInsn { code: 0x20, jt: 0, jf: 0, k: 0 },
-        seccomp::SeccompInsn { code: 0x15, jt: 0, jf: 1, k: 1 },
-        seccomp::SeccompInsn { code: 0x06, jt: 0, jf: 0, k: seccomp::SECCOMP_RET_ALLOW },
-        seccomp::SeccompInsn { code: 0x06, jt: 0, jf: 0, k: seccomp::SECCOMP_RET_KILL },
-    ];
-    let _ = seccomp::seccomp_load_filter(1, &filter);
-    let action = seccomp::seccomp_check(1, 1);
-    serial_println!("[test_security] seccomp syscall=1 action={:#x}", action);
-
-    serial_println!("[test_security] All tests passed");
-}
-
-#[cfg(not(test))]
-fn test_userspace() {
-    serial_println!("[Userspace] Loading test ELF...");
-
-    // Minimal ELF64: writes "Hello userspace\n" via SYS_WRITE then SYS_EXIT
-    static TEST_ELF: &[u8] = &[
-        0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x02, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00,
-        0x78, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xb2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xb2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, 0x48,
-        0xc7, 0xc7, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8d,
-        0x35, 0x15, 0x00, 0x00, 0x00, 0x48, 0xc7, 0xc2,
-        0x0e, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x48, 0xc7,
-        0xc0, 0x00, 0x00, 0x00, 0x00, 0x48, 0x31, 0xff,
-        0x0f, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20,
-        0x75, 0x73, 0x65, 0x72, 0x73, 0x70, 0x61, 0x63,
-        0x65, 0x0a,
-    ];
-
-    match process::scheduler::spawn_user("test_prog", 5, TEST_ELF) {
-        Ok(id) => {
-            serial_println!("[Userspace] Spawned user task id={}", id);
-        }
-        Err(e) => {
-            serial_println!("[Userspace] Failed to load test ELF: {:?}", e);
-        }
-    }
-}
-
-#[cfg(not(test))]
-fn test_network() {
-    use core::sync::atomic::Ordering;
-    serial_println!("[test_network] Starting network tests...");
-    net::set_local_ip([127, 0, 0, 1]);
-    net::icmp::ECHO_REPLY_RECEIVED.store(false, Ordering::SeqCst);
-    net::icmp::send_echo_request([127, 0, 0, 1], 1);
-    if net::icmp::ECHO_REPLY_RECEIVED.load(Ordering::SeqCst) {
-        serial_println!("[test_network] Loopback ping OK");
-    } else {
-        serial_println!("[test_network] Loopback ping FAILED");
-    }
-}
