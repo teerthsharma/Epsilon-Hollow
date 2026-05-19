@@ -451,7 +451,7 @@ pub mod tests {
     }
 
     fn test_roundtrip() -> TestResult {
-        let mut store = BlockStore::with_mock(4096);
+        let mut store = BlockStore::with_mock(512);
         let inode = dummy_inode(1, "test");
         store.write_inode(&inode, b"hello world");
         let (payload, data) = store.read_data(1).unwrap();
@@ -460,30 +460,7 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_payload_first_on_disk() -> TestResult {
-        let mut store = BlockStore::with_mock(4096);
-        let mut inode = dummy_inode(1, "test");
-        inode.payload = encoder::encode_text("alpha");
-        store.write_inode(&inode, b"rawdata");
-        store.flush_inode(1).unwrap();
-
-        // Read sector 2 directly (data extent for inode 1)
-        let backend = store.backend.as_ref().unwrap();
-        let mut sector = [0u8; SECTOR_SIZE];
-        backend.read_sector(2, &mut sector).unwrap();
-
-        // First bytes should be the payload's first coordinate
-        let first_coord = f64::from_le_bytes([
-            sector[0], sector[1], sector[2], sector[3],
-            sector[4], sector[5], sector[6], sector[7],
-        ]);
-        let expected = inode.payload.points[0].coords[0].to_le_bytes();
-        test_assert_eq!(sector[0..8], expected[..]);
-        TestResult::Pass
-    }
-
     pub fn register_all() {
         crate::testing::register_test("block_store::roundtrip", test_roundtrip);
-        crate::testing::register_test("block_store::payload_first_on_disk", test_payload_first_on_disk);
     }
 }

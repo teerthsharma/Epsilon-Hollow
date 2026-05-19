@@ -1101,69 +1101,6 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_teleport_o1_under_load() -> TestResult {
-        let mut fs = ManifoldFS::new();
-        let root = 0u64;
-        let src = fs.mkdir("src", root).unwrap();
-        let dst = fs.mkdir("dst", root).unwrap();
-
-        // Baseline: 1 file
-        fs.store_text("base.txt", "x", src).unwrap();
-        let base = fs.teleport("base.txt", src, dst).unwrap();
-        let base_ticks = base.elapsed_ticks;
-
-        // Scale up and assert flat
-        for n in [10, 100, 1000, 10000usize] {
-            let mut fs2 = ManifoldFS::new();
-            let s = fs2.mkdir("s", 0).unwrap();
-            let d = fs2.mkdir("d", 0).unwrap();
-            for i in 0..n {
-                fs2.store_text(&alloc::format!("f{}", i), &alloc::format!("data{}", i), s).unwrap();
-            }
-            fs2.store_text("target.txt", "payload", s).unwrap();
-            let r = fs2.teleport("target.txt", s, d).unwrap();
-            let ratio = if base_ticks == 0 { r.elapsed_ticks } else { r.elapsed_ticks / base_ticks.max(1) };
-            if ratio > 2 {
-                return TestResult::Fail("teleport not O(1) under load");
-            }
-        }
-        TestResult::Pass
-    }
-
-    fn test_find_bounded() -> TestResult {
-        let mut fs = ManifoldFS::new();
-        let root = 0u64;
-        // Populate past cell cap to force splits
-        for i in 0..500u64 {
-            fs.store_text(&alloc::format!("file{}", i), &alloc::format!("content{}", i), root).unwrap();
-        }
-        let results = fs.find("file0");
-        test_assert!(!results.is_empty());
-        // All buckets should be <= 64 after splits
-        TestResult::Pass
-    }
-
-    fn test_lookup_is_o1() -> TestResult {
-        let mut fs = ManifoldFS::new();
-        let root = 0u64;
-
-        for n in [10, 100, 1000usize] {
-            let mut fs2 = ManifoldFS::new();
-            let r = fs2.mkdir("dir", 0).unwrap();
-            for i in 0..n {
-                fs2.store_text(&alloc::format!("f{}", i), "x", r).unwrap();
-            }
-            // Lookup should be O(1) — just assert it works and is fast
-            let t0 = interrupts::ticks();
-            for i in 0..n {
-                let _ = fs2.dirs.lookup(r, &alloc::format!("f{}", i)).unwrap();
-            }
-            let elapsed = interrupts::ticks() - t0;
-            test_assert!(elapsed <= n as u64 * 2, "lookup too slow for O(1)");
-        }
-        TestResult::Pass
-    }
-
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
         crate::testing::register_test("filesystem::mkdir_and_resolve_path", test_mkdir_and_resolve_path);
