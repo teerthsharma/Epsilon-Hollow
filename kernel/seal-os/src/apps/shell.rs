@@ -454,6 +454,20 @@ impl Shell {
                 let epochs: usize = arg.parse().unwrap_or(1000);
                 crate::ml_engine::demo_train_mlp(epochs)
             }
+            "save" => {
+                let name = if arg.is_empty() { "model.sealml" } else { arg };
+                match crate::ml_engine::save_model(name) {
+                    Ok(msg) => msg,
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            "load" => {
+                let name = if arg.is_empty() { "model.sealml" } else { arg };
+                match crate::ml_engine::load_model(name) {
+                    Ok(msg) => msg,
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
             "tensor" => {
                 // Create a simple 2x3 tensor for demo
                 let t = crate::ml_engine::tensor_from_data(
@@ -490,6 +504,8 @@ impl Shell {
                  ml status   — Show ML runtime status\n\
                  ml devices  — List compute devices\n\
                  ml train    — Train MLP on XOR dataset\n\
+                 ml save     — Save trained model to ManifoldFS\n\
+                 ml load     — Load model from ManifoldFS\n\
                  ml tensor   — Create a demo tensor\n\
                  ml matmul   — Demo matrix multiply",
             ),
