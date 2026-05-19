@@ -91,6 +91,8 @@ pub fn alloc_frame() -> Option<PhysAddr> {
             return Some(PhysAddr::new(frame as u64 * 4096));
         }
     }
+    let free = *FREE_COUNT.lock();
+    crate::serial_println!("[DEBUG] alloc_frame returning None, free_count={}", free);
     None
 }
 
