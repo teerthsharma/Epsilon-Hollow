@@ -19,7 +19,7 @@ spin = "0.9"
 volatile = "0.4"
 x86_64 = "0.15"
 libm = { version = "0.2", default-features = false }
-uefi = { version = "0.37", features = ["alloc"] }
+uefi = { version = "0.32", features = ["alloc"] }
 
 [profile.dev]
 opt-level = 1
@@ -30,3 +30,7 @@ lto = "fat"
 codegen-units = 1
 opt-level = 3
 panic = "abort"
+
+[dev-dependencies]
+proptest = { version = "1.5.0", default-features = false, features = ["alloc"] }
+

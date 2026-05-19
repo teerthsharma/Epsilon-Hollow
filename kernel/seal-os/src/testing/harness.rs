@@ -56,19 +56,18 @@ pub fn run_suite(suite: &TestSuite) -> bool {
     let mut panicked = 0;
 
     for case in &suite.cases {
-        crate::serial_print!("[TEST] {} ... ", case.name);
         let result = (case.func)();
         match result {
             TestResult::Pass => {
-                serial_println!("PASS");
+                serial_println!("TEST_PASS: {}", case.name);
                 passed += 1;
             }
             TestResult::Fail(msg) => {
-                serial_println!("FAIL: {}", msg);
+                serial_println!("TEST_FAIL: {} - {}", case.name, msg);
                 failed += 1;
             }
             TestResult::Panic => {
-                serial_println!("PANIC");
+                serial_println!("TEST_FAIL: {} - PANIC", case.name);
                 panicked += 1;
             }
         }
