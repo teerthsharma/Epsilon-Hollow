@@ -39,12 +39,17 @@ pub unsafe fn init(boot_info: &BootInfo) {
         fb_end,
     );
 
+    let free_after_phys = phys::free_count();
+    crate::serial_println!("[BOOT] phys::init complete, free frames = {}", free_after_phys);
+
     if let Err(_) = virt::init(kernel_start, boot_info.kernel_size) {
         crate::serial_println!("[BOOT] FATAL: Failed to initialize virtual memory (out of memory)");
         loop {
             x86_64::instructions::hlt();
         }
     }
+    let free_after_virt = phys::free_count();
+    crate::serial_println!("[BOOT] virt::init complete, free frames = {}", free_after_virt);
     gdt::init_gdt();
 }
 

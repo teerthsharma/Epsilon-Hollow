@@ -1,177 +1,278 @@
 # FUTURE_PLAN.md — Epsilon-Hollow Roadmap
 
-## 1. What's Been Built — Summary of All Subsystems
+## Master Task Registry
 
-### Core Mathematical Foundation (aether-core)
-- **TSS** (Theorem 1) — Spherical Voronoi Index for O(1) retrieval on S^(D-1)
-- **SCM** (Theorem 2) — Spectral Contraction Operator for Banach fixed-point dynamics
-- **Topology** — Betti number computation via filtration-based TDA
-- **Manifold** — S² hollow manifold operations with β₂ = 1
-- **OS** — Operating system primitives (process, memory, scheduler)
-- **Governor** — PD control for resource regulation
-- **State** — Topological state management
-- **Aether** — Core coordinate system and transformations
-- **Memory** — Memory management abstractions
+This document is the single source of truth for all remaining work. Every task has a checkbox. Agents tick `[ ] → [x]` as work completes. Each major area links to its design document, which contains the granular task breakdown.
 
-### Machine Learning Subsystems (aether-core/src/ml/)
-- **Tensor** — N-dimensional tensor operations
-- **Autograd** — Automatic differentiation engine
-- **Neural** — Neural network layers and activations
-- **Classification** — Topological classification algorithms
-- **Regression** — Manifold regression
-- **Clustering** — Betti-0 based semantic clustering
-- **Convolution** — Manifold-aware convolution
-- **Convergence** — Topological convergence primitives
-- **Gossip** — Distributed learning via gossip protocols
-- **Benchmark** — Performance benchmarking suite
-- **Dataloader** — Data loading with topological batching
-- **LinAlg** — Linear algebra on manifolds
+---
 
-### Epsilon Context Teleportation (epsilon crate)
-- **Bridge** — Cross-agent context bridge
-- **Teleport** — O(1) context transfer via topological surgery
-- **Governor** — Teleportation rate limiting
-- **Manifold** — Context manifold construction
-- **Memory** — Context memory management
-- **Mock** — Testing mocks for teleportation
+## Phase 1: Boot to Shell (MVP)
 
-### Epsilon-OS World Model (epsilon-os)
-- **World** — Topological world model with episodic memory
-- **Main** — OS entry point and REPL
+> **Goal:** The kernel boots, initializes all subsystems, and drops into a working shell. All tests pass. This is the minimum viable Seal OS.
 
-### Aether-Lang DSL
-- **Interpreter** — Tree-walking interpreter (Bio mode)
-- **VM** — Bytecode virtual machine (Titan mode)
-- **Parser** — Manifold-native syntax parser
-- **Python** — Python interoperability layer
+### 1.1 Boot Sequence
+**Design doc:** [`docs/design/BOOT-SEQUENCE.md`](docs/design/BOOT-SEQUENCE.md)
 
-### Aether-Link I/O Superkernel
-- **Fast Math** — POVM-based adaptive prefetching (~18 ns/decision)
-- **Benchmarks** — I/O cycle and throughput benchmarks
+- [ ] Stage 1: EFI pre-exit (memory map, framebuffer, ExitBootServices)
+- [ ] Stage 2: Long mode setup (GDT, IDT stub, E820 parsing)
+- [ ] Stage 3: Virtual memory bootstrap (identity map, higher half, page tables)
+- [ ] Stage 3: Bitmap allocator init (mark usable, free count correct)
+- [ ] Stage 3: Heap init (slab allocator online, Box::new succeeds)
+- [ ] Stage 4: Subsystem init order verified (12 inits complete in sequence)
+- [ ] Stage 5: Init process execs `/bin/init` or `/bin/sh`
+- [ ] GRUB ISO generation (multiboot2 compliant)
+- [ ] QEMU runner scripts automated
 
-### Aegis-Core Memory
-- **TitanClock** — Lock-free sharded allocator (32 shards)
-- **ML** — Memory-optimized ML kernels
+### 1.2 Interrupt & Exception Handling
+**Design doc:** [`docs/design/INTERRUPT-IDT.md`](docs/design/INTERRUPT-IDT.md)
 
-### Verified Kernels (aether-verified)
-- Lean 4 → C → Rust verified kernel pipeline
+- [ ] IDT with all 256 entries populated
+- [ ] Exception handlers for vectors 0–20
+- [ ] Page fault handler (COW, lazy alloc, stack growth, fixup tables)
+- [ ] IO-APIC + Local APIC IRQ routing
+- [ ] Interrupt Stack Table (IST1–IST4 allocated)
+- [ ] `IrqGuard` RAII + spinlock integration
+- [ ] Softirq framework + tasklets
+- [ ] Local APIC timer fires at 1 kHz
 
-## 2. What's Still Needed
+### 1.3 Syscall Dispatcher
+**Design doc:** [`docs/design/SYSCALL-DISPATCHER.md`](docs/design/SYSCALL-DISPATCHER.md)
 
-### Critical Path — Kernel Infrastructure
-- [ ] **Interrupt/IDT Setup** — Interrupt descriptor table, exception handlers, IRQ routing
-- [ ] **Syscall Dispatcher** — System call table, argument marshalling, privilege transitions
-- [ ] **Kernel Entry Assembly** — Boot trampoline, long mode transition, stack setup
-- [ ] **Linker Script** — Memory layout, sections, BSS zeroing
-- [ ] **GRUB ISO Generation** — Multiboot2 compliant bootloader image
-- [ ] **QEMU Runner Scripts** — Automated testing in virtualized environment
+- [ ] `syscall`/`sysret` ABI wired (STAR, LSTAR, SFMASK)
+- [ ] Assembly entry/exit with `swapgs` mitigation
+- [ ] `SyscallFrame` + dispatch table (512 entries)
+- [ ] Tier 1 syscalls: read, write, open, close, exit, brk, mmap, munmap, fork, execve, wait4, getpid, getppid, chdir, getcwd
+- [ ] Tier 2 syscalls: stat, fstat, lstat, lseek, ioctl, pipe, dup, dup2, fcntl, access, getdents64, mkdir, rmdir, unlink, rename, link, symlink, readlink, chmod, chown, umask
+- [ ] Tier 3 syscalls: signals + threads (sigaction, sigprocmask, kill, sigreturn, clone, exit_group, set_tid_address, gettid, nanosleep)
+- [ ] VDSO: clock_gettime, gettimeofday, getcpu, time
+- [ ] MAC/audit integration on every syscall
 
-### Block Layer
-- [ ] **ATA Driver** — PIO/DMA mode disk access
-- [ ] **Virtio-blk** — Paravirtualized block device for QEMU
-- [ ] **Buffer Cache** — Write-back caching with read-ahead
+### 1.4 VFS & Device Filesystem
+**Design doc:** [`docs/design/VFS-DEVTMPFS.md`](docs/design/VFS-DEVTMPFS.md)
 
-### Network Stack
-- [ ] **NIC Drivers** — e1000, virtio-net
-- [ ] **TCP/IP Stack** — Full networking (currently stubbed)
-- [ ] **Socket API** — Berkeley sockets compatible interface
+- [ ] `Inode`, `Dentry`, `VfsMount` structs
+- [ ] `FileSystem` trait with full POSIX ops
+- [ ] Path resolution (absolute, relative, symlink following, mount crossing)
+- [ ] devtmpfs populated at boot (/dev/null, zero, full, random, urandom, tty, console, pts)
+- [ ] `CharDevice` trait + implementations
+- [ ] tmpfs for /tmp, /run, /var/tmp
+- [ ] procfs minimal (/proc/cpuinfo, meminfo, uptime, version, self, sys)
+- [ ] initrd / initramfs CPIO loader
+- [ ] mount/umount syscalls
 
-### Filesystem
-- [ ] **/dev Filesystem** — Device file abstraction
-- [ ] **VFS → tmpfs → initrd** — Virtual filesystem layer
-- [ ] **Ext2 Driver** — Full read/write ext2 support
+### 1.5 Shell & Userspace
+**Design doc:** [`docs/design/SHELL-USERLAND.md`](docs/design/SHELL-USERLAND.md)
 
-### SMP & Concurrency
-- [ ] **APIC** — Local and I/O APIC initialization
-- [ ] **SMP Bootstrap** — Application processor startup
-- [ ] **Per-CPU Runqueues** — Lock-free scheduler per core
+- [ ] Init system mounts essential FS, spawns getty
+- [ ] POSIX shell (pipes, redirects, background, variables, conditionals, loops)
+- [ ] P0 utilities: ls, cat, cp, mv, rm, mkdir, rmdir, touch, chmod, chown, ln, find, grep, sort, uniq, wc, head, tail, cut, tr, diff, ps, kill, df, du, mount, umount, free, uname, uptime, date, sleep, echo, test
+- [ ] libc minimal (malloc, free, fopen, fread, fwrite, printf, fork, execve, wait, pthread_create)
+- [ ] ELF loader (PT_LOAD, BSS, stack, auxv)
+- [ ] crt0.o startup code
 
-### User Space
-- [ ] **Shell** — Interactive command interpreter
-- [ ] **Utilities** — mkdir, rm, cp, mv, grep, kill, ps, ls, cat
-- [ ] **libc** — C standard library compatibility
+### 1.6 Testing Harness
+**Design doc:** [`docs/design/TEST-HARNESS.md`](docs/design/TEST-HARNESS.md)
 
-### Testing & Verification
-- [ ] **Integration Test Harness** — QEMU-based automated tests
-- [ ] **Syscall Conformance Tests** — Linux-compatible behavior verification
-- [ ] **custom_test_frameworks** — #![no_std] test runner
-- [ ] **Property Tests** — Expand proptest coverage (currently: OS, SCM, TSS)
+- [ ] In-kernel `test_main()` with `TEST_PASS`/`TEST_FAIL` markers
+- [ ] QEMU integration test runner (spawn, send, read, timeout)
+- [ ] Host unit tests for all testable modules
+- [ ] Property tests (proptest) for DirHash, InodeSlab, VoronoiCap, allocator
+- [ ] Benchmark regression tests with baseline comparison
+- [ ] CI pipeline: fmt → clippy → host tests → build → QEMU smoke → QEMU full → benchmarks → audit
+- [ ] Code coverage tracking (> 80% for memory/fs/syscall)
 
-## 3. Integration Roadmap
+---
 
-### Phase 1: Boot to Shell (MVP)
-```
-GRUB → Multiboot2 → Long Mode → IDT → PIC/APIC →
-Memory Map → Allocator → VFS → tmpfs → initrd →
-Scheduler → Process Table → Shell
-```
+## Phase 2: I/O & Persistence
 
-### Phase 2: I/O & Persistence
-```
-ATA/virtio-blk → Buffer Cache → Ext2 → /dev →
-Serial/UART → Keyboard → Framebuffer
-```
+> **Goal:** Real block device I/O, filesystem persistence, and buffer caching. The system can read/write files that survive reboot.
 
-### Phase 3: Networking
-```
-NIC Driver → Ethernet → ARP → IP → ICMP → UDP → TCP → Socket API
-```
+### 2.1 AHCI SATA Driver v2.0
+**Design doc:** [`docs/design/AHCI-DRIVER.md`](docs/design/AHCI-DRIVER.md)
 
-### Phase 4: Advanced Features
-```
-SMP → Per-CPU Scheduling → NUMA Awareness →
-Teleportation Bridge → Aether-Lang Runtime →
-ML Inference Engine → World Model Integration
-```
+- [ ] Multi-port foundation (`AhciPort` + `AhciHba` structs)
+- [ ] Per-port DMA buffers
+- [ ] NCQ: 32-slot command queue, tagged commands, queue depth negotiation
+- [ ] Interrupt-driven I/O (MSI/legacy IRQ, completion queue)
+- [ ] Error recovery (timeout detection, port reset, retry with exponential backoff)
+- [ ] Aether-Link integration (real LBA telemetry into 6D feature extractor)
 
-## 4. Testing Strategy
+### 2.2 Virtio-blk Driver
+**Design doc:** [`docs/design/VIRTIO-BLK.md`](docs/design/VIRTIO-BLK.md)
 
-### Unit Tests (In-Module)
-- Each subsystem has inline `#[cfg(test)]` modules
-- Run: `cargo test -p <crate>`
+- [ ] PCI discovery (vendor 0x1AF4, device 0x1001/0x1045)
+- [ ] Feature negotiation + DRIVER_OK
+- [ ] Split virtqueue implementation (desc/avail/used rings)
+- [ ] Virtio-blk protocol (read/write/flush)
+- [ ] `BlockDevice` trait abstraction
+- [ ] Multi-queue support (v2)
+- [ ] Interrupt-driven completions (v2)
+- [ ] DMA allocator for contiguous physical buffers
 
-### Workspace Tests
-- Run: `cargo test --workspace`
-- Currently: 231 tests across all crates
+### 2.3 Buffer Cache
+**Design doc:** [`docs/design/BUFFER-CACHE.md`](docs/design/BUFFER-CACHE.md)
 
-### Property Tests
-- Proptest for TSS, SCM, OS modules
-- Run: `cargo test -p aether-core -- proptest`
+- [ ] `Buffer` struct with metadata + 4 KiB DMA data
+- [ ] Hash table (1024 buckets) for fast lookup
+- [ ] LRU eviction with clean/dirty handling
+- [ ] Read path (cache hit/miss)
+- [ ] Write path (mark dirty, periodic flush)
+- [ ] Read-ahead (sequential detection, 128 KiB window)
+- [ ] Write-back vs write-through modes
+- [ ] mmap file backing (MAP_SHARED)
 
-### QEMU Integration
-- Build: `cargo build --target x86_64-unknown-none`
-- Run: `./scripts/run_qemu.sh`
-- Debug: `./scripts/debug_qemu.sh` (GDB stub)
+### 2.4 Ext2 Driver
+**Design doc:** [`docs/design/EXT2-DRIVER.md`](docs/design/EXT2-DRIVER.md)
 
-### Conformance Tests
-- Syscall behavior vs Linux reference
-- Memory layout compatibility
-- ELF loading verification
+- [ ] Superblock parsing (magic 0xEF53, dynamic revision)
+- [ ] Block group descriptor table
+- [ ] Inode read/write (direct, indirect, double-indirect blocks)
+- [ ] Directory entry iteration, create, remove
+- [ ] File read/write/truncate
+- [ ] Block allocation (bitmap scan, group selection)
+- [ ] Inode allocation
+- [ ] Mount integration (read-only + read-write)
+- [ ] Linux compatibility verified
 
-## 5. Performance Optimization Ideas
+---
+
+## Phase 3: Networking
+
+> **Goal:** TCP/IP stack, socket API, and NIC drivers. The system can connect to the internet.
+
+### 3.1 NIC Drivers
+**Design doc:** [`docs/design/NETWORK-STACK.md`](docs/design/NETWORK-STACK.md)
+
+- [ ] Virtio-net: RX/TX virtqueues, MAC, link status, checksum offload (v2)
+- [ ] e1000: MMIO, RX/TX rings, EEPROM MAC, interrupts
+
+### 3.2 Network Layer
+- [ ] Ethernet frame parsing/transmission
+- [ ] ARP cache (request, reply, timeout, eviction)
+- [ ] IPv4 header parsing/construction + checksum
+- [ ] ICMP echo request/reply (ping)
+- [ ] Routing table + longest-prefix match
+
+### 3.3 Transport Layer
+- [ ] UDP: socket, bind, sendto, recvfrom, connect
+- [ ] TCP: full state machine, 3-way handshake, teardown
+- [ ] TCP: send/recv with ring buffers
+- [ ] TCP: slow start, congestion avoidance, fast retransmit/recovery
+- [ ] TCP: RTT estimation (RFC 6298), RTO backoff
+- [ ] TCP: TIME_WAIT aging (60s)
+
+### 3.4 Socket API & Services
+- [ ] BSD socket syscalls (socket, bind, listen, accept, connect, send, recv, shutdown, setsockopt, getsockopt)
+- [ ] Loopback interface (`lo`, 127.0.0.1)
+- [ ] DHCP client (discover → offer → request → ack → renew → rebind)
+- [ ] HTTP client capability (curl-equivalent)
+
+---
+
+## Phase 4: SMP & Concurrency
+
+> **Goal:** Multi-core support with proper synchronization and load balancing.
+
+**Design doc:** [`docs/design/smp_apic.md`](docs/design/smp_apic.md)
+
+- [ ] ACPI MADT parsing for APIC IDs
+- [ ] Per-CPU data via `gsbase` (`PerCpu` struct)
+- [ ] AP bootstrap: INIT-SIPI-SIPI → real mode → long mode
+- [ ] AP sets up gsbase, IDT, enters scheduler
+- [ ] I/O APIC routing (timer → all CPUs, device IRQs → round-robin)
+- [ ] Per-CPU scheduler runqueues (`ManifoldScheduler` per core)
+- [ ] Load balancing (steal task every 100ms if >2× imbalance)
+- [ ] Preemptive reschedule IPI (`apic_send_ipi(target, RESCHEDULE_VECTOR)`)
+- [ ] Spinlocks → ticket locks or MCS locks
+- [ ] RCU for read-mostly data (VFS mount table, device list)
+- [ ] Seqlocks for jiffies/ticks
+- [ ] TLB shootdown IPI on `unmap_page()`
+
+---
+
+## Phase 5: Performance Optimizations
+
+> **Goal:** Every subsystem is benchmarked and optimized. No regressions.
+
+**Design doc:** [`docs/design/PERFORMANCE.md`](docs/design/PERFORMANCE.md)
 
 ### Memory
-- [ ] **Slab Allocators** — Replace fixed-size arrays with slab allocation
-- [ ] **Per-CPU Caches** — Reduce contention on global allocator
-- [ ] **Huge Pages** — 2MB/1GB page support for large allocations
+- [ ] Per-CPU slab caches (< 5% slowdown at 4 CPUs)
+- [ ] Slab coloring (-20% L1 misses)
+- [ ] Huge pages (2 MiB / 1 GiB) — 50% fewer TLB misses
+- [ ] Page reclaim / swap — survive 2×RAM pressure
 
 ### Scheduling
-- [ ] **Red-Black Tree CFS** — Replace simple queue with O(log n) vruntime tree
-- [ ] **Per-CPU Runqueues** — Lock-free scheduling per core
-- [ ] **NUMA Awareness** — Memory affinity for process placement
+- [ ] CFS red-black tree (fairness ratio < 1.1)
+- [ ] Load balancing (all CPUs > 90% under load)
+- [ ] Preemption (< 1 µs wake-to-schedule)
 
 ### I/O
-- [ ] **DMA** — Zero-copy block and network I/O
-- [ ] **Read-Ahead** — Predictive buffer cache prefetching
-- [ ] **IO_uring** — Async I/O submission/completion rings
+- [ ] AHCI NCQ (2× throughput on rotational)
+- [ ] Block I/O scheduler (30% improvement via merging)
+- [ ] Read-ahead (5× sequential read improvement)
 
 ### Network
-- [ ] **Zero-Copy Sockets** — Direct DMA to user buffers
-- [ ] **RSS/RPS** — Receive-side scaling across cores
-- [ ] **DPDK Integration** — Kernel-bypass networking for HFT
+- [ ] Zero-copy networking (90% line rate)
+- [ ] TSO/LRO offload (v2)
+- [ ] IRQ coalescing (< 10k IRQ/s at line rate)
 
-### ML/Scientific
-- [ ] **SIMD Vectorization** — AVX-512 for tensor operations
-- [ ] **GPU Offload** — CUDA/ROCm for large manifold computations
-- [ ] **Quantization** — INT8/FP16 for inference speedup
+### Locking
+- [ ] MCS locks (max wait < 2× mean)
+- [ ] RCU for VFS (lock-free reads)
+- [ ] Seqlocks for ticks (2 loads + compare)
 
+### Build
+- [ ] LTO + PGO enabled
+- [ ] Kernel < 2 MiB compressed
+- [ ] Boot time < 500 ms to shell
+
+---
+
+## Phase 6: The Probabilistic Topology *(The Grand Goal)*
+
+User space is not a flat address space. It is a **topology being observed by the machine** — and the machine does not observe it directly. It observes it through projection.
+
+The ultimate arc of Epsilon-Hollow is to make the computer itself **probabilistic** — not by bolting sampling layers onto a deterministic kernel, but by making probability emerge naturally from the projected topology of user-space state. The theorems T1–T5 are not optimization heuristics. They are the scaffolding of a new kind of computation where the kernel does not *decide* — it *collapses*.
+
+**What this means concretely:**
+
+- **User space as observed manifold**: Every process, every file descriptor, every page table entry is a point in a high-dimensional state manifold. The kernel does not traverse this space linearly. It projects it — through the same JL-projected S² encoding that powers ManifoldFS — into a topology the computer can "see."
+
+- **Probability through projection, not sampling**: Traditional probabilistic OS work adds Bayesian networks or MCMC on top of deterministic schedulers. That is backwards. In the projected topology, probability is not an extra layer — it is the *geometry of uncertainty* that arises naturally when you project a high-dimensional state space onto a curved manifold and ask "what is the measure of this region?" The Voronoi cells become confidence regions. The spectral contraction operator becomes a belief-update rule. The governor becomes a posterior-adaptive regulator.
+
+- **The computer observes, therefore it is probabilistic**: When the kernel maps a user-space operation into its projected topology, it is not computing a deterministic path. It is computing a **distribution over paths** — and then collapsing that distribution via the same topological surgery that makes teleportation O(1). The collapse is the syscall. The distribution before collapse is the *possibility space*.
+
+- **From T1–T5 to T∞**: T1 (Voronoi) gives us spatial indexing on the observation manifold. T2 (Spectral Contraction) gives us belief propagation. T4 (Governor) gives us posterior adaptation. The missing piece — the one that makes the machine probabilistic — is the **measure on the projected space**. When a user process requests a resource, the kernel does not check a boolean permission. It computes the **measure of that request in the projected topology of the user's observed state** — and if the measure exceeds a curvature threshold, the request is granted. The kernel is not enforcing policy. It is measuring topology.
+
+**The end state:**
+
+A kernel where every decision — page allocation, scheduling quantum, I/O prefetch, file teleport — is the collapse of a probability distribution that lives on the projected topology of user-space state. The machine does not "use" probability. The machine *is* probability, because probability is the only thing that geometry can be when it is observed through projection.
+
+This is not a feature to implement. This is the shape the kernel grows into once T1–T10 are fully wired and the topology engine becomes the primary sense organ of the OS.
+
+---
+
+## Appendix: Design Document Index
+
+| Document | Phase | Status |
+|---|---|---|
+| [`MANIFOLDFS-O1-DESIGN.md`](docs/MANIFOLDFS-O1-DESIGN.md) | 1 | [x] Complete (docs created) |
+| [`AHCI-DRIVER.md`](docs/design/AHCI-DRIVER.md) | 2 | [x] Complete (docs created) |
+| [`BOOT-SEQUENCE.md`](docs/design/BOOT-SEQUENCE.md) | 1 | [x] Complete (docs created) |
+| [`INTERRUPT-IDT.md`](docs/design/INTERRUPT-IDT.md) | 1 | [x] Complete (docs created) |
+| [`SYSCALL-DISPATCHER.md`](docs/design/SYSCALL-DISPATCHER.md) | 1 | [x] Complete (docs created) |
+| [`VFS-DEVTMPFS.md`](docs/design/VFS-DEVTMPFS.md) | 1 | [x] Complete (docs created) |
+| [`SHELL-USERLAND.md`](docs/design/SHELL-USERLAND.md) | 1 | [x] Complete (docs created) |
+| [`TEST-HARNESS.md`](docs/design/TEST-HARNESS.md) | 1 | [x] Complete (docs created) |
+| [`VIRTIO-BLK.md`](docs/design/VIRTIO-BLK.md) | 2 | [x] Complete (docs created) |
+| [`BUFFER-CACHE.md`](docs/design/BUFFER-CACHE.md) | 2 | [x] Complete (docs created) |
+| [`EXT2-DRIVER.md`](docs/design/EXT2-DRIVER.md) | 2 | [x] Complete (docs created) |
+| [`NETWORK-STACK.md`](docs/design/NETWORK-STACK.md) | 3 | [x] Complete (docs created) |
+| [`smp_apic.md`](docs/design/smp_apic.md) | 4 | [x] Complete (docs created) |
+| [`PERFORMANCE.md`](docs/design/PERFORMANCE.md) | 3–5 | [x] Complete (docs created) |
+
+---
+
+*Master roadmap produced by Phase X Planning*
+*2026-05-19*
