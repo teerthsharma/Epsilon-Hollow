@@ -11,30 +11,40 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(feature = "alloc")]
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 #[cfg(feature = "alloc")]
 use alloc::vec;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 #[cfg(not(feature = "alloc"))]
-use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(not(feature = "alloc"))]
 use std::vec;
 #[cfg(not(feature = "alloc"))]
 use std::vec::Vec;
 
-use core::cell::RefCell;
+use spin::Mutex;
 use libm::sqrt;
 
 /// AEGIS Tensor: N-dimensional array
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Tensor {
     /// Shared data storage (flat generic buffer)
-    pub data: Rc<RefCell<Vec<f64>>>,
+    pub data: Arc<Mutex<Vec<f64>>>,
+    /// Cached total element count (avoids locking for size queries)
+    pub len: usize,
     /// Shape of the tensor dimensions
     pub shape: Vec<usize>,
     /// Strides for traversing the data
     pub strides: Vec<usize>,
+}
+
+impl PartialEq for Tensor {
+    fn eq(&self, other: &Self) -> bool {
+        self.shape == other.shape
+            && self.strides == other.strides
+            && *self.data.lock() == *other.data.lock()
+    }
 }
 
 impl Tensor {
@@ -54,8 +64,10 @@ impl Tensor {
             stride *= shape[i];
         }
 
+        let len = data.len();
         Self {
-            data: Rc::new(RefCell::new(data)),
+            data: Arc::new(Mutex::new(data)),
+            len,
             shape,
             strides,
         }
@@ -77,8 +89,11 @@ impl Tensor {
             stride *= shape[i];
         }
 
+        let data_vec = data.to_vec();
+        let len = data_vec.len();
         Self {
-            data: Rc::new(RefCell::new(data.to_vec())),
+            data: Arc::new(Mutex::new(data_vec)),
+            len,
             shape: shape.to_vec(),
             strides,
         }
@@ -120,13 +135,13 @@ impl Tensor {
     /// Get value at index (handles strides)
     pub fn get(&self, indices: &[usize]) -> f64 {
         let offset = self.compute_offset(indices);
-        self.data.borrow()[offset]
+        self.data.lock()[offset]
     }
 
     /// Set value at index
     pub fn set(&self, indices: &[usize], value: f64) {
         let offset = self.compute_offset(indices);
-        self.data.borrow_mut()[offset] = value;
+        self.data.lock()[offset] = value;
     }
 
     fn compute_offset(&self, indices: &[usize]) -> usize {
@@ -143,12 +158,13 @@ impl Tensor {
     pub fn flatten(&self) -> Self {
         let total_size: usize = self.shape.iter().product();
         let mut new_data = Vec::with_capacity(total_size);
-        let data = self.data.borrow();
+        let data = self.data.lock();
 
         new_data.extend_from_slice(&data);
 
         Self {
-            data: Rc::new(RefCell::new(new_data)),
+            data: Arc::new(Mutex::new(new_data)),
+            len: total_size,
             shape: vec![total_size],
             strides: vec![1],
         }
@@ -168,9 +184,9 @@ impl Tensor {
         let n = other.shape[1];
 
         let result = Tensor::zeros(&[m, n]);
-        let data_a = self.data.borrow();
-        let data_b = other.data.borrow();
-        let mut data_c = result.data.borrow_mut();
+        let data_a = self.data.lock();
+        let data_b = other.data.lock();
+        let mut data_c = result.data.lock();
 
         for i in 0..m {
             for j in 0..n {
@@ -194,8 +210,8 @@ impl Tensor {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
 
-        let data_a = self.data.borrow();
-        let data_b = other.data.borrow();
+        let data_a = self.data.lock();
+        let data_b = other.data.lock();
 
         for i in 0..total_size {
             result_data.push(data_a[i] + data_b[i]);
@@ -210,8 +226,8 @@ impl Tensor {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
 
-        let data_a = self.data.borrow();
-        let data_b = other.data.borrow();
+        let data_a = self.data.lock();
+        let data_b = other.data.lock();
 
         for i in 0..total_size {
             result_data.push(data_a[i] * data_b[i]);
@@ -224,7 +240,7 @@ impl Tensor {
     pub fn scale(&self, s: f64) -> Tensor {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
-        let data = self.data.borrow();
+        let data = self.data.lock();
 
         for i in 0..total_size {
             result_data.push(data[i] * s);
@@ -240,8 +256,8 @@ impl Tensor {
         let cols = self.shape[1];
 
         let result = Tensor::zeros(&[cols, rows]);
-        let data = self.data.borrow();
-        let mut res_data = result.data.borrow_mut();
+        let data = self.data.lock();
+        let mut res_data = result.data.lock();
 
         for i in 0..rows {
             for j in 0..cols {
@@ -256,7 +272,7 @@ impl Tensor {
 
     /// Sum all elements
     pub fn sum(&self) -> f64 {
-        self.data.borrow().iter().sum()
+        self.data.lock().iter().sum()
     }
 
     /// Element-wise subtraction
@@ -265,8 +281,8 @@ impl Tensor {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
 
-        let data_a = self.data.borrow();
-        let data_b = other.data.borrow();
+        let data_a = self.data.lock();
+        let data_b = other.data.lock();
 
         for i in 0..total_size {
             result_data.push(data_a[i] - data_b[i]);
@@ -282,7 +298,7 @@ impl Tensor {
     {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
-        let data = self.data.borrow();
+        let data = self.data.lock();
 
         for i in 0..total_size {
             result_data.push(f(data[i]));

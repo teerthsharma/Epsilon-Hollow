@@ -175,7 +175,7 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
 
 /// Format a tensor for display.
 pub fn format_tensor(t: &Tensor) -> String {
-    let data_len = t.data.borrow().len();
+    let data_len = t.data.lock().len();
     if t.shape.len() == 1 {
         let vals: Vec<String> = (0..t.shape[0])
             .map(|i| format!("{:.4}", t.get(&[i])))
@@ -273,13 +273,13 @@ pub fn serialize_mlp(mlp: &MLP) -> Vec<u8> {
         push_u32(&mut buf, layer.output_size as u32);
         push_u8(&mut buf, activation_to_u8(layer.activation));
         // Weights
-        let w_data = layer.weights.data.borrow();
+        let w_data = layer.weights.data.lock();
         push_u32(&mut buf, w_data.len() as u32);
         for &v in w_data.iter() {
             push_f64(&mut buf, v);
         }
         // Biases
-        let b_data = layer.biases.data.borrow();
+        let b_data = layer.biases.data.lock();
         push_u32(&mut buf, b_data.len() as u32);
         for &v in b_data.iter() {
             push_f64(&mut buf, v);

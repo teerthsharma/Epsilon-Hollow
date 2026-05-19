@@ -66,8 +66,8 @@ impl LossConfig {
             }
             LossConfig::BinaryCrossEntropy => {
                 // dL/dp = (1-y)/(1-p) - y/p
-                let true_data = y_true.data.borrow();
-                let pred_data = y_pred.data.borrow();
+                let true_data = y_true.data.lock();
+                let pred_data = y_pred.data.lock();
                 let n = true_data.len();
                 let mut grad_data = Vec::with_capacity(n); // Fixed: using Vec instead of let mut
 
@@ -83,8 +83,8 @@ impl LossConfig {
             LossConfig::Hinge => {
                 // L = max(0, 1 - y*p)
                 // dL/dp = -y if 1 - y*p > 0 else 0
-                let true_data = y_true.data.borrow();
-                let pred_data = y_pred.data.borrow();
+                let true_data = y_true.data.lock();
+                let pred_data = y_pred.data.lock();
                 let n = true_data.len();
                 let mut grad_data = Vec::with_capacity(n);
 
@@ -113,8 +113,8 @@ pub fn mse(y_true: &Tensor, y_pred: &Tensor) -> f64 {
 /// Mean Absolute Error
 pub fn mae(y_true: &Tensor, y_pred: &Tensor) -> f64 {
     let mut sum = 0.0;
-    let true_data = y_true.data.borrow();
-    let pred_data = y_pred.data.borrow();
+    let true_data = y_true.data.lock();
+    let pred_data = y_pred.data.lock();
     let n = true_data.len().min(pred_data.len());
 
     for i in 0..n {
@@ -131,8 +131,8 @@ pub fn rmse(y_true: &Tensor, y_pred: &Tensor) -> f64 {
 /// Binary Cross-Entropy
 pub fn binary_cross_entropy(y_true: &Tensor, y_pred: &Tensor) -> f64 {
     let mut sum = 0.0;
-    let true_data = y_true.data.borrow();
-    let pred_data = y_pred.data.borrow();
+    let true_data = y_true.data.lock();
+    let pred_data = y_pred.data.lock();
     let n = true_data.len().min(pred_data.len());
 
     for i in 0..n {
@@ -154,8 +154,8 @@ pub fn binary_cross_entropy(y_true: &Tensor, y_pred: &Tensor) -> f64 {
 /// Hinge Loss (for SVM)
 pub fn hinge_loss(y_true: &Tensor, y_pred: &Tensor) -> f64 {
     let mut sum = 0.0;
-    let true_data = y_true.data.borrow();
-    let pred_data = y_pred.data.borrow();
+    let true_data = y_true.data.lock();
+    let pred_data = y_pred.data.lock();
     let n = true_data.len().min(pred_data.len());
 
     for i in 0..n {
@@ -180,30 +180,30 @@ where
     let grad = Tensor::zeros(&x.shape);
     let n = x.shape.iter().product();
 
-    let mut grad_data = grad.data.borrow_mut();
+    let mut grad_data = grad.data.lock();
 
     // We need a deep copy to mutate independent probe.
-    let x_plus = Tensor::new(&x.data.borrow(), &x.shape);
-    let x_minus = Tensor::new(&x.data.borrow(), &x.shape);
+    let x_plus = Tensor::new(&*x.data.lock(), &x.shape);
+    let x_minus = Tensor::new(&*x.data.lock(), &x.shape);
 
     {
-        let xp_data = x_plus.data.borrow_mut();
-        let xm_data = x_minus.data.borrow_mut();
+        let xp_data = x_plus.data.lock();
+        let xm_data = x_minus.data.lock();
 
         drop(xp_data);
         drop(xm_data);
 
         for i in 0..n {
-            let original = x.data.borrow()[i];
+            let original = x.data.lock()[i];
 
-            x_plus.data.borrow_mut()[i] = original + epsilon;
-            x_minus.data.borrow_mut()[i] = original - epsilon;
+            x_plus.data.lock()[i] = original + epsilon;
+            x_minus.data.lock()[i] = original - epsilon;
 
             grad_data[i] = (f(&x_plus) - f(&x_minus)) / (2.0 * epsilon);
 
             // Restore
-            x_plus.data.borrow_mut()[i] = original;
-            x_minus.data.borrow_mut()[i] = original;
+            x_plus.data.lock()[i] = original;
+            x_minus.data.lock()[i] = original;
         }
     }
 
@@ -226,7 +226,7 @@ pub fn manhattan_distance(a: &Tensor, b: &Tensor) -> f64 {
     let mut sum = 0.0;
     // Tensor doesn't have L1 norm built-in, do manual
     let diff_data = a.sub(b).data;
-    let data = diff_data.borrow();
+    let data = diff_data.lock();
     for &val in data.iter() {
         sum += fabs(val);
     }
@@ -236,7 +236,7 @@ pub fn manhattan_distance(a: &Tensor, b: &Tensor) -> f64 {
 /// Chebyshev distance (L∞)
 pub fn chebyshev_distance(a: &Tensor, b: &Tensor) -> f64 {
     let diff = a.sub(b);
-    let data = diff.data.borrow();
+    let data = diff.data.lock();
     let mut max = 0.0;
     for &val in data.iter() {
         let abs_val = fabs(val);
