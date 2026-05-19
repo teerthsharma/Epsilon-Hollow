@@ -41,6 +41,7 @@ pub struct Inode {
     pub name: String,
     pub kind: InodeKind,
     pub payload: ManifoldPayload,
+    pub data: Vec<u8>,
     pub metadata: InodeMetadata,
     pub voronoi_cell: usize,
     pub cluster_id: i32,
@@ -112,6 +113,7 @@ impl ManifoldFS {
             name: String::from("/"),
             kind: InodeKind::Directory,
             payload: root_payload,
+            data: Vec::new(),
             metadata: InodeMetadata {
                 created_ms: now_ms(),
                 modified_ms: now_ms(),
@@ -156,6 +158,7 @@ impl ManifoldFS {
             name: String::from(name),
             kind: InodeKind::File,
             payload,
+            data: Vec::from(data),
             metadata: InodeMetadata {
                 created_ms: now_ms(),
                 modified_ms: now_ms(),
@@ -168,10 +171,9 @@ impl ManifoldFS {
         };
 
         self.inodes.insert(id, inode);
-        self.dir_entries
-            .get_mut(&parent_id)
-            .unwrap()
-            .insert(String::from(name), id);
+        if let Some(parent_entries) = self.dir_entries.get_mut(&parent_id) {
+            parent_entries.insert(String::from(name), id);
+        }
         self.cell_files[cell].push(id);
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
@@ -256,6 +258,34 @@ impl ManifoldFS {
         })
     }
 
+    pub fn teleport_bulk(
+        &mut self,
+        src_dir: u64,
+        dst_dir: u64,
+    ) -> Result<Vec<TeleportResult>, FsError> {
+        let names: Vec<String> = self
+            .dir_entries
+            .get(&src_dir)
+            .ok_or(FsError::NotADirectory)?
+            .keys()
+            .cloned()
+            .collect();
+        let mut results = Vec::with_capacity(names.len());
+        for name in names {
+            results.push(self.teleport(&name, src_dir, dst_dir)?);
+        }
+        Ok(results)
+    }
+
+    pub fn store_large(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        parent_id: u64,
+    ) -> Result<u64, FsError> {
+        self.store(name, data, parent_id)
+    }
+
     pub fn find(&mut self, query: &str) -> Vec<FindResult> {
         self.total_lookups += 1;
         let query_payload = encoder::encode_text(query);
@@ -327,6 +357,7 @@ impl ManifoldFS {
             name: String::from(name),
             kind: InodeKind::Directory,
             payload,
+            data: Vec::new(),
             metadata: InodeMetadata {
                 created_ms: now_ms(),
                 modified_ms: now_ms(),
@@ -557,11 +588,7 @@ impl ManifoldFS {
     pub fn read_text(&self, name: &str, dir_id: u64) -> Option<String> {
         let inode_id = self.dir_entries.get(&dir_id)?.get(name)?;
         let inode = self.inodes.get(inode_id)?;
-        Some(format!(
-            "[{}] {} bytes, {} pts on S², cell={}, cluster={}",
-            inode.name, inode.metadata.original_size,
-            inode.payload.point_count, inode.voronoi_cell, inode.cluster_id
-        ))
+        String::from_utf8(inode.data.clone()).ok()
     }
 
     pub fn file_info(&self, name: &str, dir_id: u64) -> Option<String> {
@@ -656,6 +683,7 @@ impl ManifoldFS {
             name: String::from(name),
             kind: src_inode.kind,
             payload: src_inode.payload,
+            data: src_inode.data.clone(),
             metadata: InodeMetadata {
                 created_ms: now_ms(),
                 modified_ms: now_ms(),
@@ -669,7 +697,9 @@ impl ManifoldFS {
 
         let cell = new_inode.voronoi_cell;
         self.inodes.insert(id, new_inode);
-        self.dir_entries.get_mut(&dst_dir).unwrap().insert(String::from(name), id);
+        if let Some(dst_entries) = self.dir_entries.get_mut(&dst_dir) {
+            dst_entries.insert(String::from(name), id);
+        }
         self.cell_files[cell].push(id);
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
@@ -737,21 +767,12 @@ impl FileSystem for ManifoldFS {
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
         let inode = self.inodes.get(&handle.inode).ok_or(VfsError::NotFound)?;
-        let text = format!(
-            "[{}] {} bytes, {} pts on S², cell={}, cluster={}",
-            inode.name,
-            inode.metadata.original_size,
-            inode.payload.point_count,
-            inode.voronoi_cell,
-            inode.cluster_id
-        );
-        let bytes = text.as_bytes();
         let off = offset as usize;
-        if off >= bytes.len() {
+        if off >= inode.data.len() {
             return Ok(0);
         }
-        let len = buf.len().min(bytes.len() - off);
-        buf[..len].copy_from_slice(&bytes[off..off + len]);
+        let len = buf.len().min(inode.data.len() - off);
+        buf[..len].copy_from_slice(&inode.data[off..off + len]);
         Ok(len)
     }
 
@@ -761,6 +782,7 @@ impl FileSystem for ManifoldFS {
             return Err(VfsError::NotSupported);
         }
         inode.payload = encoder::encode_data(buf);
+        inode.data = Vec::from(buf);
         inode.metadata.original_size = buf.len() as u64;
         inode.metadata.modified_ms = now_ms();
         Ok(buf.len())
