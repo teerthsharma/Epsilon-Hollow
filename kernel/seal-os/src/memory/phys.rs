@@ -61,6 +61,7 @@ pub unsafe fn init(
             }
             if overlaps(PhysAddr::new(addr), kernel_start, kernel_end)
                 || overlaps(PhysAddr::new(addr), fb_start, fb_end)
+                || addr < 0x10_0000
             {
                 continue;
             }
@@ -88,12 +89,25 @@ pub fn alloc_frame() -> Option<PhysAddr> {
         if bit < 64 {
             *word |= 1 << bit;
             let frame = word_idx * 64 + bit;
+            drop(bitmap);
+            let mut count = FREE_COUNT.lock();
+            *count = count.saturating_sub(1);
             return Some(PhysAddr::new(frame as u64 * 4096));
         }
     }
-    let free = *FREE_COUNT.lock();
-    crate::serial_println!("[DEBUG] alloc_frame returning None, free_count={}", free);
+    drop(bitmap);
+    let actual_free = count_free_bits();
+    crate::serial_println!("[DEBUG] alloc_frame returning None, actual_free_frames={}, stale_free_count={}", actual_free, *FREE_COUNT.lock());
     None
+}
+
+fn count_free_bits() -> usize {
+    let bitmap = BITMAP.lock();
+    let mut total = 0usize;
+    for word in bitmap.iter() {
+        total += word.count_zeros() as usize;
+    }
+    total
 }
 
 /// Allocate `count` contiguous 4 KiB frames.
@@ -124,6 +138,9 @@ pub fn alloc_frames_contiguous(count: usize) -> Option<PhysAddr> {
                         let (w, b) = frame_bit(f);
                         bitmap[w] |= 1 << b;
                     }
+                    drop(bitmap);
+                    let mut free_count = FREE_COUNT.lock();
+                    *free_count = free_count.saturating_sub(count);
                     return Some(PhysAddr::new(run_start as u64 * 4096));
                 }
             } else {
@@ -142,7 +159,13 @@ pub unsafe fn free_frame(addr: PhysAddr) {
     }
     let (word, bit) = frame_bit(frame);
     let mut bitmap = BITMAP.lock();
+    let was_used = (bitmap[word] >> bit) & 1 != 0;
     bitmap[word] &= !(1 << bit);
+    drop(bitmap);
+    if was_used {
+        let mut count = FREE_COUNT.lock();
+        *count += 1;
+    }
 }
 
 /// Return the number of free frames.

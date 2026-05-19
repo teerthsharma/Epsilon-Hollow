@@ -14,15 +14,16 @@ pub enum BlockError {
     IoError,
     InvalidLba,
     Timeout,
+    Unsupported,
 }
 
-/// A block device capable of reading and writing 512-byte sectors.
+/// A block device capable of reading and writing sectors.
 pub trait BlockDevice: Send + Sync {
-    /// Read a single 512-byte sector at `lba` into `buf`.
-    fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError>;
-
-    /// Write a single 512-byte sector at `lba` from `buf`.
-    fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError>;
+    fn sector_size(&self) -> u64;
+    fn num_sectors(&self) -> u64;
+    fn read_sectors(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+    fn write_sectors(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError>;
+    fn flush(&self) -> Result<(), BlockError>;
 }
 
 /// Registry of all detected block devices.

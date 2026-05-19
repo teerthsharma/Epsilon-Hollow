@@ -52,7 +52,7 @@ pub fn alloc_virtual_pages(pages: usize, align_pages: usize) -> Option<VirtAddr>
     let addr = (*bump + align - 1) & !(align - 1);
     let size = (pages as u64).checked_mul(4096)?;
     let new_bump = addr.checked_add(size)?;
-    if new_bump > 0xFFFF_8000_0000_0000 {
+    if new_bump > 0xFFFF_A000_0000_0000 {
         return None;
     }
     *bump = new_bump;
