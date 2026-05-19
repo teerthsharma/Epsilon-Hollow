@@ -5,6 +5,7 @@
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(abi_x86_interrupt))]
 
+#[macro_use]
 extern crate alloc;
 
 #[cfg(not(test))]

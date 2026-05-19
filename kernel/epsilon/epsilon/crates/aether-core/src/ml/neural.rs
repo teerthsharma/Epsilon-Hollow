@@ -39,7 +39,7 @@ impl Activation {
     pub fn apply(&self, x: &Tensor) -> Tensor {
         match self {
             Activation::Softmax => {
-                let data_borrow = x.data.borrow();
+                let data_borrow = x.data.lock();
                 let max_val = data_borrow.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
                 let mut sum = 0.0;
                 let data: Vec<f64> = data_borrow
@@ -267,8 +267,8 @@ impl DenseLayer {
         // delta: [out], input: [in]
 
         let mut dw_data = Vec::with_capacity(self.output_size * self.input_size);
-        let delta_data = delta.data.borrow();
-        let input_data = last_input.data.borrow();
+        let delta_data = delta.data.lock();
+        let input_data = last_input.data.lock();
 
         for i in 0..self.output_size {
             for j in 0..self.input_size {

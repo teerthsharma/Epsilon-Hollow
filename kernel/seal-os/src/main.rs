@@ -5,6 +5,7 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+#[macro_use]
 extern crate alloc;
 
 use core::panic::PanicInfo;

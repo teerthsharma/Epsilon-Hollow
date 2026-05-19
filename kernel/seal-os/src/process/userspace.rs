@@ -4,6 +4,7 @@
 //! Ring-3 entry and syscall infrastructure.
 
 use core::arch::{asm, global_asm};
+use core::sync::atomic::Ordering;
 use x86_64::registers::model_specific::Msr;
 use x86_64::PrivilegeLevel;
 
@@ -56,8 +57,8 @@ pub unsafe fn enter_userspace(context: &UserContext) -> ! {
     );
 
     // Build the interrupt-return stack frame.
-    let user_ss = (gdt::USER_DATA_SELECTOR.index() as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
-    let user_cs = (gdt::USER_CODE_SELECTOR.index() as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
+    let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
+    let user_cs = ((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
 
     asm!(
         "push {user_ss}",
@@ -184,8 +185,8 @@ pub extern "C" fn do_syscall(frame: *mut SyscallFrame) {
 /// `syscall_entry`.
 pub fn init_syscall_msrs() {
     unsafe {
-        let star = ((gdt::USER_CODE32_SELECTOR.index() as u64) << 48)
-                 | ((gdt::KERNEL_CODE_SELECTOR.index() as u64) << 32);
+        let star = (((gdt::USER_CODE32_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) << 48)
+                 | (((gdt::KERNEL_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) << 32);
 
         Msr::new(MSR_STAR).write(star);
         Msr::new(MSR_LSTAR).write(syscall_entry as *const () as u64);
