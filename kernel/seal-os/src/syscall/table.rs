@@ -464,19 +464,19 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         ),
         SYS_WIFI_SCAN => SyscallResult::with_data(
             0,
-            String::from("wifi_scan: no networks found (hardware simulation)"),
+            String::from("wifi_scan: no wireless hardware detected"),
         ),
         SYS_WIFI_CONNECT => SyscallResult::with_data(
             0,
-            String::from("wifi_connect: not connected (hardware simulation)"),
+            String::from("wifi_connect: no wireless hardware detected"),
         ),
         SYS_BT_SCAN => SyscallResult::with_data(
             0,
-            String::from("bt_scan: no devices found (hardware simulation)"),
+            String::from("bt_scan: no Bluetooth adapter detected"),
         ),
         SYS_BT_PAIR => SyscallResult::with_data(
             0,
-            String::from("bt_pair: no device paired (hardware simulation)"),
+            String::from("bt_pair: no Bluetooth adapter detected"),
         ),
         SYS_SETTING_GET => SyscallResult::with_data(
             0,

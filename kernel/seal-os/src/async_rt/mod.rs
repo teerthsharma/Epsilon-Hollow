@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Tokio-compatible async runtime — single-threaded waker-based executor.
+//! Minimal async runtime — single-threaded no-op-waker executor. Not Tokio-compatible.
 
 pub mod task;
 pub mod timer;

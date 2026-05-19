@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! xHCI (USB 3.x) host controller driver — MMIO register interface.
-//! NOTE: This is a simulated driver. No real xHCI hardware is accessed.
+//! NOTE: Register structs are defined but hardware init is not yet implemented.
 
 pub const XHCI_CLASS: u8 = 0x0C;
 pub const XHCI_SUBCLASS: u8 = 0x03;
