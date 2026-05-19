@@ -33,7 +33,7 @@ timeout 120 qemu-system-x86_64 \
     -no-reboot \
     -no-shutdown \
     -device isa-debug-exit,iobase=0x501,iosize=0x04 \
-    -serial stdio > "$LOGFILE" 2>&1 || QEMU_EXIT=$?
+    > "$LOGFILE" 2>&1 || QEMU_EXIT=$?
 
 echo "[test_kernel] QEMU exited with code: $QEMU_EXIT"
 echo "[test_kernel] Serial output:"

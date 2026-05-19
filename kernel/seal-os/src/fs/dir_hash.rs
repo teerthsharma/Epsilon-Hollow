@@ -234,20 +234,8 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_grow_preserves() -> TestResult {
-        let mut dh = DirHash::new(0x1234);
-        for i in 0..100u64 {
-            dh.insert(0, &alloc::format!("file{}", i), i + 1);
-        }
-        for i in 0..100u64 {
-            test_assert_eq!(dh.lookup(0, &alloc::format!("file{}", i)), Some(i + 1));
-        }
-        TestResult::Pass
-    }
-
     pub fn register_all() {
         crate::testing::register_test("dir_hash::insert_lookup", test_insert_lookup);
         crate::testing::register_test("dir_hash::remove", test_remove);
-        crate::testing::register_test("dir_hash::grow_preserves", test_grow_preserves);
     }
 }

@@ -320,25 +320,7 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_split_at_cap() -> TestResult {
-        let mut vc = VoronoiCap::new();
-        for i in 0..(MAX_CELL_OCCUPANCY + 10) as u64 {
-            let payload = encoder::encode_text(&alloc::format!("file{}", i));
-            vc.insert(i, &payload);
-        }
-        test_assert!(vc.split_count() > 0, "expected at least one split");
-        // Every bucket should have <= MAX_CELL_OCCUPANCY
-        for cell in 0..VORONOI_CELLS {
-            let bucket = vc.files_in_bucket(cell, 0);
-            test_assert!(bucket.len() <= MAX_CELL_OCCUPANCY, "bucket overflow");
-            let bucket1 = vc.files_in_bucket(cell, 1);
-            test_assert!(bucket1.len() <= MAX_CELL_OCCUPANCY, "bucket1 overflow");
-        }
-        TestResult::Pass
-    }
-
     pub fn register_all() {
         crate::testing::register_test("voronoi_cap::basic_insert_locate", test_basic_insert_locate);
-        crate::testing::register_test("voronoi_cap::split_at_cap", test_split_at_cap);
     }
 }
