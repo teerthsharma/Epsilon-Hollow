@@ -8,12 +8,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use aether_core::ml::{
-    Activation, DenseLayer, MLP, OptimizerConfig, Tensor, TrainingResult,
+    Activation, DenseLayer, MLP, OptimizerConfig, Tensor,
 };
-use spin::Mutex;
-
-/// Global slot for the last trained MLP model.
-static LAST_MLP: Mutex<Option<MLP>> = Mutex::new(None);
+use aether_core::ml::linalg::LossConfig;
 
 /// Status of the ML runtime.
 pub struct MlStatus {
@@ -39,16 +36,26 @@ impl MlStatus {
 /// Detect AVX2 support via CPUID.
 fn detect_avx2() -> bool {
     unsafe {
-        // CPUID leaf 1: check ECX bit 28 (AVX) and bit 27 (OSXSAVE)
         let leaf1 = core::arch::x86_64::__cpuid(1);
         let avx_available = (leaf1.ecx & (1 << 28)) != 0;
         let osxsave = (leaf1.ecx & (1 << 27)) != 0;
         if !avx_available || !osxsave {
             return false;
         }
-        // CPUID leaf 7 subleaf 0: check EBX bit 5 (AVX2)
         let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
         (leaf7.ebx & (1 << 5)) != 0
+    }
+}
+
+/// Detect AVX-512 support via CPUID.
+fn detect_avx512() -> bool {
+    unsafe {
+        let leaf1 = core::arch::x86_64::__cpuid(1);
+        if (leaf1.ecx & (1 << 28)) == 0 {
+            return false;
+        }
+        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+        (leaf7.ebx & (1 << 16)) != 0
     }
 }
 
@@ -72,20 +79,6 @@ fn detect_gpu() -> Option<(String, u16, u16)> {
         }
     }
     None
-}
-
-/// Detect AVX-512 support via CPUID.
-fn detect_avx512() -> bool {
-    unsafe {
-        // CPUID leaf 1: check ECX bit 28 (AVX)
-        let leaf1 = core::arch::x86_64::__cpuid(1);
-        if (leaf1.ecx & (1 << 28)) == 0 {
-            return false;
-        }
-        // CPUID leaf 7 subleaf 0: check EBX bit 16 (AVX-512F)
-        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
-        (leaf7.ebx & (1 << 16)) != 0
-    }
 }
 
 /// Create a tensor from raw data.
@@ -117,16 +110,21 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 }
 
 /// Train a simple MLP on synthetic XOR-like data.
-/// Returns a human-readable training report.
-pub fn demo_train_mlp(epochs: usize) -> String {
+/// Returns (human-readable report, serialized model bytes).
+pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
     let mut mlp = MLP::new(
-        OptimizerConfig::Adam { learning_rate: 0.01 },
-        aether_core::ml::LossConfig::MSE,
+        OptimizerConfig::Adam {
+            learning_rate: 0.01,
+            beta1: 0.9,
+            beta2: 0.999,
+            epsilon: 1e-8,
+        },
+        LossConfig::MSE,
     );
 
     // 2 -> 4 -> 1 network for XOR
-    mlp.add_layer(2, 4, Activation::ReLU);
-    mlp.add_layer(4, 1, Activation::Sigmoid);
+    mlp.add_layer(2, 4, Activation::ReLU, None);
+    mlp.add_layer(4, 1, Activation::Sigmoid, None);
 
     // Synthetic XOR dataset
     let x = vec![
@@ -144,12 +142,7 @@ pub fn demo_train_mlp(epochs: usize) -> String {
 
     let result = mlp.fit(&x, &y, epochs);
 
-    // Store model globally
-    *LAST_MLP.lock() = Some(mlp);
-
-    // Test predictions from global model
-    let mut mlp_guard = LAST_MLP.lock();
-    let mlp_ref = mlp_guard.as_mut().unwrap();
+    // Test predictions
     let mut out = format!(
         "MLP Training Report\n\
          ═══════════════════\n\
@@ -165,7 +158,7 @@ pub fn demo_train_mlp(epochs: usize) -> String {
     );
 
     for (i, input) in x.iter().enumerate() {
-        let pred = mlp_ref.predict(input);
+        let pred = mlp.predict(input);
         let val = pred.get(&[0]);
         out.push_str(&format!(
             "  Input [{:.0}, {:.0}] -> Output {:.4} (target: {:.0})\n",
@@ -176,11 +169,13 @@ pub fn demo_train_mlp(epochs: usize) -> String {
         ));
     }
 
-    out
+    let bytes = serialize_mlp(&mlp);
+    (out, bytes)
 }
 
 /// Format a tensor for display.
 pub fn format_tensor(t: &Tensor) -> String {
+    let data_len = t.data.borrow().len();
     if t.shape.len() == 1 {
         let vals: Vec<String> = (0..t.shape[0])
             .map(|i| format!("{:.4}", t.get(&[i])))
@@ -196,7 +191,7 @@ pub fn format_tensor(t: &Tensor) -> String {
         }
         out
     } else {
-        format!("Tensor(shape={:?}) — {} elements", t.shape, t.data.len())
+        format!("Tensor(shape={:?}) — {} elements", t.shape, data_len)
     }
 }
 
@@ -249,8 +244,8 @@ fn activation_to_u8(a: Activation) -> u8 {
         Activation::Sigmoid => 1,
         Activation::Tanh => 2,
         Activation::Linear => 3,
-        Activation::Softmax => 4,
-        Activation::Gelu => 5,
+        Activation::LeakyReLU => 4,
+        Activation::Softmax => 5,
     }
 }
 
@@ -260,8 +255,8 @@ fn activation_from_u8(v: u8) -> Option<Activation> {
         1 => Some(Activation::Sigmoid),
         2 => Some(Activation::Tanh),
         3 => Some(Activation::Linear),
-        4 => Some(Activation::Softmax),
-        5 => Some(Activation::Gelu),
+        4 => Some(Activation::LeakyReLU),
+        5 => Some(Activation::Softmax),
         _ => None,
     }
 }
@@ -278,13 +273,15 @@ pub fn serialize_mlp(mlp: &MLP) -> Vec<u8> {
         push_u32(&mut buf, layer.output_size as u32);
         push_u8(&mut buf, activation_to_u8(layer.activation));
         // Weights
-        push_u32(&mut buf, layer.weights.data.len() as u32);
-        for &v in &layer.weights.data {
+        let w_data = layer.weights.data.borrow();
+        push_u32(&mut buf, w_data.len() as u32);
+        for &v in w_data.iter() {
             push_f64(&mut buf, v);
         }
         // Biases
-        push_u32(&mut buf, layer.biases.data.len() as u32);
-        for &v in &layer.biases.data {
+        let b_data = layer.biases.data.borrow();
+        push_u32(&mut buf, b_data.len() as u32);
+        for &v in b_data.iter() {
             push_f64(&mut buf, v);
         }
     }
@@ -300,8 +297,13 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
     let n_layers = read_u32(bytes, &mut off).ok_or("Missing layer count")? as usize;
 
     let mut mlp = MLP::new(
-        OptimizerConfig::Adam { learning_rate: 0.01 },
-        aether_core::ml::LossConfig::MSE,
+        OptimizerConfig::Adam {
+            learning_rate: 0.01,
+            beta1: 0.9,
+            beta2: 0.999,
+            epsilon: 1e-8,
+        },
+        LossConfig::MSE,
     );
 
     for _ in 0..n_layers {
@@ -327,36 +329,36 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         layer.weights = Tensor::from_vec(w_data, vec![output_size, input_size]);
         layer.biases = Tensor::from_vec(b_data, vec![output_size, 1]);
         // Initialize optimizer state
-        layer.init_optimizer(&OptimizerConfig::Adam { learning_rate: 0.01 });
+        layer.init_optimizer(&OptimizerConfig::Adam {
+            learning_rate: 0.01,
+            beta1: 0.9,
+            beta2: 0.999,
+            epsilon: 1e-8,
+        });
         mlp.layers.push(layer);
     }
 
     Ok(mlp)
 }
 
-/// Save the last trained MLP to ManifoldFS.
-pub fn save_model(name: &str) -> Result<String, String> {
-    let mlp_opt = LAST_MLP.lock();
-    let mlp = mlp_opt.as_ref().ok_or("No model trained yet. Run 'ml train' first.")?;
-    let bytes = serialize_mlp(mlp);
+/// Save model bytes to ManifoldFS.
+pub fn save_model_bytes(name: &str, bytes: &[u8]) -> Result<String, String> {
     let mut fs = crate::fs::manifold_fs::ManifoldFS::new();
     let root = 0u64;
-    fs.store(name, &bytes, root)
+    fs.store(name, bytes, root)
         .map(|_| format!("Model '{}' saved ({} bytes)", name, bytes.len()))
         .map_err(|e| format!("Save failed: {:?}", e))
 }
 
 /// Load an MLP from ManifoldFS.
-pub fn load_model(name: &str) -> Result<String, String> {
+pub fn load_model(name: &str) -> Result<MLP, String> {
     let mut fs = crate::fs::manifold_fs::ManifoldFS::new();
     let root = 0u64;
     let inode_id = fs.resolve_path_from(name, root)
         .map_err(|_| format!("Model '{}' not found", name))?;
     let inode = fs.inode(inode_id).ok_or("Inode missing")?;
     let bytes = &inode.data;
-    let mlp = deserialize_mlp(bytes)?;
-    *LAST_MLP.lock() = Some(mlp);
-    Ok(format!("Model '{}' loaded ({} bytes)", name, bytes.len()))
+    deserialize_mlp(bytes)
 }
 
 // ── Simple Markov Text Generator ────────────────────────────────────────────

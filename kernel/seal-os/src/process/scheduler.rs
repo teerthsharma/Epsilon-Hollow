@@ -660,6 +660,15 @@ pub fn current_gid() -> u32 {
     }
 }
 
+/// Return the current governor epsilon value.
+pub fn governor_epsilon() -> f64 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.governor_epsilon()
+    }
+}
+
 /// Set the GID of the currently running task.
 pub fn set_current_gid(gid: u32) {
     unsafe {
