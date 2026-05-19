@@ -342,12 +342,13 @@ impl Shell {
     }
 
     fn cmd_seal(&self) -> String {
-        let mut out = String::from(
-            "Seal OS v0.1.0 (x86_64)\n\
+        let mut out = format!(
+            "Seal OS v{} (x86_64)\n\
              The Geometrical Operating System\n\
              All data = geometry on S²\n\
              File moves = O(1) topological surgery\n\
              ═══════════════════════════════════\n",
+            crate::VERSION
         );
         for (name, status) in self.fs.theorem_status() {
             out.push_str(&format!("  {} = {}\n", name, status));
