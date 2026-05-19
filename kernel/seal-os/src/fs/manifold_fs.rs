@@ -1123,7 +1123,9 @@ pub mod tests {
             fs2.store_text("target.txt", "payload", s).unwrap();
             let r = fs2.teleport("target.txt", s, d).unwrap();
             let ratio = if base_ticks == 0 { r.elapsed_ticks } else { r.elapsed_ticks / base_ticks.max(1) };
-            test_assert!(ratio <= 2, &alloc::format!("teleport not O(1) at N={}: {} ticks vs base {}", n, r.elapsed_ticks, base_ticks));
+            if ratio > 2 {
+                return TestResult::Fail("teleport not O(1) under load");
+            }
         }
         TestResult::Pass
     }
