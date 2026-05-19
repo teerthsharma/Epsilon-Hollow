@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(dirname "$0")/.."
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "[test_kernel] Building Seal OS with test-mode (release)..."
 cd "$PROJECT_ROOT/kernel/seal-os"
