@@ -1048,7 +1048,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**60071 lines of Rust** across 278 files · 0 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **75499 total**
+**60369 lines of Rust** across 279 files · 0 lines of x86 assembly · 803 lines of Lean 4 proofs · 14625 lines of Python — **75797 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
