@@ -128,6 +128,27 @@ fn boot_graphical(fb: &'static Framebuffer) {
         fb.width, fb.height, fb.bpp
     );
 
+    // First-boot login screen with mascot splash
+    serial_println!("[LOGIN] Showing login screen");
+    let mut login = graphics::login::LoginScreen::new();
+    login.render(fb);
+
+    loop {
+        if let Some(event) = drivers::interrupts::poll_event() {
+            if let wm::event::InputEvent::KeyPress(scancode) = event {
+                let ch = drivers::interrupts::scancode_to_char(scancode);
+                if ch != 0 {
+                    if login.key_press(ch) {
+                        break;
+                    }
+                    login.render(fb);
+                }
+            }
+        }
+        x86_64::instructions::hlt();
+    }
+    serial_println!("[LOGIN] Authenticated");
+
     let mut console = graphics::console::Console::new(fb);
     graphics::splash::render_splash(&mut console);
     graphics::splash::draw_progress_bar(fb, 10);
