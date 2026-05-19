@@ -85,7 +85,7 @@ jobs:
             ### Run it
             ```bash
             # QEMU with UEFI firmware
-            qemu-system-x86_64 -bios OVMF.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
+            qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
 
             # Real UEFI hardware
             dd if=seal-os.img of=/dev/sdX bs=4M status=progress
@@ -104,6 +104,6 @@ jobs:
             Built from `main` branch at ${{ github.sha }}.
 
             ```bash
-            qemu-system-x86_64 -bios OVMF.fd -drive file=seal-os.img,format=raw -serial stdio -m 512M -vga std
+            qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 512M -vga std
             ```
           prerelease: true

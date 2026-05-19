@@ -183,8 +183,8 @@ where
     let mut grad_data = grad.data.lock();
 
     // We need a deep copy to mutate independent probe.
-    let x_plus = Tensor::new(&*x.data.lock(), &x.shape);
-    let x_minus = Tensor::new(&*x.data.lock(), &x.shape);
+    let x_plus = Tensor::new(&x.data.lock(), &x.shape);
+    let x_minus = Tensor::new(&x.data.lock(), &x.shape);
 
     {
         let xp_data = x_plus.data.lock();

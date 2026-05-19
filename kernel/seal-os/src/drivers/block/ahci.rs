@@ -318,12 +318,12 @@ impl BlockDevice for AhciController {
 
 // ── Initialization ──────────────────────────────────────────────────────────
 
-pub fn init() {
+pub fn init() -> Option<()> {
     let device = match get_device_by_class(0x01, 0x06, 0x01) {
         Some(d) => d,
         None => {
             serial_println!("[AHCI] No AHCI controller found");
-            return;
+            return None;
         }
     };
 
@@ -377,17 +377,41 @@ pub fn init() {
             Some(p) => p,
             None => {
                 serial_println!("[AHCI] No SATA device found");
-                return;
+                return None;
             }
         };
 
         serial_println!("[AHCI] Using port {}", port);
 
         // Allocate DMA structures (identity-mapped below 4 GiB)
-        let cl_phys = alloc_frame().expect("AHCI: no memory for CL").as_u64();
-        let fis_phys = alloc_frame().expect("AHCI: no memory for FIS").as_u64();
-        let ct_phys = alloc_frame().expect("AHCI: no memory for CT").as_u64();
-        let buf_phys = alloc_frame().expect("AHCI: no memory for DMA buf").as_u64();
+        let cl_phys = match alloc_frame() {
+            Some(addr) => addr.as_u64(),
+            None => {
+                serial_println!("[AHCI] Warning: no memory for CL");
+                return None;
+            }
+        };
+        let fis_phys = match alloc_frame() {
+            Some(addr) => addr.as_u64(),
+            None => {
+                serial_println!("[AHCI] Warning: no memory for FIS");
+                return None;
+            }
+        };
+        let ct_phys = match alloc_frame() {
+            Some(addr) => addr.as_u64(),
+            None => {
+                serial_println!("[AHCI] Warning: no memory for CT");
+                return None;
+            }
+        };
+        let buf_phys = match alloc_frame() {
+            Some(addr) => addr.as_u64(),
+            None => {
+                serial_println!("[AHCI] Warning: no memory for DMA buf");
+                return None;
+            }
+        };
 
         for addr in [cl_phys, fis_phys, ct_phys, buf_phys] {
             let ptr = addr as *mut u8;
@@ -452,6 +476,7 @@ pub fn init() {
         register_block_device(0x800, controller);
         serial_println!("[AHCI] Registered as block device 0x800");
     }
+    Some(())
 }
 
 // ── Test ────────────────────────────────────────────────────────────────────

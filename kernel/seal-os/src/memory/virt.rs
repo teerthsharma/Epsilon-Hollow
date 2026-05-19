@@ -27,6 +27,10 @@ const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
 
 const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
 
+/// Error returned when a page-table allocation or mapping fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MapError;
+
 /// Virtual address of the current PML4 (accessed via identity-mapped address).
 static PML4_VIRT: Mutex<VirtAddr> = Mutex::new(VirtAddr::new_truncate(0));
 
@@ -46,7 +50,12 @@ pub fn alloc_virtual_pages(pages: usize, align_pages: usize) -> Option<VirtAddr>
     let align = align_pages.max(1) as u64 * 4096;
     let mut bump = VIRTUAL_BUMP.lock();
     let addr = (*bump + align - 1) & !(align - 1);
-    *bump = addr + pages as u64 * 4096;
+    let size = (pages as u64).checked_mul(4096)?;
+    let new_bump = addr.checked_add(size)?;
+    if new_bump > 0xFFFF_8000_0000_0000 {
+        return None;
+    }
+    *bump = new_bump;
     Some(VirtAddr::new(addr))
 }
 
@@ -54,8 +63,8 @@ pub fn alloc_virtual_pages(pages: usize, align_pages: usize) -> Option<VirtAddr>
 ///
 /// # Safety
 /// Must be called once after the physical allocator is ready.
-pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) {
-    let pml4_frame = crate::memory::phys::alloc_frame().expect("No memory for PML4");
+pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) -> Result<(), MapError> {
+    let pml4_frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
     let pml4 = &mut *(pml4_frame.as_u64() as *mut PageTable);
     pml4.zero();
 
@@ -67,7 +76,7 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) {
             PhysAddr::new(phys),
             id_flags,
             pml4,
-        );
+        )?;
     }
 
     // Map kernel to higher half with 4 KiB pages.
@@ -75,7 +84,7 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) {
     for offset in (0..kernel_size).step_by(4096) {
         let phys = kernel_base + offset;
         let virt = VirtAddr::new(KERNEL_HIGHER_HALF + offset);
-        map_page_inner(virt, phys, kernel_flags, pml4);
+        map_page_inner(virt, phys, kernel_flags, pml4)?;
     }
 
     // Install the new page-table root.
@@ -84,6 +93,7 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) {
 
     *PML4_VIRT.lock() = VirtAddr::new(pml4 as *mut _ as u64);
     BSP_PML4_PHYS.store(pml4_frame.as_u64(), Ordering::SeqCst);
+    Ok(())
 }
 
 /// Map a 2 MiB huge page at the PD level.
@@ -92,27 +102,29 @@ unsafe fn map_huge_page_2m(
     phys: PhysAddr,
     flags: PageTableFlags,
     pml4: &mut PageTable,
-) {
+) -> Result<(), MapError> {
     let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
     let pdpt_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
     let pd_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
 
-    let pdpt = get_or_create_table(&mut pml4[pml4_idx]);
-    let pd = get_or_create_table(&mut pdpt[pdpt_idx]);
+    let pdpt = get_or_create_table(&mut pml4[pml4_idx])?;
+    let pd = get_or_create_table(&mut pdpt[pdpt_idx])?;
     pd[pd_idx].set_addr(phys, flags | PageTableFlags::HUGE_PAGE);
+    Ok(())
 }
 
 /// Internal `map_page` that works on an arbitrary PML4.
-unsafe fn map_page_inner(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) {
+unsafe fn map_page_inner(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) -> Result<(), MapError> {
     let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
     let pdpt_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
     let pd_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
     let pt_idx = ((virt.as_u64() >> 12) & 0x1FF) as usize;
 
-    let pdpt = get_or_create_table(&mut pml4[pml4_idx]);
-    let pd = get_or_create_table(&mut pdpt[pdpt_idx]);
-    let pt = get_or_create_table(&mut pd[pd_idx]);
+    let pdpt = get_or_create_table(&mut pml4[pml4_idx])?;
+    let pd = get_or_create_table(&mut pdpt[pdpt_idx])?;
+    let pt = get_or_create_table(&mut pd[pd_idx])?;
     pt[pt_idx].set_addr(phys, flags);
+    Ok(())
 }
 
 /// Return the virtual address at which the kernel PML4 is mapped.
@@ -124,18 +136,18 @@ pub fn current_pml4_virt() -> VirtAddr {
 ///
 /// # Safety
 /// `pml4` must point to a valid, active or soon-to-be-active page table.
-pub unsafe fn map_page_to_pml4(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) {
-    map_page_inner(virt, phys, flags, pml4);
+pub unsafe fn map_page_to_pml4(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) -> Result<(), MapError> {
+    map_page_inner(virt, phys, flags, pml4)
 }
 
 /// Map a 4 KiB page into the current address space.
 ///
 /// # Safety
 /// Caller must ensure the mapping does not violate invariants.
-pub unsafe fn map_page(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) {
+pub unsafe fn map_page(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) -> Result<(), MapError> {
     let mut ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };
-    map_page_inner(virt, phys, flags, pml4);
+    map_page_inner(virt, phys, flags, pml4)
 }
 
 /// Unmap a 4 KiB page and return the previously mapped physical address.
@@ -224,19 +236,19 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
 
 /// Helper: allocate a new zeroed page table if `entry` is unused,
 /// then return a mutable reference to it (via identity map).
-fn get_or_create_table(entry: &mut PageTableEntry) -> &'static mut PageTable {
+fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTable, MapError> {
     if entry.is_unused() {
-        let frame = crate::memory::phys::alloc_frame().expect("Out of memory for page table");
+        let frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
         let table = unsafe { &mut *(frame.as_u64() as *mut PageTable) };
         table.zero();
         entry.set_addr(
             frame,
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
         );
-        table
+        Ok(table)
     } else {
         let addr = entry.addr();
-        unsafe { &mut *(addr.as_u64() as *mut PageTable) }
+        Ok(unsafe { &mut *(addr.as_u64() as *mut PageTable) })
     }
 }
 

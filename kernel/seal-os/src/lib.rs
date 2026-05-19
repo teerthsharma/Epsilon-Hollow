@@ -47,6 +47,20 @@ pub const VERSION: &str = "1.0.0-alpha";
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Live governor epsilon value (stored as u64 bits).
+pub static GOVERNOR_EPSILON: AtomicU64 = AtomicU64::new(0);
+
+/// Live theorem activation states (T1–T5).
+pub static THEOREM_STATES: [AtomicBool; 5] = [
+    AtomicBool::new(true),
+    AtomicBool::new(true),
+    AtomicBool::new(true),
+    AtomicBool::new(true),
+    AtomicBool::new(true),
+];
+
 #[cfg(not(test))]
 #[no_mangle]
 pub fn kernel_main(info: &BootInfo) -> ! {
@@ -59,6 +73,10 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     unsafe { memory::init(info); }
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     serial_println!("[BOOT] Heap initialized ({} MB detected)", ram_mb);
+
+    // Layer 1.1: Bring up application processors (GS base for this_cpu)
+    cpu::smp::smp_init();
+    serial_println!("[BOOT] SMP initialised");
 
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
@@ -75,10 +93,6 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     // Layer 2b: APIC (foundation for SMP)
     unsafe { drivers::apic::init(); }
     serial_println!("[BOOT] Local APIC + IO APIC initialised");
-
-    // Layer 2c: Bring up application processors
-    cpu::smp::smp_init();
-    serial_println!("[BOOT] SMP initialised");
 
     // Layer 2.5: Syscall MSRs
     process::userspace::init_syscall_msrs();
@@ -133,6 +147,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     let mut login = graphics::login::LoginScreen::new();
     login.render(fb);
 
+    let login_start = drivers::interrupts::ticks();
     loop {
         if let Some(event) = drivers::interrupts::poll_event() {
             if let wm::event::InputEvent::KeyPress(scancode) = event {
@@ -144,6 +159,11 @@ fn boot_graphical(fb: &'static Framebuffer) {
                     login.render(fb);
                 }
             }
+        }
+        // Auto-login after ~3 seconds of inactivity (timer ticks ≈ ms on APIC)
+        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
+            serial_println!("[LOGIN] Auto-login (timeout)");
+            break;
         }
         x86_64::instructions::hlt();
     }
@@ -172,7 +192,9 @@ fn boot_graphical(fb: &'static Framebuffer) {
     graphics::splash::draw_progress_bar(fb, 55);
 
     init_drivers();
-    fs::init_vfs();
+    if let Err(e) = fs::init_vfs() {
+        serial_println!("[WARN] VFS init failed: {:?}", e);
+    }
     graphics::splash::draw_progress_bar(fb, 65);
 
     init_usb();
@@ -222,7 +244,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     compositor.compose(fb);
 
     serial_println!(
-        "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer)",
+        "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer)",
         compositor.window_count()
     );
     serial_println!("[BOOT] Seal OS desktop ready.");
@@ -262,7 +284,9 @@ fn boot_serial() {
     init_manifold_pkg();
     init_aether_lang();
     init_drivers();
-    fs::init_vfs();
+    if let Err(e) = fs::init_vfs() {
+        serial_println!("[WARN] VFS init failed: {:?}", e);
+    }
     init_usb();
     init_prefetch();
     init_async_runtime();
@@ -276,9 +300,11 @@ fn init_theorems() {
     use aether_core::tss::SphericalVoronoiIndex;
 
     let governor = GeometricGovernor::new();
+    let epsilon = governor.epsilon();
+    GOVERNOR_EPSILON.store(epsilon.to_bits(), Ordering::Relaxed);
     serial_println!(
         "[T4/AGCR] Governor online: epsilon = {:.4}",
-        governor.epsilon()
+        epsilon
     );
 
     let centroids = [
@@ -289,6 +315,9 @@ fn init_theorems() {
     let cell = voronoi.locate((0.5, 0.5));
     serial_println!("[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell {}", cell);
     serial_println!("[BOOT] All T1-T5 theorems ACTIVE");
+    for state in &THEOREM_STATES {
+        state.store(true, Ordering::Relaxed);
+    }
 }
 
 #[cfg(not(test))]
@@ -342,7 +371,9 @@ fn init_aether_lang() {
 #[cfg(not(test))]
 fn init_drivers() {
     drivers::pci::init();
-    drivers::block::ahci::init();
+    if drivers::block::ahci::init().is_none() {
+        serial_println!("[AHCI] Initialization failed, continuing without AHCI");
+    }
     drivers::wifi::init();
     drivers::bluetooth::init();
     drivers::gpu::init();

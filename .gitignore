@@ -100,6 +100,13 @@ wheels/
 **/tree*.txt
 **/temp_*.rs
 
+# --- Agent & Runtime Artifacts ---
+.claude/
+bench.txt
+*.jpeg
+*.jpg
+*.png
+
 # --- LaTeX ---
 *.aux
 *.bbl

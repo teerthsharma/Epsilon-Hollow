@@ -30,6 +30,7 @@ pub struct SnakeGame {
     apple: (i32, i32),
     score: u32,
     game_over: bool,
+    paused: bool,
     rng_state: u32,
     tick_count: u64,
 }
@@ -49,6 +50,7 @@ impl SnakeGame {
             apple: (0, 0),
             score: 0,
             game_over: false,
+            paused: false,
             rng_state: 42,
             tick_count: 0,
         };
@@ -85,12 +87,13 @@ impl SnakeGame {
                     self.direction = Direction::Right;
                 }
             }
+            b' ' => self.paused = !self.paused,
             _ => {}
         }
     }
 
     pub fn tick(&mut self) {
-        if self.game_over {
+        if self.game_over || self.paused {
             return;
         }
         self.tick_count += 1;
@@ -180,4 +183,7 @@ impl SnakeGame {
             game_engine::render_text(win, 4, win.client_height() / 2, "GAME OVER!", 0x00FF4444);
         }
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }

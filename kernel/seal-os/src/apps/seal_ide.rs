@@ -379,4 +379,7 @@ impl SealIde {
             }
         }
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }

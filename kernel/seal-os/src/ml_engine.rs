@@ -16,6 +16,7 @@ use aether_core::ml::linalg::LossConfig;
 pub struct MlStatus {
     pub tensor_ops_available: bool,
     pub neural_net_available: bool,
+    pub xsave_detected: bool,
     pub avx2_detected: bool,
     pub avx512_detected: bool,
     pub gpu_detected: Option<(String, u16, u16)>,
@@ -23,13 +24,30 @@ pub struct MlStatus {
 
 impl MlStatus {
     pub fn detect() -> Self {
+        let xsave = detect_xsave();
         Self {
             tensor_ops_available: true,
             neural_net_available: true,
-            avx2_detected: detect_avx2(),
-            avx512_detected: detect_avx512(),
+            xsave_detected: xsave,
+            avx2_detected: xsave && detect_avx2(),
+            avx512_detected: xsave && detect_avx512(),
             gpu_detected: detect_gpu(),
         }
+    }
+}
+
+/// Returns true if the CPU supports XSAVE and OSXSAVE.
+pub fn xsave_available() -> bool {
+    detect_xsave()
+}
+
+/// Detect XSAVE support via CPUID.
+fn detect_xsave() -> bool {
+    unsafe {
+        let leaf1 = core::arch::x86_64::__cpuid(1);
+        let has_xsave = (leaf1.ecx & (1 << 26)) != 0;
+        let osxsave = (leaf1.ecx & (1 << 27)) != 0;
+        has_xsave && osxsave
     }
 }
 
@@ -51,7 +69,8 @@ fn detect_avx2() -> bool {
 fn detect_avx512() -> bool {
     unsafe {
         let leaf1 = core::arch::x86_64::__cpuid(1);
-        if (leaf1.ecx & (1 << 28)) == 0 {
+        let avx_available = (leaf1.ecx & (1 << 28)) != 0;
+        if !avx_available {
             return false;
         }
         let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);

@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 # Allow X11 connections from Docker
 xhost +local:docker 2>/dev/null || true
 
-echo "Building Seal OS kernel + ISO in Docker..."
+echo "Building Seal OS kernel + image in Docker..."
 docker compose up --build
 
 # Revoke X11 access

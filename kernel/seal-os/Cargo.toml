@@ -20,6 +20,7 @@ volatile = "0.4"
 x86_64 = "0.15"
 libm = { version = "0.2", default-features = false }
 uefi = { version = "0.37", features = ["alloc"] }
+hashbrown = { version = "0.17.1", default-features = false }
 
 [profile.dev]
 opt-level = 1

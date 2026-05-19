@@ -11,6 +11,7 @@ jobs:
   kernel-tests:
     name: Seal OS kernel integration tests (QEMU)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

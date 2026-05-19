@@ -31,7 +31,7 @@ pub const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 pub const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Classic BPF opcodes (subset)
-const BPF_LD_W_ABS: u16 = 0x00 | 0x00 | 0x20; // 0x20
+const BPF_LD_W_ABS: u16 = 0x20;
 const BPF_JMP_JEQ: u16 = 0x05 | 0x10;       // 0x15
 const BPF_RET: u16 = 0x06;
 

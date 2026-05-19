@@ -168,7 +168,7 @@ extern "C" {
 /// Reads the syscall number and arguments from the saved frame, dispatches
 /// via the syscall table, and writes the return value back into RAX.
 #[no_mangle]
-pub extern "C" fn do_syscall(frame: *mut SyscallFrame) {
+pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
     unsafe {
         let f = &mut *frame;
         let num = f.rax;

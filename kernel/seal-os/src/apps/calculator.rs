@@ -371,6 +371,9 @@ impl Calculator {
             }
         }
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }
 
 fn try_func_call<'a>(expr: &'a str, name: &str) -> Option<&'a str> {

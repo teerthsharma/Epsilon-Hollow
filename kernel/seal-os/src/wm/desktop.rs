@@ -3,25 +3,25 @@
 
 //! Desktop surface: equation wallpaper + taskbar integration.
 
-use crate::graphics::console::Console;
+use crate::graphics::font;
 use crate::graphics::framebuffer::Framebuffer;
 
 use super::taskbar;
 
 const BG_COLOR: u32 = 0x000A0A0F;
-const GOLD: u32 = 0x00D4A847;
-const WHITE: u32 = 0x00C8C8D0;
-const DIM: u32 = 0x00404050;
 
 pub fn render_desktop(fb: &Framebuffer) {
     // Clear to dark background
     fb.clear(BG_COLOR);
 
-    // Render equations directly to framebuffer using pixel art
+    // Render decorative background art
     render_equation_wallpaper(fb);
 
+    // Render equations as text in the upper-left quadrant
+    render_equations_text(fb);
+
     // Draw taskbar
-    taskbar::draw_taskbar(fb, &[true; 5], 0.042);
+    taskbar::draw_taskbar(fb);
 }
 
 fn render_equation_wallpaper(fb: &Framebuffer) {
@@ -91,4 +91,78 @@ fn render_equation_wallpaper(fb: &Framebuffer) {
             }
         }
     }
+}
+
+fn render_equations_text(fb: &Framebuffer) {
+    const TEXT_X: u32 = 20;
+    const TEXT_Y: u32 = 20;
+    const LINE_HEIGHT: u32 = 18;
+    const PAD: u32 = 8;
+    const BG_ALPHA: u8 = 180;
+    const BG_PANEL: u32 = 0x0005080A;
+    const TEXT_COLOR: u32 = 0x00C8C8D0;
+    const LABEL_COLOR: u32 = 0x00606070;
+    const GOLD_COLOR: u32 = 0x00D4A847;
+
+    let lines: &[(u32, &str)] = &[
+        (LABEL_COLOR, "Schwarzschild metric:"),
+        (GOLD_COLOR, "ds^2 = -(1-2GM/rc^2)dt^2 + (1-2GM/rc^2)^-1 dr^2 + r^2 dO^2"),
+        (TEXT_COLOR, ""),
+        (LABEL_COLOR, "Faraday tensor F^uv:"),
+        (TEXT_COLOR, "[ 0   -Ex  -Ey  -Ez ]"),
+        (TEXT_COLOR, "[ Ex   0   -Bz   By ]"),
+        (TEXT_COLOR, "[ Ey   Bz   0   -Bx ]"),
+        (TEXT_COLOR, "[ Ez  -By   Bx   0  ]"),
+    ];
+
+    // Compute bounding box from longest line
+    let mut max_w = 0u32;
+    for (_, text) in lines {
+        let w = text.len() as u32 * font::CHAR_WIDTH;
+        if w > max_w {
+            max_w = w;
+        }
+    }
+    let total_h = lines.len() as u32 * LINE_HEIGHT;
+
+    let bg_x = TEXT_X.saturating_sub(PAD);
+    let bg_y = TEXT_Y.saturating_sub(PAD);
+    let bg_w = max_w + PAD * 2;
+    let bg_h = total_h + PAD * 2;
+
+    // Draw semi-transparent dark background
+    for row in bg_y..(bg_y + bg_h).min(fb.height) {
+        for col in bg_x..(bg_x + bg_w).min(fb.width) {
+            let bg_pixel = fb.get_pixel(col, row);
+            let blended = alpha_blend(bg_pixel, BG_PANEL, BG_ALPHA);
+            fb.put_pixel(col, row, blended);
+        }
+    }
+
+    // Draw each line of text
+    for (i, &(color, text)) in lines.iter().enumerate() {
+        let y = TEXT_Y + i as u32 * LINE_HEIGHT;
+        draw_text(fb, TEXT_X, y, text, color);
+    }
+}
+
+fn draw_text(fb: &Framebuffer, x: u32, y: u32, text: &str, color: u32) {
+    for (i, ch) in text.bytes().enumerate() {
+        font::draw_char(fb, x + (i as u32) * font::CHAR_WIDTH, y, ch, color);
+    }
+}
+
+fn alpha_blend(bg: u32, fg: u32, alpha: u8) -> u32 {
+    if alpha == 255 {
+        return fg;
+    }
+    if alpha == 0 {
+        return bg;
+    }
+    let a = alpha as u32;
+    let inv = 255 - a;
+    let r = ((fg >> 16 & 0xFF) * a + (bg >> 16 & 0xFF) * inv) / 255;
+    let g = ((fg >> 8 & 0xFF) * a + (bg >> 8 & 0xFF) * inv) / 255;
+    let b = ((fg & 0xFF) * a + (bg & 0xFF) * inv) / 255;
+    (r << 16) | (g << 8) | b
 }

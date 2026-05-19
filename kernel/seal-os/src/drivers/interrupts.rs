@@ -12,6 +12,7 @@ use x86_64::registers::control::Cr2;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::memory::gdt;
 use crate::serial_println;
 #[cfg(not(test))]
 use crate::wm::event::InputEvent;
@@ -34,7 +35,15 @@ pub enum Irq {
 pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     idt.breakpoint.set_handler_fn(breakpoint_handler);
-    idt.double_fault.set_handler_fn(double_fault_handler);
+    unsafe {
+        idt.double_fault
+            .set_handler_fn(double_fault_handler)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+    }
+    idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+    idt.segment_not_present.set_handler_fn(segment_not_present_handler);
+    idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
+    idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
     idt.page_fault.set_handler_fn(page_fault_handler);
     idt[VECTOR_TIMER_APIC].set_handler_fn(timer_handler_apic);
     idt[Irq::Keyboard as u8].set_handler_fn(keyboard_handler);
@@ -374,6 +383,30 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
 
 extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _code: u64) -> ! {
     serial_println!("[FATAL] DOUBLE FAULT\n{:#?}", frame);
+    loop { x86_64::instructions::hlt(); }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn invalid_opcode_handler(frame: InterruptStackFrame) {
+    serial_println!("[FAULT] Invalid Opcode (#UD)\n{:#?}", frame);
+    loop { x86_64::instructions::hlt(); }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn segment_not_present_handler(frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[FAULT] Segment Not Present (#NP), error code: {:#x}\n{:#?}", error_code, frame);
+    loop { x86_64::instructions::hlt(); }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn stack_segment_fault_handler(frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[FAULT] Stack Segment Fault (#SS), error code: {:#x}\n{:#?}", error_code, frame);
+    loop { x86_64::instructions::hlt(); }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn general_protection_fault_handler(frame: InterruptStackFrame, error_code: u64) {
+    serial_println!("[FAULT] General Protection Fault (#GP), error code: {:#x}\n{:#?}", error_code, frame);
     loop { x86_64::instructions::hlt(); }
 }
 

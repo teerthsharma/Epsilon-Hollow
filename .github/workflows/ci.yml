@@ -270,9 +270,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
       - name: Boot UEFI image in QEMU and capture serial output
         run: |
+          set -euo pipefail
           timeout 45 qemu-system-x86_64 \
             -machine q35 \
-            -pflash /usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -drive file=seal-os.img,format=raw \
             -nographic \
             -m 4G \

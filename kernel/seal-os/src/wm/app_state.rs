@@ -36,9 +36,12 @@ pub struct AppState {
     pub tv_id: u32,
     pub calc_id: u32,
     pub player_id: u32,
+    pub snake_id: u32,
+    pub breakout_id: u32,
+    pub warp_racer_id: u32,
 
     // Track which windows are dirty and need re-render
-    dirty: [bool; 5],
+    dirty: [bool; 8],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -79,7 +82,10 @@ impl AppState {
             tv_id: 0,
             calc_id: 0,
             player_id: 0,
-            dirty: [true; 5],
+            snake_id: 0,
+            breakout_id: 0,
+            warp_racer_id: 0,
+            dirty: [true; 8],
         }
     }
 
@@ -89,6 +95,9 @@ impl AppState {
         self.tv_id = compositor.create_window("Theorems", 500, 60, 420, 340);
         self.calc_id = compositor.create_window("Calculator", 680, 100, 280, 440);
         self.player_id = compositor.create_window("SealPlayer", 200, 160, 520, 380);
+        self.snake_id = compositor.create_window("Snake", 100, 100, 400, 380);
+        self.breakout_id = compositor.create_window("Breakout", 150, 150, 400, 380);
+        self.warp_racer_id = compositor.create_window("Warp Racer", 200, 200, 400, 380);
 
         // Initial render of all windows
         self.render_all(compositor);
@@ -102,9 +111,11 @@ impl AppState {
             InputEvent::KeyRelease(_) => {}
             InputEvent::MouseMove { dx, dy } => {
                 compositor.mouse_move(dx, dy, 1024, 768);
+                self.route_mouse_move(compositor);
             }
             InputEvent::MouseButton { button: 0, pressed } => {
                 compositor.mouse_click(pressed);
+                self.route_mouse_click(compositor, pressed);
             }
             InputEvent::MouseButton { .. } => {}
             InputEvent::Scroll { .. } => {}
@@ -138,6 +149,8 @@ impl AppState {
                 }
             }
             self.dirty[1] = true;
+        } else if focused_id == self.tv_id {
+            self.dirty[2] = true;
         } else if focused_id == self.calc_id {
             let ch = scancode_to_char(scancode);
             if ch != 0 {
@@ -150,6 +163,15 @@ impl AppState {
                 self.media_player.key_press(ch);
             }
             self.dirty[4] = true;
+        } else if focused_id == self.snake_id {
+            send_key_to_game(scancode, |k| self.snake.key_press(k));
+            self.dirty[5] = true;
+        } else if focused_id == self.breakout_id {
+            send_key_to_game(scancode, |k| self.breakout.key_press(k));
+            self.dirty[6] = true;
+        } else if focused_id == self.warp_racer_id {
+            send_key_to_game(scancode, |k| self.warp_racer.key_press(k));
+            self.dirty[7] = true;
         }
     }
 
@@ -190,6 +212,24 @@ impl AppState {
             }
             self.dirty[4] = false;
         }
+        if self.dirty[5] {
+            if let Some(win) = compositor.window_mut(self.snake_id) {
+                self.snake.render_to_window(win);
+            }
+            self.dirty[5] = false;
+        }
+        if self.dirty[6] {
+            if let Some(win) = compositor.window_mut(self.breakout_id) {
+                self.breakout.render_to_window(win);
+            }
+            self.dirty[6] = false;
+        }
+        if self.dirty[7] {
+            if let Some(win) = compositor.window_mut(self.warp_racer_id) {
+                self.warp_racer.render_to_window(win);
+            }
+            self.dirty[7] = false;
+        }
     }
 
     fn render_all(&mut self, compositor: &mut Compositor) {
@@ -208,9 +248,125 @@ impl AppState {
         if let Some(win) = compositor.window_mut(self.player_id) {
             self.media_player.render_to_window(win);
         }
+        if let Some(win) = compositor.window_mut(self.snake_id) {
+            self.snake.render_to_window(win);
+        }
+        if let Some(win) = compositor.window_mut(self.breakout_id) {
+            self.breakout.render_to_window(win);
+        }
+        if let Some(win) = compositor.window_mut(self.warp_racer_id) {
+            self.warp_racer.render_to_window(win);
+        }
     }
 
     pub fn mark_all_dirty(&mut self) {
-        self.dirty = [true; 5];
+        self.dirty = [true; 8];
+    }
+
+    fn route_mouse_move(&mut self, compositor: &mut Compositor) {
+        let focused_id = compositor.focused_window_id();
+        if focused_id == 0 {
+            return;
+        }
+        let mx = compositor.mouse_state().x as u32;
+        let my = compositor.mouse_state().y as u32;
+        if let Some(win) = compositor.window_mut(focused_id) {
+            let cx = win.client_x();
+            let cy = win.client_y();
+            let cw = win.client_width();
+            let ch = win.client_height();
+            if mx >= cx && mx < cx + cw && my >= cy && my < cy + ch {
+                let local_x = mx - cx;
+                let local_y = my - cy;
+                if focused_id == self.term_id {
+                    self.terminal.mouse_move(local_x, local_y);
+                    self.dirty[0] = true;
+                } else if focused_id == self.ide_id {
+                    self.ide.mouse_move(local_x, local_y);
+                    self.dirty[1] = true;
+                } else if focused_id == self.tv_id {
+                    self.theorem_viewer.mouse_move(local_x, local_y);
+                    self.dirty[2] = true;
+                } else if focused_id == self.calc_id {
+                    self.calculator.mouse_move(local_x, local_y);
+                    self.dirty[3] = true;
+                } else if focused_id == self.player_id {
+                    self.media_player.mouse_move(local_x, local_y);
+                    self.dirty[4] = true;
+                } else if focused_id == self.snake_id {
+                    self.snake.mouse_move(local_x, local_y);
+                    self.dirty[5] = true;
+                } else if focused_id == self.breakout_id {
+                    self.breakout.mouse_move(local_x, local_y);
+                    self.dirty[6] = true;
+                } else if focused_id == self.warp_racer_id {
+                    self.warp_racer.mouse_move(local_x, local_y);
+                    self.dirty[7] = true;
+                }
+            }
+        }
+    }
+
+    fn route_mouse_click(&mut self, compositor: &mut Compositor, pressed: bool) {
+        let focused_id = compositor.focused_window_id();
+        if focused_id == 0 {
+            return;
+        }
+        let mx = compositor.mouse_state().x as u32;
+        let my = compositor.mouse_state().y as u32;
+        if let Some(win) = compositor.window_mut(focused_id) {
+            let cx = win.client_x();
+            let cy = win.client_y();
+            let cw = win.client_width();
+            let ch = win.client_height();
+            if mx >= cx && mx < cx + cw && my >= cy && my < cy + ch {
+                let local_x = mx - cx;
+                let local_y = my - cy;
+                if focused_id == self.term_id {
+                    self.terminal.mouse_click(local_x, local_y, pressed);
+                    self.dirty[0] = true;
+                } else if focused_id == self.ide_id {
+                    self.ide.mouse_click(local_x, local_y, pressed);
+                    self.dirty[1] = true;
+                } else if focused_id == self.tv_id {
+                    self.theorem_viewer.mouse_click(local_x, local_y, pressed);
+                    self.dirty[2] = true;
+                } else if focused_id == self.calc_id {
+                    self.calculator.mouse_click(local_x, local_y, pressed);
+                    self.dirty[3] = true;
+                } else if focused_id == self.player_id {
+                    self.media_player.mouse_click(local_x, local_y, pressed);
+                    self.dirty[4] = true;
+                } else if focused_id == self.snake_id {
+                    self.snake.mouse_click(local_x, local_y, pressed);
+                    self.dirty[5] = true;
+                } else if focused_id == self.breakout_id {
+                    self.breakout.mouse_click(local_x, local_y, pressed);
+                    self.dirty[6] = true;
+                } else if focused_id == self.warp_racer_id {
+                    self.warp_racer.mouse_click(local_x, local_y, pressed);
+                    self.dirty[7] = true;
+                }
+            }
+        }
+    }
+}
+
+fn send_key_to_game(scancode: u8, mut key_press: impl FnMut(u8)) {
+    let ch = if scancode == 0x39 { b' ' } else { scancode_to_char(scancode) };
+    if ch != 0 {
+        key_press(ch);
+    }
+    if let Some(special) = scancode_to_special(scancode) {
+        let raw = match special {
+            SpecialKey::Up => 0x48,
+            SpecialKey::Down => 0x50,
+            SpecialKey::Left => 0x4B,
+            SpecialKey::Right => 0x4D,
+            _ => 0,
+        };
+        if raw != 0 {
+            key_press(raw);
+        }
     }
 }

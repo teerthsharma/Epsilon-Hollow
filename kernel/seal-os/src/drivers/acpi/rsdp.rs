@@ -33,8 +33,9 @@ impl Rsdp {
             return false;
         }
 
-        if self.revision >= 2 {
-            let len = self.length as usize;
+        let revision = unsafe { core::ptr::addr_of!((*self).revision).read_unaligned() };
+        if revision >= 2 {
+            let len = unsafe { core::ptr::addr_of!((*self).length).read_unaligned() } as usize;
             if len < mem::size_of::<Rsdp>() {
                 return false;
             }
@@ -73,8 +74,18 @@ pub fn find_rsdp(uefi_rsdp: u64) -> Option<u64> {
 
 fn scan_region(start: u64, end: u64) -> Option<u64> {
     for addr in (start..end).step_by(16) {
+        if addr + 8 > end {
+            break;
+        }
         let sig = unsafe { core::slice::from_raw_parts(addr as *const u8, 8) };
         if sig == b"RSD PTR " {
+            if addr + mem::size_of::<Rsdp>() as u64 > end {
+                crate::serial_println!(
+                    "[ACPI/RSDP] RSDP candidate at {:#X} truncated, skipping",
+                    addr
+                );
+                continue;
+            }
             let rsdp = unsafe { &*(addr as *const Rsdp) };
             if rsdp.is_valid() {
                 return Some(addr);
@@ -101,7 +112,7 @@ pub struct SdtHeader {
 impl SdtHeader {
     /// Validate checksum: sum of all bytes in the table must be 0 (mod 256).
     pub fn is_valid(&self) -> bool {
-        let len = self.length as usize;
+        let len = unsafe { core::ptr::addr_of!((*self).length).read_unaligned() } as usize;
         let bytes = unsafe {
             core::slice::from_raw_parts(self as *const _ as *const u8, len)
         };
@@ -113,11 +124,14 @@ impl SdtHeader {
 /// address of the table matching `signature`.
 pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
     let rsdp = unsafe { &*(rsdp_addr as *const Rsdp) };
-    let use_xsdt = rsdp.revision >= 2 && rsdp.xsdt_addr != 0;
+    let rsdp_revision = unsafe { core::ptr::addr_of!((*rsdp).revision).read_unaligned() };
+    let rsdp_xsdt_addr = unsafe { core::ptr::addr_of!((*rsdp).xsdt_addr).read_unaligned() };
+    let rsdp_rsdt_addr = unsafe { core::ptr::addr_of!((*rsdp).rsdt_addr).read_unaligned() };
+    let use_xsdt = rsdp_revision >= 2 && rsdp_xsdt_addr != 0;
     let root_phys = if use_xsdt {
-        rsdp.xsdt_addr
+        rsdp_xsdt_addr
     } else {
-        rsdp.rsdt_addr as u64
+        rsdp_rsdt_addr as u64
     };
 
     let header = unsafe { &*(root_phys as *const SdtHeader) };
@@ -127,15 +141,36 @@ pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
 
     let entry_size = if use_xsdt { 8usize } else { 4usize };
     let header_size = mem::size_of::<SdtHeader>();
-    let num_entries = (header.length as usize - header_size) / entry_size;
+    let header_len = unsafe { core::ptr::addr_of!((*header).length).read_unaligned() } as usize;
+    if header_len < header_size {
+        crate::serial_println!(
+            "[ACPI/RSDP] SDT at {:#X} claims length {} < header size {}",
+            root_phys, header_len, header_size
+        );
+        return None;
+    }
+    let num_entries = (header_len - header_size) / entry_size;
     let entries_base = root_phys + header_size as u64;
+    let table_end = root_phys + header_len as u64;
 
     for i in 0..num_entries {
+        let entry_addr = entries_base + i as u64 * entry_size as u64;
+        if entry_addr + entry_size as u64 > table_end {
+            crate::serial_println!(
+                "[ACPI/RSDP] SDT entry {} exceeds table bounds, stopping walk",
+                i
+            );
+            break;
+        }
         let entry_phys = if use_xsdt {
-            unsafe { core::ptr::read_volatile((entries_base + i as u64 * 8) as *const u64) }
+            unsafe { core::ptr::read_volatile(entry_addr as *const u64) }
         } else {
-            unsafe { core::ptr::read_volatile((entries_base + i as u64 * 4) as *const u32) as u64 }
+            unsafe { core::ptr::read_volatile(entry_addr as *const u32) as u64 }
         };
+
+        if entry_phys == 0 {
+            continue;
+        }
 
         let tbl_header = unsafe { &*(entry_phys as *const SdtHeader) };
         let tbl_sig = unsafe { core::ptr::addr_of!((*tbl_header).signature).read_unaligned() };

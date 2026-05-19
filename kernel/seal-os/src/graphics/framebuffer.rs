@@ -67,6 +67,18 @@ impl Framebuffer {
         self.fill_rect(0, 0, self.width, self.height, color);
     }
 
+    pub fn get_pixel(&self, x: u32, y: u32) -> u32 {
+        if x >= self.width || y >= self.height || self.buffer.is_null() {
+            return 0;
+        }
+        let bytes_per_pixel = (self.bpp as u32) / 8;
+        let offset = (y * self.pitch + x * bytes_per_pixel) as isize;
+        unsafe {
+            let pixel = self.buffer.offset(offset) as *mut u32;
+            ptr::read_volatile(pixel)
+        }
+    }
+
     pub fn buffer_ptr(&self) -> *mut u8 {
         self.buffer
     }
