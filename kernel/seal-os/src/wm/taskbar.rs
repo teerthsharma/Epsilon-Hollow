@@ -3,9 +3,12 @@
 
 //! Bottom taskbar: theorem status indicators, clock, seal logo.
 
+use core::sync::atomic::Ordering;
+
 use crate::drivers::interrupts;
 use crate::graphics::console::Console;
 use crate::graphics::framebuffer::Framebuffer;
+use crate::{GOVERNOR_EPSILON, THEOREM_STATES};
 
 const TASKBAR_HEIGHT: u32 = 28;
 const TASKBAR_BG: u32 = 0x00101018;
@@ -13,7 +16,7 @@ const TASKBAR_TEXT: u32 = 0x00A0A0B0;
 const THEOREM_ACTIVE: u32 = 0x0044CC66;
 const SEAL_BLUE: u32 = 0x004488CC;
 
-pub fn draw_taskbar(fb: &Framebuffer, theorem_states: &[bool; 5], epsilon: f64) {
+pub fn draw_taskbar(fb: &Framebuffer) {
     let y = fb.height - TASKBAR_HEIGHT;
 
     // Background
@@ -24,7 +27,8 @@ pub fn draw_taskbar(fb: &Framebuffer, theorem_states: &[bool; 5], epsilon: f64) 
 
     // Theorem indicators (small colored squares)
     let names = ["T1", "T2", "T3", "T4", "T5"];
-    for (i, (&active, name)) in theorem_states.iter().zip(names.iter()).enumerate() {
+    for (i, name) in names.iter().enumerate() {
+        let active = THEOREM_STATES[i].load(Ordering::Relaxed);
         let x = 10 + i as u32 * 50;
         let color = if active { THEOREM_ACTIVE } else { 0x00404040 };
         // Indicator dot
@@ -32,6 +36,7 @@ pub fn draw_taskbar(fb: &Framebuffer, theorem_states: &[bool; 5], epsilon: f64) 
     }
 
     // Epsilon value area
+    let _epsilon = f64::from_bits(GOVERNOR_EPSILON.load(Ordering::Relaxed));
     fb.fill_rect(270, y + 6, 80, 14, 0x00181828);
 
     // Seal OS branding on the right

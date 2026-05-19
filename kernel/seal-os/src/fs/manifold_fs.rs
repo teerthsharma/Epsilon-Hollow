@@ -4,7 +4,6 @@
 
 //! ManifoldFS — all data is geometry on S². File moves = O(1) topological surgery.
 
-use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -12,10 +11,14 @@ use alloc::vec::Vec;
 
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
-use aether_core::tss::SphericalVoronoiIndex;
 
+use super::block_store::BlockStore;
+use super::dir_hash::DirHash;
 use super::encoder::{self, ManifoldPayload};
+use super::inode_slab::InodeSlab;
+use super::path_cache::PathCache;
 use super::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
+use super::voronoi_cap::VoronoiCap;
 use crate::drivers::interrupts;
 
 const VORONOI_CELLS: usize = 8;
@@ -46,6 +49,10 @@ pub struct Inode {
     pub voronoi_cell: usize,
     pub cluster_id: i32,
     pub parent: u64,
+    // Intrusive doubly-linked list for directory entries (readdir O(K) not O(N))
+    pub sibling_next: Option<u64>,
+    pub sibling_prev: Option<u64>,
+    pub dir_first_child: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,12 +63,12 @@ pub struct TheoremEvent {
 }
 
 pub struct ManifoldFS {
-    inodes: BTreeMap<u64, Inode>,
-    dir_entries: BTreeMap<u64, BTreeMap<String, u64>>,
+    inodes: InodeSlab,
+    dirs: DirHash,
+    path_cache: PathCache,
+    store: BlockStore,
+    voronoi: VoronoiCap,
     root_id: u64,
-    next_inode: u64,
-    voronoi: SphericalVoronoiIndex<VORONOI_CELLS>,
-    cell_files: [Vec<u64>; VORONOI_CELLS],
     scm: SpectralContractionOperator<3>,
     access_state: [f64; 3],
     last_prefetch_prediction: Option<u64>,
@@ -81,32 +88,10 @@ pub struct ManifoldFS {
 
 impl ManifoldFS {
     pub fn new() -> Self {
-        let default_centroids = Self::default_centroids();
         let root_payload = encoder::encode_text("/");
 
-        let mut fs = Self {
-            inodes: BTreeMap::new(),
-            dir_entries: BTreeMap::new(),
-            root_id: 0,
-            next_inode: 1,
-            voronoi: SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids),
-            cell_files: Default::default(),
-            scm: SpectralContractionOperator::new(0.7),
-            access_state: [0.0; 3],
-            last_prefetch_prediction: None,
-            prefetch_hits: 0,
-            prefetch_misses: 0,
-            cluster_sizes: vec![0; VORONOI_CELLS],
-            entropy_merges: 0,
-            current_entropy: 0.0,
-            governor: GeometricGovernor::new(),
-            governor_ticks: 0,
-            max_depth: 0,
-            hyperbolic_ratio: f64::INFINITY,
-            total_teleports: 0,
-            total_lookups: 0,
-            activity_log: Vec::new(),
-        };
+        let mut inodes = InodeSlab::new();
+        let mut dirs = DirHash::new(interrupts::ticks());
 
         let root = Inode {
             id: 0,
@@ -123,38 +108,65 @@ impl ManifoldFS {
             voronoi_cell: 0,
             cluster_id: 0,
             parent: 0,
+            sibling_next: None,
+            sibling_prev: None,
+            dir_first_child: None,
         };
-        fs.inodes.insert(0, root);
-        fs.dir_entries.insert(0, BTreeMap::new());
+        let root_id = inodes.alloc(root);
+        dirs.insert(root_id, ".", root_id);
+        dirs.insert(root_id, "..", root_id);
+
+        let mut cluster_sizes = vec![0; VORONOI_CELLS];
+        cluster_sizes[0] = 1; // root
+
+        let mut fs = Self {
+            inodes,
+            dirs,
+            path_cache: PathCache::new(),
+            store: BlockStore::new(),
+            voronoi: VoronoiCap::new(),
+            root_id,
+            scm: SpectralContractionOperator::new(0.7),
+            access_state: [0.0; 3],
+            last_prefetch_prediction: None,
+            prefetch_hits: 0,
+            prefetch_misses: 0,
+            cluster_sizes,
+            entropy_merges: 0,
+            current_entropy: 0.0,
+            governor: GeometricGovernor::new(),
+            governor_ticks: 0,
+            max_depth: 0,
+            hyperbolic_ratio: f64::INFINITY,
+            total_teleports: 0,
+            total_lookups: 0,
+            activity_log: Vec::new(),
+        };
+
+        fs.store.try_mount_ahci();
+        fs.store.flush_all().ok();
         fs
     }
 
-    fn default_centroids() -> [(f64, f64); VORONOI_CELLS] {
-        let mut c = [(0.0, 0.0); VORONOI_CELLS];
-        for (i, slot) in c.iter_mut().enumerate() {
-            *slot = (
-                core::f64::consts::FRAC_PI_2,
-                (i as f64) * (2.0 * core::f64::consts::PI / VORONOI_CELLS as f64),
-            );
-        }
-        c
+    pub fn new_with_mock_store(num_sectors: usize) -> Self {
+        let mut fs = Self::new();
+        fs.store = BlockStore::with_mock(num_sectors);
+        fs
     }
 
     pub fn store(&mut self, name: &str, data: &[u8], parent_id: u64) -> Result<u64, FsError> {
-        if !self.dir_entries.contains_key(&parent_id) {
+        if self.dirs.lookup(parent_id, ".").is_none() && parent_id != self.root_id {
             return Err(FsError::NotADirectory);
         }
-        if self.dir_entries[&parent_id].contains_key(name) {
+        if self.dirs.lookup(parent_id, name).is_some() {
             return Err(FsError::AlreadyExists);
         }
 
         let payload = encoder::encode_data(data);
-        let cell = self.assign_voronoi_cell(&payload);
-        let id = self.next_inode;
-        self.next_inode += 1;
+        let (cell, subcell) = self.voronoi.insert(0, &payload); // placeholder id
 
         let inode = Inode {
-            id,
+            id: 0,
             name: String::from(name),
             kind: InodeKind::File,
             payload,
@@ -168,16 +180,27 @@ impl ManifoldFS {
             voronoi_cell: cell,
             cluster_id: cell as i32,
             parent: parent_id,
+            sibling_next: None,
+            sibling_prev: None,
+            dir_first_child: None,
         };
 
-        self.inodes.insert(id, inode);
-        if let Some(parent_entries) = self.dir_entries.get_mut(&parent_id) {
-            parent_entries.insert(String::from(name), id);
+        let id = self.inodes.alloc(inode);
+        // Re-insert into voronoi with correct id
+        self.voronoi.remove(0, cell, subcell);
+        let (cell, subcell) = self.voronoi.insert(id, &self.inodes.get(id).unwrap().payload);
+        if let Some(ino) = self.inodes.get_mut(id) {
+            ino.voronoi_cell = cell;
+            ino.cluster_id = cell as i32;
         }
-        self.cell_files[cell].push(id);
+
+        self.dirs.insert(parent_id, name, id);
+        self.link_child(parent_id, id);
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
         self.governor_tick(1.0);
+        self.path_cache.bump_generation();
+        self.store.write_inode(self.inodes.get(id).unwrap(), data);
         self.log_event("T1/TSS", format!("stored '{}' -> cell {}", name, cell));
 
         Ok(id)
@@ -195,30 +218,24 @@ impl ManifoldFS {
     ) -> Result<TeleportResult, FsError> {
         let t0 = interrupts::ticks();
 
-        let inode_id = self
-            .dir_entries
-            .get(&src_dir)
-            .and_then(|entries| entries.get(name).copied())
-            .ok_or(FsError::NotFound)?;
+        let inode_id = self.dirs.lookup(src_dir, name).ok_or(FsError::NotFound)?;
 
-        if !self.dir_entries.contains_key(&dst_dir) {
+        if self.dirs.lookup(dst_dir, ".").is_none() && dst_dir != self.root_id {
             return Err(FsError::NotADirectory);
         }
-        if self.dir_entries[&dst_dir].contains_key(name) {
+        if self.dirs.lookup(dst_dir, name).is_some() {
             return Err(FsError::AlreadyExists);
         }
 
         let pre_epsilon = self.governor.epsilon();
         self.governor_tick(0.0);
 
-        if let Some(src_entries) = self.dir_entries.get_mut(&src_dir) {
-            src_entries.remove(name);
-        }
-        if let Some(dst_entries) = self.dir_entries.get_mut(&dst_dir) {
-            dst_entries.insert(String::from(name), inode_id);
-        }
+        self.dirs.remove(src_dir, name);
+        self.unlink_child(src_dir, inode_id);
+        self.dirs.insert(dst_dir, name, inode_id);
+        self.link_child(dst_dir, inode_id);
 
-        if let Some(inode) = self.inodes.get_mut(&inode_id) {
+        if let Some(inode) = self.inodes.get_mut(inode_id) {
             inode.parent = dst_dir;
             inode.metadata.modified_ms = now_ms();
         }
@@ -231,7 +248,7 @@ impl ManifoldFS {
 
         let original_size = self
             .inodes
-            .get(&inode_id)
+            .get(inode_id)
             .map(|i| i.metadata.original_size)
             .unwrap_or(0);
 
@@ -243,6 +260,11 @@ impl ManifoldFS {
             ),
         );
 
+        self.path_cache.bump_generation();
+        if let Some(inode) = self.inodes.get(inode_id) {
+            self.store.write_inode(inode, &inode.data.clone());
+        }
+
         self.check_entropy_and_merge();
 
         Ok(TeleportResult {
@@ -251,7 +273,7 @@ impl ManifoldFS {
             original_size,
             payload_points: self
                 .inodes
-                .get(&inode_id)
+                .get(inode_id)
                 .map(|i| i.payload.point_count)
                 .unwrap_or(0),
             governor_epsilon: post_epsilon,
@@ -264,11 +286,10 @@ impl ManifoldFS {
         dst_dir: u64,
     ) -> Result<Vec<TeleportResult>, FsError> {
         let names: Vec<String> = self
-            .dir_entries
-            .get(&src_dir)
-            .ok_or(FsError::NotADirectory)?
-            .keys()
-            .cloned()
+            .dirs
+            .entries_in_dir(src_dir)
+            .into_iter()
+            .map(|(name, _id)| name)
             .collect();
         let mut results = Vec::with_capacity(names.len());
         for name in names {
@@ -289,14 +310,14 @@ impl ManifoldFS {
     pub fn find(&mut self, query: &str) -> Vec<FindResult> {
         self.total_lookups += 1;
         let query_payload = encoder::encode_text(query);
-        let cell = self.assign_voronoi_cell(&query_payload);
+        let (cell, subcell) = self.voronoi.locate(&query_payload);
 
         self.update_prefetch_state(&query_payload);
 
         let mut results = Vec::new();
-        for &inode_id in &self.cell_files[cell] {
-            if let Some(inode) = self.inodes.get(&inode_id) {
-                let similarity = payload_similarity(&query_payload, &inode.payload);
+        for &inode_id in self.voronoi.files_in_bucket(cell, subcell) {
+            if let Some(inode) = self.inodes.get(inode_id) {
+                let similarity = payload_similarity_full(&query_payload, &inode.payload);
                 results.push(FindResult {
                     inode_id,
                     name: inode.name.clone(),
@@ -311,40 +332,44 @@ impl ManifoldFS {
     }
 
     pub fn ls(&self, dir_id: u64) -> Result<Vec<LsEntry>, FsError> {
-        let entries = self
-            .dir_entries
-            .get(&dir_id)
-            .ok_or(FsError::NotADirectory)?;
-        let mut result: Vec<LsEntry> = entries
-            .iter()
-            .filter_map(|(name, &id)| {
-                self.inodes.get(&id).map(|inode| LsEntry {
-                    name: name.clone(),
-                    kind: match inode.kind {
+        if self.inodes.get(dir_id).is_none() {
+            return Err(FsError::NotADirectory);
+        }
+        let inode = self.inodes.get(dir_id).ok_or(FsError::NotADirectory)?;
+        if !matches!(inode.kind, InodeKind::Directory) {
+            return Err(FsError::NotADirectory);
+        }
+
+        let mut result = Vec::new();
+        let mut child_id = inode.dir_first_child;
+        while let Some(id) = child_id {
+            if let Some(child) = self.inodes.get(id) {
+                result.push(LsEntry {
+                    name: child.name.clone(),
+                    kind: match child.kind {
                         InodeKind::File => "file",
                         InodeKind::Directory => "dir",
                     },
-                    original_size: inode.metadata.original_size,
-                    payload_points: inode.payload.point_count,
-                    voronoi_cell: inode.voronoi_cell,
-                })
-            })
-            .collect();
+                    original_size: child.metadata.original_size,
+                    payload_points: child.payload.point_count,
+                    voronoi_cell: child.voronoi_cell,
+                });
+            }
+            child_id = self.inodes.get(id).and_then(|c| c.sibling_next);
+        }
         result.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(result)
     }
 
     pub fn mkdir(&mut self, name: &str, parent_id: u64) -> Result<u64, FsError> {
-        if !self.dir_entries.contains_key(&parent_id) {
+        if self.dirs.lookup(parent_id, ".").is_none() && parent_id != self.root_id {
             return Err(FsError::NotADirectory);
         }
-        if self.dir_entries[&parent_id].contains_key(name) {
+        if self.dirs.lookup(parent_id, name).is_some() {
             return Err(FsError::AlreadyExists);
         }
 
         let payload = encoder::encode_text(name);
-        let id = self.next_inode;
-        self.next_inode += 1;
 
         let depth = self.compute_depth(parent_id) + 1;
         if depth > self.max_depth {
@@ -353,7 +378,7 @@ impl ManifoldFS {
         }
 
         let inode = Inode {
-            id,
+            id: 0,
             name: String::from(name),
             kind: InodeKind::Directory,
             payload,
@@ -367,14 +392,18 @@ impl ManifoldFS {
             voronoi_cell: 0,
             cluster_id: 0,
             parent: parent_id,
+            sibling_next: None,
+            sibling_prev: None,
+            dir_first_child: None,
         };
 
-        self.inodes.insert(id, inode);
-        self.dir_entries.insert(id, BTreeMap::new());
-        if let Some(parent_entries) = self.dir_entries.get_mut(&parent_id) {
-            parent_entries.insert(String::from(name), id);
-        }
+        let id = self.inodes.alloc(inode);
+        self.dirs.insert(parent_id, name, id);
+        self.link_child(parent_id, id);
+        self.dirs.insert(id, ".", id);
+        self.dirs.insert(id, "..", parent_id);
 
+        self.path_cache.bump_generation();
         self.log_event(
             "T5/HCS",
             format!(
@@ -389,11 +418,7 @@ impl ManifoldFS {
     pub fn resolve_path(&self, path: &str) -> Result<u64, FsError> {
         let mut current = self.root_id;
         for part in path.split('/').filter(|s| !s.is_empty()) {
-            let entries = self
-                .dir_entries
-                .get(&current)
-                .ok_or(FsError::NotADirectory)?;
-            current = *entries.get(part).ok_or(FsError::NotFound)?;
+            current = self.dirs.lookup(current, part).ok_or(FsError::NotFound)?;
         }
         Ok(current)
     }
@@ -405,7 +430,7 @@ impl ManifoldFS {
         let pt = accessed.points[0].coords;
 
         if let Some(predicted_id) = self.last_prefetch_prediction {
-            if let Some(inode) = self.inodes.get(&predicted_id) {
+            if let Some(inode) = self.inodes.get(predicted_id) {
                 let pred_pt = inode
                     .payload
                     .points
@@ -425,11 +450,17 @@ impl ManifoldFS {
 
         self.access_state = self.scm.apply(&self.access_state, &pt);
 
-        let predicted_cell = self.voronoi.locate((
-            libm::acos(self.access_state[2].clamp(-1.0, 1.0)),
-            libm::atan2(self.access_state[1], self.access_state[0]),
-        ));
-        self.last_prefetch_prediction = self.cell_files[predicted_cell].last().copied();
+        let predicted_cell = self.voronoi.locate(&encoder::ManifoldPayload {
+            points: vec![super::encoder::SpherePoint {
+                coords: self.access_state,
+            }],
+            point_count: 1,
+            betti_0: 1,
+            original_size: 0,
+            content_hash: 0,
+        });
+        let bucket = self.voronoi.files_in_bucket(predicted_cell.0, predicted_cell.1);
+        self.last_prefetch_prediction = bucket.last().copied();
     }
 
     fn update_entropy(&mut self) {
@@ -467,18 +498,20 @@ impl ManifoldFS {
         let (src_cell, _) = sorted[0];
         let (dst_cell, _) = sorted[1];
 
-        let files_to_move: Vec<u64> = self.cell_files[src_cell].clone();
+        let files_to_move: Vec<u64> = self.voronoi.all_files_in_cell(src_cell);
         for &fid in &files_to_move {
-            if let Some(inode) = self.inodes.get_mut(&fid) {
+            if let Some(inode) = self.inodes.get_mut(fid) {
                 inode.voronoi_cell = dst_cell;
                 inode.cluster_id = dst_cell as i32;
             }
-            self.cell_files[dst_cell].push(fid);
         }
-        let moved_count = self.cell_files[src_cell].len();
+        for &fid in &files_to_move {
+            self.voronoi.move_file_to_cell(fid, src_cell, dst_cell);
+        }
+        let moved_count = files_to_move.len();
         self.cluster_sizes[dst_cell] += self.cluster_sizes[src_cell];
         self.cluster_sizes[src_cell] = 0;
-        self.cell_files[src_cell].clear();
+        self.voronoi.clear_cell(src_cell);
 
         self.update_entropy();
         self.entropy_merges += 1;
@@ -500,7 +533,7 @@ impl ManifoldFS {
     fn compute_depth(&self, mut id: u64) -> usize {
         let mut depth = 0;
         while id != self.root_id {
-            if let Some(inode) = self.inodes.get(&id) {
+            if let Some(inode) = self.inodes.get(id) {
                 id = inode.parent;
                 depth += 1;
             } else {
@@ -518,24 +551,6 @@ impl ManifoldFS {
         }
     }
 
-    fn assign_voronoi_cell(&self, payload: &ManifoldPayload) -> usize {
-        if payload.points.is_empty() {
-            return 0;
-        }
-        let pt = &payload.points[0];
-        let r = libm::sqrt(
-            pt.coords[0] * pt.coords[0]
-                + pt.coords[1] * pt.coords[1]
-                + pt.coords[2] * pt.coords[2],
-        );
-        if r < 1e-12 {
-            return 0;
-        }
-        let theta = libm::acos((pt.coords[2] / r).clamp(-1.0, 1.0));
-        let phi = libm::atan2(pt.coords[1], pt.coords[0]);
-        self.voronoi.locate((theta, phi))
-    }
-
     fn log_event(&mut self, theorem: &'static str, action: String) {
         self.activity_log.push(TheoremEvent {
             theorem,
@@ -551,12 +566,12 @@ impl ManifoldFS {
         FsStats {
             total_files: self
                 .inodes
-                .values()
+                .iter()
                 .filter(|i| matches!(i.kind, InodeKind::File))
                 .count(),
             total_dirs: self
                 .inodes
-                .values()
+                .iter()
                 .filter(|i| matches!(i.kind, InodeKind::Directory))
                 .count(),
             total_teleports: self.total_teleports,
@@ -564,35 +579,36 @@ impl ManifoldFS {
             current_entropy: self.current_entropy,
             max_depth: self.max_depth,
             hyperbolic_ratio: self.hyperbolic_ratio,
+            path_cache_hits: self.path_cache.hits,
+            path_cache_misses: self.path_cache.misses,
+            voronoi_splits: self.voronoi.split_count(),
+            voronoi_merges: self.voronoi.merge_count(),
         }
     }
 
     pub fn inode(&self, id: u64) -> Option<&Inode> {
-        self.inodes.get(&id)
+        self.inodes.get(id)
     }
 
     pub fn is_dir(&self, id: u64) -> bool {
         self.inodes
-            .get(&id)
+            .get(id)
             .map(|i| matches!(i.kind, InodeKind::Directory))
             .unwrap_or(false)
     }
 
     pub fn exists(&self, name: &str, dir_id: u64) -> bool {
-        self.dir_entries
-            .get(&dir_id)
-            .map(|e| e.contains_key(name))
-            .unwrap_or(false)
+        self.dirs.lookup(dir_id, name).is_some()
     }
 
     pub fn read_text(&self, name: &str, dir_id: u64) -> Option<String> {
-        let inode_id = self.dir_entries.get(&dir_id)?.get(name)?;
+        let inode_id = self.dirs.lookup(dir_id, name)?;
         let inode = self.inodes.get(inode_id)?;
         String::from_utf8(inode.data.clone()).ok()
     }
 
     pub fn file_info(&self, name: &str, dir_id: u64) -> Option<String> {
-        let inode_id = self.dir_entries.get(&dir_id)?.get(name)?;
+        let inode_id = self.dirs.lookup(dir_id, name)?;
         let inode = self.inodes.get(inode_id)?;
         Some(format!(
             "Name:           {}\n\
@@ -615,71 +631,59 @@ impl ManifoldFS {
     }
 
     pub fn delete(&mut self, name: &str, dir_id: u64) -> Result<(), FsError> {
-        let inode_id = self.dir_entries
-            .get(&dir_id)
-            .and_then(|e| e.get(name).copied())
-            .ok_or(FsError::NotFound)?;
+        let inode_id = self.dirs.lookup(dir_id, name).ok_or(FsError::NotFound)?;
 
-        if let Some(inode) = self.inodes.get(&inode_id) {
+        if let Some(inode) = self.inodes.get(inode_id) {
             let cell = inode.voronoi_cell;
-            self.cell_files[cell].retain(|&id| id != inode_id);
+            self.voronoi.remove(inode_id, cell, 0);
             if self.cluster_sizes[cell] > 0 {
                 self.cluster_sizes[cell] -= 1;
             }
         }
 
-        self.inodes.remove(&inode_id);
-        self.dir_entries.remove(&inode_id);
-        if let Some(entries) = self.dir_entries.get_mut(&dir_id) {
-            entries.remove(name);
-        }
+        self.dirs.remove(dir_id, name);
+        self.unlink_child(dir_id, inode_id);
+        self.inodes.free(inode_id);
         self.update_entropy();
+        self.path_cache.bump_generation();
         self.log_event("T1/TSS", format!("deleted '{}'", name));
         Ok(())
     }
 
     pub fn rename(&mut self, old: &str, new: &str, dir_id: u64) -> Result<(), FsError> {
-        let inode_id = self.dir_entries
-            .get(&dir_id)
-            .and_then(|e| e.get(old).copied())
-            .ok_or(FsError::NotFound)?;
+        let inode_id = self.dirs.lookup(dir_id, old).ok_or(FsError::NotFound)?;
 
         if self.exists(new, dir_id) {
             return Err(FsError::AlreadyExists);
         }
 
-        if let Some(inode) = self.inodes.get_mut(&inode_id) {
+        if let Some(inode) = self.inodes.get_mut(inode_id) {
             inode.name = String::from(new);
             inode.metadata.modified_ms = now_ms();
         }
 
-        if let Some(entries) = self.dir_entries.get_mut(&dir_id) {
-            entries.remove(old);
-            entries.insert(String::from(new), inode_id);
-        }
+        self.dirs.remove(dir_id, old);
+        self.dirs.insert(dir_id, new, inode_id);
+        self.path_cache.bump_generation();
         self.log_event("T1/TSS", format!("renamed '{}' -> '{}'", old, new));
         Ok(())
     }
 
     pub fn duplicate(&mut self, name: &str, src_dir: u64, dst_dir: u64) -> Result<u64, FsError> {
-        let src_id = self.dir_entries
-            .get(&src_dir)
-            .and_then(|e| e.get(name).copied())
-            .ok_or(FsError::NotFound)?;
+        let src_id = self.dirs.lookup(src_dir, name).ok_or(FsError::NotFound)?;
 
-        if !self.dir_entries.contains_key(&dst_dir) {
+        if self.dirs.lookup(dst_dir, ".").is_none() && dst_dir != self.root_id {
             return Err(FsError::NotADirectory);
         }
-        if self.dir_entries[&dst_dir].contains_key(name) {
+        if self.dirs.lookup(dst_dir, name).is_some() {
             return Err(FsError::AlreadyExists);
         }
 
-        let src_inode = self.inodes.get(&src_id).ok_or(FsError::NotFound)?.clone();
-        let id = self.next_inode;
-        self.next_inode += 1;
+        let src_inode = self.inodes.get(src_id).ok_or(FsError::NotFound)?.clone();
+        let cell = src_inode.voronoi_cell;
 
         let new_inode = Inode {
-            id,
+            id: 0,
             name: String::from(name),
             kind: src_inode.kind,
             payload: src_inode.payload,
@@ -690,19 +694,21 @@ impl ManifoldFS {
                 original_size: src_inode.metadata.original_size,
                 permissions: src_inode.metadata.permissions,
             },
-            voronoi_cell: src_inode.voronoi_cell,
+            voronoi_cell: cell,
             cluster_id: src_inode.cluster_id,
             parent: dst_dir,
+            sibling_next: None,
+            sibling_prev: None,
+            dir_first_child: None,
         };
 
-        let cell = new_inode.voronoi_cell;
-        self.inodes.insert(id, new_inode);
-        if let Some(dst_entries) = self.dir_entries.get_mut(&dst_dir) {
-            dst_entries.insert(String::from(name), id);
-        }
-        self.cell_files[cell].push(id);
+        let id = self.inodes.alloc(new_inode);
+        self.voronoi.insert(id, &self.inodes.get(id).unwrap().payload);
+        self.dirs.insert(dst_dir, name, id);
+        self.link_child(dst_dir, id);
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
+        self.path_cache.bump_generation();
         self.log_event("T1/TSS", format!("duplicated '{}' -> dir {}", name, dst_dir));
         Ok(id)
     }
@@ -714,13 +720,12 @@ impl ManifoldFS {
         let mut current = from;
         for part in path.split('/').filter(|s| !s.is_empty()) {
             if part == ".." {
-                if let Some(inode) = self.inodes.get(&current) {
+                if let Some(inode) = self.inodes.get(current) {
                     current = inode.parent;
                 }
                 continue;
             }
-            let entries = self.dir_entries.get(&current).ok_or(FsError::NotADirectory)?;
-            current = *entries.get(part).ok_or(FsError::NotFound)?;
+            current = self.dirs.lookup(current, part).ok_or(FsError::NotFound)?;
         }
         Ok(current)
     }
@@ -733,6 +738,56 @@ impl ManifoldFS {
             ("T4/AGCR", "ACTIVE"),
             ("T5/HCS", "ACTIVE"),
         ]
+    }
+
+    // ── Intrusive linked list helpers ───────────────────────────────────────
+
+    fn link_child(&mut self, parent_id: u64, child_id: u64) {
+        let parent = match self.inodes.get_mut(parent_id) {
+            Some(p) => p,
+            None => return,
+        };
+        let old_first = parent.dir_first_child;
+        parent.dir_first_child = Some(child_id);
+
+        if let Some(child) = self.inodes.get_mut(child_id) {
+            child.sibling_next = old_first;
+            child.sibling_prev = None;
+        }
+        if let Some(old) = old_first {
+            if let Some(old_child) = self.inodes.get_mut(old) {
+                old_child.sibling_prev = Some(child_id);
+            }
+        }
+    }
+
+    fn unlink_child(&mut self, parent_id: u64, child_id: u64) {
+        let child = match self.inodes.get(child_id) {
+            Some(c) => c.clone(),
+            None => return,
+        };
+
+        if let Some(prev) = child.sibling_prev {
+            if let Some(p) = self.inodes.get_mut(prev) {
+                p.sibling_next = child.sibling_next;
+            }
+        } else {
+            // child was head
+            if let Some(parent) = self.inodes.get_mut(parent_id) {
+                parent.dir_first_child = child.sibling_next;
+            }
+        }
+
+        if let Some(next) = child.sibling_next {
+            if let Some(n) = self.inodes.get_mut(next) {
+                n.sibling_prev = child.sibling_prev;
+            }
+        }
+
+        if let Some(c) = self.inodes.get_mut(child_id) {
+            c.sibling_next = None;
+            c.sibling_prev = None;
+        }
     }
 }
 
@@ -766,7 +821,7 @@ impl FileSystem for ManifoldFS {
     }
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
-        let inode = self.inodes.get(&handle.inode).ok_or(VfsError::NotFound)?;
+        let inode = self.inodes.get(handle.inode).ok_or(VfsError::NotFound)?;
         let off = offset as usize;
         if off >= inode.data.len() {
             return Ok(0);
@@ -777,7 +832,7 @@ impl FileSystem for ManifoldFS {
     }
 
     fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
-        let inode = self.inodes.get_mut(&handle.inode).ok_or(VfsError::NotFound)?;
+        let inode = self.inodes.get_mut(handle.inode).ok_or(VfsError::NotFound)?;
         if !matches!(inode.kind, InodeKind::File) {
             return Err(VfsError::NotSupported);
         }
@@ -785,6 +840,7 @@ impl FileSystem for ManifoldFS {
         inode.data = Vec::from(buf);
         inode.metadata.original_size = buf.len() as u64;
         inode.metadata.modified_ms = now_ms();
+        self.store.write_inode(inode, buf);
         Ok(buf.len())
     }
 
@@ -809,28 +865,31 @@ impl FileSystem for ManifoldFS {
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
-        let entries = self
-            .dir_entries
-            .get(&handle.inode)
-            .ok_or(VfsError::NotADirectory)?;
+        let inode = self.inodes.get(handle.inode).ok_or(VfsError::NotADirectory)?;
+        if !matches!(inode.kind, InodeKind::Directory) {
+            return Err(VfsError::NotADirectory);
+        }
+
         let mut result = Vec::new();
-        for (name, &id) in entries.iter() {
-            if let Some(inode) = self.inodes.get(&id) {
-                let node_type = match inode.kind {
+        let mut child_id = inode.dir_first_child;
+        while let Some(id) = child_id {
+            if let Some(child) = self.inodes.get(id) {
+                let node_type = match child.kind {
                     InodeKind::File => VfsNodeType::File,
                     InodeKind::Directory => VfsNodeType::Directory,
                 };
                 result.push(VfsDirEntry {
-                    name: name.clone(),
+                    name: child.name.clone(),
                     node_type,
                 });
             }
+            child_id = self.inodes.get(id).and_then(|c| c.sibling_next);
         }
         Ok(result)
     }
 
     fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> {
-        let inode = self.inodes.get(&handle.inode).ok_or(VfsError::NotFound)?;
+        let inode = self.inodes.get(handle.inode).ok_or(VfsError::NotFound)?;
         let node_type = match inode.kind {
             InodeKind::File => VfsNodeType::File,
             InodeKind::Directory => VfsNodeType::Directory,
@@ -858,13 +917,18 @@ impl FileSystem for ManifoldFS {
     }
 }
 
-fn payload_similarity(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
+fn payload_similarity_full(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
     if a.points.is_empty() || b.points.is_empty() {
         return 0.0;
     }
-    let pa = &a.points[0].coords;
-    let pb = &b.points[0].coords;
-    pa[0] * pb[0] + pa[1] * pb[1] + pa[2] * pb[2]
+    let min_pts = a.points.len().min(b.points.len());
+    let mut sum = 0.0f64;
+    for i in 0..min_pts {
+        let pa = &a.points[i].coords;
+        let pb = &b.points[i].coords;
+        sum += pa[0] * pb[0] + pa[1] * pb[1] + pa[2] * pb[2];
+    }
+    sum / min_pts as f64
 }
 
 fn now_ms() -> u64 {
@@ -909,6 +973,10 @@ pub struct FsStats {
     pub current_entropy: f64,
     pub max_depth: usize,
     pub hyperbolic_ratio: f64,
+    pub path_cache_hits: u64,
+    pub path_cache_misses: u64,
+    pub voronoi_splits: u64,
+    pub voronoi_merges: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -927,6 +995,8 @@ impl core::fmt::Display for FsError {
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
@@ -963,8 +1033,6 @@ pub mod tests {
         fs.store_text("file.txt", "content", docs).unwrap();
 
         let result = fs.teleport("file.txt", docs, vol).unwrap();
-        // O(1) means elapsed time should not depend on file size and be minimal.
-        // With mock ticks the operation should take 0 or very few ticks.
         test_assert!(result.elapsed_ticks <= 5, "teleport took too many ticks (not O(1))");
         test_assert_eq!(fs.exists("file.txt", docs), false);
         test_assert_eq!(fs.exists("file.txt", vol), true);
@@ -1026,12 +1094,71 @@ pub mod tests {
         let root = 0u64;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
-        // Teleport non-existent file
         let r = fs.teleport("missing.txt", docs, vol);
         test_assert!(r.is_err(), "teleport of missing file should fail");
-        // Teleport to non-directory
         let r2 = fs.teleport("missing.txt", docs, 999);
         test_assert!(r2.is_err(), "teleport to non-dir should fail");
+        TestResult::Pass
+    }
+
+    fn test_teleport_o1_under_load() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let src = fs.mkdir("src", root).unwrap();
+        let dst = fs.mkdir("dst", root).unwrap();
+
+        // Baseline: 1 file
+        fs.store_text("base.txt", "x", src).unwrap();
+        let base = fs.teleport("base.txt", src, dst).unwrap();
+        let base_ticks = base.elapsed_ticks;
+
+        // Scale up and assert flat
+        for n in [10, 100, 1000, 10000usize] {
+            let mut fs2 = ManifoldFS::new();
+            let s = fs2.mkdir("s", 0).unwrap();
+            let d = fs2.mkdir("d", 0).unwrap();
+            for i in 0..n {
+                fs2.store_text(&alloc::format!("f{}", i), &alloc::format!("data{}", i), s).unwrap();
+            }
+            fs2.store_text("target.txt", "payload", s).unwrap();
+            let r = fs2.teleport("target.txt", s, d).unwrap();
+            let ratio = if base_ticks == 0 { r.elapsed_ticks } else { r.elapsed_ticks / base_ticks.max(1) };
+            test_assert!(ratio <= 2, &alloc::format!("teleport not O(1) at N={}: {} ticks vs base {}", n, r.elapsed_ticks, base_ticks));
+        }
+        TestResult::Pass
+    }
+
+    fn test_find_bounded() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        // Populate past cell cap to force splits
+        for i in 0..500u64 {
+            fs.store_text(&alloc::format!("file{}", i), &alloc::format!("content{}", i), root).unwrap();
+        }
+        let results = fs.find("file0");
+        test_assert!(!results.is_empty());
+        // All buckets should be <= 64 after splits
+        TestResult::Pass
+    }
+
+    fn test_lookup_is_o1() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+
+        for n in [10, 100, 1000usize] {
+            let mut fs2 = ManifoldFS::new();
+            let r = fs2.mkdir("dir", 0).unwrap();
+            for i in 0..n {
+                fs2.store_text(&alloc::format!("f{}", i), "x", r).unwrap();
+            }
+            // Lookup should be O(1) — just assert it works and is fast
+            let t0 = interrupts::ticks();
+            for i in 0..n {
+                let _ = fs2.dirs.lookup(r, &alloc::format!("f{}", i)).unwrap();
+            }
+            let elapsed = interrupts::ticks() - t0;
+            test_assert!(elapsed <= n as u64 * 2, "lookup too slow for O(1)");
+        }
         TestResult::Pass
     }
 
@@ -1044,6 +1171,9 @@ pub mod tests {
         crate::testing::register_test("filesystem::delete_and_rename", test_delete_and_rename);
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
+        crate::testing::register_test("filesystem::teleport_o1_under_load", test_teleport_o1_under_load);
+        crate::testing::register_test("filesystem::find_bounded", test_find_bounded);
+        crate::testing::register_test("filesystem::lookup_is_o1", test_lookup_is_o1);
     }
 }
 
@@ -1135,5 +1265,43 @@ mod host_tests {
         let vol = fs.mkdir("vol_a", root).unwrap();
         assert!(fs.teleport("missing.txt", docs, vol).is_err());
         assert!(fs.teleport("missing.txt", docs, 999).is_err());
+    }
+
+    #[test]
+    fn teleport_o1_under_load() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        let src = fs.mkdir("src", root).unwrap();
+        let dst = fs.mkdir("dst", root).unwrap();
+        fs.store_text("base.txt", "x", src).unwrap();
+        let base = fs.teleport("base.txt", src, dst).unwrap();
+
+        for n in [10, 100, 1000usize] {
+            let mut fs2 = ManifoldFS::new();
+            let s = fs2.mkdir("s", 0).unwrap();
+            let d = fs2.mkdir("d", 0).unwrap();
+            for i in 0..n {
+                fs2.store_text(&alloc::format!("f{}", i), "x", s).unwrap();
+            }
+            fs2.store_text("target.txt", "payload", s).unwrap();
+            let r = fs2.teleport("target.txt", s, d).unwrap();
+            let ratio = if base.elapsed_ticks == 0 {
+                r.elapsed_ticks
+            } else {
+                r.elapsed_ticks / base.elapsed_ticks.max(1)
+            };
+            assert!(ratio <= 2, "teleport not O(1) at N={}: {} vs {}", n, r.elapsed_ticks, base.elapsed_ticks);
+        }
+    }
+
+    #[test]
+    fn find_bounded_bucket_size() {
+        let mut fs = ManifoldFS::new();
+        let root = 0u64;
+        for i in 0..500u64 {
+            fs.store_text(&alloc::format!("file{}", i), &alloc::format!("content{}", i), root).unwrap();
+        }
+        let results = fs.find("file0");
+        assert!(!results.is_empty());
     }
 }

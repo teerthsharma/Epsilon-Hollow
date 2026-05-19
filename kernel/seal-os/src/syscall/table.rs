@@ -351,14 +351,17 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     if let Some(frame) = crate::memory::phys::alloc_frame() {
                         unsafe {
                             core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
-                            crate::memory::virt::map_page_to_pml4(
+                            if crate::memory::virt::map_page_to_pml4(
                                 virt,
                                 frame,
                                 x86_64::structures::paging::PageTableFlags::PRESENT
                                     | x86_64::structures::paging::PageTableFlags::WRITABLE
                                     | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
                                 pml4,
-                            );
+                            ).is_err() {
+                                crate::memory::phys::free_frame(frame);
+                                return SyscallResult::err(12); // ENOMEM
+                            }
                         }
                     } else {
                         return SyscallResult::err(12); // ENOMEM

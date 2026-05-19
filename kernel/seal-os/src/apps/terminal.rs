@@ -152,4 +152,7 @@ impl Terminal {
     pub fn shell_mut(&mut self) -> &mut Shell {
         &mut self.shell
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }

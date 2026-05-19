@@ -3,6 +3,7 @@
 
 //! Per-CPU data structures and accessors.
 
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -10,7 +11,7 @@ use x86_64::registers::model_specific::Msr;
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::tss::TaskStateSegment;
 
-use crate::process::context_switch::{TaskContext, KERNEL_STACK_SIZE};
+use crate::process::context_switch::{TaskContext, KERNEL_STACK_SIZE, detect_xsave, xsave_area_size};
 use crate::process::scheduler::ManifoldScheduler;
 use crate::process::task::Task;
 
@@ -25,7 +26,9 @@ pub struct PerCpu {
     pub cpu_num: u32,
     pub current_task: *mut Task,
     pub idle_context: TaskContext,
+    pub idle_xsave: Vec<u8>,
     pub kernel_stack: [u8; KERNEL_STACK_SIZE],
+    pub double_fault_stack: [u8; 4096],
     pub tss: TaskStateSegment,
     pub scheduler: ManifoldScheduler,
     pub scheduler_lock: spin::Mutex<()>,
@@ -76,6 +79,8 @@ pub unsafe fn init_bsp() {
     let cpu_num = 0;
     BSP_CPU_NUM.store(cpu_num, Ordering::SeqCst);
 
+    detect_xsave();
+
     let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
     let ptr = unsafe { (*base.add(cpu_num)).bytes.as_mut_ptr() as *mut PerCpu };
     ptr.write(PerCpu {
@@ -83,7 +88,9 @@ pub unsafe fn init_bsp() {
         cpu_num: cpu_num as u32,
         current_task: core::ptr::null_mut(),
         idle_context: TaskContext::zero(),
+        idle_xsave: Vec::new(),
         kernel_stack: [0; KERNEL_STACK_SIZE],
+        double_fault_stack: [0; 4096],
         tss: TaskStateSegment::new(),
         scheduler: ManifoldScheduler::new(),
         scheduler_lock: spin::Mutex::new(()),
@@ -97,6 +104,13 @@ pub unsafe fn init_bsp() {
 
     let per_cpu = &mut *ptr;
     crate::memory::gdt::init_tss_for_cpu(per_cpu);
+
+    // Allocate aligned idle XSAVE area
+    let xsave_size = xsave_area_size();
+    let mut idle_xsave = vec![0u8; xsave_size + 64];
+    let aligned = ((idle_xsave.as_ptr() as usize) + 63) & !63;
+    per_cpu.idle_xsave = idle_xsave;
+    per_cpu.idle_context.xsave_ptr = aligned as *mut u8;
 
     // GS base -> PerCpu
     Msr::new(0xC000_0101).write(ptr as u64);
@@ -126,7 +140,9 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
             cpu_num,
             current_task: core::ptr::null_mut(),
             idle_context: TaskContext::zero(),
+            idle_xsave: Vec::new(),
             kernel_stack: [0; KERNEL_STACK_SIZE],
+            double_fault_stack: [0; 4096],
             tss: TaskStateSegment::new(),
             scheduler: ManifoldScheduler::new(),
             scheduler_lock: spin::Mutex::new(()),
@@ -140,6 +156,13 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
 
         let per_cpu = &mut *ptr;
         crate::memory::gdt::init_tss_for_cpu(per_cpu);
+
+        // Allocate aligned idle XSAVE area
+        let xsave_size = xsave_area_size();
+        let mut idle_xsave = vec![0u8; xsave_size + 64];
+        let aligned = ((idle_xsave.as_ptr() as usize) + 63) & !63;
+        per_cpu.idle_xsave = idle_xsave;
+        per_cpu.idle_context.xsave_ptr = aligned as *mut u8;
 
         PER_CPU_INITIALIZED[cpu_num as usize].store(true, Ordering::SeqCst);
         CPU_COUNT.fetch_add(1, Ordering::SeqCst);

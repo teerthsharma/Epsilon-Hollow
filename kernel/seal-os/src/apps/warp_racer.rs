@@ -20,6 +20,7 @@ const TUNNEL_COLOR: u32 = 0x00202040;
 pub struct WarpRacer {
     width: u32,
     height: u32,
+    ship_x: i32,
     ship_y: i32,
     scroll_offset: u32,
     score: u32,
@@ -37,6 +38,7 @@ impl WarpRacer {
         let mut game = Self {
             width: client_w,
             height: client_h,
+            ship_x: 20,
             ship_y: (client_h / 2) as i32,
             scroll_offset: 0,
             score: 0,
@@ -68,6 +70,8 @@ impl WarpRacer {
         match key {
             b'w' | 0x48 => self.ship_y = (self.ship_y - 8).max(0),
             b's' | 0x50 => self.ship_y = (self.ship_y + 8).min(self.height as i32 - SHIP_H as i32),
+            b'a' | 0x4B => self.ship_x = (self.ship_x - 8).max(0),
+            b'd' | 0x4D => self.ship_x = (self.ship_x + 8).min(self.width as i32 - SHIP_W as i32),
             _ => {}
         }
     }
@@ -86,7 +90,7 @@ impl WarpRacer {
 
         self.epsilon = 0.40 + 0.01 * libm::sin(self.tick_count as f64 * 0.01);
 
-        let ship_x = 20u32;
+        let ship_x = self.ship_x as u32;
         for &(bx, by, prefetched) in &self.blocks {
             let screen_y = by as i32 - self.scroll_offset as i32;
             if screen_y > self.ship_y - BLOCK_H as i32
@@ -136,10 +140,13 @@ impl WarpRacer {
         }
 
         // Ship
-        game_engine::fill_rect(win, 20, self.ship_y as u32, SHIP_W, SHIP_H, SHIP_COLOR);
+        game_engine::fill_rect(win, self.ship_x as u32, self.ship_y as u32, SHIP_W, SHIP_H, SHIP_COLOR);
 
         if self.game_over {
             game_engine::render_text(win, self.width / 2 - 60, self.height / 2, "WARP COMPLETE!", 0x0088CCFF);
         }
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }

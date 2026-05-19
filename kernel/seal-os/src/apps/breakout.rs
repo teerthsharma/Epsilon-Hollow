@@ -47,8 +47,8 @@ impl BreakoutGame {
             paddle_x: (client_w / 2 - PADDLE_W / 2) as i32,
             ball_x: (client_w / 2) as i32,
             ball_y: (client_h - 40) as i32,
-            ball_dx: 2,
-            ball_dy: -2,
+            ball_dx: 0,
+            ball_dy: 0,
             bricks: [[true; BRICK_COLS as usize]; BRICK_ROWS as usize],
             score: 0,
             lives: 3,
@@ -69,6 +69,14 @@ impl BreakoutGame {
             }
             b'd' | 0x4D => {
                 self.paddle_x = (self.paddle_x + 16).min((self.width - PADDLE_W) as i32);
+            }
+            b' ' => {
+                if self.ball_dy == 0 {
+                    self.ball_dy = -2;
+                    if self.ball_dx == 0 {
+                        self.ball_dx = 2;
+                    }
+                }
             }
             _ => {}
         }
@@ -201,4 +209,7 @@ impl BreakoutGame {
             game_engine::render_text(win, self.width / 2 - 40, self.height / 2, msg, 0x00FF4444);
         }
     }
+
+    pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
+    pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }

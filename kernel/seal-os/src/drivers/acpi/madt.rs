@@ -77,8 +77,9 @@ fn current_lapic_id() -> u32 {
 /// # Safety
 /// Caller must ensure `madt_phys` points to a valid MADT in identity-mapped memory.
 pub unsafe fn parse_madt(madt_phys: u64) {
-    let madt = &*(madt_phys as *const Madt);
-    if !madt.header.is_valid() {
+    let madt = madt_phys as *const Madt;
+    let header = unsafe { core::ptr::addr_of!((*madt).header).read_unaligned() };
+    if !header.is_valid() {
         return;
     }
 
@@ -87,36 +88,55 @@ pub unsafe fn parse_madt(madt_phys: u64) {
     let mut count = 0;
 
     let entries_start = madt_phys + core::mem::size_of::<Madt>() as u64;
-    let entries_end = madt_phys + madt.header.length as u64;
+    let entries_end = madt_phys + header.length as u64;
     let mut offset = entries_start;
 
     while offset < entries_end {
-        let hdr = &*(offset as *const MadtEntryHeader);
-        let entry_type = hdr.entry_type;
-        let entry_len = hdr.length as u64;
+        if offset + core::mem::size_of::<MadtEntryHeader>() as u64 > entries_end {
+            crate::serial_println!(
+                "[ACPI/MADT] MADT truncated: cannot read entry header at offset {:#X}",
+                offset - madt_phys
+            );
+            break;
+        }
+        let hdr = offset as *const MadtEntryHeader;
+        let entry_type = unsafe { core::ptr::addr_of!((*hdr).entry_type).read_unaligned() };
+        let entry_len = unsafe { core::ptr::addr_of!((*hdr).length).read_unaligned() as u64 };
         if entry_len == 0 {
+            crate::serial_println!("[ACPI/MADT] MADT entry claims length 0, stopping parse");
             break;
         }
 
         match entry_type {
             0 => {
                 if offset + core::mem::size_of::<LocalApicEntry>() as u64 <= entries_end {
-                    let entry = &*(offset as *const LocalApicEntry);
-                    let flags = entry.flags; // copy out of packed struct
+                    let entry = offset as *const LocalApicEntry;
+                    let flags = unsafe { core::ptr::addr_of!((*entry).flags).read_unaligned() }; // copy out of packed struct
                     if (flags & 1) != 0 && count < MAX_CPUS {
-                        let apic_id = entry.apic_id as u32;
+                        let apic_id = unsafe { core::ptr::addr_of!((*entry).apic_id).read_unaligned() as u32 };
                         ids[count] = apic_id;
                         count += 1;
                         if apic_id == this_lapic {
                             BSP_APIC_ID.store(apic_id, Ordering::SeqCst);
                         }
                     }
+                } else {
+                    crate::serial_println!(
+                        "[ACPI/MADT] Local APIC entry at offset {:#X} truncated, skipping",
+                        offset - madt_phys
+                    );
                 }
             }
             1 => {
                 if offset + core::mem::size_of::<IoApicEntry>() as u64 <= entries_end {
-                    let entry = &*(offset as *const IoApicEntry);
-                    IOAPIC_BASE.store(entry.ioapic_addr as u64, Ordering::SeqCst);
+                    let entry = offset as *const IoApicEntry;
+                    let ioapic_addr = unsafe { core::ptr::addr_of!((*entry).ioapic_addr).read_unaligned() };
+                    IOAPIC_BASE.store(ioapic_addr as u64, Ordering::SeqCst);
+                } else {
+                    crate::serial_println!(
+                        "[ACPI/MADT] I/O APIC entry at offset {:#X} truncated, skipping",
+                        offset - madt_phys
+                    );
                 }
             }
             2 => {

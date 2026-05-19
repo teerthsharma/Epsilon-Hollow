@@ -37,6 +37,8 @@ pub static KERNEL_DATA_SELECTOR: AtomicU16 = AtomicU16::new(0);
 pub static USER_CODE32_SELECTOR: AtomicU16 = AtomicU16::new(0);
 pub static USER_DATA_SELECTOR: AtomicU16 = AtomicU16::new(0);
 pub static USER_CODE_SELECTOR: AtomicU16 = AtomicU16::new(0);
+pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+
 pub static TSS_SELECTOR: AtomicU16 = AtomicU16::new(0);
 
 static NEXT_GDT_SLOT: AtomicU16 = AtomicU16::new(6);
@@ -112,8 +114,11 @@ pub unsafe fn init_tss_for_cpu(per_cpu: &mut PerCpu) {
     let stack_top = per_cpu.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
     per_cpu.tss.privilege_stack_table[0] = VirtAddr::new(stack_top);
 
-    // IST[0] for double-fault handler
-    per_cpu.tss.interrupt_stack_table[0] = VirtAddr::new(stack_top);
+    // IST[0] for double-fault handler — dedicated stack so overflow on the
+    // kernel stack does not corrupt it and cause a triple fault.
+    let df_stack_top = per_cpu.double_fault_stack.as_ptr() as u64
+        + per_cpu.double_fault_stack.len() as u64;
+    per_cpu.tss.interrupt_stack_table[0] = VirtAddr::new(df_stack_top);
 
     per_cpu.tss_selector = SegmentSelector((slot as u16) << 3);
 }

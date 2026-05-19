@@ -12,8 +12,8 @@ cargo +nightly build --release --features test-mode
 
 echo "[test_kernel] Building disk image..."
 cd "$PROJECT_ROOT/kernel/seal-mkimage"
-cargo build --release
-cargo run --release
+cargo +stable build --release
+cargo +stable run --release
 
 IMG="$PROJECT_ROOT/kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img"
 if [ ! -f "$IMG" ]; then
@@ -24,9 +24,9 @@ fi
 echo "[test_kernel] Running kernel tests in QEMU..."
 LOGFILE=$(mktemp)
 QEMU_EXIT=0
-qemu-system-x86_64 \
+timeout 120 qemu-system-x86_64 \
     -machine q35 \
-    -pflash /usr/share/OVMF/OVMF_CODE_4M.fd \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
     -drive file="$IMG",format=raw \
     -nographic \
     -m 4G \

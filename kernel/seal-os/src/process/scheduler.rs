@@ -18,6 +18,7 @@ use aether_core::tss::SphericalVoronoiIndex;
 
 use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE};
 use super::task::{Task, TaskState};
+use crate::serial_println;
 
 const VORONOI_CELLS: usize = 8;
 
@@ -209,11 +210,21 @@ impl ManifoldScheduler {
         let task = Task::new(id, name, priority, entry);
         let idx = self.slab.alloc(task);
         {
-            let task_ref = self.slab.get_mut(idx).unwrap();
-            task_ref.voronoi_cell =
-                Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+            if let Some(task_ref) = self.slab.get_mut(idx) {
+                task_ref.voronoi_cell =
+                    Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+            } else {
+                serial_println!("[scheduler] spawn: slab index {} invalid after alloc", idx);
+                return 0;
+            }
         }
-        let cell = self.slab.get(idx).unwrap().voronoi_cell;
+        let cell = match self.slab.get(idx) {
+            Some(t) => t.voronoi_cell,
+            None => {
+                serial_println!("[scheduler] spawn: slab index {} vanished after update", idx);
+                return 0;
+            }
+        };
         self.cell_queues[cell].push(idx, priority);
         self.cell_bitmap |= 1 << cell;
         id
@@ -229,10 +240,7 @@ impl ManifoldScheduler {
         let loaded = super::elf::load(elf_data, aslr_base)?;
 
         let user_stack_size = 65536usize;
-        let mut user_stack = alloc::vec::Vec::with_capacity(user_stack_size);
-        unsafe {
-            user_stack.set_len(user_stack_size);
-        }
+        let mut user_stack = vec![0u8; user_stack_size];
         let user_stack_top = user_stack.as_ptr() as u64 + user_stack_size as u64;
         let user_stack_top = user_stack_top & !0xF;
 
@@ -250,11 +258,21 @@ impl ManifoldScheduler {
         task.user_stack = user_stack;
         let idx = self.slab.alloc(task);
         {
-            let task_ref = self.slab.get_mut(idx).unwrap();
-            task_ref.voronoi_cell =
-                Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+            if let Some(task_ref) = self.slab.get_mut(idx) {
+                task_ref.voronoi_cell =
+                    Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+            } else {
+                serial_println!("[scheduler] spawn_user: slab index {} invalid after alloc", idx);
+                return Ok(0);
+            }
         }
-        let cell = self.slab.get(idx).unwrap().voronoi_cell;
+        let cell = match self.slab.get(idx) {
+            Some(t) => t.voronoi_cell,
+            None => {
+                serial_println!("[scheduler] spawn_user: slab index {} vanished after update", idx);
+                return Ok(0);
+            }
+        };
         self.cell_queues[cell].push(idx, priority);
         self.cell_bitmap |= 1 << cell;
         Ok(id)
@@ -307,19 +325,19 @@ impl ManifoldScheduler {
             for i in 1..cpu_count {
                 let target = ((cpu_num as usize + i) % cpu_count) as u32;
                 if let Some(task) = steal_task(target) {
-                    let cell = task.voronoi_cell;
                     let priority = task.priority;
                     let idx = self.slab.alloc(task);
-                    {
-                        let task_ref = self.slab.get_mut(idx).unwrap();
+                    if let Some(task_ref) = self.slab.get_mut(idx) {
                         task_ref.voronoi_cell = Self::compute_voronoi_cell(
                             &task_ref.manifold_embedding,
                             &self.voronoi,
                         );
+                        let cell = task_ref.voronoi_cell;
+                        self.cell_queues[cell].push(idx, priority);
+                        self.cell_bitmap |= 1 << cell;
+                    } else {
+                        serial_println!("[scheduler] schedule: stolen task slab index {} invalid", idx);
                     }
-                    let cell = self.slab.get(idx).unwrap().voronoi_cell;
-                    self.cell_queues[cell].push(idx, priority);
-                    self.cell_bitmap |= 1 << cell;
                     next = self.select_next_task();
                     break;
                 }
@@ -342,13 +360,26 @@ impl ManifoldScheduler {
 
             let old_ctx = match old_idx {
                 Some(idx) if !old_task_dead => {
-                    let t = self.slab.get_mut(idx).unwrap();
-                    &mut t.context as *mut TaskContext
+                    if let Some(t) = self.slab.get_mut(idx) {
+                        &mut t.context as *mut TaskContext
+                    } else {
+                        serial_println!("[scheduler] schedule: old task {} missing for context switch", idx);
+                        &mut cpu.idle_context as *mut TaskContext
+                    }
                 }
                 _ => &mut cpu.idle_context as *mut TaskContext,
             };
 
-            let next_task = self.slab.get_mut(next_idx).unwrap();
+            let next_task = match self.slab.get_mut(next_idx) {
+                Some(t) => t,
+                None => {
+                    serial_println!("[scheduler] schedule: next task {} missing, going idle", next_idx);
+                    cpu.is_idle = true;
+                    drop(guard.take());
+                    cpu.switching = false;
+                    return;
+                }
+            };
             next_task.state = TaskState::Running;
             self.current = Some(next_idx);
             cpu.current_task = next_task as *mut Task;
@@ -374,7 +405,7 @@ impl ManifoldScheduler {
             }
 
             if old_task_dead {
-                drop(guard.take().unwrap());
+                drop(guard.take());
             }
 
             x86_64::instructions::interrupts::disable();
@@ -388,7 +419,7 @@ impl ManifoldScheduler {
             }
         } else {
             cpu.is_idle = true;
-            drop(guard.take().unwrap());
+            drop(guard.take());
         }
 
         cpu.switching = false;
@@ -429,11 +460,15 @@ impl ManifoldScheduler {
             }
         }
         if let Some(cell) = best_cell {
-            let idx = self.cell_queues[cell].pop().unwrap();
-            if self.cell_queues[cell].ready_count == 0 {
+            if let Some(idx) = self.cell_queues[cell].pop() {
+                if self.cell_queues[cell].ready_count == 0 {
+                    self.cell_bitmap &= !(1 << cell);
+                }
+                return Some(idx);
+            } else {
+                serial_println!("[scheduler] select_next_task: cell {} bitmap set but queue empty", cell);
                 self.cell_bitmap &= !(1 << cell);
             }
-            return Some(idx);
         }
 
         None

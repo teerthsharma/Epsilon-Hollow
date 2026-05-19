@@ -146,25 +146,24 @@ Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"` (kernel jobs ov
 | Toolchain | `dtolnay/rust-toolchain@nightly` + `rust-src`, `llvm-tools-preview` |
 | Env | `RUSTFLAGS=""` (overrides global `-D warnings` for nightly) |
 | Commands | `cargo +nightly build --release` (release), `cargo +nightly build` (debug) |
-| Size Gate | Kernel binary must exist at `target/x86_64-unknown-none/release/seal-os` and be <= 512KB |
+| Size Gate | Kernel binary must exist at `target/x86_64-unknown-uefi/release/seal-os.efi` and be <= 512KB |
 | What It Checks | Kernel compiles for bare-metal x86_64 target; binary size is reasonable |
 | Failure Means | Kernel build failure or binary exceeds 512KB |
 
-## Job 13: `kernel-iso`
+## Job 13: `kernel-image`
 
 | Field | Value |
 |-------|-------|
-| Display Name | `Build Seal OS ISO` |
+| Display Name | `Build Seal OS UEFI Image` |
 | Runner | `ubuntu-latest` |
 | Depends On | `kernel-build` |
 | Toolchain | `dtolnay/rust-toolchain@nightly` + `rust-src`, `llvm-tools-preview` |
-| APT Packages | `grub-pc-bin`, `grub-common`, `xorriso`, `mtools` |
-| Commands | Build kernel, copy to `iso/boot/kernel.bin`, copy `boot/grub/grub.cfg`, `grub-mkrescue -o seal-os.iso iso/` |
-| Size Gate | ISO must be <= 64MB |
-| Verification | Checks multiboot2 magic `0xd6e85250` in first 32KB, prints ELF section headers |
-| Artifact | `seal-os-iso-ci` (seal-os.iso) |
-| What It Checks | Bootable ISO can be created from the kernel binary |
-| Failure Means | GRUB packaging failed, multiboot2 header missing, or ISO too large |
+| Commands | Build kernel, then run `cargo +stable run --release` in `kernel/seal-mkimage` to produce `seal-os.img` |
+| Size Gate | Image must be <= 64MB |
+| Verification | Checks UEFI PE/COFF header in `.efi`, GPT layout in `.img` |
+| Artifact | `seal-os-img-ci` (seal-os.img) |
+| What It Checks | Bootable UEFI disk image can be created from the kernel binary |
+| Failure Means | `seal-mkimage` failed, missing PE/COFF header, or image too large |
 
 ## Job 14: `kernel-qemu-smoke`
 
@@ -172,9 +171,9 @@ Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"` (kernel jobs ov
 |-------|-------|
 | Display Name | `QEMU boot smoke test` |
 | Runner | `ubuntu-latest` |
-| Depends On | `kernel-iso` |
-| APT Packages | `qemu-system-x86` |
-| Command | `timeout 45 qemu-system-x86_64 -cdrom seal-os.iso -nographic -m 4G -no-reboot -no-shutdown` |
+| Depends On | `kernel-image` |
+| APT Packages | `qemu-system-x86`, `ovmf` |
+| Command | `timeout 45 qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -nographic -m 4G -no-reboot -no-shutdown` |
 | Artifact | `seal-os-boot-log` (/tmp/seal-os.log) |
 | What It Checks | Kernel boots successfully in QEMU and reaches all 11 milestones |
 | Failure Means | Kernel fails to boot or does not reach expected milestones |
@@ -243,7 +242,7 @@ python ──────────────┤
 kernel-clippy ───────┤
 lean ────────────────┘
 
-kernel-build ──> kernel-iso ──> kernel-qemu-smoke
+kernel-build ──> kernel-image ──> kernel-qemu-smoke
 ```
 
 The kernel pipeline is sequential: build depends on nothing, ISO depends on build, QEMU depends on ISO. All other jobs are independent and run in parallel.

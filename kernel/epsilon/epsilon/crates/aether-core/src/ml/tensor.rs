@@ -23,8 +23,8 @@ use std::vec;
 #[cfg(not(feature = "alloc"))]
 use std::vec::Vec;
 
-use spin::Mutex;
 use libm::sqrt;
+use spin::Mutex;
 
 /// AEGIS Tensor: N-dimensional array
 #[derive(Debug, Clone)]
@@ -184,6 +184,27 @@ impl Tensor {
         let n = other.shape[1];
 
         let result = Tensor::zeros(&[m, n]);
+
+        if Arc::ptr_eq(&self.data, &other.data) {
+            let data_a = self.data.lock();
+            let mut data_c = result.data.lock();
+
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = 0.0;
+                    for l in 0..k {
+                        let val_a = data_a[i * self.strides[0] + l * self.strides[1]];
+                        let val_b = data_a[l * self.strides[0] + j * self.strides[1]];
+                        sum += val_a * val_b;
+                    }
+                    data_c[i * result.strides[0] + j * result.strides[1]] = sum;
+                }
+            }
+
+            drop(data_c);
+            return result;
+        }
+
         let data_a = self.data.lock();
         let data_b = other.data.lock();
         let mut data_c = result.data.lock();
@@ -210,6 +231,14 @@ impl Tensor {
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
 
+        if Arc::ptr_eq(&self.data, &other.data) {
+            let data = self.data.lock();
+            for i in 0..total_size {
+                result_data.push(data[i] + data[i]);
+            }
+            return Self::new(&result_data, &self.shape);
+        }
+
         let data_a = self.data.lock();
         let data_b = other.data.lock();
 
@@ -225,6 +254,14 @@ impl Tensor {
         assert_eq!(self.shape, other.shape, "Shape mismatch for mul");
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
+
+        if Arc::ptr_eq(&self.data, &other.data) {
+            let data = self.data.lock();
+            for i in 0..total_size {
+                result_data.push(data[i] * data[i]);
+            }
+            return Self::new(&result_data, &self.shape);
+        }
 
         let data_a = self.data.lock();
         let data_b = other.data.lock();
@@ -280,6 +317,10 @@ impl Tensor {
         assert_eq!(self.shape, other.shape, "Shape mismatch for sub");
         let total_size: usize = self.shape.iter().product();
         let mut result_data = Vec::with_capacity(total_size);
+
+        if Arc::ptr_eq(&self.data, &other.data) {
+            return Tensor::zeros(&self.shape);
+        }
 
         let data_a = self.data.lock();
         let data_b = other.data.lock();

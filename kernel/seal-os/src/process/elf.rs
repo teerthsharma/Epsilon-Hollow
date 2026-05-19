@@ -16,6 +16,30 @@ pub enum ElfError {
     LoadFailed,
 }
 
+/// Read a little-endian u16 from `data` at `offset`, returning `TooSmall` if out of bounds.
+fn read_u16(data: &[u8], offset: usize) -> Result<u16, ElfError> {
+    let bytes = data.get(offset..offset + 2).ok_or(ElfError::TooSmall)?;
+    let mut arr = [0u8; 2];
+    arr.copy_from_slice(bytes);
+    Ok(u16::from_le_bytes(arr))
+}
+
+/// Read a little-endian u32 from `data` at `offset`, returning `TooSmall` if out of bounds.
+fn read_u32(data: &[u8], offset: usize) -> Result<u32, ElfError> {
+    let bytes = data.get(offset..offset + 4).ok_or(ElfError::TooSmall)?;
+    let mut arr = [0u8; 4];
+    arr.copy_from_slice(bytes);
+    Ok(u32::from_le_bytes(arr))
+}
+
+/// Read a little-endian u64 from `data` at `offset`, returning `TooSmall` if out of bounds.
+fn read_u64(data: &[u8], offset: usize) -> Result<u64, ElfError> {
+    let bytes = data.get(offset..offset + 8).ok_or(ElfError::TooSmall)?;
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(bytes);
+    Ok(u64::from_le_bytes(arr))
+}
+
 /// Result of a successful ELF load.
 pub struct LoadedElf {
     pub entry_point: u64,
@@ -25,27 +49,24 @@ pub struct LoadedElf {
 
 /// Parse and load a static ELF64 image into fresh user page tables.
 pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
-    if elf_data.len() < 64 {
-        return Err(ElfError::TooSmall);
-    }
-    if &elf_data[0..4] != b"\x7FELF" {
+    if !elf_data.get(0..4).map(|s| s == b"\x7FELF").unwrap_or(false) {
         return Err(ElfError::InvalidMagic);
     }
-    if elf_data[4] != 2 {
+    if elf_data.get(4).copied().unwrap_or(0) != 2 {
         // ELFCLASS64
         return Err(ElfError::InvalidClass);
     }
 
-    let e_type = u16::from_le_bytes([elf_data[16], elf_data[17]]);
+    let e_type = read_u16(elf_data, 16)?;
     if e_type != 2 && e_type != 3 {
         // ET_EXEC or ET_DYN only
         return Err(ElfError::InvalidType);
     }
 
-    let entry = u64::from_le_bytes(elf_data[24..32].try_into().unwrap());
-    let phoff = u64::from_le_bytes(elf_data[32..40].try_into().unwrap());
-    let phentsize = u16::from_le_bytes([elf_data[54], elf_data[55]]);
-    let phnum = u16::from_le_bytes([elf_data[56], elf_data[57]]);
+    let entry = read_u64(elf_data, 24)?;
+    let phoff = read_u64(elf_data, 32)?;
+    let phentsize = read_u16(elf_data, 54)?;
+    let phnum = read_u16(elf_data, 56)?;
 
     let base = if e_type == 3 { aslr_base } else { 0 };
     let entry_point = entry + base;
@@ -67,25 +88,27 @@ pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
 
     // Walk program headers and map PT_LOAD segments.
     for i in 0..phnum {
-        let off = phoff + (i as u64) * (phentsize as u64);
+        let off = phoff
+            .checked_add((i as u64).checked_mul(phentsize as u64).ok_or(ElfError::TooSmall)?)
+            .ok_or(ElfError::TooSmall)?;
         let ph_start = off as usize;
-        let ph_end = ph_start + 56;
+        let ph_end = ph_start.checked_add(56).ok_or(ElfError::TooSmall)?;
         if ph_end > elf_data.len() {
             return Err(ElfError::TooSmall);
         }
-        let ph = &elf_data[ph_start..ph_end];
+        let ph = elf_data.get(ph_start..ph_end).ok_or(ElfError::TooSmall)?;
 
-        let p_type = u32::from_le_bytes(ph[0..4].try_into().unwrap());
+        let p_type = read_u32(ph, 0)?;
         if p_type != 1 {
             // PT_LOAD
             continue;
         }
 
-        let p_offset = u64::from_le_bytes(ph[8..16].try_into().unwrap());
-        let p_vaddr = u64::from_le_bytes(ph[16..24].try_into().unwrap()) + base;
-        let _p_filesz = u64::from_le_bytes(ph[32..40].try_into().unwrap());
-        let p_memsz = u64::from_le_bytes(ph[40..48].try_into().unwrap());
-        let p_flags = u32::from_le_bytes(ph[4..8].try_into().unwrap());
+        let p_offset = read_u64(ph, 8)?;
+        let p_vaddr = read_u64(ph, 16)? + base;
+        let _p_filesz = read_u64(ph, 32)?;
+        let p_memsz = read_u64(ph, 40)?;
+        let p_flags = read_u32(ph, 4)?;
 
         let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         if p_flags & 0x2 != 0 {
@@ -122,8 +145,15 @@ pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
 
             if len > 0 {
                 let frame_offset = (seg_page_start - page_start) as usize;
-                let file_offset = p_offset + (seg_page_start - seg_start);
-                let src = &elf_data[file_offset as usize..(file_offset + len) as usize];
+                let file_offset = p_offset
+                    .checked_add(seg_page_start - seg_start)
+                    .ok_or(ElfError::TooSmall)?;
+                let file_end = file_offset.checked_add(len).ok_or(ElfError::TooSmall)? as usize;
+                let file_start = file_offset as usize;
+                if file_end > elf_data.len() {
+                    return Err(ElfError::TooSmall);
+                }
+                let src = elf_data.get(file_start..file_end).ok_or(ElfError::TooSmall)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         src.as_ptr(),
@@ -134,7 +164,10 @@ pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
             }
 
             unsafe {
-                crate::memory::virt::map_page_to_pml4(page_virt, frame, flags, pml4);
+                if crate::memory::virt::map_page_to_pml4(page_virt, frame, flags, pml4).is_err() {
+                    crate::memory::phys::free_frame(frame);
+                    return Err(ElfError::LoadFailed);
+                }
             }
         }
     }
@@ -150,12 +183,15 @@ pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
         }
         let virt = VirtAddr::new(USER_STACK_TOP - ((USER_STACK_PAGES - i) as u64) * 4096);
         unsafe {
-            crate::memory::virt::map_page_to_pml4(
+            if crate::memory::virt::map_page_to_pml4(
                 virt,
                 frame,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
                 pml4,
-            );
+            ).is_err() {
+                crate::memory::phys::free_frame(frame);
+                return Err(ElfError::LoadFailed);
+            }
         }
     }
 

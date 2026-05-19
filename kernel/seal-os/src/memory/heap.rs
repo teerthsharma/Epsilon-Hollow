@@ -46,7 +46,17 @@ unsafe impl GlobalAlloc for SealAllocator {
                         let flags = PageTableFlags::PRESENT
                             | PageTableFlags::WRITABLE
                             | PageTableFlags::NO_EXECUTE;
-                        virt::map_page(page_virt, frame, flags);
+                        if virt::map_page(page_virt, frame, flags).is_err() {
+                            // Page-table allocation failed — free this frame and undo prior mappings.
+                            crate::memory::phys::free_frame(frame);
+                            for j in 0..i {
+                                let v = VirtAddr::new(base.as_u64() + j as u64 * 4096);
+                                if let Some(f) = virt::unmap_page(v) {
+                                    crate::memory::phys::free_frame(f);
+                                }
+                            }
+                            return core::ptr::null_mut();
+                        }
                     }
                     None => {
                         // OOM — unmap and free what we already acquired.
