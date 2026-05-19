@@ -494,26 +494,45 @@ impl AhciPort {
 }
 
 impl BlockDevice for AhciPort {
-    fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        if buf.len() != 512 {
+    fn sector_size(&self) -> u64 {
+        512
+    }
+
+    fn num_sectors(&self) -> u64 {
+        // Fallback or placeholder for now until we store capacity from IDENTIFY
+        0x10000000 
+    }
+
+    fn read_sectors(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        let count = (buf.len() / 512) as u16;
+        if count == 0 {
             return Err(BlockError::InvalidLba);
         }
         if self.ncq_supported.load(Ordering::SeqCst) {
-            unsafe { self.read_sectors_ncq(lba, 1, buf) }
+            unsafe { self.read_sectors_ncq(lba, count, buf) }
         } else {
-            unsafe { self.read_sectors(lba, 1, buf) }
+            // Note: ahci read_sectors function also expects count. 
+            // the inner functions take care of actual bytes logic.
+            unsafe { self.read_sectors(lba, count, buf) }
         }
     }
 
-    fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-        if buf.len() != 512 {
+    fn write_sectors(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+        let count = (buf.len() / 512) as u16;
+        if count == 0 {
             return Err(BlockError::InvalidLba);
         }
         if self.ncq_supported.load(Ordering::SeqCst) {
-            unsafe { self.write_sectors_ncq(lba, 1, buf) }
+            unsafe { self.write_sectors_ncq(lba, count, buf) }
         } else {
-            unsafe { self.write_sectors(lba, 1, buf) }
+            unsafe { self.write_sectors(lba, count, buf) }
         }
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        // AHCI typically doesn't need explicit flush unless FLUSH CACHE command is sent,
+        // which we will assume OK for MVP block interface.
+        Ok(())
     }
 }
 

@@ -57,20 +57,20 @@ pub fn register_block_device(dev_num: u32, device: &'static dyn BlockDevice) {
     BLOCK_DEVICES.lock().register(dev_num, device);
 }
 
-/// Read a single 512-byte sector from the device numbered `dev_num`.
+/// Read from the device numbered `dev_num`.
 pub fn read_block(dev_num: u32, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
     BLOCK_DEVICES
         .lock()
         .get(dev_num)
         .ok_or(BlockError::NoDevice)?
-        .read_sector(lba, buf)
+        .read_sectors(lba, buf)
 }
 
-/// Write a single 512-byte sector to the device numbered `dev_num`.
+/// Write to the device numbered `dev_num`.
 pub fn write_block(dev_num: u32, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
     BLOCK_DEVICES
         .lock()
         .get(dev_num)
         .ok_or(BlockError::NoDevice)?
-        .write_sector(lba, buf)
+        .write_sectors(lba, buf)
 }
