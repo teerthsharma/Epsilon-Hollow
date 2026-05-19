@@ -76,4 +76,20 @@ impl GpuDriver {
 }
 
 pub fn init() {
+    let mut driver = GpuDriver::new();
+    let devices = crate::drivers::pci::enumerate();
+    for dev in &devices {
+        // PCI class 0x03 = display controller
+        if dev.class == 0x03 {
+            driver.init_from_pci(dev.vendor_id, dev.bar_address(0) as u32);
+            crate::serial_println!(
+                "[GPU] {} display controller detected ({:04X}:{:04X})",
+                driver.vendor().name(),
+                dev.vendor_id,
+                dev.device_id
+            );
+            return;
+        }
+    }
+    crate::serial_println!("[GPU] No display controller detected");
 }
