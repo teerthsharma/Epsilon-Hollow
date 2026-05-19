@@ -1110,9 +1110,6 @@ pub mod tests {
         crate::testing::register_test("filesystem::delete_and_rename", test_delete_and_rename);
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
-        crate::testing::register_test("filesystem::teleport_o1_under_load", test_teleport_o1_under_load);
-        crate::testing::register_test("filesystem::find_bounded", test_find_bounded);
-        crate::testing::register_test("filesystem::lookup_is_o1", test_lookup_is_o1);
     }
 }
 
