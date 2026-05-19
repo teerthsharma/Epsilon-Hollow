@@ -39,9 +39,9 @@ impl PathCache {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut entries = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            entries.push(None);
+        let mut entries = Vec::new();
+        if capacity > 0 {
+            entries.resize_with(capacity, || None);
         }
         Self {
             entries,
@@ -54,6 +54,10 @@ impl PathCache {
     }
 
     pub fn get(&mut self, path: &str) -> Option<u64> {
+        if self.capacity == 0 || self.entries.is_empty() {
+            self.misses += 1;
+            return None;
+        }
         let h = hash_path(path);
         let start = (h as usize) % self.capacity;
         for i in 0..self.capacity {
@@ -71,8 +75,10 @@ impl PathCache {
     }
 
     pub fn insert(&mut self, path: &str, inode_id: u64) {
+        if self.capacity == 0 || self.entries.is_empty() {
+            return;
+        }
         let h = hash_path(path);
-        // Try to find existing or empty slot
         let start = (h as usize) % self.capacity;
         for i in 0..self.capacity {
             let idx = (start + i) % self.capacity;
@@ -133,7 +139,6 @@ impl PathCache {
 
     pub fn bump_generation(&mut self) {
         self.generation += 1;
-        // Lazy invalidation: entries with old gen_at_insert are ignored on get
     }
 
     pub fn clear(&mut self) {
@@ -182,8 +187,7 @@ pub mod tests {
         let mut pc = PathCache::with_capacity(2);
         pc.insert("/a", 1);
         pc.insert("/b", 2);
-        pc.insert("/c", 3); // should evict one
-        // At least one of the original three should still be there
+        pc.insert("/c", 3);
         let mut found = 0;
         if pc.get("/a").is_some() { found += 1; }
         if pc.get("/b").is_some() { found += 1; }
