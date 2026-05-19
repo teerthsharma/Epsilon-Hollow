@@ -8,6 +8,7 @@
 //! performs at most 8 cell probes + 256 priority bucket pops — all
 //! bounded by compile-time constants.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -73,6 +74,10 @@ impl TaskSlab {
 
     fn len(&self) -> usize {
         self.allocated
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Task> {
+        self.slots.iter().filter_map(|s| s.task.as_ref())
     }
 }
 
@@ -444,6 +449,18 @@ impl ManifoldScheduler {
         self.slab.len()
     }
 
+    pub fn list_tasks(&self) -> Vec<(u64, &str, &str, u8, usize)> {
+        self.slab.iter().map(|t| {
+            let state = match t.state {
+                TaskState::Ready => "ready",
+                TaskState::Running => "running",
+                TaskState::Blocked => "blocked",
+                TaskState::Dead => "dead",
+            };
+            (t.id, t.name.as_str(), state, t.priority, t.voronoi_cell)
+        }).collect()
+    }
+
     pub fn current_task_name(&self) -> &str {
         self.current
             .and_then(|i| self.slab.get(i))
@@ -579,6 +596,22 @@ pub fn task_count() -> usize {
         }
     }
     total
+}
+
+pub fn list_all_tasks() -> Vec<(u64, String, String, u8, usize)> {
+    let cpu_count = crate::cpu::CPU_COUNT.load(Ordering::SeqCst);
+    let mut all = Vec::new();
+    for i in 0..cpu_count {
+        unsafe {
+            if let Some(per_cpu) = crate::cpu::per_cpu(i as u32) {
+                let _guard = per_cpu.scheduler_lock.lock();
+                for (id, name, state, prio, cell) in per_cpu.scheduler.list_tasks() {
+                    all.push((id, String::from(name), String::from(state), prio, cell));
+                }
+            }
+        }
+    }
+    all
 }
 
 /// Return the name of the currently running task.

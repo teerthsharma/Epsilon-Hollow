@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! GPU driver — NVIDIA/AMD/Intel detection + 2D acceleration + compute dispatch.
+//! GPU driver — PCI vendor detection. 2D acceleration and compute dispatch are not yet implemented.
 
 use alloc::string::String;
 
@@ -59,11 +59,11 @@ impl GpuDriver {
     }
 
     pub fn blit(&self, _src: *const u32, _dst: *mut u32, _w: u32, _h: u32) {
-        // 2D acceleration placeholder
+        // Not yet implemented — requires GPU command ring setup
     }
 
     pub fn fill_rect(&self, _fb: *mut u32, _x: u32, _y: u32, _w: u32, _h: u32, _color: u32) {
-        // 2D fill acceleration placeholder
+        // Not yet implemented — requires GPU command ring setup
     }
 
     pub fn vendor(&self) -> GpuVendor {

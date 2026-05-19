@@ -1,6 +1,8 @@
 # Epsilon-Hollow
 
-A bare-metal x86_64 operating system where every byte on disk is a point cloud on the unit sphere, every file move is O(1) topological surgery, and every kernel decision — from page allocation to window compositing — is driven by five formally verified topology theorems.
+A bare-metal x86_64 operating system built for **ML model training** and **high-frequency trading**, where every byte on disk is a point cloud on the unit sphere, every file move is O(1) topological surgery, and every kernel decision — from page allocation to I/O prefetch — is driven by five formally verified topology theorems.
+
+**Aether-Lang (AEGIS)** is the HolyC of Seal OS — a real language with lexer, parser, AST, and interpreter, wired directly into the kernel runtime.
 
 Written in Rust. No libc. No POSIX. No compromises.
 
@@ -92,27 +94,29 @@ graph TB
     subgraph "Layer 3 — Graphics"
         FB["Framebuffer<br/>1024×768×32bpp"]
         FONT["8×16 Bitmap Font + High-Tech Engine"]
-        SPLASH["Boot Splash<br/>seal photo + progress bar"]
+        SPLASH["Boot Splash<br/>ASCII seal art + progress bar"]
         HTEK["htek.rs — AA text, gradients,<br/>rounded rects, glow, alpha blend"]
     end
 
     subgraph "Layer 2 — Interrupts & Drivers"
         IDT["IDT — 256 entries"]
-        PIC["8259A PIC<br/>IRQ offset 32"]
-        TIMER["PIT Timer<br/>IRQ0"]
+        APIC["Local APIC + I/O APIC"]
+        TIMER["APIC Timer<br/>per-CPU"]
         KBD["PS/2 Keyboard<br/>IRQ1"]
         MOUSE["PS/2 Mouse<br/>IRQ12"]
         SERIAL["Serial COM1<br/>115200 baud"]
+        PCIDRV["PCI + AHCI + e1000"]
+        ACPIDRV["ACPI (RSDP, MADT)"]
     end
 
     subgraph "Layer 1 — Memory"
-        HEAP["16 MB Bump Allocator<br/>spin-locked GlobalAlloc"]
+        HEAP["Slab Allocator (64B–2048B)<br/>+ Page Allocator + VMM<br/>+ Physical Frame Bitmap"]
     end
 
     subgraph "Layer 0 — Boot"
-        GRUB["GRUB2 Multiboot2"]
-        TRAMP["32→64 Trampoline<br/>4GB identity map, PAE, EFER.LME"]
-        LINK["Linker Script<br/>kernel at 1MB"]
+        UEFIBOOT["UEFI Entry<br/>PE/COFF, 64-bit long mode"]
+        GOP["GOP Framebuffer Query"]
+        SMP["SMP Bring-up<br/>INIT-SIPI-SIPI"]
     end
 
     TERM & IDE & FMGR & TVIEW & CALC & SPLAYER & GAMES --> COMP
@@ -127,17 +131,19 @@ graph TB
     ENC --> HEAP
     FB --> HEAP
     SPLASH --> FB
-    IDT --> PIC
-    PIC --> TIMER & KBD & MOUSE
+    IDT --> APIC
+    APIC --> TIMER & KBD & MOUSE
     SERIAL --> HEAP
-    HEAP --> TRAMP
-    GRUB --> TRAMP
-    TRAMP --> LINK
+    PCIDRV --> HEAP
+    ACPIDRV --> APIC
+    HEAP --> UEFIBOOT
+    UEFIBOOT --> GOP
+    GOP --> SMP
 
     style MFS fill:#1a1a2e,stroke:#e94560,color:#fff
     style SCHED fill:#1a1a2e,stroke:#0f3460,color:#fff
     style ENC fill:#1a1a2e,stroke:#e94560,color:#fff
-    style TRAMP fill:#0d1117,stroke:#58a6ff,color:#fff
+    style UEFIBOOT fill:#0d1117,stroke:#58a6ff,color:#fff
 ```
 
 Every layer above Layer 0 is driven by the T1–T5 theorems. There is no separate "theorem layer" — the math is the kernel.
@@ -148,74 +154,76 @@ Every layer above Layer 0 is driven by the T1–T5 theorems. There is no separat
 
 ```mermaid
 sequenceDiagram
-    participant BIOS
-    participant GRUB
-    participant boot.S
-    participant Rust _start
+    participant UEFI
+    participant efi_main
+    participant uefi_entry
+    participant kernel_main
 
-    BIOS->>GRUB: Load from ISO (El Torito)
-    GRUB->>GRUB: Parse grub.cfg, set gfxmode=1024x768x32
-    GRUB->>boot.S: multiboot2 entry (32-bit protected mode)<br/>EAX=0x36d76289, EBX=info struct
+    UEFI->>UEFI: Load PE/COFF binary in 64-bit long mode
+    UEFI->>efi_main: #[entry] fn efi_main() → Status
+    efi_main->>uefi_entry: uefi_entry::run()
 
-    Note over boot.S: .code32 — 32-bit trampoline
-    boot.S->>boot.S: Save EBX → ESI (multiboot info)
-    boot.S->>boot.S: Zero 6 pages (PML4 + PDPT + PD0–PD3)
-    boot.S->>boot.S: PML4[0] → PDPT
-    boot.S->>boot.S: PDPT[0..3] → PD0..PD3
-    boot.S->>boot.S: PD0–PD3: 2048 × 2MB huge pages = 4GB identity map
-    boot.S->>boot.S: Enable PAE (CR4.PAE)
-    boot.S->>boot.S: Load PML4 → CR3
-    boot.S->>boot.S: Enable long mode (EFER.LME via MSR 0xC0000080)
-    boot.S->>boot.S: Enable paging (CR0.PG + CR0.PE)
-    boot.S->>boot.S: Load 64-bit GDT, far-jump to .code64
+    uefi_entry->>uefi_entry: Serial init (COM1 @ 115200)
+    uefi_entry->>uefi_entry: UEFI helpers init
+    uefi_entry->>uefi_entry: Search config tables for ACPI 2.0 RSDP
+    uefi_entry->>uefi_entry: Query GOP for framebuffer
+    uefi_entry->>uefi_entry: Get LoadedImage (kernel base/size)
+    uefi_entry->>uefi_entry: exit_boot_services() — UEFI is gone
+    uefi_entry->>uefi_entry: Copy memory map → BootInfo
 
-    Note over boot.S: .code64 — 64-bit mode
-    boot.S->>boot.S: Set segment registers (DS/ES/SS/FS/GS = 0x10)
-    boot.S->>boot.S: Set 64-bit stack (64KB)
-    boot.S->>Rust _start: call _start(multiboot_info_addr)
-
-    Rust _start->>Rust _start: Serial init (COM1 @ 115200)
-    Rust _start->>Rust _start: Heap init (16 MB bump allocator)
-    Rust _start->>Rust _start: IDT + PIC init (IRQ offset 32)
-    Rust _start->>Rust _start: Parse Multiboot2 tags → framebuffer
+    uefi_entry->>kernel_main: kernel_main(&boot_info)
+    kernel_main->>kernel_main: Memory init (phys bitmap + slab + VMM + GDT)
+    kernel_main->>kernel_main: ACPI parse (RSDP → MADT → APIC topology)
+    kernel_main->>kernel_main: APIC init (Local + I/O APIC)
+    kernel_main->>kernel_main: IDT init (256 entries, APIC vectors)
+    kernel_main->>kernel_main: SMP bring-up (INIT-SIPI-SIPI for APs)
+    kernel_main->>kernel_main: PCI enumeration
     alt Framebuffer available
-        Rust _start->>Rust _start: Graphical boot (splash → theorems → desktop)
+        kernel_main->>kernel_main: Graphical boot (splash → theorems → desktop)
     else No framebuffer
-        Rust _start->>Rust _start: Serial-only boot (theorems → shell)
+        kernel_main->>kernel_main: Serial-only boot (theorems → shell)
     end
-    Rust _start->>Rust _start: HLT loop
+    kernel_main->>kernel_main: HLT loop
 ```
 
-**Multiboot2 header** (48 bytes, in `.multiboot_header` section):
-- Magic: `0xE85250D6`
-- Architecture: `0` (i386)
-- Framebuffer request: 1024x768x32bpp
-- Placed first by linker script at 1MB — within GRUB's 32KB scan window
+**UEFI boot** — pure Rust, zero assembly in the boot path. UEFI firmware loads the kernel as a PE/COFF binary, already in 64-bit long mode with identity-mapped page tables. The kernel queries GOP (Graphics Output Protocol) for a framebuffer, reads the UEFI memory map, then calls `exit_boot_services()` to take full control of the machine.
 
-**Page tables** identity-map the first 4GB using 2MB huge pages (4 page directories, 2048 entries). This covers both RAM and MMIO regions like the framebuffer at `0xFD000000`.
+**Target**: `x86_64-unknown-uefi` with `build-std = ["core", "alloc"]`.
 
-**GDT**: 3 entries — null, 64-bit code (0x00AF9A000000FFFF), 64-bit data (0x00CF92000000FFFF).
+**GDT**: Full GDT with TSS (Task State Segment), initialized in `memory/gdt.rs` after boot services exit.
 
 ---
 
 ## Memory
 
 ```mermaid
-graph LR
-    subgraph "Physical Memory Layout"
-        A["0x00000000<br/>Reserved"] --> B["0x00100000 (1MB)<br/>Kernel .text"]
-        B --> C[".rodata"]
-        C --> D[".data"]
-        D --> E[".bss<br/>page tables (24KB)<br/>boot stack (64KB)"]
-        E --> F["Heap<br/>16 MB bump allocator"]
-        F --> G["...<br/>Free RAM"]
-        G --> H["0xFD000000<br/>Framebuffer (MMIO)<br/>1024×768×4 = 3MB"]
+graph TD
+    subgraph "Allocator Stack"
+        GLOBAL["GlobalAlloc (SealAllocator)"]
+        SLAB["Slab Allocator<br/>64B, 128B, 256B, 512B, 1024B, 2048B<br/>intrusive free-list per size class"]
+        PAGE["Page Allocator + VMM<br/>4 KiB pages, mapped on demand"]
+        PHYS["Physical Frame Allocator<br/>bitmap (1 bit per 4 KiB frame)<br/>supports up to 16 GiB RAM"]
     end
+
+    GLOBAL -->|"≤ 2048 B"| SLAB
+    GLOBAL -->|"> 2048 B"| PAGE
+    SLAB --> PHYS
+    PAGE --> PHYS
+
+    subgraph "Memory Management"
+        GDT["GDT + TSS<br/>memory/gdt.rs"]
+        VIRT["Virtual Memory Manager<br/>4-level page tables (PML4)<br/>on-demand mapping"]
+    end
+
+    PAGE --> VIRT
 ```
 
-The heap is a contiguous 16 MB `static` array, managed by a spin-locked bump allocator implementing `GlobalAlloc`. Allocation is O(1) — advance a pointer, align to requested layout. No deallocation (bump-only). This is sufficient for the kernel's allocation patterns: ManifoldFS inodes, scheduler task structs, window buffers, and encoder working memory.
+The kernel uses a tiered allocator implementing `GlobalAlloc`:
 
-16 MB handles the graphical desktop comfortably: each window buffer is sized per-window (not full-screen), and the kernel runs a compositor, five application windows (Terminal, IDE, Theorems, Calculator, SealPlayer), and ManifoldFS metadata.
+- **Small allocations (≤ 2048 B)**: Slab allocator with six size classes (64B–2048B). Objects are carved from 4 KiB pages with intrusive free-lists. O(1) alloc/dealloc.
+- **Large allocations (> 2048 B)**: Virtual pages allocated from a bump region, backed by physical frames from the bitmap allocator, mapped via 4-level page tables.
+- **Physical frame allocator**: Bitmap-based, initialized from the UEFI memory map. One bit per 4 KiB frame, up to 16 GiB of RAM. Allocations restricted to the low 4 GiB (identity-mapped region).
+- **GDT + TSS**: Full Global Descriptor Table with Task State Segment, supporting ring-0/ring-3 transitions.
 
 ---
 
@@ -226,32 +234,49 @@ graph TD
     subgraph "Interrupt Descriptor Table (256 entries)"
         E3["#3 Breakpoint"]
         E8["#8 Double Fault"]
-        IRQ0["IRQ0 — PIT Timer"]
-        IRQ1["IRQ1 — PS/2 Keyboard"]
-        IRQ12["IRQ12 — PS/2 Mouse"]
+        E14["#14 Page Fault"]
+        VEC32["IRQ1 — PS/2 Keyboard (vec 33)"]
+        VEC44["IRQ12 — PS/2 Mouse (vec 44)"]
+        VEC48["APIC Timer (vec 48)"]
+        VECFD["IPI: TLB Shootdown (vec 0xFD)"]
+        VECFE["IPI: Reschedule (vec 0xFE)"]
     end
 
-    subgraph "8259A PIC (cascaded)"
-        PIC1["PIC1: ports 0x20/0x21<br/>IRQ0–IRQ7 → INT 32–39"]
-        PIC2["PIC2: ports 0xA0/0xA1<br/>IRQ8–IRQ15 → INT 40–47"]
+    subgraph "Local APIC + I/O APIC"
+        LAPIC["Local APIC<br/>MMIO-mapped registers<br/>per-CPU timer, EOI, ICR"]
+        IOAPIC["I/O APIC<br/>routes external IRQs<br/>to LAPIC vectors"]
     end
 
-    subgraph "Serial I/O"
-        COM1["COM1: port 0x3F8<br/>115200 baud, 8N1<br/>used for all kernel logging"]
+    subgraph "Hardware Drivers"
+        COM1["Serial COM1: 0x3F8<br/>115200 baud, 8N1"]
+        PCI["PCI bus: 0xCF8/0xCFC<br/>enumerate all devices"]
+        AHCI["AHCI SATA<br/>read/write sectors via MMIO"]
+        E1000["Intel e1000 NIC<br/>TX/RX descriptor rings"]
+        ACPI["ACPI: RSDP → MADT<br/>discover APIC topology"]
     end
 
-    IRQ0 --> |"tick counter++<br/>T4 governor samples"| PIC1
-    IRQ1 --> |"scancode → ASCII<br/>58-char keymap"| PIC1
-    IRQ12 --> |"mouse dx/dy/buttons<br/>read port 0x60"| PIC2
-    PIC2 --> PIC1
-    PIC1 --> |"EOI: outb 0x20, 0x20"| E3
+    VEC48 --> LAPIC
+    VEC32 --> IOAPIC
+    VEC44 --> IOAPIC
+    IOAPIC --> LAPIC
+    PCI --> AHCI
+    PCI --> E1000
+    ACPI --> LAPIC
 ```
 
-**Keyboard driver**: reads scancodes from port `0x60`, maps to ASCII via a 58-entry table (set 1 scancodes). Handles key-down events only.
+**APIC**: Replaces the legacy 8259 PIC. Local APIC provides per-CPU timer and inter-processor interrupts (IPIs). I/O APIC routes external device IRQs. Discovered via ACPI MADT parsing.
 
-**Timer**: PIT on IRQ0. Increments a global tick counter used by the governor and scheduler for timeslice enforcement.
+**Keyboard driver**: reads scancodes from port `0x60`, maps to ASCII via a 58-entry table (set 1 scancodes).
 
-**Serial**: COM1 initialized at 115200 baud, 8N1. All `serial_println!` output goes here. This is the primary diagnostic channel — visible in QEMU via `-nographic` or `-serial stdio`.
+**APIC Timer**: per-CPU local APIC timer for scheduler ticks and governor sampling.
+
+**PCI**: Full bus enumeration via config space ports 0xCF8/0xCFC. Discovers AHCI controllers, NICs, WiFi/BT adapters, USB controllers, GPUs.
+
+**AHCI**: SATA disk driver with MMIO command/FIS structures, read/write sector support.
+
+**e1000**: Intel 8254x Ethernet — MMIO registers, 256-entry TX/RX descriptor rings, packet send/receive.
+
+**Serial**: COM1 initialized at 115200 baud, 8N1. Primary diagnostic channel — visible in QEMU via `-serial stdio`.
 
 ---
 
@@ -293,6 +318,8 @@ graph TD
 ```
 
 **Why O(1) teleport?** A traditional `mv` copies data. ManifoldFS doesn't touch the data at all — it updates two BTreeMap entries (remove from source directory, insert into destination directory) and adjusts the inode's parent pointer. The payload stays in place. The file's identity is its geometry, not its location.
+
+**Data storage**: Each inode stores both the raw bytes (for faithful `read()`/`write()`) and the ManifoldPayload (S² point cloud for content-addressable search and Voronoi indexing). `teleport_bulk()` supports moving entire directories — designed for ML dataset reorganization. `store_large()` accepts size hints for prefetch tuning on datasets >100 MB.
 
 **Theorem integration in ManifoldFS:**
 
@@ -343,7 +370,7 @@ Each task is embedded as an 8-dimensional point on a manifold. The scheduler use
 
 ```mermaid
 graph LR
-    subgraph "POSIX-Compatible (0–10)"
+    subgraph "POSIX-Compatible (0–13)"
         S0["0 sys_exit"]
         S1["1 sys_write"]
         S2["2 sys_read"]
@@ -355,19 +382,26 @@ graph LR
         S8["8 sys_mmap"]
         S9["9 sys_getpid"]
         S10["10 sys_stat"]
+        S11["11 sys_mkdir"]
+        S12["12 sys_setuid"]
+        S13["13 sys_setgid"]
     end
 
-    subgraph "Epsilon Extensions (100–102)"
+    subgraph "Epsilon Extensions (100–111)"
         S100["100 sys_manifold_query<br/>query T1-T5 state by theorem ID"]
         S101["101 sys_teleport<br/>O(1) file move via topological surgery"]
-        S102["102 sys_theorem_status<br/>all theorem states as string"]
+        S102["102 sys_theorem_status"]
+        S103["103–105 sys_pkg_install/remove/list"]
+        S106["106–107 sys_wifi_scan/connect"]
+        S108["108–109 sys_bt_scan/pair"]
+        S110["110–111 sys_setting_get/set"]
     end
 
     subgraph "Result"
         RES["SyscallResult<br/>code: i64<br/>data: Option&lt;String&gt;"]
     end
 
-    S0 & S1 & S2 & S3 & S100 & S101 & S102 --> RES
+    S0 & S1 & S2 & S3 & S100 & S101 & S102 & S103 --> RES
 ```
 
 The syscall table is dispatched via a match on the syscall number. POSIX calls provide standard OS semantics. Epsilon extensions expose the theorem engine to userspace — any process can query the current governor epsilon, Voronoi cell count, or trigger an O(1) file teleport.
@@ -468,8 +502,8 @@ graph TD
     end
 
     subgraph "SealPlayer (apps/media_player.rs)"
-        PLAYER_FMT["12 container formats<br/>MP4, MKV, AVI, MOV, WebM,<br/>FLV, WMV, OGG, MP3, WAV, FLAC, AAC"]
-        PLAYER_CODEC["8 video + 7 audio codecs<br/>H.264, H.265, VP9, AV1, AAC, Opus"]
+        PLAYER_FMT["WAV/PCM (working)<br/>MP4, MKV, MP3, FLAC (planned)"]
+        PLAYER_CODEC["PCM decoder (working)<br/>H.264, AAC, Opus (planned)"]
         PLAYER_UI["High-tech UI<br/>gradient viewport, glow playhead,<br/>rounded progress bar, format badges"]
     end
 
@@ -512,9 +546,9 @@ Full scientific calculator with recursive descent expression parser:
 
 ### SealPlayer (`apps/media_player.rs`)
 
-Native media player supporting 12 container formats and 15 codecs:
-- **Video**: MP4, AVI, MKV, MOV, WebM, FLV, WMV, OGG (H.264, H.265, VP8, VP9, AV1, MPEG-4, Theora, WMV3)
-- **Audio**: MP3, WAV, FLAC, AAC (AAC, MP3, Vorbis, Opus, FLAC, PCM, WMA)
+Native media player — every ML engineer needs their anime:
+- **Working**: WAV/PCM playback
+- **Planned**: MP4, MKV, MP3, FLAC, AAC, H.264, VP9, Opus (container parsing + codec decode)
 - **Features**: playlist management, seek, volume control, codec detection
 - **UI**: High-tech rendering with gradient viewport, glowing playhead, rounded progress bar, format badges
 
@@ -671,15 +705,17 @@ graph LR
     DECIDE -->|"no"| SKIP["Skip"]
 ```
 
-**Use cases**: HFT (high-frequency trading I/O), DirectStorage (game asset streaming), WSL2 acceleration.
+**Use cases**: HFT (high-frequency trading I/O), ML model training (sequential CSV/parquet prefetch), DirectStorage (game asset streaming).
+
+**Presets**: `new_hft()` (aggressive, low-latency), `new_gaming()` (directstorage-tuned), `ModelTraining` (sequential reads, aggressive prefetch for large datasets). The real 6D telemetry extraction and trigonometric POVM heuristic are wired into the kernel prefetch path.
 
 **Fast math** (`fast_math.rs`): `fast_atan()`, `fast_exp()`, `fast_sigmoid()` — sub-microsecond approximations using polynomial fitting. No libm dependency in the hot path.
 
 ---
 
-## Aether-Lang — Topological DSL
+## Aether-Lang (AEGIS) — The HolyC of Seal OS
 
-A domain-specific language where all data processing is manifold-native.
+A real programming language wired directly into the kernel. Lexer → Parser → AST → Interpreter, all running in `no_std` kernel space. This is Seal OS's native scripting language — the equivalent of what HolyC was to TempleOS.
 
 ```mermaid
 graph TD
@@ -793,21 +829,28 @@ graph TD
 ```
 Epsilon-Hollow/
 ├── kernel/
-│   ├── seal-os/                    # Bare-metal x86_64 kernel
+│   ├── seal-os/                    # Bare-metal x86_64 UEFI kernel
 │   │   ├── src/
-│   │   │   ├── main.rs             # Entry point, boot sequence
-│   │   │   ├── boot/               # Multiboot2 header, 32→64 trampoline
-│   │   │   ├── memory/             # 16MB bump allocator
-│   │   │   ├── drivers/            # IDT, PIC, serial, keyboard, mouse
-│   │   │   ├── fs/                 # ManifoldFS + S² encoder
-│   │   │   ├── graphics/           # Framebuffer, font, console, splash, wallpaper, htek (high-tech engine)
-│   │   │   ├── process/            # ManifoldScheduler, task structs
-│   │   │   ├── syscall/            # POSIX + Epsilon extensions
+│   │   │   ├── main.rs             # UEFI #[entry], panic handler
+│   │   │   ├── lib.rs              # kernel_main(), module declarations
+│   │   │   ├── boot/               # uefi_entry.rs, boot_info.rs, ap_trampoline.rs
+│   │   │   ├── memory/             # phys.rs (bitmap), slab.rs, heap.rs, virt.rs (VMM), gdt.rs
+│   │   │   ├── drivers/            # IDT, APIC, serial, PCI, AHCI, e1000, ACPI, WiFi, BT, GPU, USB
+│   │   │   ├── fs/                 # ManifoldFS + S² encoder + VFS (devtmpfs, procfs, sysfs)
+│   │   │   ├── graphics/           # Framebuffer, font, console, splash, wallpaper, htek
+│   │   │   ├── process/            # ManifoldScheduler, context switch, ELF loader, userspace (ring-3)
+│   │   │   ├── syscall/            # 26 syscalls: POSIX + Epsilon extensions
 │   │   │   ├── wm/                 # Compositor, windows, desktop, taskbar
+│   │   │   ├── cpu/                # SMP bring-up (INIT-SIPI-SIPI)
+│   │   │   ├── net/                # TCP/IP stack (ARP, DHCP, DNS, ICMP, IPv4, TCP, UDP)
+│   │   │   ├── security/           # ASLR, seccomp, MAC, SMAP/SMEP, audit
+│   │   │   ├── sync/               # Ticket lock, seq lock, TLB shootdown
+│   │   │   ├── pkg/                # ManifoldPkg package manager
+│   │   │   ├── lang/               # Aether-Lang kernel bridge + stdlib
+│   │   │   ├── async_rt/           # Minimal async runtime
 │   │   │   └── apps/               # Shell, terminal, IDE, calculator, SealPlayer, games
-│   │   ├── boot/grub/grub.cfg      # GRUB config (1024x768x32, 3s timeout)
-│   │   ├── linker.ld               # Kernel at 1MB, multiboot header first
-│   │   └── build.rs                # Absolute linker script path, -z notext
+│   │   ├── .cargo/config.toml      # target = x86_64-unknown-uefi
+│   │   └── build.rs                # Build configuration
 │   │
 │   ├── epsilon/epsilon/crates/
 │   │   ├── aether-core/            # T1-T5 math: TSS, SCM, topology, governor
@@ -898,7 +941,7 @@ How does a geometry-native research kernel compare to production operating syste
 | **Kernel size** | ~260 KB | ~1 MB | ~12 MB (vmlinuz) | ~8 MB (vmlinuz) | ~30 MB (ntoskrnl) | ~25 MB (kernel.release) |
 | **ISO size** | < 10 MB | ~70 MB | ~5 GB | ~650 MB (netinst) | ~5.5 GB | ~13 GB (IPSW) |
 | **Min RAM** | 4 GB | 512 MB | 4 GB | 512 MB | 4 GB | 8 GB |
-| **Boot target** | `x86_64-unknown-none` | `x86_64-unknown-redox` | `x86_64-linux-gnu` | `x86_64-linux-gnu` | proprietary | proprietary |
+| **Boot target** | `x86_64-unknown-uefi` | `x86_64-unknown-redox` | `x86_64-linux-gnu` | `x86_64-linux-gnu` | proprietary | proprietary |
 | **Filesystem** | ManifoldFS (S² geometry) | RedoxFS (CoW) | ext4 / btrfs | ext4 | NTFS / ReFS | APFS |
 | **File identity** | 64-point cloud on S² | byte sequence | byte sequence | byte sequence | byte sequence | byte sequence |
 | **File move** | O(1) topological surgery | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same vol) | rename (O(1) same vol) |
@@ -909,15 +952,15 @@ How does a geometry-native research kernel compare to production operating syste
 | **Math-driven kernel** | Yes (all 5 theorems active) | No | No | No | No | No |
 | **Topological data analysis** | Native (Betti numbers, Voronoi) | No | Userspace only | Userspace only | No | No |
 | **Predictive prefetch** | T2 spectral contraction | No | readahead heuristic | readahead heuristic | Superfetch/SysMain | Speculative prefetch |
-| **GPU offload ready** | Yes (2 GB compute budget, PCI detection) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
+| **GPU offload ready** | PCI detection only (driver pending) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
 | **Display** | 1024x768x32 framebuffer | 1920x1080 (orbital) | Wayland/X11 | Wayland/X11 | DWM | Quartz |
 | **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
 | **Shell** | SealShell (30+ English-first commands) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
 | **Package manager** | ManifoldPkg (Voronoi deps) | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
-| **Syscalls** | 22 (POSIX + Epsilon + pkg/wifi/bt/settings) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
-| **USB support** | Yes (xHCI, HID, mass storage) | Basic (xHCI) | Full | Full | Full | Full |
-| **Network stack** | Yes (TCP/UDP/DHCP/DNS/HTTP/TLS) | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
+| **Syscalls** | 26 (POSIX + Epsilon + pkg/wifi/bt/settings) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
+| **USB support** | Stubs (xHCI, HID, mass storage — not yet implemented) | Basic (xHCI) | Full | Full | Full | Full |
+| **Network stack** | Stubs (TCP/UDP/DNS structure — needs NIC driver) | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
 | **Driver count** | 12 (serial, kbd, mouse, timer, PCI, WiFi, BT, GPU, NIC, USB, net, prefetch) | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
 | **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
 | **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |

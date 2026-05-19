@@ -20,10 +20,10 @@ impl HttpClient {
     }
 
     pub fn get(&self, url: &str) -> Result<HttpResponse, String> {
-        Err(alloc::format!("No network hardware — simulated GET for {}", url))
+        Err(alloc::format!("HTTP GET failed for {}: TCP stack requires e1000 NIC", url))
     }
 
     pub fn post(&self, url: &str, body: &[u8]) -> Result<HttpResponse, String> {
-        Err(alloc::format!("No network hardware — simulated POST of {} bytes to {}", body.len(), url))
+        Err(alloc::format!("HTTP POST failed ({} bytes to {}): TCP stack requires e1000 NIC", body.len(), url))
     }
 }

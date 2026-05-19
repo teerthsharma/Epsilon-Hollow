@@ -11,6 +11,8 @@ pub struct Framebuffer {
     pub bpp: u8,
 }
 
+// SAFETY: The framebuffer pointer comes from UEFI firmware and remains valid for
+// the kernel's lifetime. All pixel writes use volatile ops and bounds-check x/y.
 unsafe impl Send for Framebuffer {}
 unsafe impl Sync for Framebuffer {}
 
