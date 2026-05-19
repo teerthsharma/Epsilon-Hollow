@@ -1,8 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! SealPlayer — native media player. Decodes and plays video/audio files from ManifoldFS.
-//! Supports: MP4, AVI, MKV, MOV, WEBM, FLV, WMV, OGG, MP3, WAV, FLAC, AAC.
+//! SealPlayer — native media player. Currently decodes WAV/PCM from ManifoldFS.
+//! Container demuxers for MP4/MKV/etc are planned.
 
 use alloc::format;
 use alloc::string::String;
@@ -363,14 +363,15 @@ impl MediaPlayer {
         String::from(
             "[SealPlayer] Supported Formats\n\
              ═══════════════════════════════\n\
-             Video: MP4, AVI, MKV, MOV, WebM, FLV, WMV, OGG\n\
-             Audio: MP3, WAV, FLAC, AAC, OGG\n\
+             Working:\n\
+               Audio: WAV (PCM) — native decoding, real RIFF/WAVE parser\n\
              \n\
-             Video codecs: H.264, H.265/HEVC, VP8, VP9, AV1, MPEG-4, Theora\n\
-             Audio codecs: AAC, MP3, Vorbis, Opus, FLAC, PCM, WMA\n\
+             Planned:\n\
+               Video: MP4, MKV, AVI, WebM, MOV, FLV, WMV, OGG\n\
+               Audio: MP3, FLAC, AAC, OGG/Vorbis, Opus\n\
              \n\
-             All decoding runs natively on CPU+GPU via Seal OS media pipeline.\n\
-             GPU-accelerated decode for H.264/H.265/VP9/AV1 when available.",
+             Roadmap: container demuxers first, then software decode.\n\
+             GPU-accelerated decode planned once GPU driver is complete.",
         )
     }
 

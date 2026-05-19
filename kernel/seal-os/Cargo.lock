@@ -12,6 +12,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-lang"
+version = "0.1.0"
+dependencies = [
+ "aether-core",
+ "heapless",
+ "libm",
+ "rand",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -193,6 +203,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -209,6 +234,7 @@ name = "seal-os"
 version = "1.0.0-alpha"
 dependencies = [
  "aether-core",
+ "aether-lang",
  "libm",
  "spin",
  "uefi",

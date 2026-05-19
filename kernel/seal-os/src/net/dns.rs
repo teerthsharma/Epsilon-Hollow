@@ -27,17 +27,21 @@ fn ticks() -> u64 {
     crate::drivers::interrupts::ticks()
 }
 
+static PENDING_QUERY: Mutex<Option<String>> = Mutex::new(None);
+
 pub fn query(name: &str) -> Option<[u8; 4]> {
     let cache = CACHE.lock();
     for (cached_name, entry) in cache.iter() {
         if cached_name == name {
-            if ticks().wrapping_sub(entry.expires_at) < 0x8000_0000_0000_0000 && ticks() >= entry.expires_at {
+            if ticks() >= entry.expires_at {
                 continue;
             }
             return Some(entry.ip);
         }
     }
     drop(cache);
+
+    *PENDING_QUERY.lock() = Some(String::from(name));
 
     let mut qid = QUERY_ID.lock();
     let id = *qid;
@@ -120,12 +124,13 @@ pub fn handle_dns_response(pkt: &[u8]) {
         offset += 2;
         if rtype == 1 && rdlen == 4 && offset + 4 <= pkt.len() {
             let ip = [pkt[offset], pkt[offset + 1], pkt[offset + 2], pkt[offset + 3]];
+            let hostname = PENDING_QUERY.lock().take().unwrap_or_else(|| String::from("unknown"));
             let mut cache = CACHE.lock();
             if cache.len() >= 16 {
                 cache.remove(0);
             }
             cache.push((
-                String::from("resolved"),
+                hostname,
                 DnsCacheEntry {
                     ip,
                     expires_at: ticks().wrapping_add(ttl as u64 * 100),

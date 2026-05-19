@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! USB mass storage class driver — bulk-only transport, SCSI READ/WRITE.
-//! NOTE: This is a simulated driver. No real USB mass storage hardware is accessed.
+//! NOTE: Protocol constants and struct defined; bulk transfers not yet implemented.
 
 use alloc::vec::Vec;
 
@@ -35,7 +35,7 @@ impl MassStorageDriver {
     }
 
     pub fn read_sectors(&self, _lba: u64, _count: u32) -> Vec<u8> {
-        // No real bulk transfer — cannot read from simulated device
+        // Not yet implemented — requires xHCI bulk transfer setup
         Vec::new()
     }
 

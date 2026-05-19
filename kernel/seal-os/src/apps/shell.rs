@@ -357,17 +357,23 @@ impl Shell {
     }
 
     fn cmd_tasks(&self) -> String {
-        use crate::process::scheduler::ManifoldScheduler;
-        let sched = ManifoldScheduler::new();
-        format!(
-            "  PID  STATE    NAME         PRIORITY  (from ManifoldScheduler)\n\
-                1  running  kernel       10\n\
-                2  ready    compositor   8\n\
-                3  ready    shell        5\n\
-                4  idle     idle         0\n\
-             Tasks: {}  |  Governor ε: {:.4}",
-            sched.task_count(), sched.governor_epsilon()
-        )
+        let tasks = crate::process::scheduler::list_all_tasks();
+        let mut out = String::from("  PID  STATE    NAME             PRI  CELL\n");
+        if tasks.is_empty() {
+            out.push_str("  (no tasks scheduled)\n");
+        } else {
+            for (id, name, state, prio, cell) in &tasks {
+                out.push_str(&format!(
+                    "  {:<4} {:<8} {:<16} {:<4} {}\n",
+                    id, state, name, prio, cell
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "  Total: {} tasks",
+            crate::process::scheduler::task_count()
+        ));
+        out
     }
 
     fn cmd_stats(&self) -> String {
@@ -542,7 +548,7 @@ impl Shell {
         if file.is_empty() {
             return String::from("run: which script? Usage: run <file.aether>");
         }
-        let runtime = AetherRuntime::new();
+        let mut runtime = AetherRuntime::new();
         match runtime.execute_file(file, "") {
             Ok(output) => output,
             Err(e) => format!("[Aether-Lang] {}: {}", file, e),
