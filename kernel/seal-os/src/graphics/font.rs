@@ -7,6 +7,18 @@
 pub const CHAR_WIDTH: u32 = 8;
 pub const CHAR_HEIGHT: u32 = 16;
 
+pub fn draw_char(fb: &super::framebuffer::Framebuffer, x: u32, y: u32, ch: u8, color: u32) {
+    let g = glyph(ch);
+    for row in 0..CHAR_HEIGHT {
+        let bits = g[row as usize];
+        for col in 0..CHAR_WIDTH {
+            if bits & (0x80 >> col) != 0 {
+                fb.put_pixel(x + col, y + row, color);
+            }
+        }
+    }
+}
+
 pub fn glyph(ch: u8) -> &'static [u8; 16] {
     if ch < 32 || ch > 126 {
         return &FONT_DATA[0]; // space for unprintable
