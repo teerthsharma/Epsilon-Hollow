@@ -989,8 +989,10 @@ pub mod tests {
         let inner = fs.mkdir("inner", docs).unwrap();
         let resolved = fs.resolve_path_from("inner", docs).unwrap();
         test_assert_eq!(resolved, inner);
-        let resolved2 = fs.resolve_path_from("../docs/inner", inner).unwrap();
+        let resolved2 = fs.resolve_path_from("../inner", inner).unwrap();
         test_assert_eq!(resolved2, inner);
+        let resolved3 = fs.resolve_path_from("../../docs/inner", inner).unwrap();
+        test_assert_eq!(resolved3, inner);
         TestResult::Pass
     }
 

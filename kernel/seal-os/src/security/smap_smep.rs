@@ -13,12 +13,25 @@ use x86_64::registers::control::{Cr4, Cr4Flags};
 /// Upper limit of user address space (non-canonical gap starts here).
 const USER_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000;
 
-/// Enable SMEP and SMAP in CR4.
+/// Check whether the CPU supports SMEP/SMAP via CPUID leaf 7.
+fn has_smep_smap() -> bool {
+    let (smep, smap) = unsafe {
+        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+        let smep = (leaf7.ebx & (1 << 7)) != 0;
+        let smap = (leaf7.ebx & (1 << 20)) != 0;
+        (smep, smap)
+    };
+    smep && smap
+}
+
+/// Enable SMEP and SMAP in CR4 if the CPU supports them.
 ///
 /// # Safety
-/// Must be called once during early boot. Panics if the CPU does not support
-/// these features (in a production kernel we would check CPUID first).
+/// Must be called once during early boot.
 pub unsafe fn enable_smap_smep() {
+    if !has_smep_smap() {
+        return;
+    }
     let mut cr4 = Cr4::read_raw();
     cr4 |= 1 << 20; // CR4.SMEP
     cr4 |= 1 << 21; // CR4.SMAP

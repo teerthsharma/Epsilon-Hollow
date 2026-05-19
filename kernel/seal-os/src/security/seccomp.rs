@@ -31,11 +31,8 @@ pub const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 pub const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Classic BPF opcodes (subset)
-const BPF_LD: u16 = 0x00;
-const BPF_W: u16 = 0x00;
-const BPF_ABS: u16 = 0x20;
-const BPF_JMP: u16 = 0x05;
-const BPF_JEQ: u16 = 0x10;
+const BPF_LD_W_ABS: u16 = 0x00 | 0x00 | 0x20; // 0x20
+const BPF_JMP_JEQ: u16 = 0x05 | 0x10;       // 0x15
 const BPF_RET: u16 = 0x06;
 
 /// Per-task seccomp filters keyed by task ID.
@@ -73,7 +70,7 @@ pub fn seccomp_check(task_id: u64, syscall_num: u64) -> u32 {
     while pc < filter.len() {
         let insn = filter[pc];
         match insn.code {
-            BPF_LD | BPF_W | BPF_ABS => {
+            BPF_LD_W_ABS => {
                 // Load syscall number from argument offset k (0 = syscall_num)
                 acc = if insn.k == 0 {
                     syscall_num as u32
@@ -82,7 +79,7 @@ pub fn seccomp_check(task_id: u64, syscall_num: u64) -> u32 {
                 };
                 pc += 1;
             }
-            BPF_JMP | BPF_JEQ => {
+            BPF_JMP_JEQ => {
                 if acc == insn.k {
                     pc += insn.jt as usize + 1;
                 } else {
@@ -114,8 +111,8 @@ pub mod tests {
 
     fn test_seccomp_allow() -> TestResult {
         let filter = vec![
-            SeccompInsn { code: BPF_LD | BPF_W | BPF_ABS, jt: 0, jf: 0, k: 0 },
-            SeccompInsn { code: BPF_JMP | BPF_JEQ, jt: 0, jf: 1, k: 1 },
+            SeccompInsn { code: BPF_LD_W_ABS, jt: 0, jf: 0, k: 0 },
+            SeccompInsn { code: BPF_JMP_JEQ, jt: 0, jf: 1, k: 1 },
             SeccompInsn { code: BPF_RET, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW },
             SeccompInsn { code: BPF_RET, jt: 0, jf: 0, k: SECCOMP_RET_KILL },
         ];

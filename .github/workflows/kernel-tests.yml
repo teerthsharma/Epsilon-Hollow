@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           chmod +x scripts/test_kernel.sh
-          scripts/test_kernel.sh 2>&1 | tee kernel-test-log.txt || true
+          scripts/test_kernel.sh 2>&1 | tee kernel-test-log.txt
 
       - name: Check test result
         shell: bash
