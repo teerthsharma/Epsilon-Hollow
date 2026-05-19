@@ -22,6 +22,7 @@ pub mod net;
 #[cfg(not(test))]
 pub mod lang;
 pub mod memory;
+pub mod ml_engine;
 #[cfg(not(test))]
 pub mod pkg;
 pub mod process;
@@ -55,7 +56,8 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
-    serial_println!("[BOOT] Heap initialized (16 MB)");
+    let ram_mb = memory::total_ram(info) / (1024 * 1024);
+    serial_println!("[BOOT] Heap initialized ({} MB detected)", ram_mb);
 
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);

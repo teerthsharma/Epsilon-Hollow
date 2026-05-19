@@ -36,6 +36,13 @@ pub fn handbook() -> String {
            stats             Filesystem statistics\n\
            race [size]       Benchmark teleport vs copy\n\
            prefetch status   Aether-link I/O stats\n\
+           memory            Memory usage statistics\n\
+         \n\
+         ML:\n\
+           ml status         ML runtime status\n\
+           ml devices        List compute devices\n\
+           ml train          Train a model (coming soon)\n\
+           ml infer          Run inference (coming soon)\n\
          \n\
          Packages:\n\
            install <pkg>     Install a package\n\
@@ -154,6 +161,12 @@ pub fn help_for(cmd: &str) -> String {
         ),
         "history" => String::from("history\n  Show command history for this session."),
         "clear" => String::from("clear\n  Clear the terminal screen."),
+        "memory" => String::from(
+            "memory\n  Show memory usage statistics.\n  Includes: allocated bytes, total bytes, free bytes.",
+        ),
+        "ml" => String::from(
+            "ml <subcommand>\n  ML runtime control.\n  Subcommands: status, devices, train, infer",
+        ),
         _ => alloc::format!("No help available for '{}'.\nType 'help' for the full handbook.", cmd),
     }
 }

@@ -109,6 +109,12 @@ impl Shell {
             "breakout" => String::from("[Breakout] Starting Breakout... Arrow keys to move paddle!"),
             "warp" => String::from("[Warp Racer] Starting Warp Racer... Fly through the data stream!"),
 
+            // System
+            "memory" => self.cmd_memory(),
+
+            // ML
+            "ml" => self.cmd_ml(arg1, arg2),
+
             // Settings
             "theme" => self.cmd_theme(arg1),
             "set" => self.cmd_set(arg1, arg2),
@@ -391,6 +397,97 @@ impl Shell {
             s.total_files, s.total_dirs, s.total_teleports,
             s.governor_epsilon, s.current_entropy, s.max_depth, s.hyperbolic_ratio
         )
+    }
+
+    fn cmd_memory(&self) -> String {
+        let (allocated, total) = crate::memory::heap_stats();
+        let allocated_mb = allocated / (1024 * 1024);
+        let total_mb = total / (1024 * 1024);
+        format!(
+            "Memory Status\n\
+             ═════════════\n\
+             Allocated: {} bytes ({} MB)\n\
+             Total:     {} bytes ({} MB)\n\
+             Free:      {} bytes ({} MB)",
+            allocated, allocated_mb,
+            total, total_mb,
+            total.saturating_sub(allocated),
+            total_mb.saturating_sub(allocated_mb)
+        )
+    }
+
+    fn cmd_ml(&self, subcmd: &str, arg: &str) -> String {
+        match subcmd {
+            "status" => {
+                let status = crate::ml_engine::MlStatus::detect();
+                format!(
+                    "ML Runtime Status\n\
+                     ══════════════════\n\
+                     AEGIS Engine: aether-core (no_std)\n\
+                     Tensor ops:   {}\n\
+                     Neural nets:  {}\n\
+                     AVX2:         {}\n\
+                     AVX-512:      {}\n\
+                     Use: ml train [epochs] | ml matmul | ml tensor",
+                    if status.tensor_ops_available { "available" } else { "unavailable" },
+                    if status.neural_net_available { "available" } else { "unavailable" },
+                    if status.avx2_detected { "detected" } else { "not detected" },
+                    if status.avx512_detected { "detected" } else { "not detected" },
+                )
+            }
+            "devices" => {
+                String::from(
+                    "ML Compute Devices\n\
+                     ═══════════════════\n\
+                     CPU:  x86_64 (AVX2/AVX-512 detection pending)\n\
+                     GPU:  Not detected (PCI probe pending)\n\
+                     NPU:  Not detected",
+                )
+            }
+            "train" => {
+                let epochs: usize = arg.parse().unwrap_or(1000);
+                crate::ml_engine::demo_train_mlp(epochs)
+            }
+            "tensor" => {
+                // Create a simple 2x3 tensor for demo
+                let t = crate::ml_engine::tensor_from_data(
+                    vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                    vec![2, 3],
+                );
+                match t {
+                    Ok(tensor) => crate::ml_engine::format_tensor(&tensor),
+                    Err(e) => format!("Tensor error: {}", e),
+                }
+            }
+            "matmul" => {
+                let a = match crate::ml_engine::tensor_from_data(
+                    vec![1.0, 2.0, 3.0, 4.0],
+                    vec![2, 2],
+                ) {
+                    Ok(t) => t,
+                    Err(e) => return format!("Tensor A error: {}", e),
+                };
+                let b = match crate::ml_engine::tensor_from_data(
+                    vec![5.0, 6.0, 7.0, 8.0],
+                    vec![2, 2],
+                ) {
+                    Ok(t) => t,
+                    Err(e) => return format!("Tensor B error: {}", e),
+                };
+                match crate::ml_engine::tensor_matmul(&a, &b) {
+                    Ok(result) => crate::ml_engine::format_tensor(&result),
+                    Err(e) => format!("Matmul error: {}", e),
+                }
+            }
+            _ => String::from(
+                "ML Subcommands:\n\
+                 ml status   — Show ML runtime status\n\
+                 ml devices  — List compute devices\n\
+                 ml train    — Train MLP on XOR dataset\n\
+                 ml tensor   — Create a demo tensor\n\
+                 ml matmul   — Demo matrix multiply",
+            ),
+        }
     }
 
     fn cmd_race(&self, arg: &str) -> String {
