@@ -24,6 +24,9 @@ unsafe impl GlobalAlloc for SealAllocator {
         if req_size <= 2048 {
             let slab_size = req_size.next_power_of_two().max(64);
             let ptr = slab::slab_alloc(slab_size);
+            if ptr.is_null() {
+                crate::serial_println!("[DEBUG] SealAllocator::alloc size={} slab_size={} -> null", layout.size(), slab_size);
+            }
             if !ptr.is_null() {
                 TOTAL_ALLOCATED.fetch_add(slab_size, Ordering::Relaxed);
             }

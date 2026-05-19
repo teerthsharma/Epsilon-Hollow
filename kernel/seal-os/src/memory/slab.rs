@@ -87,7 +87,11 @@ static SLAB: Mutex<SlabAllocator> = Mutex::new(SlabAllocator::new());
 /// Allocate an object of exactly `size` bytes from the slab.
 /// `size` must be one of the supported slab sizes.
 pub unsafe fn slab_alloc(size: usize) -> *mut u8 {
-    SLAB.lock().alloc(size).unwrap_or(core::ptr::null_mut())
+    let result = SLAB.lock().alloc(size);
+    if result.is_none() {
+        crate::serial_println!("[DEBUG] slab_alloc({}) failed", size);
+    }
+    result.unwrap_or(core::ptr::null_mut())
 }
 
 /// Free an object previously allocated with `slab_alloc`.
