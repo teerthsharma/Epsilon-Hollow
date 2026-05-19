@@ -72,7 +72,13 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     // Layer 1: Memory
     unsafe { memory::init(info); }
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
-    serial_println!("[BOOT] Heap initialized ({} MB detected)", ram_mb);
+    let free_frames = memory::phys::free_count();
+    serial_println!("[BOOT] Heap initialized ({} MB detected, {} free frames)", ram_mb, free_frames);
+    let test_frame = memory::phys::alloc_frame();
+    serial_println!("[DEBUG] alloc_frame test: {:?}", test_frame);
+    if let Some(frame) = test_frame {
+        unsafe { memory::phys::free_frame(frame); }
+    }
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
