@@ -42,13 +42,13 @@ Current kernel has `syscall::init_syscall_msrs()` which sets `STAR`, `LSTAR`, `S
 // SFMASK = EFLAGS.IF | EFLAGS.DF | EFLAGS.TF | EFLAGS.AC | EFLAGSNT
 ```
 
-- [ ] Verify `EFER.SCE` is set during early boot
-- [ ] Program `STAR` MSR with kernel CS = 0x08, user CS = 0x1B
-- [ ] Program `LSTAR` MSR to `syscall_entry_asm` address
-- [ ] Program `SFMASK` MSR with `IF | DF | TF | AC | NT`
-- [ ] Document the `syscall` / `sysret` ABI in a header comment
-- [ ] Define `SYSCALL_MAX_ARGS = 6`
-- [ ] Define `SYSCALL_MAX_NR = 512`
+- [x] Verify `EFER.SCE` is set during early boot
+- [x] Program `STAR` MSR with kernel CS = 0x08, user CS = 0x1B
+- [x] Program `LSTAR` MSR to `syscall_entry_asm` address
+- [x] Program `SFMASK` MSR with `IF | DF | TF | AC | NT`
+- [x] Document the `syscall` / `sysret` ABI in a header comment
+- [x] Define `SYSCALL_MAX_ARGS = 6`
+- [x] Define `SYSCALL_MAX_NR = 512`
 
 ### 2. Assembly Entry / Exit
 
@@ -77,15 +77,15 @@ syscall_entry_asm:
     sysretq
 ```
 
-- [ ] Write `syscall_entry_asm` in `kernel/seal-os/src/syscall/entry.asm` or inline asm
-- [ ] Implement `swapgs` on entry with SWAPGS mitigation sequence
-- [ ] Save all caller-saved registers (rcx, r11 overwritten by syscall)
-- [ ] Save user RSP, load kernel RSP from `gs:[PERCPU_KERNEL_RSP]`
-- [ ] Build `SyscallFrame` on kernel stack with all GPRs
-- [ ] Call `syscall_dispatch_rust(frame: *mut SyscallFrame)`
-- [ ] On exit: restore user RSP, RIP, RFLAGS
-- [ ] `sysretq` with verified correct privilege level
-- [ ] Add `swapgs` mismatch detection (NMI during entry scenario)
+- [x] Write `syscall_entry_asm` in `kernel/seal-os/src/syscall/entry.asm` or inline asm
+- [x] Implement `swapgs` on entry with SWAPGS mitigation sequence
+- [x] Save all caller-saved registers (rcx, r11 overwritten by syscall)
+- [x] Save user RSP, load kernel RSP from `gs:[PERCPU_KERNEL_RSP]`
+- [x] Build `SyscallFrame` on kernel stack with all GPRs
+- [x] Call `syscall_dispatch_rust(frame: *mut SyscallFrame)`
+- [x] On exit: restore user RSP, RIP, RFLAGS
+- [x] `sysretq` with verified correct privilege level
+- [x] Add `swapgs` mismatch detection (NMI during entry scenario)
 
 ### 3. Rust Dispatch
 
@@ -131,22 +131,22 @@ fn syscall_dispatch_rust(frame: &mut SyscallFrame) {
 - [ ] Define `SyscallFrame` struct matching assembly layout
 - [ ] Create `SYSCALL_TABLE: [Option<SyscallFn>; 512]` static
 - [ ] Implement `syscall_register(nr, fn_ptr)` for populating the table
-- [ ] Implement `syscall_dispatch_rust()` with bounds checking
-- [ ] Return `-ENOSYS` for unimplemented syscalls
-- [ ] Integrate MAC `security::syscall_allowed()` hook
-- [ ] Integrate `audit::log_denied_syscall()` on denial
+- [x] Implement `syscall_dispatch_rust()` with bounds checking
+- [x] Return `-ENOSYS` for unimplemented syscalls
+- [x] Integrate MAC `security::syscall_allowed()` hook
+- [x] Integrate `audit::log_denied_syscall()` on denial
 - [ ] Add per-syscall timing telemetry with slow threshold warning
-- [ ] Define syscall number constants (`SYS_read = 0`, `SYS_write = 1`, etc.)
-- [ ] Implement syscall argument extraction helpers from `SyscallFrame`
+- [x] Define syscall number constants (`SYS_read = 0`, `SYS_write = 1`, etc.)
+- [x] Implement syscall argument extraction helpers from `SyscallFrame`
 
 ### 4. Syscall Table Implementation (Priority Order)
 
 #### Tier 1 — Essential (init + shell)
-- [ ] `sys_read(fd, buf, count)`
-- [ ] `sys_write(fd, buf, count)`
-- [ ] `sys_open(pathname, flags, mode)`
-- [ ] `sys_close(fd)`
-- [ ] `sys_exit(error_code)`
+- [x] `sys_read(fd, buf, count)`
+- [x] `sys_write(fd, buf, count)`
+- [x] `sys_open(pathname, flags, mode)`
+- [x] `sys_close(fd)`
+- [x] `sys_exit(error_code)`
 - [ ] `sys_brk(addr)`
 - [ ] `sys_mmap(addr, len, prot, flags, fd, off)`
 - [ ] `sys_munmap(addr, len)`

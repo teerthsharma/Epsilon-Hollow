@@ -63,17 +63,17 @@ Power On → UEFI Firmware → Boot Manager → seal-os.efi
 - `ImageHandle` in `rcx`
 - Stack provided by firmware (~128 KiB)
 - GDT, IDT, page tables set by firmware (likely 4-level, NX off)
+### Stage 1: EFI Pre-Exit (uefi_entry.rs)
 
-- [ ] Save `SystemTable` and `ImageHandle` in `.bss` globals
+- [x] Save `SystemTable` and `ImageHandle` in `.bss` globals
 - [ ] Verify UEFI runtime services pointer is valid
-- [ ] Call `GetMemoryMap()` to learn available RAM
-- [ ] Record memory map in `E820_ENTRIES` array
-- [ ] Save framebuffer info via GOP (`FrameBufferBase`, dimensions, stride)
+- [x] Call `GetMemoryMap()` to learn available RAM
+- [x] Record memory map in `E820_ENTRIES` array
+- [x] Save framebuffer info via GOP (`FrameBufferBase`, dimensions, stride)
 - [ ] Optionally call `SetVirtualAddressMap()` for runtime services in virtual mode
-- [ ] Call `ExitBootServices(ImageHandle, MapKey)`
-- [ ] Verify boot services are gone (any subsequent UEFI boot call must panic)
+- [x] Call `ExitBootServices(ImageHandle, MapKey)`
+- [x] Verify boot services are gone (any subsequent UEFI boot call must panic)
 - [ ] Preserve runtime services (ResetSystem, GetTime) for shutdown
-
 **Framebuffer:**
 ```rust
 struct FramebufferInfo {
@@ -85,8 +85,8 @@ struct FramebufferInfo {
     bpp: u32,          // bytes per pixel (usually 4)
 }
 ```
-- [ ] Define `FramebufferInfo` struct
-- [ ] Store framebuffer base identity-mapped for early printk
+- [x] Define `FramebufferInfo` struct
+- [x] Store framebuffer base identity-mapped for early printk
 - [ ] Implement `early_putpixel()` for visual boot progress
 
 ### 3. Stage 2: Long Mode Setup
@@ -103,18 +103,18 @@ After ExitBootServices, we own the machine.
 0x28: TSS (64-bit system segment)
 ```
 
-- [ ] Define GDT with 6 entries
-- [ ] Load GDT via `lgdt`
-- [ ] Reload segment registers (CS, DS, ES, FS, GS, SS)
-- [ ] Verify we are in long mode with correct segments
+- [x] Define GDT with 6 entries
+- [x] Load GDT via `lgdt`
+- [x] Reload segment registers (CS, DS, ES, FS, GS, SS)
+- [x] Verify we are in long mode with correct segments
 
 **IDT:**
-- [ ] Allocate IDT array `[GateDescriptor; 256]`
-- [ ] Set up divide-by-zero handler before any division
-- [ ] Set up GPF handler before any memory operation that could fault
-- [ ] Set up page fault handler before heap init
-- [ ] Load IDT via `lidt`
-- [ ] Verify IDT is active via `int 0x03` self-test
+- [x] Allocate IDT array `[GateDescriptor; 256]`
+- [x] Set up divide-by-zero handler before any division
+- [x] Set up GPF handler before any memory operation that could fault
+- [x] Set up page fault handler before heap init
+- [x] Load IDT via `lidt`
+- [x] Verify IDT is active via `int 0x03` self-test
 
 **Memory Map Parsing:**
 ```rust
@@ -170,23 +170,23 @@ Higher half base: `0xffff_8000_0000_0000` (standard Linux kernel mapping).
 - [ ] Track highest allocated address for debugging
 
 **Bitmap allocator init:**
-- [ ] Compute total frames = max_usable_address / 4096, capped at 1,048,576
-- [ ] Allocate bitmap array `[u64; 65536]` = 512 KiB via bump allocator
-- [ ] Mark all frames as used initially
-- [ ] Iterate E820 usable regions, mark frames as free
-- [ ] Skip frame 0 (null guard)
-- [ ] Skip our own image frames
-- [ ] Skip 0-1 MiB frames
-- [ ] Initialize `FREE_COUNT` to actual free frames
-- [ ] Log free frame count at boot
+- [x] Compute total frames = max_usable_address / 4096, capped at 1,048,576
+- [x] Allocate bitmap array `[u64; 65536]` = 512 KiB via bump allocator
+- [x] Mark all frames as used initially
+- [x] Iterate E820 usable regions, mark frames as free
+- [x] Skip frame 0 (null guard)
+- [x] Skip our own image frames
+- [x] Skip 0-1 MiB frames
+- [x] Initialize `FREE_COUNT` to actual free frames
+- [x] Log free frame count at boot
 
 **Heap init:**
-- [ ] Allocate single 4 KiB frame for slab allocator's initial caches
-- [ ] Set up `SealAllocator` as `#[global_allocator]`
-- [ ] Test: `alloc_frame()` returns `Some`
-- [ ] Test: `Box::new(42)` succeeds
-- [ ] Test: `Vec::with_capacity(100)` succeeds
-- [ ] Verify slab caches are populated (64, 128, 256, 512, 1024, 2048)
+- [x] Allocate single 4 KiB frame for slab allocator's initial caches
+- [x] Set up `SealAllocator` as `#[global_allocator]`
+- [x] Test: `alloc_frame()` returns `Some`
+- [x] Test: `Box::new(42)` succeeds
+- [x] Test: `Vec::with_capacity(100)` succeeds
+- [x] Verify slab caches are populated (64, 128, 256, 512, 1024, 2048)
 
 ### 5. Stage 4: Subsystem Initialization Order
 
@@ -208,25 +208,25 @@ fn stage4_init() {
 ```
 
 **Invariants:**
-- [ ] `interrupts::init_idt()` succeeds before any subsystem that could trigger exception
-- [ ] `memory::heap::init()` succeeds before any subsystem using `Vec`/`Box`/`String`
-- [ ] `cpu::smp::smp_init()` can use `alloc_frame()` but not `Box` (AP boot code identity-mapped)
-- [ ] All init functions log their start + completion via serial
-- [ ] Any init failure causes kernel panic with descriptive message
+- [x] `interrupts::init_idt()` succeeds before any subsystem that could trigger exception
+- [x] `memory::heap::init()` succeeds before any subsystem using `Vec`/`Box`/`String`
+- [x] `cpu::smp::smp_init()` can use `alloc_frame()` but not `Box` (AP boot code identity-mapped)
+- [x] All init functions log their start + completion via serial
+- [x] Any init failure causes kernel panic with descriptive message
 
 Per-subsystem checklist:
-- [ ] `interrupts::init_idt()` — all 256 entries valid
-- [ ] `memory::heap::init()` — slab caches online
-- [ ] `cpu::smp::smp_init()` — APs respond to INIT-SIPI-SIPI
-- [ ] `acpi::init()` — MADT, FADT parsed successfully
-- [ ] `security::init_security()` — MAC policy loaded
-- [ ] `interrupts::init_irq_routing()` — IO-APIC + Local APIC timer configured
-- [ ] `apic::init_local_apic_timer_for_bsp()` — BSP timer firing at 1 kHz
-- [ ] `syscall::init_syscall_msrs()` — STAR, LSTAR, SFMASK programmed
-- [ ] `drivers::pci::scan_bus()` — PCI devices enumerated
-- [ ] `drivers::block::ahci::init()` — AHCI controller found and initialized (if present)
-- [ ] `fs::manifold::init()` — root filesystem mounted
-- [ ] `scheduler::init()` — idle task created, ready to schedule
+- [x] `interrupts::init_idt()` — all 256 entries valid
+- [x] `memory::heap::init()` — slab caches online
+- [x] `cpu::smp::smp_init()` — APs respond to INIT-SIPI-SIPI
+- [x] `acpi::init()` — MADT, FADT parsed successfully
+- [x] `security::init_security()` — MAC policy loaded
+- [x] `interrupts::init_irq_routing()` — IO-APIC + Local APIC timer configured
+- [x] `apic::init_local_apic_timer_for_bsp()` — BSP timer firing at 1 kHz
+- [x] `syscall::init_syscall_msrs()` — STAR, LSTAR, SFMASK programmed
+- [x] `drivers::pci::scan_bus()` — PCI devices enumerated
+- [x] `drivers::block::ahci::init()` — AHCI controller found and initialized (if present)
+- [x] `fs::manifold::init()` — root filesystem mounted
+- [x] `scheduler::init()` — idle task created, ready to schedule
 
 ### 6. Stage 5: Init Process
 
@@ -239,14 +239,14 @@ fn stage5_userspace() {
 }
 ```
 
-- [ ] Search for `/bin/init` in root filesystem
-- [ ] If not found, search for `/bin/sh`
-- [ ] If neither found, launch embedded emergency shell
-- [ ] Create first process (PID 1) with kernel privileges dropped
-- [ ] `execve` loads ELF binary into process address space
+- [x] Search for `/bin/init` in root filesystem
+- [x] If not found, search for `/bin/sh`
+- [x] If neither found, launch embedded emergency shell
+- [x] Create first process (PID 1) with kernel privileges dropped
+- [x] `execve` loads ELF binary into process address space
 - [ ] Set up standard file descriptors (0, 1, 2) pointing to `/dev/console`
-- [ ] Enter scheduler — never returns to kernel_main
-- [ ] Implement emergency shell in `.rodata` as fallback
+- [x] Enter scheduler — never returns to kernel_main
+- [x] Implement emergency shell in `.rodata` as fallback
 - [ ] Emergency shell supports: `ls`, `cat`, `echo`, `reboot`, `help`
 
 ---

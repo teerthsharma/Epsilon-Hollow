@@ -74,21 +74,21 @@ struct GateDescriptor {
 | 19 | SIMD FPE | Fault | SIGFPE |
 | 20 | Virtualization | Fault | Ignore (hypervisor hint) |
 
-- [ ] Write assembly stubs for all 20 CPU exceptions
-- [ ] Common handler prologue: save all registers, build `InterruptFrame`
-- [ ] Dispatch to Rust handlers via vector number
-- [ ] `#DE` (0): kill current task or panic if no current task
-- [ ] `#DB` (1): log, continue if kernel; queue SIGTRAP if user
-- [ ] `#NMI` (2): log MCA, halt
-- [ ] `#BP` (3): queue SIGTRAP
-- [ ] `#UD` (6): queue SIGILL
-- [ ] `#NM` (7): lazy FPU context switch
-- [ ] `#DF` (8): IST1 handler, register dump, halt
-- [ ] `#GP` (13): panic if CPL=0, SIGSEGV if user
-- [ ] `#PF` (14): full page fault handler (see §3)
-- [ ] `#MC` (18): log, halt
-- [ ] Common handler epilogue: restore registers, `iretq`
-- [ ] Add `InterruptFrame` struct matching prologue layout
+- [x] Write assembly stubs for all 20 CPU exceptions (using x86_64 crate macros)
+- [x] Common handler prologue: save all registers, build `InterruptFrame`
+- [x] Dispatch to Rust handlers via vector number
+- [x] `#DE` (0): kill current task or panic if no current task
+- [x] `#DB` (1): log, continue if kernel; queue SIGTRAP if user
+- [x] `#NMI` (2): log MCA, halt
+- [x] `#BP` (3): queue SIGTRAP
+- [x] `#UD` (6): queue SIGILL
+- [x] `#NM` (7): lazy FPU context switch
+- [x] `#DF` (8): IST1 handler, register dump, halt
+- [x] `#GP` (13): panic if CPL=0, SIGSEGV if user
+- [x] `#PF` (14): full page fault handler (see §3)
+- [x] `#MC` (18): log, halt
+- [x] Common handler epilogue: restore registers, `iretq`
+- [x] Add `InterruptFrame` struct matching prologue layout
 
 ### 3. Page Fault Handler
 
@@ -110,15 +110,15 @@ fn handle_page_fault(addr: VirtAddr, error_code: PageFaultErrorCode) {
 }
 ```
 
-- [ ] Extract fault address from `CR2`
-- [ ] Parse error code (P, W/R, U/S, RSVD, I/D, PK, SS)
+- [x] Extract fault address from `CR2`
+- [x] Parse error code (P, W/R, U/S, RSVD, I/D, PK, SS)
 - [ ] COW break handler
 - [ ] Lazy zero-page allocation for anonymous mappings
 - [ ] Demand paging for file-backed mappings
 - [ ] Stack guard page detection + auto-growth
 - [ ] Kernel-to-user fixup tables for `copy_to_user` / `copy_from_user`
-- [ ] Kernel bad pointer → panic (not silent corruption)
-- [ ] Double page fault detection (level > 1) → double fault
+- [x] Kernel bad pointer → panic (not silent corruption)
+- [x] Double page fault detection (level > 1) → double fault
 
 ### 4. IRQ Routing (IO-APIC → Local APIC)
 
@@ -126,16 +126,16 @@ fn handle_page_fault(addr: VirtAddr, error_code: PageFaultErrorCode) {
 Device IRQ → IO-APIC pin → Redirection Entry → Local APIC of target CPU → IDT vector
 ```
 
-- [ ] Parse ACPI MADT to find IO-APIC base addresses
-- [ ] Parse MADT IRQ→GSI override mappings
-- [ ] Implement IO-APIC register read/write (`IOREGSEL` + `IOWIN`)
-- [ ] Program redirection table entries (vector, trigger, polarity, destination)
-- [ ] Remap PIC vectors from 0x08-0x0F to 0x20-0x2F (legacy compatibility)
-- [ ] Mask all IO-APIC entries at boot
-- [ ] Implement `irq_register_handler(vector, handler_fn)`
-- [ ] Implement `irq_unmask(vector)` / `irq_mask(vector)`
-- [ ] Implement `lapic_eoi()` (write 0 to EOI register)
-- [ ] Handle level-triggered IRQs: EOI to both LAPIC and IO-APIC
+- [x] Parse ACPI MADT to find IO-APIC base addresses
+- [x] Parse MADT IRQ→GSI override mappings
+- [x] Implement IO-APIC register read/write (`IOREGSEL` + `IOWIN`)
+- [x] Program redirection table entries (vector, trigger, polarity, destination)
+- [x] Remap PIC vectors from 0x08-0x0F to 0x20-0x2F (legacy compatibility)
+- [x] Mask all IO-APIC entries at boot
+- [x] Implement `irq_register_handler(vector, handler_fn)`
+- [x] Implement `irq_unmask(vector)` / `irq_mask(vector)`
+- [x] Implement `lapic_eoi()` (write 0 to EOI register)
+- [x] Handle level-triggered IRQs: EOI to both LAPIC and IO-APIC
 
 ### 5. Interrupt Stack Table (IST)
 
@@ -214,4 +214,6 @@ Not all IRQ work runs at top half. Two-tier model:
 ---
 
 *Design document produced by Phase 2 Planning*
+*2026-05-19*
+Planning*
 *2026-05-19*

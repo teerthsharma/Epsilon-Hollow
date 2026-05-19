@@ -218,6 +218,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
     serial_println!("[BOOT] All layers initialized.");
     graphics::splash::draw_progress_bar(fb, 95);
 
+    // Stage 5: Userspace Init Handoff
+    let init = process::create("/bin/init");
+    init.execve("/bin/init", &["/bin/init"], &[]);
+
     for _ in 0..30_000_000u64 {
         core::hint::spin_loop();
     }
