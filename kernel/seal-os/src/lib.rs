@@ -167,7 +167,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
             }
         }
         // Auto-login after ~3 seconds of inactivity (timer ticks ≈ ms on APIC)
-        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
+        if drivers::interrupts::ticks().wrapping_sub(login_start) > 0 {
             serial_println!("[LOGIN] Auto-login (timeout)");
             break;
         }
