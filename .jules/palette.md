@@ -1,0 +1,3 @@
+## 2025-03-24 - APEIRON Frontend UI UX Refinements
+**Learning:** Adding disabled states and basic keyboard focus styling (via outline/ring properties) significantly improves the accessibility and overall polish of the React web UI. While making these UI changes, we had to work around Next.js/Turbopack import problems, TypeScript typing edge-cases and React impure rules for specific dependencies used in the project, which reveals an underlying fragility around `next build` configuration.
+**Action:** Always check `eslint` purity constraints (especially `Math.random()` in hooks) and verify build output with `pnpm build` immediately after component UI modifications to catch Next.js compilation issues early.
