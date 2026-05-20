@@ -38,6 +38,7 @@ unsafe impl GlobalAlloc for SealAllocator {
 
             let virt = virt::alloc_virtual_pages(total_pages, align_pages);
             if virt.is_none() {
+                crate::serial_println!("[DEBUG] alloc_virtual_pages({}, {}) returned None", total_pages, align_pages);
                 return core::ptr::null_mut();
             }
             let base = virt.unwrap();
@@ -50,7 +51,7 @@ unsafe impl GlobalAlloc for SealAllocator {
                             | PageTableFlags::WRITABLE
                             | PageTableFlags::NO_EXECUTE;
                         if virt::map_page(page_virt, frame, flags).is_err() {
-                            // Page-table allocation failed — free this frame and undo prior mappings.
+                            crate::serial_println!("[DEBUG] virt::map_page failed for virt={:?}, phys={:?}", page_virt, frame);
                             crate::memory::phys::free_frame(frame);
                             for j in 0..i {
                                 let v = VirtAddr::new(base.as_u64() + j as u64 * 4096);
@@ -62,7 +63,7 @@ unsafe impl GlobalAlloc for SealAllocator {
                         }
                     }
                     None => {
-                        // OOM — unmap and free what we already acquired.
+                        crate::serial_println!("[DEBUG] alloc_frame returned None during large alloc");
                         for j in 0..i {
                             let v = VirtAddr::new(base.as_u64() + j as u64 * 4096);
                             if let Some(frame) = virt::unmap_page(v) {
