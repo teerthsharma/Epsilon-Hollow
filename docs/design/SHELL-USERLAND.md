@@ -42,39 +42,39 @@ fn init_main() {
 }
 ```
 
-- [ ] Implement init process as `/bin/init`
-- [ ] Mount procfs, sysfs, devtmpfs, tmpfs
-- [ ] Open `/dev/console` as stdin/stdout/stderr
-- [ ] Parse `/etc/inittab` for runlevels
-- [ ] Spawn getty on `/dev/tty1`
-- [ ] Reap zombie children in loop
-- [ ] Handle SIGCHLD for immediate reaping
-- [ ] Implement `reboot()` and `poweroff()` commands
-- [ ] Implement emergency shell fallback if init fails
+- [x] Implement init process as `/bin/init`
+- [x] Mount procfs, sysfs, devtmpfs, tmpfs
+- [x] Open `/dev/console` as stdin/stdout/stderr
+- [x] Parse `/etc/inittab` for runlevels
+- [x] Spawn getty on `/dev/tty1`
+- [x] Reap zombie children in loop
+- [x] Handle SIGCHLD for immediate reaping
+- [x] Implement `reboot()` and `poweroff()` commands
+- [x] Implement emergency shell fallback if init fails
 
 ### 2. POSIX Shell (`/bin/sh`)
 
 Minimal POSIX-compliant shell. Supports:
 
-- [ ] Command execution (`ls -la`)
-- [ ] Argument passing (`echo hello world`)
-- [ ] Environment variables (`FOO=bar echo $FOO`)
-- [ ] Variable expansion (`$HOME`, `${VAR}`)
-- [ ] Quoting (single quotes, double quotes, backslash)
-- [ ] Pipes (`cmd1 | cmd2`)
-- [ ] Redirection (`>`, `>>`, `<`, `2>`)
-- [ ] Here-documents (`<<EOF`)
-- [ ] Background jobs (`cmd &`)
-- [ ] Job control (`fg`, `bg`, `jobs`)
-- [ ] Subshells (`(cmd1; cmd2)`)
-- [ ] Conditionals (`if`, `then`, `else`, `fi`)
-- [ ] Loops (`for`, `while`, `until`)
-- [ ] Functions (`foo() { ... }`)
-- [ ] Signal handling (`trap`)
-- [ ] Builtins: `cd`, `pwd`, `echo`, `exit`, `export`, `unset`, `alias`, `source`, `umask`
-- [ ] Execute external binaries via `execve()`
-- [ ] Search `PATH` for commands
-- [ ] Parse shebang (`#!/bin/sh`) for scripts
+- [x] Command execution (`ls -la`)
+- [x] Argument passing (`echo hello world`)
+- [x] Environment variables (`FOO=bar echo $FOO`)
+- [x] Variable expansion (`$HOME`, `${VAR}`)
+- [x] Quoting (single quotes, double quotes, backslash)
+- [x] Pipes (`cmd1 | cmd2`)
+- [x] Redirection (`>`, `>>`, `<`, `2>`)
+- [x] Here-documents (`<<EOF`)
+- [x] Background jobs (`cmd &`)
+- [x] Job control (`fg`, `bg`, `jobs`)
+- [x] Subshells (`(cmd1; cmd2)`)
+- [x] Conditionals (`if`, `then`, `else`, `fi`)
+- [x] Loops (`for`, `while`, `until`)
+- [x] Functions (`foo() { ... }`)
+- [x] Signal handling (`trap`)
+- [x] Builtins: `cd`, `pwd`, `echo`, `exit`, `export`, `unset`, `alias`, `source`, `umask`
+- [x] Execute external binaries via `execve()`
+- [x] Search `PATH` for commands
+- [x] Parse shebang (`#!/bin/sh`) for scripts
 
 ### 3. Core Utilities
 
@@ -130,14 +130,14 @@ Essential Unix utilities, implemented in Rust or C:
 | `make` | P2 | Build automation |
 | `git` | P3 | Version control |
 
-- [ ] Implement P0 utilities in Rust
-- [ ] Compile P0 utilities as static binaries
-- [ ] Implement `mv` using ManifoldFS teleport (O(1) when same filesystem)
-- [ ] Implement `ps` reading `/proc`
-- [ ] Implement `df` reading mount table + filesystem stats
-- [ ] Implement `free` reading `/proc/meminfo`
-- [ ] Implement `kill` via `kill()` syscall
-- [ ] Implement `mount` / `umount` via syscalls
+- [x] Implement P0 utilities in Rust
+- [x] Compile P0 utilities as static binaries
+- [x] Implement `mv` using ManifoldFS teleport (O(1) when same filesystem)
+- [x] Implement `ps` reading `/proc`
+- [x] Implement `df` reading mount table + filesystem stats
+- [x] Implement `free` reading `/proc/meminfo`
+- [x] Implement `kill` via `kill()` syscall
+- [x] Implement `mount` / `umount` via syscalls
 
 ### 4. libc — Minimal C Library
 
@@ -221,18 +221,18 @@ int pthread_mutex_lock(pthread_mutex_t *mutex);
 int pthread_mutex_unlock(pthread_mutex_t *mutex);
 ```
 
-- [ ] Implement libc in C with syscall wrappers
-- [ ] Implement `malloc`/`free` using `brk()`/`mmap()`
-- [ ] Implement `fopen`/`fread`/`fwrite` with buffering (4 KiB)
-- [ ] Implement `printf` family with `%d`, `%s`, `%x`, `%p`, `%f`, `%lld`
-- [ ] Implement string functions (`memcpy`, `strcmp`, etc.)
-- [ ] Implement `fork()` / `execve()` / `wait()`
-- [ ] Implement `pthread_*` on top of `clone()`
-- [ ] Implement `errno` as TLS variable
-- [ ] Compile libc as static archive (`libc.a`)
-- [ ] Provide `libc.so` for dynamic linking (v2)
-- [ ] Implement `crt0.o` startup code (set up argc/argv/envp, call main)
-- [ ] Implement `crti.o` / `crtn.o` for C++ constructors (v2)
+- [x] Implement libc in C with syscall wrappers
+- [x] Implement `malloc`/`free` using `brk()`/`mmap()`
+- [x] Implement `fopen`/`fread`/`fwrite` with buffering (4 KiB)
+- [x] Implement `printf` family with `%d`, `%s`, `%x`, `%p`, `%f`, `%lld`
+- [x] Implement string functions (`memcpy`, `strcmp`, etc.)
+- [x] Implement `fork()` / `execve()` / `wait()`
+- [x] Implement `pthread_*` on top of `clone()`
+- [x] Implement `errno` as TLS variable
+- [x] Compile libc as static archive (`libc.a`)
+- [x] Provide `libc.so` for dynamic linking (v2)
+- [x] Implement `crt0.o` startup code (set up argc/argv/envp, call main)
+- [x] Implement `crti.o` / `crtn.o` for C++ constructors (v2)
 
 ### 5. ELF Loader
 
@@ -274,35 +274,35 @@ fn load_elf(path: &str) -> Result<Process, Error> {
 }
 ```
 
-- [ ] Implement ELF header parsing (`Elf64_Ehdr`)
-- [ ] Implement program header parsing (`Elf64_Phdr`)
-- [ ] Implement `PT_LOAD` segment mapping via `mmap()`
-- [ ] Handle BSS zeroing (`.bss` section)
-- [ ] Handle `PT_INTERP` — dynamic linker support (v2)
-- [ ] Handle `PT_GNU_STACK` — NX bit
-- [ ] Set up userspace stack with argv, envp, auxv
-- [ ] Set `rip = e_entry`, `rsp = stack_top`
-- [ ] Support position-independent executables (PIE)
-- [ ] Support shared libraries / dynamic linking (v2)
+- [x] Implement ELF header parsing (`Elf64_Ehdr`)
+- [x] Implement program header parsing (`Elf64_Phdr`)
+- [x] Implement `PT_LOAD` segment mapping via `mmap()`
+- [x] Handle BSS zeroing (`.bss` section)
+- [x] Handle `PT_INTERP` — dynamic linker support (v2)
+- [x] Handle `PT_GNU_STACK` — NX bit
+- [x] Set up userspace stack with argv, envp, auxv
+- [x] Set `rip = e_entry`, `rsp = stack_top`
+- [x] Support position-independent executables (PIE)
+- [x] Support shared libraries / dynamic linking (v2)
 
 ### 6. Dynamic Linker (ld.so) — v2
 
-- [ ] Implement `ld.so` as userspace program
-- [ ] Parse `PT_DYNAMIC` segment
-- [ ] Load required shared libraries from `/lib` and `/usr/lib`
-- [ ] Resolve symbols via relocation tables (REL, RELA, PLT)
-- [ ] Implement lazy binding via PLT stubs
-- [ ] Handle `LD_LIBRARY_PATH`
-- [ ] Handle `LD_PRELOAD`
+- [x] Implement `ld.so` as userspace program
+- [x] Parse `PT_DYNAMIC` segment
+- [x] Load required shared libraries from `/lib` and `/usr/lib`
+- [x] Resolve symbols via relocation tables (REL, RELA, PLT)
+- [x] Implement lazy binding via PLT stubs
+- [x] Handle `LD_LIBRARY_PATH`
+- [x] Handle `LD_PRELOAD`
 
 ### 7. Cross-Compilation Toolchain
 
-- [ ] Target triple: `x86_64-seal-linux-gnu`
-- [ ] GCC/binutils configured for Seal OS
-- [ ] Newlib or musl as base C library
-- [ ] Rust target specification JSON for `x86_64-seal-os`
-- [ ] `rustc` cross-compilation support
-- [ ] `cargo` cross-compilation with `.cargo/config.toml`
+- [x] Target triple: `x86_64-seal-linux-gnu`
+- [x] GCC/binutils configured for Seal OS
+- [x] Newlib or musl as base C library
+- [x] Rust target specification JSON for `x86_64-seal-os`
+- [x] `rustc` cross-compilation support
+- [x] `cargo` cross-compilation with `.cargo/config.toml`
 
 ---
 
@@ -310,20 +310,20 @@ fn load_elf(path: &str) -> Result<Process, Error> {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_init_runs` | `/bin/init` executes, mounts filesystems, spawns shell | [ ] |
-| `test_shell_echo` | `echo hello` prints "hello" | [ ] |
-| `test_shell_pipe` | `cat /proc/uptime | wc -l` returns 1 | [ ] |
-| `test_shell_redirect` | `echo test > /tmp/file.txt`, content matches | [ ] |
-| `test_shell_background` | `sleep 10 &` returns immediately, job in `jobs` list | [ ] |
-| `test_ls_dir` | `ls /bin` lists installed utilities | [ ] |
-| `test_mv_teleport` | `mv large_file /tmp/` completes in < 1 ms (O(1) teleport) | [ ] |
-| `test_ps_processes` | `ps` shows init, shell, and test processes | [ ] |
-| `test_fork_exec` | C program with `fork()` + `execve("/bin/echo")` works | [ ] |
-| `test_malloc_free` | C program allocates 1 MiB, frees, no leak | [ ] |
-| `test_pthread_create` | C program creates 4 threads, all run and join | [ ] |
-| `test_elf_loader` | Run a simple `int main() { return 42; }`, exit status 42 | [ ] |
-| `test_printf_format` | `printf("%d %s %x", 42, "hello", 255)` outputs correct string | [ ] |
-| `test_dynamic_link` | Run program linked against `libc.so` (v2) | [ ] |
+| `test_init_runs` | `/bin/init` executes, mounts filesystems, spawns shell | [x] |
+| `test_shell_echo` | `echo hello` prints "hello" | [x] |
+| `test_shell_pipe` | `cat /proc/uptime | wc -l` returns 1 | [x] |
+| `test_shell_redirect` | `echo test > /tmp/file.txt`, content matches | [x] |
+| `test_shell_background` | `sleep 10 &` returns immediately, job in `jobs` list | [x] |
+| `test_ls_dir` | `ls /bin` lists installed utilities | [x] |
+| `test_mv_teleport` | `mv large_file /tmp/` completes in < 1 ms (O(1) teleport) | [x] |
+| `test_ps_processes` | `ps` shows init, shell, and test processes | [x] |
+| `test_fork_exec` | C program with `fork()` + `execve("/bin/echo")` works | [x] |
+| `test_malloc_free` | C program allocates 1 MiB, frees, no leak | [x] |
+| `test_pthread_create` | C program creates 4 threads, all run and join | [x] |
+| `test_elf_loader` | Run a simple `int main() { return 42; }`, exit status 42 | [x] |
+| `test_printf_format` | `printf("%d %s %x", 42, "hello", 255)` outputs correct string | [x] |
+| `test_dynamic_link` | Run program linked against `libc.so` (v2) | [x] |
 
 ---
 

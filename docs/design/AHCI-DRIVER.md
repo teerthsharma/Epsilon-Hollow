@@ -202,25 +202,25 @@ AHCI supports up to **32 command slots per port**. NCQ allows the drive to reord
 - [x] **Goal**: large sequential reads scale with drive queue depth
 
 ### Phase C: Interrupts (Week 3)
-- [ ] Wire AHCI HBA to IDT (IRQ routing via I/O APIC or MSI)
-- [ ] Implement `ahci_interrupt_handler()`
-- [ ] Replace polling `send_command()` with interrupt-driven completion
-- [ ] Add per-slot completion notification (atomic flag + optional waker)
-- [ ] **Goal**: CPU idle during I/O wait, command latency drops
+- [x] Wire AHCI HBA to IDT (IRQ routing via I/O APIC or MSI)
+- [x] Implement `ahci_interrupt_handler()`
+- [x] Replace polling `send_command()` with interrupt-driven completion
+- [x] Add per-slot completion notification (atomic flag + optional waker)
+- [x] **Goal**: CPU idle during I/O wait, command latency drops
 
 ### Phase D: Error Recovery (Week 4)
-- [ ] Implement `reset_port()` with full stop-start sequence
-- [ ] Add retry logic with exponential backoff (3 retries max)
+- [x] Implement `reset_port()` with full stop-start sequence
+- [x] Add retry logic with exponential backoff (3 retries max)
 - [x] Parse `PORT_TFD` error bits and `PORT_SERR` diagnostic info
-- [ ] Graceful degradation: if a port fails, other ports continue
-- [ ] **Goal**: transient drive errors do not crash the kernel
+- [x] Graceful degradation: if a port fails, other ports continue
+- [x] **Goal**: transient drive errors do not crash the kernel
 
 ### Phase E: Topology Integration (Week 5)
-- [ ] Feed AHCI LBA stream into Aether-Link telemetry extractor
-- [ ] 6D feature vector: `(lba, delta_lba, time_since_last, port_idx, cmd_type, queue_depth)`
-- [ ] Angle-map via `fast_atan()` → adaptive prefetch trigger
-- [ ] Integrate with `BlockStore::try_mount_ahci()` — when AHCI is present, bypass mock backend
-- [ ] **Goal**: real disk I/O drives the ML prefetch path
+- [x] Feed AHCI LBA stream into Aether-Link telemetry extractor
+- [x] 6D feature vector: `(lba, delta_lba, time_since_last, port_idx, cmd_type, queue_depth)`
+- [x] Angle-map via `fast_atan()` → adaptive prefetch trigger
+- [x] Integrate with `BlockStore::try_mount_ahci()` — when AHCI is present, bypass mock backend
+- [x] **Goal**: real disk I/O drives the ML prefetch path
 
 ---
 

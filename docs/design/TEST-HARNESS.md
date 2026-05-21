@@ -46,13 +46,13 @@ mod tests {
 }
 ```
 
-- [ ] Standard `cargo test` works for all host-testable modules
-- [ ] `#[test]` attribute recognized in kernel code (custom macro for no_std)
-- [ ] Mock `alloc`/`free` for tests that need heap
-- [ ] Mock block device for filesystem tests
-- [ ] Mock timer for scheduler tests
-- [ ] Each test is independent (no shared state leakage)
-- [ ] Test output captures `serial_println!` for debugging
+- [x] Standard `cargo test` works for all host-testable modules
+- [x] `#[test]` attribute recognized in kernel code (custom macro for no_std)
+- [x] Mock `alloc`/`free` for tests that need heap
+- [x] Mock block device for filesystem tests
+- [x] Mock timer for scheduler tests
+- [x] Each test is independent (no shared state leakage)
+- [x] Test output captures `serial_println!` for debugging
 
 ### 3. QEMU Integration Test Runner
 
@@ -85,16 +85,16 @@ fn main() {
 }
 ```
 
-- [ ] Implement `Qemu` test harness struct
-- [ ] Spawn QEMU process with correct arguments
-- [ ] Capture serial output via pipe or file
-- [ ] Send commands to QEMU via serial input
-- [ ] Wait for specific output markers with timeout
-- [ ] Parse `TEST_PASS` / `TEST_FAIL` markers
-- [ ] Collect test results and generate report
-- [ ] Kill QEMU on timeout or crash
-- [ ] Support multiple QEMU configurations (UEFI, BIOS, virtio, AHCI)
-- [ ] Support snapshot/restore for fast test iteration
+- [x] Implement `Qemu` test harness struct
+- [x] Spawn QEMU process with correct arguments
+- [x] Capture serial output via pipe or file
+- [x] Send commands to QEMU via serial input
+- [x] Wait for specific output markers with timeout
+- [x] Parse `TEST_PASS` / `TEST_FAIL` markers
+- [x] Collect test results and generate report
+- [x] Kill QEMU on timeout or crash
+- [x] Support multiple QEMU configurations (UEFI, BIOS, virtio, AHCI)
+- [x] Support snapshot/restore for fast test iteration
 
 ### 4. In-Kernel Test Harness
 
@@ -130,15 +130,15 @@ fn test_main() {
 }
 ```
 
-- [ ] Define `TestResult` enum (Pass, Fail, Skip)
-- [ ] Implement `run_test(name, fn)` wrapper catching panics
-- [ ] Implement test registry (auto-discover via linker sections or manual list)
-- [ ] Output standardized `TEST_PASS` / `TEST_FAIL` / `TEST_SKIP` markers
-- [ ] Output summary line with pass/fail counts
-- [ ] Call `isa-debug-exit` with exit code on completion
-- [ ] Support test filtering by name (e.g., `test_main --test filesystem`)
-- [ ] Support test shuffling for order independence
-- [ ] Support test timeout (watchdog kills hung tests)
+- [x] Define `TestResult` enum (Pass, Fail, Skip)
+- [x] Implement `run_test(name, fn)` wrapper catching panics
+- [x] Implement test registry (auto-discover via linker sections or manual list)
+- [x] Output standardized `TEST_PASS` / `TEST_FAIL` / `TEST_SKIP` markers
+- [x] Output summary line with pass/fail counts
+- [x] Call `isa-debug-exit` with exit code on completion
+- [x] Support test filtering by name (e.g., `test_main --test filesystem`)
+- [x] Support test shuffling for order independence
+- [x] Support test timeout (watchdog kills hung tests)
 
 ### 5. Property-Based Tests
 
@@ -178,15 +178,15 @@ proptest! {
 }
 ```
 
-- [ ] Add `proptest` dependency for host tests
-- [ ] Write property tests for `DirHash` (insert/lookup/delete invariants)
-- [ ] Write property tests for `InodeSlab` (alloc/free/generation invariants)
-- [ ] Write property tests for `VoronoiCap` (capacity bounds, split/merge consistency)
-- [ ] Write property tests for physical allocator (alloc/free/no double-free)
-- [ ] Write property tests for `BlockStore` (write/readback consistency)
-- [ ] Write property tests for path resolution (absolute paths resolve consistently)
-- [ ] Run property tests with 10,000 iterations in CI
-- [ ] Shrink failing cases to minimal reproducer
+- [x] Add `proptest` dependency for host tests
+- [x] Write property tests for `DirHash` (insert/lookup/delete invariants)
+- [x] Write property tests for `InodeSlab` (alloc/free/generation invariants)
+- [x] Write property tests for `VoronoiCap` (capacity bounds, split/merge consistency)
+- [x] Write property tests for physical allocator (alloc/free/no double-free)
+- [x] Write property tests for `BlockStore` (write/readback consistency)
+- [x] Write property tests for path resolution (absolute paths resolve consistently)
+- [x] Run property tests with 10,000 iterations in CI
+- [x] Shrink failing cases to minimal reproducer
 
 ### 6. Benchmark Regression Tests
 
@@ -209,17 +209,17 @@ fn bench_teleport(c: &mut Criterion) {
 }
 ```
 
-- [ ] Add `criterion` dependency for host benchmarks
-- [ ] Benchmark `InodeSlab::alloc` vs old `BTreeMap` insert
-- [ ] Benchmark `DirHash::lookup` vs old `BTreeMap` lookup
-- [ ] Benchmark `VoronoiCap::find` at N = {100, 1k, 10k, 100k}
-- [ ] Benchmark `teleport` at file sizes {1 KiB, 1 MiB, 1 GiB}
-- [ ] Benchmark `read`/`write` through buffer cache vs direct block I/O
-- [ ] Benchmark syscall entry/exit overhead
-- [ ] Benchmark context switch time
-- [ ] Store benchmark results in `results/benchmarks/`
-- [ ] Compare against baseline, fail CI if > 10% regression
-- [ ] Upload benchmark graphs as CI artifacts
+- [x] Add `criterion` dependency for host benchmarks
+- [x] Benchmark `InodeSlab::alloc` vs old `BTreeMap` insert
+- [x] Benchmark `DirHash::lookup` vs old `BTreeMap` lookup
+- [x] Benchmark `VoronoiCap::find` at N = {100, 1k, 10k, 100k}
+- [x] Benchmark `teleport` at file sizes {1 KiB, 1 MiB, 1 GiB}
+- [x] Benchmark `read`/`write` through buffer cache vs direct block I/O
+- [x] Benchmark syscall entry/exit overhead
+- [x] Benchmark context switch time
+- [x] Store benchmark results in `results/benchmarks/`
+- [x] Compare against baseline, fail CI if > 10% regression
+- [x] Upload benchmark graphs as CI artifacts
 
 ### 7. CI Pipeline Stages
 
@@ -270,28 +270,28 @@ jobs:
       - cargo deny check
 ```
 
-- [ ] Stage 1: `cargo fmt --check` — no unformatted code
-- [ ] Stage 2: `cargo clippy` — zero warnings (with explicit allow list)
-- [ ] Stage 3: `cargo test --lib` — host unit tests pass
-- [ ] Stage 4: `cargo test --test integration` — host integration tests pass
-- [ ] Stage 5: `cargo test --test property` — property tests pass (10k iterations)
-- [ ] Stage 6: `cargo build --release` — kernel compiles
-- [ ] Stage 7: QEMU smoke test — boots, basic tests pass
-- [ ] Stage 8: QEMU full test suite — all integration tests pass
-- [ ] Stage 9: Benchmark comparison — no > 10% regression
-- [ ] Stage 10: Security audit — `cargo audit` clean
-- [ ] Stage 11: Documentation — `cargo doc` generates without errors
-- [ ] Parallel execution where possible (host tests + build in parallel)
-- [ ] Total CI time target: < 10 minutes
+- [x] Stage 1: `cargo fmt --check` — no unformatted code
+- [x] Stage 2: `cargo clippy` — zero warnings (with explicit allow list)
+- [x] Stage 3: `cargo test --lib` — host unit tests pass
+- [x] Stage 4: `cargo test --test integration` — host integration tests pass
+- [x] Stage 5: `cargo test --test property` — property tests pass (10k iterations)
+- [x] Stage 6: `cargo build --release` — kernel compiles
+- [x] Stage 7: QEMU smoke test — boots, basic tests pass
+- [x] Stage 8: QEMU full test suite — all integration tests pass
+- [x] Stage 9: Benchmark comparison — no > 10% regression
+- [x] Stage 10: Security audit — `cargo audit` clean
+- [x] Stage 11: Documentation — `cargo doc` generates without errors
+- [x] Parallel execution where possible (host tests + build in parallel)
+- [x] Total CI time target: < 10 minutes
 
 ### 8. Test Coverage
 
-- [ ] Measure code coverage via `grcov` or `tarpaulin` (host tests)
-- [ ] Track coverage per module
-- [ ] Target: > 80% coverage for `memory/`, `fs/`, `syscall/`
-- [ ] Target: > 60% coverage for `drivers/`, `net/`
-- [ ] Upload coverage report to Codecov or similar
-- [ ] Block PR if coverage drops > 5%
+- [x] Measure code coverage via `grcov` or `tarpaulin` (host tests)
+- [x] Track coverage per module
+- [x] Target: > 80% coverage for `memory/`, `fs/`, `syscall/`
+- [x] Target: > 60% coverage for `drivers/`, `net/`
+- [x] Upload coverage report to Codecov or similar
+- [x] Block PR if coverage drops > 5%
 
 ---
 
@@ -299,14 +299,14 @@ jobs:
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_test_framework` | The test framework itself can run tests and report results | [ ] |
-| `test_qemu_harness_spawn` | QEMU harness can spawn VM, send input, read output | [ ] |
-| `test_qemu_timeout` | QEMU harness kills VM that hangs for > 30s | [ ] |
-| `test_property_dirhash` | 10k random name sequences satisfy DirHash invariants | [ ] |
-| `test_property_voronoi_cap` | 10k random inserts never exceed cell capacity | [ ] |
-| `test_benchmark_regression` | Benchmark results compared against stored baseline | [ ] |
-| `test_ci_pipeline_fast` | Full CI completes in < 10 minutes | [ ] |
-| `test_coverage_report` | Coverage report generated and uploaded | [ ] |
+| `test_test_framework` | The test framework itself can run tests and report results | [x] |
+| `test_qemu_harness_spawn` | QEMU harness can spawn VM, send input, read output | [x] |
+| `test_qemu_timeout` | QEMU harness kills VM that hangs for > 30s | [x] |
+| `test_property_dirhash` | 10k random name sequences satisfy DirHash invariants | [x] |
+| `test_property_voronoi_cap` | 10k random inserts never exceed cell capacity | [x] |
+| `test_benchmark_regression` | Benchmark results compared against stored baseline | [x] |
+| `test_ci_pipeline_fast` | Full CI completes in < 10 minutes | [x] |
+| `test_coverage_report` | Coverage report generated and uploaded | [x] |
 
 ---
 

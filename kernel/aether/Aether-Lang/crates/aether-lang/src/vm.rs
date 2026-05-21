@@ -350,54 +350,48 @@ impl Compiler {
                 }
             }
             StmtKind::For(stmt) => {
-                // 1. Initialize Iterator
-                let start_val = stmt.range.start.as_f64();
-                let end_val = stmt.range.end.as_f64();
+                if let ExprKind::Range(r) = &stmt.iterable.node {
+                    let start_val = r.start.as_f64();
+                    let end_val = r.end.as_f64();
 
-                // PUSH start_val
-                self.code.push(OpCode::PUSH(start_val));
-                // STORE iterator
-                let iter_idx = self.resolve_local(&stmt.iterator);
-                self.code.push(OpCode::STORE(iter_idx));
+                    let iter_idx = self.resolve_local(&stmt.iterator);
+                    
+                    // 1. Initialize Iterator: i = start_val
+                    self.code.push(OpCode::PUSH(start_val));
+                    self.code.push(OpCode::STORE(iter_idx));
 
-                // 2. Loop Start Label
-                let start_ip = self.code.len();
+                    // Label: Start
+                    let start_ip = self.code.len();
 
-                // 3. Condition: iterator != end (simplified range loop)
-                // LOAD iterator
-                self.code.push(OpCode::LOAD(iter_idx));
-                // PUSH end
-                self.code.push(OpCode::PUSH(end_val));
-                // SUB
-                self.code.push(OpCode::SUB);
+                    // 2. Condition: i - end_val != 0
+                    self.code.push(OpCode::LOAD(iter_idx));
+                    self.code.push(OpCode::PUSH(end_val));
+                    self.code.push(OpCode::SUB);
 
-                // 4. Jump if False (if 0/Equal) to End
-                let jmp_false_idx = self.code.len();
-                self.code.push(OpCode::JMP_IF_FALSE(0));
+                    // Jump if False placeholder
+                    let jmp_false_idx = self.code.len();
+                    self.code.push(OpCode::JMP_IF_FALSE(0));
 
-                // 5. Body
-                for s in &stmt.body.statements {
-                    self.compile_stmt(s);
+                    // 3. Body
+                    for s in &stmt.body.statements {
+                        self.compile_stmt(s);
+                    }
+
+                    // 4. Increment Iterator: i = i + 1
+                    self.code.push(OpCode::LOAD(iter_idx));
+                    self.code.push(OpCode::PUSH(1.0));
+                    self.code.push(OpCode::ADD);
+                    self.code.push(OpCode::STORE(iter_idx));
+
+                    // 5. Jump back to Start
+                    let end_ip = self.code.len();
+                    let back_jump = (start_ip as isize) - (end_ip as isize) - 1;
+                    self.code.push(OpCode::JMP(back_jump));
+
+                    // 6. Patch Jump If False
+                    let patch_offset = (self.code.len() as isize) - (jmp_false_idx as isize) - 1;
+                    self.code[jmp_false_idx] = OpCode::JMP_IF_FALSE(patch_offset);
                 }
-
-                // 6. Increment Iterator
-                // LOAD iterator
-                self.code.push(OpCode::LOAD(iter_idx));
-                // PUSH 1.0 (step)
-                self.code.push(OpCode::PUSH(1.0));
-                // ADD
-                self.code.push(OpCode::ADD);
-                // STORE iterator
-                self.code.push(OpCode::STORE(iter_idx));
-
-                // 7. Jump back to Start
-                let end_ip = self.code.len();
-                let back_jump = (start_ip as isize) - (end_ip as isize) - 1;
-                self.code.push(OpCode::JMP(back_jump));
-
-                // 8. Patch Jump If False
-                let patch_offset = (self.code.len() as isize) - (jmp_false_idx as isize) - 1;
-                self.code[jmp_false_idx] = OpCode::JMP_IF_FALSE(patch_offset);
             }
             StmtKind::Loop(stmt) => {
                 // Simple infinite loop (seal loop)
@@ -503,10 +497,13 @@ mod tests {
                 Statement::new(
                     StmtKind::For(ForStmt {
                         iterator: "i".to_string(),
-                        range: Range {
-                            start: Number::Int(0),
-                            end: Number::Int(3),
-                        },
+                        iterable: Expr::new(
+                            ExprKind::Range(Range {
+                                start: Number::Int(0),
+                                end: Number::Int(3),
+                            }),
+                            Span::default(),
+                        ),
                         body: Block {
                             statements: vec![
                                 // accum = accum + i

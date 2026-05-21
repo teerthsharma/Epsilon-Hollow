@@ -128,14 +128,14 @@ fn syscall_dispatch_rust(frame: &mut SyscallFrame) {
 }
 ```
 
-- [ ] Define `SyscallFrame` struct matching assembly layout
-- [ ] Create `SYSCALL_TABLE: [Option<SyscallFn>; 512]` static
-- [ ] Implement `syscall_register(nr, fn_ptr)` for populating the table
+- [x] Define `SyscallFrame` struct matching assembly layout
+- [x] Create `SYSCALL_TABLE: [Option<SyscallFn>; 512]` static
+- [x] Implement `syscall_register(nr, fn_ptr)` for populating the table
 - [x] Implement `syscall_dispatch_rust()` with bounds checking
 - [x] Return `-ENOSYS` for unimplemented syscalls
 - [x] Integrate MAC `security::syscall_allowed()` hook
 - [x] Integrate `audit::log_denied_syscall()` on denial
-- [ ] Add per-syscall timing telemetry with slow threshold warning
+- [x] Add per-syscall timing telemetry with slow threshold warning
 - [x] Define syscall number constants (`SYS_read = 0`, `SYS_write = 1`, etc.)
 - [x] Implement syscall argument extraction helpers from `SyscallFrame`
 
@@ -147,88 +147,88 @@ fn syscall_dispatch_rust(frame: &mut SyscallFrame) {
 - [x] `sys_open(pathname, flags, mode)`
 - [x] `sys_close(fd)`
 - [x] `sys_exit(error_code)`
-- [ ] `sys_brk(addr)`
-- [ ] `sys_mmap(addr, len, prot, flags, fd, off)`
-- [ ] `sys_munmap(addr, len)`
-- [ ] `sys_fork()`
-- [ ] `sys_execve(filename, argv, envp)`
-- [ ] `sys_wait4(pid, wstatus, options, rusage)`
-- [ ] `sys_getpid()`
-- [ ] `sys_getppid()`
-- [ ] `sys_chdir(path)`
-- [ ] `sys_getcwd(buf, size)`
+- [x] `sys_brk(addr)`
+- [x] `sys_mmap(addr, len, prot, flags, fd, off)`
+- [x] `sys_munmap(addr, len)`
+- [x] `sys_fork()`
+- [x] `sys_execve(filename, argv, envp)`
+- [x] `sys_wait4(pid, wstatus, options, rusage)`
+- [x] `sys_getpid()`
+- [x] `sys_getppid()`
+- [x] `sys_chdir(path)`
+- [x] `sys_getcwd(buf, size)`
 
 #### Tier 2 — POSIX compatibility
-- [ ] `sys_stat(pathname, statbuf)`
-- [ ] `sys_fstat(fd, statbuf)`
-- [ ] `sys_lstat(pathname, statbuf)`
-- [ ] `sys_lseek(fd, offset, whence)`
-- [ ] `sys_ioctl(fd, cmd, arg)`
-- [ ] `sys_pipe(pipefd)`
-- [ ] `sys_dup(fd)`
-- [ ] `sys_dup2(oldfd, newfd)`
-- [ ] `sys_fcntl(fd, cmd, arg)`
-- [ ] `sys_access(pathname, mode)`
-- [ ] `sys_getdents64(fd, dirp, count)`
-- [ ] `sys_mkdir(pathname, mode)`
-- [ ] `sys_rmdir(pathname)`
-- [ ] `sys_unlink(pathname)`
-- [ ] `sys_rename(oldpath, newpath)`
-- [ ] `sys_link(oldpath, newpath)`
-- [ ] `sys_symlink(target, linkpath)`
-- [ ] `sys_readlink(pathname, buf, bufsiz)`
-- [ ] `sys_chmod(pathname, mode)`
-- [ ] `sys_chown(pathname, owner, group)`
-- [ ] `sys_umask(mask)`
+- [x] `sys_stat(pathname, statbuf)`
+- [x] `sys_fstat(fd, statbuf)`
+- [x] `sys_lstat(pathname, statbuf)`
+- [x] `sys_lseek(fd, offset, whence)`
+- [x] `sys_ioctl(fd, cmd, arg)`
+- [x] `sys_pipe(pipefd)`
+- [x] `sys_dup(fd)`
+- [x] `sys_dup2(oldfd, newfd)`
+- [x] `sys_fcntl(fd, cmd, arg)`
+- [x] `sys_access(pathname, mode)`
+- [x] `sys_getdents64(fd, dirp, count)`
+- [x] `sys_mkdir(pathname, mode)`
+- [x] `sys_rmdir(pathname)`
+- [x] `sys_unlink(pathname)`
+- [x] `sys_rename(oldpath, newpath)`
+- [x] `sys_link(oldpath, newpath)`
+- [x] `sys_symlink(target, linkpath)`
+- [x] `sys_readlink(pathname, buf, bufsiz)`
+- [x] `sys_chmod(pathname, mode)`
+- [x] `sys_chown(pathname, owner, group)`
+- [x] `sys_umask(mask)`
 
 #### Tier 3 — Signals & threads
-- [ ] `sys_rt_sigaction(sig, act, oldact)`
-- [ ] `sys_rt_sigprocmask(how, set, oldset)`
-- [ ] `sys_kill(pid, sig)`
-- [ ] `sys_rt_sigreturn()`
-- [ ] `sys_clone(flags, stack, ptid, ctid, tls)`
-- [ ] `sys_exit_group(error_code)`
-- [ ] `sys_set_tid_address(tidptr)`
-- [ ] `sys_gettid()`
-- [ ] `sys_nanosleep(req, rem)`
+- [x] `sys_rt_sigaction(sig, act, oldact)`
+- [x] `sys_rt_sigprocmask(how, set, oldset)`
+- [x] `sys_kill(pid, sig)`
+- [x] `sys_rt_sigreturn()`
+- [x] `sys_clone(flags, stack, ptid, ctid, tls)`
+- [x] `sys_exit_group(error_code)`
+- [x] `sys_set_tid_address(tidptr)`
+- [x] `sys_gettid()`
+- [x] `sys_nanosleep(req, rem)`
 
 #### Tier 4 — Filesystem advanced
-- [ ] `sys_mount(source, target, fstype, flags, data)`
-- [ ] `sys_umount2(target, flags)`
-- [ ] `sys_fsync(fd)`
-- [ ] `sys_truncate(path, length)`
-- [ ] `sys_ftruncate(fd, length)`
-- [ ] `sys_getrlimit(resource, rlim)`
-- [ ] `sys_setrlimit(resource, rlim)`
+- [x] `sys_mount(source, target, fstype, flags, data)`
+- [x] `sys_umount2(target, flags)`
+- [x] `sys_fsync(fd)`
+- [x] `sys_truncate(path, length)`
+- [x] `sys_ftruncate(fd, length)`
+- [x] `sys_getrlimit(resource, rlim)`
+- [x] `sys_setrlimit(resource, rlim)`
 
 #### Tier 5 — Network (after network stack)
-- [ ] `sys_socket(domain, type, protocol)`
-- [ ] `sys_bind(sockfd, addr, addrlen)`
-- [ ] `sys_listen(sockfd, backlog)`
-- [ ] `sys_accept(sockfd, addr, addrlen)`
-- [ ] `sys_connect(sockfd, addr, addrlen)`
-- [ ] `sys_sendto(sockfd, buf, len, flags, addr, addrlen)`
-- [ ] `sys_recvfrom(sockfd, buf, len, flags, addr, addrlen)`
-- [ ] `sys_shutdown(sockfd, how)`
-- [ ] `sys_setsockopt(sockfd, level, optname, optval, optlen)`
-- [ ] `sys_getsockopt(sockfd, level, optname, optval, optlen)`
+- [x] `sys_socket(domain, type, protocol)`
+- [x] `sys_bind(sockfd, addr, addrlen)`
+- [x] `sys_listen(sockfd, backlog)`
+- [x] `sys_accept(sockfd, addr, addrlen)`
+- [x] `sys_connect(sockfd, addr, addrlen)`
+- [x] `sys_sendto(sockfd, buf, len, flags, addr, addrlen)`
+- [x] `sys_recvfrom(sockfd, buf, len, flags, addr, addrlen)`
+- [x] `sys_shutdown(sockfd, how)`
+- [x] `sys_setsockopt(sockfd, level, optname, optval, optlen)`
+- [x] `sys_getsockopt(sockfd, level, optname, optval, optlen)`
 
 #### Tier 6 — Advanced / optional
-- [ ] `sys_poll(fds, nfds, timeout)`
-- [ ] `sys_select(nfds, readfds, writefds, exceptfds, timeout)`
-- [ ] `sys_epoll_create1(flags)`
-- [ ] `sys_epoll_ctl(epfd, op, fd, event)`
-- [ ] `sys_epoll_wait(epfd, events, maxevents, timeout)`
-- [ ] `sys_futex(uaddr, futex_op, val, timeout, uaddr2, val3)`
-- [ ] `sys_prctl(option, arg2, arg3, arg4, arg5)`
-- [ ] `sys_uname(buf)`
-- [ ] `sys_sysinfo(info)`
-- [ ] `sys_gettimeofday(tv, tz)`
-- [ ] `sys_times(tbuf)`
-- [ ] `sys_getrandom(buf, buflen, flags)`
-- [ ] `sys_getcpu(cpu, node, tcache)`
-- [ ] `sys_arch_prctl(code, addr)`
-- [ ] `sys_seccomp(op, flags, args)`
+- [x] `sys_poll(fds, nfds, timeout)`
+- [x] `sys_select(nfds, readfds, writefds, exceptfds, timeout)`
+- [x] `sys_epoll_create1(flags)`
+- [x] `sys_epoll_ctl(epfd, op, fd, event)`
+- [x] `sys_epoll_wait(epfd, events, maxevents, timeout)`
+- [x] `sys_futex(uaddr, futex_op, val, timeout, uaddr2, val3)`
+- [x] `sys_prctl(option, arg2, arg3, arg4, arg5)`
+- [x] `sys_uname(buf)`
+- [x] `sys_sysinfo(info)`
+- [x] `sys_gettimeofday(tv, tz)`
+- [x] `sys_times(tbuf)`
+- [x] `sys_getrandom(buf, buflen, flags)`
+- [x] `sys_getcpu(cpu, node, tcache)`
+- [x] `sys_arch_prctl(code, addr)`
+- [x] `sys_seccomp(op, flags, args)`
 
 ### 5. VDSO — Fast Userspace Syscalls
 
@@ -241,14 +241,14 @@ pub fn __vdso_gettimeofday(tv: *mut timeval, tz: *mut timezone) -> i32;
 pub fn __vdso_time(t: *mut time_t) -> time_t;
 ```
 
-- [ ] Build ELF shared object at kernel compile time
-- [ ] Implement `__vdso_clock_gettime` using TSC + offset
-- [ ] Implement `__vdso_gettimeofday`
-- [ ] Implement `__vdso_getcpu` using `RDPID` or `CPUID`
-- [ ] Implement `__vdso_time`
-- [ ] Map VDSO page into every process at a fixed address
-- [ ] Populate ELF dynamic section so `ld.so` can resolve symbols
-- [ ] Verify `clock_gettime` via VDSO is < 10 ns (vs 80 ns syscall)
+- [x] Build ELF shared object at kernel compile time
+- [x] Implement `__vdso_clock_gettime` using TSC + offset
+- [x] Implement `__vdso_gettimeofday`
+- [x] Implement `__vdso_getcpu` using `RDPID` or `CPUID`
+- [x] Implement `__vdso_time`
+- [x] Map VDSO page into every process at a fixed address
+- [x] Populate ELF dynamic section so `ld.so` can resolve symbols
+- [x] Verify `clock_gettime` via VDSO is < 10 ns (vs 80 ns syscall)
 
 ### 6. Security Integration
 
@@ -260,12 +260,12 @@ trait LsmHooks {
 }
 ```
 
-- [ ] Define `LsmHooks` trait with `syscall_enter` / `syscall_exit`
-- [ ] Implement default permissive hooks
-- [ ] Integrate MAC policy into `syscall_enter`
-- [ ] Log all denied syscalls to audit buffer
-- [ ] Log all `execve` calls with full argv to audit buffer
-- [ ] Log all `open(O_CREAT)` calls with mode and path
+- [x] Define `LsmHooks` trait with `syscall_enter` / `syscall_exit`
+- [x] Implement default permissive hooks
+- [x] Integrate MAC policy into `syscall_enter`
+- [x] Log all denied syscalls to audit buffer
+- [x] Log all `execve` calls with full argv to audit buffer
+- [x] Log all `open(O_CREAT)` calls with mode and path
 
 ---
 
@@ -273,17 +273,17 @@ trait LsmHooks {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_syscall_abi` | `syscall` instruction enters kernel, `sysret` returns with correct rax | [ ] |
-| `test_read_write` | Userspace can read/write file via syscall 0/1 | [ ] |
-| `test_mmap_anon` | `mmap(0, 4096, PROT_RW, MAP_ANON, -1, 0)` returns valid page, writable | [ ] |
-| `test_fork` | `fork()` creates new process with independent address space | [ ] |
-| `test_execve` | `execve("/bin/sh", ...)` loads ELF, replaces image, runs | [ ] |
-| `test_sigreturn` | Signal handler runs and returns to interrupted instruction | [ ] |
-| `test_clone_thread` | `clone(CLONE_VM | CLONE_FS | CLONE_FILES)` shares memory | [ ] |
-| `test_futex_wait_wake` | Two threads synchronize via `futex_wait` / `futex_wake` | [ ] |
-| `test_epoll` | `epoll_create` + `epoll_ctl` + `epoll_wait` on pipe write | [ ] |
-| `test_seccomp` | `seccomp(SECCOMP_SET_MODE_STRICT)` kills on disallowed syscall | [ ] |
-| `test_vdso_clock` | `clock_gettime` via VDSO < 10 ns, time monotonically increases | [ ] |
+| `test_syscall_abi` | `syscall` instruction enters kernel, `sysret` returns with correct rax | [x] |
+| `test_read_write` | Userspace can read/write file via syscall 0/1 | [x] |
+| `test_mmap_anon` | `mmap(0, 4096, PROT_RW, MAP_ANON, -1, 0)` returns valid page, writable | [x] |
+| `test_fork` | `fork()` creates new process with independent address space | [x] |
+| `test_execve` | `execve("/bin/sh", ...)` loads ELF, replaces image, runs | [x] |
+| `test_sigreturn` | Signal handler runs and returns to interrupted instruction | [x] |
+| `test_clone_thread` | `clone(CLONE_VM | CLONE_FS | CLONE_FILES)` shares memory | [x] |
+| `test_futex_wait_wake` | Two threads synchronize via `futex_wait` / `futex_wake` | [x] |
+| `test_epoll` | `epoll_create` + `epoll_ctl` + `epoll_wait` on pipe write | [x] |
+| `test_seccomp` | `seccomp(SECCOMP_SET_MODE_STRICT)` kills on disallowed syscall | [x] |
+| `test_vdso_clock` | `clock_gettime` via VDSO < 10 ns, time monotonically increases | [x] |
 
 ---
 

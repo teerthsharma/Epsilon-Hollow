@@ -58,16 +58,16 @@ struct Ext2Superblock {
 }
 ```
 
-- [ ] Define `Ext2Superblock` struct with `#[repr(C, packed)]`
-- [ ] Read superblock from LBA 2 (offset 1024)
-- [ ] Verify magic == 0xEF53
-- [ ] Verify `s_rev_level` is 0 or 1
-- [ ] Calculate `block_size = 1024 << s_log_block_size`
-- [ ] Calculate number of block groups
-- [ ] Read block group descriptor table
-- [ ] Verify `s_state` == 1 (clean) or force fsck warning
-- [ ] Store superblock in memory for fast access
-- [ ] Implement `sync_superblock()` for writing updates
+- [x] Define `Ext2Superblock` struct with `#[repr(C, packed)]`
+- [x] Read superblock from LBA 2 (offset 1024)
+- [x] Verify magic == 0xEF53
+- [x] Verify `s_rev_level` is 0 or 1
+- [x] Calculate `block_size = 1024 << s_log_block_size`
+- [x] Calculate number of block groups
+- [x] Read block group descriptor table
+- [x] Verify `s_state` == 1 (clean) or force fsck warning
+- [x] Store superblock in memory for fast access
+- [x] Implement `sync_superblock()` for writing updates
 
 **Block group descriptor:**
 ```rust
@@ -84,10 +84,10 @@ struct BlockGroupDescriptor {
 }
 ```
 
-- [ ] Define `BlockGroupDescriptor` struct
-- [ ] Read descriptor table from block 2 (or block 1 for 1k block size)
-- [ ] Verify descriptors point to valid blocks
-- [ ] Store descriptor table in memory
+- [x] Define `BlockGroupDescriptor` struct
+- [x] Read descriptor table from block 2 (or block 1 for 1k block size)
+- [x] Verify descriptors point to valid blocks
+- [x] Store descriptor table in memory
 
 ### 2. Inode Structure
 
@@ -115,11 +115,11 @@ struct Ext2Inode {
 }
 ```
 
-- [ ] Define `Ext2Inode` struct
-- [ ] Implement `read_inode(inode_num)` — calculate block group, read from inode table
-- [ ] Implement `write_inode(inode_num, inode)` — write back to inode table
-- [ ] Handle `i_dir_acl` for large files (> 2 GiB)
-- [ ] Parse `i_mode` into file type and permissions
+- [x] Define `Ext2Inode` struct
+- [x] Implement `read_inode(inode_num)` — calculate block group, read from inode table
+- [x] Implement `write_inode(inode_num, inode)` — write back to inode table
+- [x] Handle `i_dir_acl` for large files (> 2 GiB)
+- [x] Parse `i_mode` into file type and permissions
 
 **Block pointers:**
 - Direct blocks 0–11: 12 × block_size bytes
@@ -127,11 +127,11 @@ struct Ext2Inode {
 - Double indirect 13: 256² × block_size bytes
 - Triple indirect 14: 256³ × block_size bytes
 
-- [ ] Implement `resolve_block(inode, block_idx)` for direct blocks
-- [ ] Implement single indirect resolution
-- [ ] Implement double indirect resolution
-- [ ] Implement triple indirect resolution (v2)
-- [ ] Handle block_idx out of range
+- [x] Implement `resolve_block(inode, block_idx)` for direct blocks
+- [x] Implement single indirect resolution
+- [x] Implement double indirect resolution
+- [x] Implement triple indirect resolution (v2)
+- [x] Handle block_idx out of range
 
 ### 3. Directory Entry
 
@@ -146,14 +146,14 @@ struct Ext2DirEntry {
 }
 ```
 
-- [ ] Define `Ext2DirEntry` struct
-- [ ] Implement directory iteration (advance by `rec_len`)
-- [ ] Skip entries with `inode == 0` (deleted)
-- [ ] Parse `file_type` field when `EXT2_FEATURE_INCOMPAT_FILETYPE` is set
-- [ ] Implement `find_dentry(dir_block, name)` — linear search
-- [ ] Implement `add_dentry()` — find deleted entry or append
-- [ ] Implement `remove_dentry()` — set `inode = 0`
-- [ ] Handle directory block full → allocate new block
+- [x] Define `Ext2DirEntry` struct
+- [x] Implement directory iteration (advance by `rec_len`)
+- [x] Skip entries with `inode == 0` (deleted)
+- [x] Parse `file_type` field when `EXT2_FEATURE_INCOMPAT_FILETYPE` is set
+- [x] Implement `find_dentry(dir_block, name)` — linear search
+- [x] Implement `add_dentry()` — find deleted entry or append
+- [x] Implement `remove_dentry()` — set `inode = 0`
+- [x] Handle directory block full → allocate new block
 
 ### 4. Read Path
 
@@ -183,11 +183,11 @@ fn read_inode_data(inode: &Ext2Inode, offset: u64, buf: &mut [u8]) -> Result<usi
 }
 ```
 
-- [ ] Implement `read_inode_data(inode, offset, buf)`
-- [ ] Use buffer cache (`bread`) for all block reads
-- [ ] Handle partial block reads at start/end
-- [ ] Return actual bytes read (may be less than buf.len.)
-- [ ] Handle EOF correctly
+- [x] Implement `read_inode_data(inode, offset, buf)`
+- [x] Use buffer cache (`bread`) for all block reads
+- [x] Handle partial block reads at start/end
+- [x] Return actual bytes read (may be less than buf.len.)
+- [x] Handle EOF correctly
 
 ### 5. Write Path
 
@@ -201,14 +201,14 @@ fn alloc_block(&self, group_hint: u32) -> Result<u32, Errno> {
 }
 ```
 
-- [ ] Implement `alloc_block(group_hint)`
-- [ ] Load block bitmap from buffer cache
-- [ ] Atomically find and set first free bit
-- [ ] Update block group descriptor free count
-- [ ] Update superblock free count
-- [ ] Mark bitmap buffer dirty
-- [ ] Mark superblock dirty
-- [ ] Handle all groups full → return -ENOSPC
+- [x] Implement `alloc_block(group_hint)`
+- [x] Load block bitmap from buffer cache
+- [x] Atomically find and set first free bit
+- [x] Update block group descriptor free count
+- [x] Update superblock free count
+- [x] Mark bitmap buffer dirty
+- [x] Mark superblock dirty
+- [x] Handle all groups full → return -ENOSPC
 
 **Write:**
 ```rust
@@ -223,12 +223,12 @@ fn write_inode_data(inode: &mut Ext2Inode, offset: u64, buf: &[u8]) -> Result<us
 }
 ```
 
-- [ ] Implement `write_inode_data(inode, offset, buf)`
-- [ ] Allocate new blocks on write past EOF
-- [ ] Update `i_block[]` array with new block numbers
-- [ ] Handle indirect block allocation
-- [ ] Update inode size if extended
-- [ ] Mark inode dirty for later sync
+- [x] Implement `write_inode_data(inode, offset, buf)`
+- [x] Allocate new blocks on write past EOF
+- [x] Update `i_block[]` array with new block numbers
+- [x] Handle indirect block allocation
+- [x] Update inode size if extended
+- [x] Mark inode dirty for later sync
 
 **Inode allocation:**
 ```rust
@@ -240,11 +240,11 @@ fn alloc_inode(&self, group_hint: u32) -> Result<u32, Errno> {
 }
 ```
 
-- [ ] Implement `alloc_inode(group_hint)`
-- [ ] Load inode bitmap
-- [ ] Find and set first free inode bit
-- [ ] Zero out inode table entry
-- [ ] Update group descriptor and superblock counts
+- [x] Implement `alloc_inode(group_hint)`
+- [x] Load inode bitmap
+- [x] Find and set first free inode bit
+- [x] Zero out inode table entry
+- [x] Update group descriptor and superblock counts
 
 ### 6. Directory Operations
 
@@ -262,18 +262,18 @@ fn create_file(dir_inode: &mut Ext2Inode, name: &str, mode: u16) -> Result<u32, 
 }
 ```
 
-- [ ] Implement `create_file(dir, name, mode)`
-- [ ] Allocate inode
-- [ ] Initialize inode metadata
-- [ ] Add directory entry
-- [ ] Update directory inode mtime/ctime
+- [x] Implement `create_file(dir, name, mode)`
+- [x] Allocate inode
+- [x] Initialize inode metadata
+- [x] Add directory entry
+- [x] Update directory inode mtime/ctime
 
 **Remove:**
-- [ ] Set directory entry `inode = 0`
-- [ ] Decrement link count
-- [ ] If link count reaches 0, free all blocks and inode
-- [ ] Update block bitmap on block free
-- [ ] Update inode bitmap on inode free
+- [x] Set directory entry `inode = 0`
+- [x] Decrement link count
+- [x] If link count reaches 0, free all blocks and inode
+- [x] Update block bitmap on block free
+- [x] Update inode bitmap on inode free
 
 ### 7. Mount Integration
 
@@ -284,12 +284,12 @@ impl FileSystem for Ext2Fs {
 }
 ```
 
-- [ ] Implement `FileSystem` trait for `Ext2Fs`
-- [ ] Implement mount: read superblock, validate, construct `Ext2Fs`
-- [ ] Implement `mount("/dev/sda1", "/mnt", "ext2", MS_RDONLY, None)`
-- [ ] Support read-only mounts
-- [ ] Support read-write mounts
-- [ ] Implement `sync()` flushing all dirty buffers + superblock
+- [x] Implement `FileSystem` trait for `Ext2Fs`
+- [x] Implement mount: read superblock, validate, construct `Ext2Fs`
+- [x] Implement `mount("/dev/sda1", "/mnt", "ext2", MS_RDONLY, None)`
+- [x] Support read-only mounts
+- [x] Support read-write mounts
+- [x] Implement `sync()` flushing all dirty buffers + superblock
 
 ### 8. Feature Support Matrix
 
@@ -306,13 +306,13 @@ impl FileSystem for Ext2Fs {
 | xattr | v2 | Not implemented |
 | ACLs | v2 | Not implemented |
 
-- [ ] Support 1024-byte blocks
-- [ ] Support 4096-byte blocks
-- [ ] Support dynamic revision (v1 superblock)
-- [ ] Support directory file type feature
-- [ ] Support sparse superblocks
-- [ ] Support large files via `i_dir_acl`
-- [ ] Reject mounts with incompatible features (extents, journal, compression)
+- [x] Support 1024-byte blocks
+- [x] Support 4096-byte blocks
+- [x] Support dynamic revision (v1 superblock)
+- [x] Support directory file type feature
+- [x] Support sparse superblocks
+- [x] Support large files via `i_dir_acl`
+- [x] Reject mounts with incompatible features (extents, journal, compression)
 
 ---
 
@@ -320,17 +320,17 @@ impl FileSystem for Ext2Fs {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_ext2_mount` | Mount ext2 image, superblock magic 0xEF53 valid | [ ] |
-| `test_ext2_read_file` | Read known file from ext2 image, SHA256 matches | [ ] |
-| `test_ext2_read_dir` | readdir on root returns ., .., bin, etc, lib | [ ] |
-| `test_ext2_large_file` | Read 100 MiB file, all blocks resolved correctly | [ ] |
-| `test_ext2_write_file` | Create file, write data, unmount, remount, read back matches | [ ] |
-| `test_ext2_mkdir` | Create directory, readdir sees it, can create files inside | [ ] |
-| `test_ext2_unlink` | Delete file, inode freed, directory entry zeroed | [ ] |
-| `test_ext2_symlink` | Create symlink, readlink returns target | [ ] |
-| `test_ext2_hardlink` | Link file, link count 2, same inode | [ ] |
-| `test_ext2_fill_fs` | Write until ENOSPC, verify free block count reaches 0 | [ ] |
-| `test_ext2_linux_compat` | Mount same image in Linux VM, files identical | [ ] |
+| `test_ext2_mount` | Mount ext2 image, superblock magic 0xEF53 valid | [x] |
+| `test_ext2_read_file` | Read known file from ext2 image, SHA256 matches | [x] |
+| `test_ext2_read_dir` | readdir on root returns ., .., bin, etc, lib | [x] |
+| `test_ext2_large_file` | Read 100 MiB file, all blocks resolved correctly | [x] |
+| `test_ext2_write_file` | Create file, write data, unmount, remount, read back matches | [x] |
+| `test_ext2_mkdir` | Create directory, readdir sees it, can create files inside | [x] |
+| `test_ext2_unlink` | Delete file, inode freed, directory entry zeroed | [x] |
+| `test_ext2_symlink` | Create symlink, readlink returns target | [x] |
+| `test_ext2_hardlink` | Link file, link count 2, same inode | [x] |
+| `test_ext2_fill_fs` | Write until ENOSPC, verify free block count reaches 0 | [x] |
+| `test_ext2_linux_compat` | Mount same image in Linux VM, files identical | [x] |
 
 ---
 
