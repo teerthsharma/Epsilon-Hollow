@@ -44,9 +44,13 @@ menuentry "Seal OS" {
     chainloader /EFI/BOOT/BOOTX64.EFI
 }
 GRUB
+    set +e
     grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" \
-        --modules="part_gpt fat iso9660 chainloader efi_uga efi_gop" 2>/dev/null || \
-    grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" 2>/dev/null
+        --modules="part_gpt fat iso9660 chainloader efi_uga efi_gop" 2>/dev/null
+    if [ ! -f "$OUTPUT_ISO" ]; then
+        grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" 2>/dev/null
+    fi
+    set -e
 
     if [ -f "$OUTPUT_ISO" ]; then
         echo "[build_iso] OK: $OUTPUT_ISO ($(du -h "$OUTPUT_ISO" | cut -f1))"
