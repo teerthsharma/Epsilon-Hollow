@@ -5,8 +5,6 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::drivers::interrupts;
-use crate::graphics::console::Console;
 use crate::graphics::framebuffer::Framebuffer;
 use crate::{GOVERNOR_EPSILON, THEOREM_STATES};
 

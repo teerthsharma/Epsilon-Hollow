@@ -19,6 +19,7 @@ pub struct PciDevice {
     pub function: u8,
     pub vendor_id: u16,
     pub device_id: u16,
+    pub revision: u8,
     pub class: u8,
     pub subclass: u8,
     pub prog_if: u8,
@@ -90,6 +91,7 @@ pub fn enumerate() -> Vec<PciDevice> {
             let device_id = ((vendor_device >> 16) & 0xFFFF) as u16;
 
             let class_reg = pci_read32(bus as u8, device, 0, 0x08);
+            let revision = (class_reg & 0xFF) as u8;
             let class = ((class_reg >> 24) & 0xFF) as u8;
             let subclass = ((class_reg >> 16) & 0xFF) as u8;
             let prog_if = ((class_reg >> 8) & 0xFF) as u8;
@@ -102,6 +104,7 @@ pub fn enumerate() -> Vec<PciDevice> {
                 function: 0,
                 vendor_id,
                 device_id,
+                revision,
                 class,
                 subclass,
                 prog_if,

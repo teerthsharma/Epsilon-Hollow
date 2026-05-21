@@ -12,6 +12,8 @@ use aether_core::ml::{
 };
 use aether_core::ml::linalg::LossConfig;
 
+pub mod topo_asm;
+
 /// Status of the ML runtime.
 pub struct MlStatus {
     pub tensor_ops_available: bool,

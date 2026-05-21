@@ -355,7 +355,7 @@ impl Compiler {
                     let end_val = r.end.as_f64();
 
                     let iter_idx = self.resolve_local(&stmt.iterator);
-                    
+
                     // 1. Initialize Iterator: i = start_val
                     self.code.push(OpCode::PUSH(start_val));
                     self.code.push(OpCode::STORE(iter_idx));

@@ -1,25 +1,27 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Persistence layer — superblock + inode table + buddy bitmap + payload-first extents.
+//! Persistence layer — superblock + inode table + bitmap allocator + WAL journal.
 
 use alloc::boxed::Box;
-use alloc::format;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::encoder::ManifoldPayload;
+use super::encoder::{ManifoldPayload, SpherePoint};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
-use crate::drivers::block::{read_block, write_block, BlockDevice, BlockError};
+use crate::drivers::block::{read_block, write_block, BlockError};
 use crate::serial_println;
 
 const SECTOR_SIZE: usize = 512;
 const INODE_RECORD_SIZE: usize = 256;
-const MAX_EXTENT_BLOCKS: u32 = 256; // 128 KiB
-const MAGIC: u64 = 0x4D_46_53_5F_4F_31_00_00; // "MFS_O1\0\0"
+const MAX_EXTENT_BLOCKS: u32 = 256;
+const MAGIC: [u8; 4] = *b"MNFD";
 const VERSION: u32 = 1;
+const JOURNAL_BLOCKS: u64 = 1024;
+const NONE_ID: u64 = u64::MAX;
 
 /// Trait abstracting over real AHCI and mock block devices.
 pub trait BlockStoreBackend: Send + Sync {
@@ -68,6 +70,7 @@ impl BlockStoreBackend for MockBackend {
         if idx >= self.sectors.len() || buf.len() != SECTOR_SIZE {
             return Err(BlockError::InvalidLba);
         }
+        // SAFETY: idx is bounds-checked above; ptr points to valid mutable memory in Vec.
         unsafe {
             let ptr = self.sectors.as_ptr() as *mut [u8; SECTOR_SIZE];
             (*ptr.add(idx)).copy_from_slice(buf);
@@ -79,41 +82,69 @@ impl BlockStoreBackend for MockBackend {
 unsafe impl Send for MockBackend {}
 unsafe impl Sync for MockBackend {}
 
+// ── Superblock ──────────────────────────────────────────────────────────────
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct Superblock {
-    magic: u64,
+    magic: [u8; 4],
     version: u32,
-    inode_table_lba: u64,
-    freelist_lba: u64,
-    generation: u64,
-    total_blocks: u64,
+    block_size: u32,
+    _pad1: [u8; 4],
     inode_count: u64,
+    free_bitmap_start: u64,
+    free_bitmap_blocks: u64,
+    journal_start: u64,
+    journal_blocks: u64,
+    inode_table_start: u64,
+    inode_table_blocks: u64,
+    data_start: u64,
+    total_blocks: u64,
+    generation: u64,
     crc32: u32,
-    _pad: [u8; 512 - 48],
+    _pad2: [u8; 412],
 }
 
 impl Superblock {
     fn new(total_blocks: u64) -> Self {
+        let block_size = SECTOR_SIZE as u32;
+        let journal_start = 1;
+        let free_bitmap_start = journal_start + JOURNAL_BLOCKS;
+        let free_bitmap_blocks = 256;
+        let inode_table_start = free_bitmap_start + free_bitmap_blocks;
+        let max_inodes = total_blocks.saturating_sub(inode_table_start);
+        let inode_table_blocks =
+            (max_inodes * INODE_RECORD_SIZE as u64 + block_size as u64 - 1) / block_size as u64;
+        let data_start = inode_table_start + inode_table_blocks;
+
         Self {
             magic: MAGIC,
             version: VERSION,
-            inode_table_lba: 1,
-            freelist_lba: 1 + 1024, // 1M inodes = 512 sectors of inode table
-            generation: 1,
+            block_size,
+            _pad1: [0; 4],
+            inode_count: max_inodes,
+            free_bitmap_start,
+            free_bitmap_blocks,
+            journal_start,
+            journal_blocks: JOURNAL_BLOCKS,
+            inode_table_start,
+            inode_table_blocks,
+            data_start,
             total_blocks,
-            inode_count: 1024 * 1024,
+            generation: 1,
             crc32: 0,
-            _pad: [0; 512 - 48],
+            _pad2: [0; 412],
         }
     }
 
+    fn valid(&self) -> bool {
+        self.magic == MAGIC && self.version == VERSION && self.block_size as usize == SECTOR_SIZE
+    }
+
     fn as_bytes(&self) -> &[u8] {
+        // SAFETY: Superblock is repr(C) and exactly 512 bytes; any bit pattern is valid for byte slice.
         unsafe {
-            core::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                size_of::<Self>(),
-            )
+            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
         }
     }
 
@@ -121,31 +152,105 @@ impl Superblock {
         if buf.len() < size_of::<Self>() {
             return None;
         }
+        // SAFETY: buf has correct length; read_unaligned avoids alignment requirements.
         let sb = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Self) };
-        if sb.magic != MAGIC {
-            return None;
+        if sb.valid() {
+            Some(sb)
+        } else {
+            None
         }
-        Some(sb)
     }
 }
 
-#[derive(Clone, Debug)]
-struct InodeRecord {
-    id: u64,
-    kind: u8, // 0=file, 1=dir
+// ── JournalEntry ────────────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct JournalEntry {
+    seq: u64,
+    op: u8,
+    committed: u8,
+    _pad1: [u8; 6],
+    inode_id: u64,
     parent: u64,
+    kind: u8,
+    _pad2: [u8; 7],
     data_lba: u64,
     data_blocks: u32,
     voronoi_cell: u32,
-    subcell: u32,
     original_size: u64,
     permissions: u16,
+    _pad3: [u8; 6],
     created_ms: u64,
     modified_ms: u64,
     content_hash: u64,
     name_len: u16,
     name: [u8; 128],
-    _pad: [u8; 256 - 194],
+    checksum: u32,
+    _pad4: [u8; 282],
+}
+
+impl JournalEntry {
+    fn checksum(&self) -> u32 {
+        let bytes = self.as_bytes();
+        let mut h: u32 = 0x811c_9dc5;
+        for &b in &bytes[..SECTOR_SIZE - 4] {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        h
+    }
+
+    fn verify(&self) -> bool {
+        self.checksum == self.checksum()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: JournalEntry is repr(C) and exactly 512 bytes.
+        unsafe {
+            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
+        }
+    }
+
+    fn from_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < size_of::<Self>() {
+            return None;
+        }
+        // SAFETY: buf has correct length.
+        let entry = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Self) };
+        if entry.verify() {
+            Some(entry)
+        } else {
+            None
+        }
+    }
+}
+
+// ── InodeRecord ─────────────────────────────────────────────────────────────
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct InodeRecord {
+    id: u64,
+    kind: u8,
+    _pad1: [u8; 7],
+    parent: u64,
+    data_lba: u64,
+    data_blocks: u32,
+    voronoi_cell: u32,
+    cluster_id: i32,
+    _pad2: [u8; 4],
+    original_size: u64,
+    permissions: u16,
+    _pad3: [u8; 6],
+    created_ms: u64,
+    modified_ms: u64,
+    content_hash: u64,
+    name_len: u16,
+    name: [u8; 128],
+    sibling_next: u64,
+    sibling_prev: u64,
+    dir_first_child: u64,
 }
 
 impl InodeRecord {
@@ -160,43 +265,88 @@ impl InodeRecord {
                 InodeKind::File => 0,
                 InodeKind::Directory => 1,
             },
+            _pad1: [0; 7],
             parent: ino.parent,
             data_lba,
             data_blocks,
             voronoi_cell: ino.voronoi_cell as u32,
-            subcell: 0,
+            cluster_id: ino.cluster_id,
+            _pad2: [0; 4],
             original_size: ino.metadata.original_size,
             permissions: ino.metadata.permissions,
+            _pad3: [0; 6],
             created_ms: ino.metadata.created_ms,
             modified_ms: ino.metadata.modified_ms,
             content_hash: ino.payload.content_hash,
             name_len: name_len as u16,
             name,
-            _pad: [0; 256 - 194],
+            sibling_next: ino.sibling_next.unwrap_or(NONE_ID),
+            sibling_prev: ino.sibling_prev.unwrap_or(NONE_ID),
+            dir_first_child: ino.dir_first_child.unwrap_or(NONE_ID),
+        }
+    }
+
+    fn to_inode(&self, payload: ManifoldPayload, data: Vec<u8>) -> Inode {
+        let name_len = self.name_len.min(128) as usize;
+        let name = String::from_utf8_lossy(&self.name[..name_len]).into_owned();
+        Inode {
+            id: self.id,
+            name,
+            kind: match self.kind {
+                1 => InodeKind::Directory,
+                _ => InodeKind::File,
+            },
+            payload,
+            data,
+            metadata: InodeMetadata {
+                created_ms: self.created_ms,
+                modified_ms: self.modified_ms,
+                original_size: self.original_size,
+                permissions: self.permissions,
+            },
+            voronoi_cell: self.voronoi_cell as usize,
+            cluster_id: self.cluster_id,
+            parent: self.parent,
+            sibling_next: if self.sibling_next == NONE_ID {
+                None
+            } else {
+                Some(self.sibling_next)
+            },
+            sibling_prev: if self.sibling_prev == NONE_ID {
+                None
+            } else {
+                Some(self.sibling_prev)
+            },
+            dir_first_child: if self.dir_first_child == NONE_ID {
+                None
+            } else {
+                Some(self.dir_first_child)
+            },
         }
     }
 
     fn as_bytes(&self) -> &[u8] {
+        // SAFETY: InodeRecord is repr(C) and exactly 256 bytes.
         unsafe {
-            core::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                size_of::<Self>(),
-            )
+            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
         }
     }
 }
 
-/// O(1) persistence layer.
+// ── BlockStore ──────────────────────────────────────────────────────────────
+
+/// O(1) persistence layer with bitmap allocator and WAL.
 pub struct BlockStore {
     backend: Option<Box<dyn BlockStoreBackend>>,
     superblock: Option<Superblock>,
-    // In-memory caches for when backend is unavailable
-    inode_records: Vec<Option<InodeRecord>>,
-    data_extents: Vec<Option<Vec<u8>>>,
-    payload_extents: Vec<Option<ManifoldPayload>>,
-    freelist: Vec<u64>, // free extent IDs
-    next_extent_id: u64,
+    inode_records: BTreeMap<u64, InodeRecord>,
+    data_extents: BTreeMap<u64, Vec<u8>>,
+    payload_extents: BTreeMap<u64, ManifoldPayload>,
+    freelist: Vec<u64>,
     dirty_inodes: Vec<u64>,
+    bitmap: Vec<u8>,
+    journal_seq: u64,
+    journal_pos: u64,
 }
 
 impl BlockStore {
@@ -204,196 +354,522 @@ impl BlockStore {
         Self {
             backend: None,
             superblock: None,
-            inode_records: Vec::new(),
-            data_extents: Vec::new(),
-            payload_extents: Vec::new(),
+            inode_records: BTreeMap::new(),
+            data_extents: BTreeMap::new(),
+            payload_extents: BTreeMap::new(),
             freelist: Vec::new(),
-            next_extent_id: 0,
             dirty_inodes: Vec::new(),
+            bitmap: Vec::new(),
+            journal_seq: 0,
+            journal_pos: 0,
         }
     }
 
     pub fn with_mock(num_sectors: usize) -> Self {
         let mut s = Self::new();
         s.backend = Some(Box::new(MockBackend::new(num_sectors)));
-        s.format(1024 * 1024);
+        let _ = s.format(num_sectors as u64);
         s
     }
 
-    pub fn try_mount_ahci(&mut self) -> bool {
+    pub fn mount_ahci() -> Result<Self, BlockError> {
         let backend = AhciBackend;
         let mut buf = [0u8; SECTOR_SIZE];
-        if backend.read_sector(0, &mut buf).is_err() {
-            serial_println!("[BlockStore] AHCI not available");
-            return false;
+        backend.read_sector(0, &mut buf)?;
+        if Superblock::from_bytes(&buf).is_none() {
+            let mut s = Self::new();
+            s.backend = Some(Box::new(backend));
+            s.format(1024 * 1024)?;
+            return Ok(s);
         }
-        if let Some(sb) = Superblock::from_bytes(&buf) {
-            serial_println!("[BlockStore] Mounted existing filesystem, gen={}", sb.generation);
-            self.superblock = Some(sb);
-        } else {
-            serial_println!("[BlockStore] No valid superblock; formatting");
-            self.format_with_backend(Box::new(backend));
-            return true;
-        }
-        self.backend = Some(Box::new(backend));
-        true
+        let mut s = Self::new();
+        s.backend = Some(Box::new(backend));
+        s.read_superblock()?;
+        s.read_bitmap()?;
+        s.read_inode_table()?;
+        s.replay_journal()?;
+        Ok(s)
     }
 
-    pub fn format(&mut self, total_blocks: u64) {
+    pub fn try_mount_ahci(&mut self) -> bool {
+        match Self::mount_ahci() {
+            Ok(store) => {
+                *self = store;
+                true
+            }
+            Err(e) => {
+                serial_println!("[BlockStore] AHCI mount failed: {:?}", e);
+                false
+            }
+        }
+    }
+
+    pub fn format(&mut self, total_blocks: u64) -> Result<(), BlockError> {
+        if total_blocks < JOURNAL_BLOCKS + 10 {
+            return Err(BlockError::InvalidLba);
+        }
         self.superblock = Some(Superblock::new(total_blocks));
         self.inode_records.clear();
         self.data_extents.clear();
         self.payload_extents.clear();
         self.freelist.clear();
-        self.next_extent_id = 0;
         self.dirty_inodes.clear();
-    }
 
-    fn format_with_backend(&mut self, backend: Box<dyn BlockStoreBackend>) {
-        self.backend = Some(backend);
-        self.format(1024 * 1024);
-        if let Some(ref sb) = self.superblock {
-            let _ = self.backend.as_ref().unwrap().write_sector(0, sb.as_bytes());
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let bitmap_bytes = (sb.free_bitmap_blocks as usize) * SECTOR_SIZE;
+        self.bitmap = vec![0u8; bitmap_bytes];
+        self.mark_used(0, sb.data_start)?;
+
+        self.journal_seq = 0;
+        self.journal_pos = sb.journal_start;
+
+        if let Some(ref backend) = self.backend {
+            backend.write_sector(0, sb.as_bytes())?;
+            let zero = [0u8; SECTOR_SIZE];
+            for i in sb.journal_start..sb.journal_start + sb.journal_blocks {
+                backend.write_sector(i, &zero)?;
+            }
+            for i in sb.free_bitmap_start..sb.free_bitmap_start + sb.free_bitmap_blocks {
+                backend.write_sector(i, &zero)?;
+            }
         }
+        Ok(())
     }
 
-    fn alloc_extent(&mut self, payload: &ManifoldPayload, data: &[u8]) -> (u64, u32) {
-        let total = payload_bytes(payload) + data.len();
+    fn mark_used(&mut self, lba: u64, count: u64) -> Result<(), BlockError> {
+        for i in lba..lba + count {
+            let idx = i as usize;
+            let byte = idx / 8;
+            let bit = idx % 8;
+            if byte >= self.bitmap.len() {
+                return Err(BlockError::InvalidLba);
+            }
+            self.bitmap[byte] |= 1 << bit;
+        }
+        Ok(())
+    }
+
+    fn mark_free(&mut self, lba: u64, count: u64) -> Result<(), BlockError> {
+        for i in lba..lba + count {
+            let idx = i as usize;
+            let byte = idx / 8;
+            let bit = idx % 8;
+            if byte >= self.bitmap.len() {
+                return Err(BlockError::InvalidLba);
+            }
+            self.bitmap[byte] &= !(1 << bit);
+        }
+        Ok(())
+    }
+
+    fn is_free(&self, lba: u64) -> Result<bool, BlockError> {
+        let idx = lba as usize;
+        let byte = idx / 8;
+        let bit = idx % 8;
+        if byte >= self.bitmap.len() {
+            return Err(BlockError::InvalidLba);
+        }
+        Ok((self.bitmap[byte] >> bit) & 1 == 0)
+    }
+
+    pub fn alloc_blocks(&mut self, count: u32) -> Result<u64, BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
+        let start = sb.data_start;
+        let end = sb.total_blocks;
+        let mut run_start = 0u64;
+        let mut run_len = 0u32;
+
+        for lba in start..end {
+            if self.is_free(lba)? {
+                if run_len == 0 {
+                    run_start = lba;
+                }
+                run_len += 1;
+                if run_len >= count {
+                    self.mark_used(run_start, count as u64)?;
+                    return Ok(run_start);
+                }
+            } else {
+                run_len = 0;
+            }
+        }
+        Err(BlockError::IoError)
+    }
+
+    pub fn free_blocks(&mut self, lba: u64, count: u32) -> Result<(), BlockError> {
+        self.mark_free(lba, count as u64)
+    }
+
+    fn read_superblock(&mut self) -> Result<(), BlockError> {
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let mut buf = [0u8; SECTOR_SIZE];
+        backend.read_sector(0, &mut buf)?;
+        let sb = Superblock::from_bytes(&buf).ok_or(BlockError::IoError)?;
+        self.superblock = Some(sb);
+        Ok(())
+    }
+
+    fn read_bitmap(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let mut bitmap = Vec::with_capacity((sb.free_bitmap_blocks as usize) * SECTOR_SIZE);
+        for i in 0..sb.free_bitmap_blocks {
+            let mut buf = [0u8; SECTOR_SIZE];
+            backend.read_sector(sb.free_bitmap_start + i, &mut buf)?;
+            bitmap.extend_from_slice(&buf);
+        }
+        self.bitmap = bitmap;
+        Ok(())
+    }
+
+    fn write_bitmap(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        for i in 0..sb.free_bitmap_blocks {
+            let start = (i as usize) * SECTOR_SIZE;
+            let end = start + SECTOR_SIZE;
+            if end > self.bitmap.len() {
+                break;
+            }
+            backend.write_sector(sb.free_bitmap_start + i, &self.bitmap[start..end])?;
+        }
+        Ok(())
+    }
+
+    fn read_inode_table(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
+
+        let mut sector = [0u8; SECTOR_SIZE];
+        for block in 0..sb.inode_table_blocks {
+            backend.read_sector(sb.inode_table_start + block, &mut sector)?;
+            for rec in 0..records_per_sector {
+                let offset = rec * INODE_RECORD_SIZE;
+                // SAFETY: offset is within sector; InodeRecord is 256 bytes.
+                let record = unsafe {
+                    core::ptr::read_unaligned(sector.as_ptr().add(offset) as *const InodeRecord)
+                };
+                let is_valid = record.kind <= 1 && (record.id != 0 || record.name_len > 0);
+                if is_valid {
+                    self.inode_records.insert(record.id, record);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn write_inode_table(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
+
+        let zero = [0u8; SECTOR_SIZE];
+        for block in 0..sb.inode_table_blocks {
+            backend.write_sector(sb.inode_table_start + block, &zero)?;
+        }
+
+        for (&id, record) in &self.inode_records {
+            let block = id / (records_per_sector as u64);
+            let rec = (id % (records_per_sector as u64)) as usize;
+            if block >= sb.inode_table_blocks {
+                continue;
+            }
+            let lba = sb.inode_table_start + block;
+            let mut sector = [0u8; SECTOR_SIZE];
+            backend.read_sector(lba, &mut sector)?;
+            let offset = rec * INODE_RECORD_SIZE;
+            sector[offset..offset + INODE_RECORD_SIZE].copy_from_slice(record.as_bytes());
+            backend.write_sector(lba, &sector)?;
+        }
+        Ok(())
+    }
+
+    fn replay_journal(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let mut buf = [0u8; SECTOR_SIZE];
+        let mut max_seq = 0u64;
+
+        for i in 0..sb.journal_blocks {
+            {
+                let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+                backend.read_sector(sb.journal_start + i, &mut buf)?;
+            }
+            if let Some(entry) = JournalEntry::from_bytes(&buf) {
+                if entry.committed != 0 && entry.seq > max_seq {
+                    max_seq = entry.seq;
+                    let payload = if entry.data_blocks > 0 && entry.data_lba != 0 {
+                        match self.read_data_extent(entry.data_lba, entry.data_blocks as usize) {
+                            Ok(ref buf) => bytes_to_payload(buf).unwrap_or_else(|| ManifoldPayload {
+                                points: vec![SpherePoint::zero()],
+                                point_count: 1,
+                                betti_0: 1,
+                                original_size: entry.original_size,
+                                content_hash: entry.content_hash,
+                            }),
+                            Err(_) => ManifoldPayload {
+                                points: vec![SpherePoint::zero()],
+                                point_count: 1,
+                                betti_0: 1,
+                                original_size: entry.original_size,
+                                content_hash: entry.content_hash,
+                            },
+                        }
+                    } else {
+                        ManifoldPayload {
+                            points: vec![SpherePoint::zero()],
+                            point_count: 1,
+                            betti_0: 1,
+                            original_size: entry.original_size,
+                            content_hash: entry.content_hash,
+                        }
+                    };
+
+                    let data = if entry.data_blocks > 0 && entry.data_lba != 0 {
+                        match self.read_data_extent(entry.data_lba, entry.data_blocks as usize) {
+                            Ok(ref extent) => {
+                                let pbytes = payload_bytes(&payload);
+                                if extent.len() > pbytes {
+                                    extent[pbytes..].to_vec()
+                                } else {
+                                    Vec::new()
+                                }
+                            }
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    let name_len = entry.name_len.min(128) as usize;
+                    let name = String::from_utf8_lossy(&entry.name[..name_len]).into_owned();
+                    let inode = Inode {
+                        id: entry.inode_id,
+                        name,
+                        kind: match entry.kind {
+                            1 => InodeKind::Directory,
+                            _ => InodeKind::File,
+                        },
+                        payload,
+                        data,
+                        metadata: InodeMetadata {
+                            created_ms: entry.created_ms,
+                            modified_ms: entry.modified_ms,
+                            original_size: entry.original_size,
+                            permissions: entry.permissions,
+                        },
+                        voronoi_cell: entry.voronoi_cell as usize,
+                        cluster_id: entry.voronoi_cell as i32,
+                        parent: entry.parent,
+                        sibling_next: None,
+                        sibling_prev: None,
+                        dir_first_child: None,
+                    };
+
+                    let record = InodeRecord::from_inode(&inode, entry.data_lba, entry.data_blocks);
+                    self.inode_records.insert(entry.inode_id, record);
+                    if entry.data_lba != 0 && entry.data_blocks > 0 {
+                        let _ = self.read_data_extent(entry.data_lba, entry.data_blocks as usize);
+                    }
+                }
+            }
+        }
+        self.journal_seq = max_seq;
+        Ok(())
+    }
+
+    fn write_journal_entry(&mut self, entry: &JournalEntry) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let lba = sb.journal_start + (self.journal_pos % sb.journal_blocks);
+        backend.write_sector(lba, entry.as_bytes())?;
+        self.journal_pos = (self.journal_pos + 1) % sb.journal_blocks;
+        Ok(())
+    }
+
+    fn commit_journal(&mut self) -> Result<(), BlockError> {
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let mut buf = [0u8; SECTOR_SIZE];
+
+        for i in 0..sb.journal_blocks {
+            backend.read_sector(sb.journal_start + i, &mut buf)?;
+            if let Some(mut entry) = JournalEntry::from_bytes(&buf) {
+                if entry.committed == 0 {
+                    entry.committed = 1;
+                    entry.checksum = entry.checksum();
+                    backend.write_sector(sb.journal_start + i, entry.as_bytes())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read_data_extent(&mut self, lba: u64, blocks: usize) -> Result<Vec<u8>, BlockError> {
+        if let Some(extent) = self.data_extents.get(&lba) {
+            return Ok(extent.clone());
+        }
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let mut extent = Vec::with_capacity(blocks * SECTOR_SIZE);
+        for i in 0..blocks {
+            let mut sector = [0u8; SECTOR_SIZE];
+            backend.read_sector(lba + i as u64, &mut sector)?;
+            extent.extend_from_slice(&sector);
+        }
+        self.data_extents.insert(lba, extent.clone());
+        Ok(extent)
+    }
+
+    fn write_data_extent(&mut self, lba: u64, blocks: usize, data: &[u8]) -> Result<(), BlockError> {
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        for i in 0..blocks {
+            let start = i * SECTOR_SIZE;
+            let end = (start + SECTOR_SIZE).min(data.len());
+            let mut sector = [0u8; SECTOR_SIZE];
+            sector[..end - start].copy_from_slice(&data[start..end]);
+            backend.write_sector(lba + i as u64, &sector)?;
+        }
+        self.data_extents.insert(lba, data.to_vec());
+        Ok(())
+    }
+
+    pub fn write_inode(&mut self, inode: &Inode, data: &[u8]) -> Result<(), BlockError> {
+        let payload = &inode.payload;
+        let payload_buf = payload_to_bytes(payload);
+        let total = payload_buf.len() + data.len();
         let blocks_needed = ((total + SECTOR_SIZE - 1) / SECTOR_SIZE).max(1) as u32;
         let blocks = blocks_needed.min(MAX_EXTENT_BLOCKS);
 
-        let id = if let Some(id) = self.freelist.pop() {
-            id
-        } else {
-            let id = self.next_extent_id;
-            self.next_extent_id += 1;
-            id
-        };
-
-        // Ensure vectors are large enough
-        while self.data_extents.len() <= id as usize {
-            self.data_extents.push(None);
-            self.payload_extents.push(None);
-        }
-
-        let mut extent = Vec::with_capacity((blocks as usize) * SECTOR_SIZE);
-        extent.extend_from_slice(&payload_to_bytes(payload));
-        extent.extend_from_slice(data);
-        extent.resize((blocks as usize) * SECTOR_SIZE, 0);
-        self.data_extents[id as usize] = Some(extent);
-        self.payload_extents[id as usize] = Some(payload.clone());
-
-        (id, blocks)
-    }
-
-    fn free_extent(&mut self, id: u64) {
-        let idx = id as usize;
-        if idx < self.data_extents.len() {
-            self.data_extents[idx] = None;
-            self.payload_extents[idx] = None;
-        }
-        self.freelist.push(id);
-    }
-
-    pub fn write_inode(&mut self, inode: &Inode, data: &[u8]) {
-        let slot = (inode.id & 0xFFFF_FFFF) as usize;
-        while self.inode_records.len() <= slot {
-            self.inode_records.push(None);
-        }
-
-        // Allocate or reuse extent
-        let (extent_id, blocks) = if let Some(ref old) = self.inode_records[slot] {
-            if old.data_blocks > 0 {
-                // Try to reuse if size fits
-                let old_total = (old.data_blocks as usize) * SECTOR_SIZE;
-                let new_total = payload_bytes(&inode.payload) + data.len();
-                if new_total <= old_total {
-                    // Reuse same extent
-                    let idx = old.data_lba as usize;
-                    if idx < self.data_extents.len() {
-                        let mut extent = Vec::with_capacity(old_total);
-                        extent.extend_from_slice(&payload_to_bytes(&inode.payload));
-                        extent.extend_from_slice(data);
-                        extent.resize(old_total, 0);
-                        self.data_extents[idx] = Some(extent);
-                        self.payload_extents[idx] = Some(inode.payload.clone());
-                    }
-                    self.inode_records[slot] = Some(InodeRecord::from_inode(inode, old.data_lba, old.data_blocks));
-                    self.dirty_inodes.push(inode.id);
-                    return;
+        let old_record = self.inode_records.get(&inode.id).copied();
+        let (lba, blocks) = if let Some(old) = old_record {
+            if old.data_blocks >= blocks && old.data_lba != 0 {
+                let mut extent = Vec::with_capacity((old.data_blocks as usize) * SECTOR_SIZE);
+                extent.extend_from_slice(&payload_buf);
+                extent.extend_from_slice(data);
+                extent.resize((old.data_blocks as usize) * SECTOR_SIZE, 0);
+                self.write_data_extent(old.data_lba, old.data_blocks as usize, &extent)?;
+                self.payload_extents.insert(old.data_lba, payload.clone());
+                (old.data_lba, old.data_blocks)
+            } else {
+                if old.data_lba != 0 && old.data_blocks > 0 {
+                    let _ = self.free_blocks(old.data_lba, old.data_blocks);
                 }
-                self.free_extent(old.data_lba);
+                let new_lba = self.alloc_blocks(blocks)?;
+                let mut extent = Vec::with_capacity((blocks as usize) * SECTOR_SIZE);
+                extent.extend_from_slice(&payload_buf);
+                extent.extend_from_slice(data);
+                extent.resize((blocks as usize) * SECTOR_SIZE, 0);
+                self.write_data_extent(new_lba, blocks as usize, &extent)?;
+                self.payload_extents.insert(new_lba, payload.clone());
+                (new_lba, blocks)
             }
-            (0, 0)
         } else {
-            (0, 0)
+            let new_lba = self.alloc_blocks(blocks)?;
+            let mut extent = Vec::with_capacity((blocks as usize) * SECTOR_SIZE);
+            extent.extend_from_slice(&payload_buf);
+            extent.extend_from_slice(data);
+            extent.resize((blocks as usize) * SECTOR_SIZE, 0);
+            self.write_data_extent(new_lba, blocks as usize, &extent)?;
+            self.payload_extents.insert(new_lba, payload.clone());
+            (new_lba, blocks)
         };
 
-        let (extent_id, blocks) = if extent_id == 0 && blocks == 0 {
-            self.alloc_extent(&inode.payload, data)
-        } else {
-            (extent_id, blocks)
-        };
-
-        self.inode_records[slot] = Some(InodeRecord::from_inode(inode, extent_id, blocks));
+        let record = InodeRecord::from_inode(inode, lba, blocks);
+        self.inode_records.insert(inode.id, record);
         self.dirty_inodes.push(inode.id);
+
+        // WAL: write journal entry before metadata is durable.
+        self.journal_seq += 1;
+        let mut name = [0u8; 128];
+        let name_bytes = inode.name.as_bytes();
+        let name_len = name_bytes.len().min(128);
+        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        let mut entry = JournalEntry {
+            seq: self.journal_seq,
+            op: 1,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: inode.id,
+            parent: inode.parent,
+            kind: match inode.kind {
+                InodeKind::File => 0,
+                InodeKind::Directory => 1,
+            },
+            _pad2: [0; 7],
+            data_lba: lba,
+            data_blocks: blocks,
+            voronoi_cell: inode.voronoi_cell as u32,
+            original_size: inode.metadata.original_size,
+            permissions: inode.metadata.permissions,
+            _pad3: [0; 6],
+            created_ms: inode.metadata.created_ms,
+            modified_ms: inode.metadata.modified_ms,
+            content_hash: inode.payload.content_hash,
+            name_len: name_len as u16,
+            name,
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        entry.checksum = entry.checksum();
+        self.write_journal_entry(&entry)?;
+
+        Ok(())
     }
 
     pub fn read_data(&self, inode_id: u64) -> Option<(ManifoldPayload, Vec<u8>)> {
-        let slot = (inode_id & 0xFFFF_FFFF) as usize;
-        let record = self.inode_records.get(slot)?.as_ref()?;
-        let idx = record.data_lba as usize;
-        let extent = self.data_extents.get(idx)?.as_ref()?;
-        let payload = self.payload_extents.get(idx)?.as_ref()?.clone();
-        let payload_len = payload_bytes(&payload);
-        let data = extent[payload_len..payload_len + record.original_size as usize].to_vec();
+        let record = self.inode_records.get(&inode_id)?;
+        let extent = self.data_extents.get(&record.data_lba)?;
+        let payload = self.payload_extents.get(&record.data_lba)?.clone();
+        let pbytes = payload_bytes(&payload);
+        let data = if extent.len() > pbytes && record.original_size > 0 {
+            let end = (pbytes + record.original_size as usize).min(extent.len());
+            extent[pbytes..end].to_vec()
+        } else {
+            Vec::new()
+        };
         Some((payload, data))
     }
 
     pub fn read_payload(&self, inode_id: u64) -> Option<ManifoldPayload> {
-        let slot = (inode_id & 0xFFFF_FFFF) as usize;
-        let record = self.inode_records.get(slot)?.as_ref()?;
-        let idx = record.data_lba as usize;
-        self.payload_extents.get(idx)?.as_ref().cloned()
+        let record = self.inode_records.get(&inode_id)?;
+        self.payload_extents.get(&record.data_lba).cloned()
     }
 
     pub fn flush_inode(&mut self, inode_id: u64) -> Result<(), BlockError> {
-        let Some(ref backend) = self.backend else { return Ok(()); };
-        let slot = (inode_id & 0xFFFF_FFFF) as usize;
-        let record = match self.inode_records.get(slot).and_then(|r| r.as_ref()) {
-            Some(r) => r.clone(),
+        let record = match self.inode_records.get(&inode_id).copied() {
+            Some(r) => r,
             None => return Ok(()),
         };
-
-        // Write data extent first
-        let idx = record.data_lba as usize;
-        if let Some(ref extent) = self.data_extents.get(idx).and_then(|e| e.as_ref()) {
-            let blocks = record.data_blocks as usize;
-            for i in 0..blocks {
-                let lba = record.data_lba + i as u64;
-                let start = i * SECTOR_SIZE;
-                let end = start + SECTOR_SIZE;
-                backend.write_sector(lba, &extent[start..end])?;
+        if record.data_lba != 0 && record.data_blocks > 0 {
+            if let Some(extent) = self.data_extents.get(&record.data_lba).cloned() {
+                self.write_data_extent(record.data_lba, record.data_blocks as usize, &extent)?;
             }
         }
-
-        // Write inode record
-        let inode_lba = 1 + (slot as u64 / 2);
+        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
+        let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
+        let block = inode_id / (records_per_sector as u64);
+        let rec = (inode_id % (records_per_sector as u64)) as usize;
+        if block >= sb.inode_table_blocks {
+            return Err(BlockError::InvalidLba);
+        }
+        let lba = sb.inode_table_start + block;
         let mut sector = [0u8; SECTOR_SIZE];
-        backend.read_sector(inode_lba, &mut sector)?;
-        let offset_in_sector = (slot % 2) * INODE_RECORD_SIZE;
-        sector[offset_in_sector..offset_in_sector + INODE_RECORD_SIZE]
-            .copy_from_slice(record.as_bytes());
-        backend.write_sector(inode_lba, &sector)?;
-
+        backend.read_sector(lba, &mut sector)?;
+        let offset = rec * INODE_RECORD_SIZE;
+        sector[offset..offset + INODE_RECORD_SIZE].copy_from_slice(record.as_bytes());
+        backend.write_sector(lba, &sector)?;
         Ok(())
     }
 
     pub fn flush_all(&mut self) -> Result<(), BlockError> {
         let dirty: Vec<u64> = self.dirty_inodes.drain(..).collect();
-        for id in dirty {
-            self.flush_inode(id)?;
+        for id in &dirty {
+            self.flush_inode(*id)?;
         }
+        self.commit_journal()?;
+        self.write_bitmap()?;
         if let Some(ref sb) = self.superblock {
             if let Some(ref backend) = self.backend {
                 backend.write_sector(0, sb.as_bytes())?;
@@ -402,17 +878,54 @@ impl BlockStore {
         Ok(())
     }
 
+    pub fn sync(&mut self) -> Result<(), BlockError> {
+        self.flush_all()
+    }
+
     pub fn is_mounted(&self) -> bool {
         self.superblock.is_some()
+    }
+
+    pub fn load_inodes(&self) -> Vec<Inode> {
+        let mut inodes = Vec::new();
+        for (&_id, record) in &self.inode_records {
+            let payload = match self.payload_extents.get(&record.data_lba) {
+                Some(p) => p.clone(),
+                None => ManifoldPayload {
+                    points: vec![SpherePoint::zero()],
+                    point_count: 1,
+                    betti_0: 1,
+                    original_size: record.original_size,
+                    content_hash: record.content_hash,
+                },
+            };
+            let data = if let Some(extent) = self.data_extents.get(&record.data_lba) {
+                let pbytes = payload_bytes(&payload);
+                if extent.len() > pbytes && record.original_size > 0 {
+                    let end = (pbytes + record.original_size as usize).min(extent.len());
+                    extent[pbytes..end].to_vec()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            inodes.push(record.to_inode(payload, data));
+        }
+        inodes
     }
 }
 
 fn payload_bytes(payload: &ManifoldPayload) -> usize {
-    payload.point_count * size_of::<[f64; 3]>()
+    24 + payload.point_count * 24
 }
 
 fn payload_to_bytes(payload: &ManifoldPayload) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(payload.point_count * size_of::<[f64; 3]>());
+    let mut buf = Vec::with_capacity(payload_bytes(payload));
+    buf.extend_from_slice(&(payload.point_count as u32).to_le_bytes());
+    buf.extend_from_slice(&(payload.betti_0 as u32).to_le_bytes());
+    buf.extend_from_slice(&payload.original_size.to_le_bytes());
+    buf.extend_from_slice(&payload.content_hash.to_le_bytes());
     for pt in &payload.points {
         for &c in &pt.coords {
             buf.extend_from_slice(&c.to_le_bytes());
@@ -420,6 +933,37 @@ fn payload_to_bytes(payload: &ManifoldPayload) -> Vec<u8> {
     }
     buf
 }
+
+fn bytes_to_payload(buf: &[u8]) -> Option<ManifoldPayload> {
+    if buf.len() < 24 {
+        return None;
+    }
+    let point_count = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    let betti_0 = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+    let original_size = u64::from_le_bytes(buf[8..16].try_into().ok()?);
+    let content_hash = u64::from_le_bytes(buf[16..24].try_into().ok()?);
+    let expected = 24 + point_count * 24;
+    if buf.len() < expected {
+        return None;
+    }
+    let mut points = Vec::with_capacity(point_count);
+    for i in 0..point_count {
+        let off = 24 + i * 24;
+        let x = f64::from_le_bytes(buf[off..off + 8].try_into().ok()?);
+        let y = f64::from_le_bytes(buf[off + 8..off + 16].try_into().ok()?);
+        let z = f64::from_le_bytes(buf[off + 16..off + 24].try_into().ok()?);
+        points.push(SpherePoint { coords: [x, y, z] });
+    }
+    Some(ManifoldPayload {
+        points,
+        point_count,
+        betti_0,
+        original_size,
+        content_hash,
+    })
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
@@ -451,10 +995,16 @@ pub mod tests {
     }
 
     fn test_roundtrip() -> TestResult {
-        let mut store = BlockStore::with_mock(512);
+        let mut store = BlockStore::with_mock(8192);
         let inode = dummy_inode(1, "test");
-        store.write_inode(&inode, b"hello world");
-        let (payload, data) = store.read_data(1).unwrap();
+        match store.write_inode(&inode, b"hello world") {
+            Ok(()) => {}
+            Err(_) => return TestResult::Fail("write_inode failed"),
+        };
+        let (payload, data) = match store.read_data(1) {
+            Some(v) => v,
+            None => return TestResult::Fail("read_data returned None"),
+        };
         test_assert_eq!(data, b"hello world");
         test_assert!(payload.point_count > 0);
         TestResult::Pass

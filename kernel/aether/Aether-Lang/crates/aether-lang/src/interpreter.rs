@@ -65,6 +65,27 @@ use candle_transformers::models::quantized_llama::ModelWeights as LlamaWeights;
 #[cfg(feature = "ml")]
 use tokenizers::Tokenizer;
 
+/// Interpreter errors
+#[derive(Debug, Clone)]
+pub enum InterpreterError {
+    Message(String),
+    Return(Value),
+    Break,
+    Continue,
+}
+
+impl From<String> for InterpreterError {
+    fn from(s: String) -> Self {
+        InterpreterError::Message(s)
+    }
+}
+
+impl From<&str> for InterpreterError {
+    fn from(s: &str) -> Self {
+        InterpreterError::Message(s.into())
+    }
+}
+
 /// Embedding dimension
 const DIM: usize = 3;
 
@@ -96,7 +117,7 @@ pub enum Value {
     /// Native Function (for Standard Library)
     NativeFn(NativeFunction),
     /// User Function
-    Function(FnDecl),
+    Function(UserFunction),
     /// Dynamic List (Python-like)
     List(Vec<Value>),
     /// ML Types
@@ -176,6 +197,13 @@ pub struct ClassHandle(pub usize);
 /// Handle to an object instance
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectHandle(pub usize);
+
+/// User-defined function with captured closure
+#[derive(Debug, Clone)]
+pub struct UserFunction {
+    pub decl: FnDecl,
+    pub closure: BTreeMap<String, Value>,
+}
 
 /// Class Definition Runtime
 #[derive(Debug, Clone)]
@@ -530,6 +558,137 @@ fn predict_value(x: f64, coeffs: &[f64; 8], model: &RegressionModel) -> f64 {
 // Main Interpreter
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Software Framebuffer (htek.rs style)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Simple software framebuffer for render output
+#[derive(Debug, Clone)]
+pub struct Framebuffer {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u32>,
+}
+
+impl Framebuffer {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            pixels: vec![0; (width * height) as usize],
+        }
+    }
+
+    pub fn clear(&mut self, color: u32) {
+        for p in self.pixels.iter_mut() {
+            *p = color;
+        }
+    }
+
+    pub fn draw_rect(&mut self, x: u32, y: u32, w: u32, h: u32, color: u32) {
+        for dy in 0..h {
+            let py = y + dy;
+            if py >= self.height {
+                break;
+            }
+            for dx in 0..w {
+                let px = x + dx;
+                if px >= self.width {
+                    break;
+                }
+                self.pixels[(py * self.width + px) as usize] = color;
+            }
+        }
+    }
+
+    pub fn draw_text(&mut self, mut x: u32, y: u32, text: &str, color: u32) {
+        for ch in text.bytes() {
+            Self::draw_char(self, x, y, ch, color);
+            x += 4;
+        }
+    }
+
+    fn draw_char(&mut self, x: u32, y: u32, ch: u8, color: u32) {
+        let pattern: u16 = match ch {
+            b'0' => 0b111101101101111,
+            b'1' => 0b010010010010010,
+            b'2' => 0b111001111100111,
+            b'3' => 0b111001111001111,
+            b'4' => 0b100101111001001,
+            b'5' => 0b111100111001111,
+            b'6' => 0b111100111101111,
+            b'7' => 0b111001001001001,
+            b'8' => 0b111101111101111,
+            b'9' => 0b111101111001111,
+            b'a' | b'A' => 0b010101111101101,
+            b'b' | b'B' => 0b110101110101110,
+            b'c' | b'C' => 0b111100100100111,
+            b'd' | b'D' => 0b110101101101110,
+            b'e' | b'E' => 0b111100111100111,
+            b'f' | b'F' => 0b111100111100100,
+            b'g' | b'G' => 0b111100101101111,
+            b'h' | b'H' => 0b101101111101101,
+            b'i' | b'I' => 0b111010010010111,
+            b'j' | b'J' => 0b001001001101111,
+            b'k' | b'K' => 0b101101110101101,
+            b'l' | b'L' => 0b100100100100111,
+            b'm' | b'M' => 0b101111101101101,
+            b'n' | b'N' => 0b111101101101101,
+            b'o' | b'O' => 0b010101101101010,
+            b'p' | b'P' => 0b110101111100100,
+            b'q' | b'Q' => 0b111101101111001,
+            b'r' | b'R' => 0b110101110101101,
+            b's' | b'S' => 0b111100111001111,
+            b't' | b'T' => 0b111010010010010,
+            b'u' | b'U' => 0b101101101101111,
+            b'v' | b'V' => 0b101101101101010,
+            b'w' | b'W' => 0b101101111111101,
+            b'x' | b'X' => 0b101101010101101,
+            b'y' | b'Y' => 0b101101111010010,
+            b'z' | b'Z' => 0b111001010100111,
+            b' ' => 0b000000000000000,
+            b':' => 0b000010000010000,
+            b'-' => 0b000000111000000,
+            b'_' => 0b000000000000111,
+            _ => 0b111101101101111,
+        };
+        for row in 0..5 {
+            for col in 0..3 {
+                let bit = (pattern >> (row * 3 + (2 - col))) & 1;
+                if bit == 1 {
+                    let px = x + col;
+                    let py = y + row;
+                    if px < self.width && py < self.height {
+                        self.pixels[(py * self.width + px) as usize] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_bounds(points: &[[f64; 3]]) -> (f64, f64, f64, f64) {
+    let mut min_x = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut min_y = f64::MAX;
+    let mut max_y = f64::MIN;
+    for p in points {
+        if p[0] < min_x {
+            min_x = p[0];
+        }
+        if p[0] > max_x {
+            max_x = p[0];
+        }
+        if p[1] < min_y {
+            min_y = p[1];
+        }
+        if p[1] > max_y {
+            max_y = p[1];
+        }
+    }
+    (min_x, max_x, min_y, max_y)
+}
+
 /// Runtime environment
 pub struct Interpreter {
     /// Variable bindings
@@ -544,6 +703,8 @@ pub struct Interpreter {
     objects: Vec<ObjectInstance>,
     /// Sample data (for demo)
     sample_data: Vec<f64>,
+    /// Software framebuffer for render
+    pub framebuffer: Option<Framebuffer>,
 }
 
 impl Interpreter {
@@ -567,11 +728,12 @@ impl Interpreter {
             classes: Vec::new(),
             objects: Vec::new(),
             sample_data: data,
+            framebuffer: None,
         }
     }
 
     /// Execute a program
-    pub fn execute(&mut self, program: &Program) -> Result<Value, String> {
+    pub fn execute(&mut self, program: &Program) -> Result<Value, InterpreterError> {
         let mut last_value = Value::Unit;
         for stmt in &program.statements {
             last_value = self.execute_statement(stmt)?;
@@ -579,7 +741,7 @@ impl Interpreter {
         Ok(last_value)
     }
 
-    fn execute_for(&mut self, stmt: &ForStmt) -> Result<Value, String> {
+    fn execute_for(&mut self, stmt: &ForStmt) -> Result<Value, InterpreterError> {
         let iterable_val = self.evaluate_expr(&stmt.iterable)?;
         let mut last_val = Value::Unit;
 
@@ -587,7 +749,12 @@ impl Interpreter {
             Value::List(elements) => {
                 for el in elements {
                     self.variables.insert(stmt.iterator.clone(), el);
-                    last_val = self.execute_stmt_block(&stmt.body)?;
+                    match self.execute_stmt_block(&stmt.body) {
+                        Ok(v) => last_val = v,
+                        Err(InterpreterError::Break) => break,
+                        Err(InterpreterError::Continue) => continue,
+                        Err(e) => return Err(e),
+                    }
                 }
             }
             _ => return Err("Expected list or iterable in for loop".into()),
@@ -596,7 +763,7 @@ impl Interpreter {
         Ok(last_val)
     }
 
-    fn execute_statement(&mut self, stmt: &Statement) -> Result<Value, String> {
+    fn execute_statement(&mut self, stmt: &Statement) -> Result<Value, InterpreterError> {
         match &stmt.node {
             StmtKind::Manifold(decl) => self.execute_manifold(decl),
             StmtKind::Block(decl) => self.execute_block(decl),
@@ -610,7 +777,14 @@ impl Interpreter {
             StmtKind::Loop(stmt) => self.execute_seal(stmt),
             StmtKind::For(stmt) => self.execute_for(stmt),
             StmtKind::Fn(decl) => {
-                self.variables.insert(decl.name.clone(), Value::Function(decl.clone()));
+                let mut closure = self.variables.clone();
+                closure.remove(&decl.name);
+                let func = UserFunction {
+                    decl: decl.clone(),
+                    closure,
+                };
+                self.variables
+                    .insert(decl.name.clone(), Value::Function(func));
                 Ok(Value::Unit)
             }
             StmtKind::Return(stmt) => {
@@ -619,10 +793,10 @@ impl Interpreter {
                 } else {
                     Value::Unit
                 };
-                Err(format!("RETURN:{:?}", val))
+                Err(InterpreterError::Return(val))
             }
-            StmtKind::Break(_) => Ok(Value::Unit),
-            StmtKind::Continue(_) => Ok(Value::Unit),
+            StmtKind::Break(_) => Err(InterpreterError::Break),
+            StmtKind::Continue(_) => Err(InterpreterError::Continue),
             StmtKind::Expr(expr) => {
                 self.evaluate_expr(expr)?;
                 Ok(Value::Unit)
@@ -631,7 +805,7 @@ impl Interpreter {
         }
     }
 
-    fn execute_class(&mut self, decl: &ClassDecl) -> Result<Value, String> {
+    fn execute_class(&mut self, decl: &ClassDecl) -> Result<Value, InterpreterError> {
         let mut methods = BTreeMap::new();
         for m in &decl.methods {
             methods.insert(m.name.clone(), m.clone());
@@ -651,11 +825,15 @@ impl Interpreter {
     }
 
     #[allow(unused_variables)]
-    fn evaluate_new(&mut self, class_name: &String, args: &[Expr]) -> Result<Value, String> {
+    fn evaluate_new(
+        &mut self,
+        class_name: &String,
+        args: &[Expr],
+    ) -> Result<Value, InterpreterError> {
         let class_handle = if let Some(Value::Class(h)) = self.variables.get(class_name) {
             *h
         } else {
-            return Err(format!("Class '{}' not found", class_name));
+            return Err(format!("Class '{}' not found", class_name).into());
         };
 
         let class_def = self.classes[class_handle.0].clone();
@@ -674,18 +852,18 @@ impl Interpreter {
         Ok(Value::Object(obj_handle))
     }
 
-    fn execute_import(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
+    fn execute_import(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         let mod_name = stmt.module.as_str();
         match mod_name {
             "math" => self.import_math(stmt),
             "topology" => self.import_topology(stmt),
             "ml" | "Ml" => self.import_ml(stmt),
             "Seal" => self.import_seal(stmt),
-            _ => Err(format!("Module '{}' not found", mod_name)),
+            _ => Err(format!("Module '{}' not found", mod_name).into()),
         }
     }
 
-    fn import_math(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
+    fn import_math(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
                 "pi" => {
@@ -722,7 +900,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::MathRange),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in math", symbol)),
+                _ => return Err(format!("Symbol '{}' not found in math", symbol).into()),
             }
         } else {
             self.variables
@@ -743,20 +921,20 @@ impl Interpreter {
         Ok(Value::Unit)
     }
 
-    fn import_topology(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
+    fn import_topology(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
                 "Betti" => self.variables.insert(
                     String::from("Betti"),
                     Value::NativeFn(NativeFunction::TopoBetti),
                 ),
-                _ => return Err(format!("Symbol '{}' not found in topology", symbol)),
+                _ => return Err(format!("Symbol '{}' not found in topology", symbol).into()),
             };
         }
         Ok(Value::Unit)
     }
 
-    fn import_ml(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
+    fn import_ml(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
                 "MLP" => {
@@ -775,7 +953,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::Conv2DNew),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in ml", symbol)),
+                _ => return Err(format!("Symbol '{}' not found in ml", symbol).into()),
             };
         } else {
             self.variables
@@ -836,7 +1014,7 @@ impl Interpreter {
         Ok(Value::Unit)
     }
 
-    fn import_seal(&mut self, stmt: &ImportStmt) -> Result<Value, String> {
+    fn import_seal(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
                 "train" => {
@@ -869,7 +1047,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::PciReadBar5),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in Seal", symbol)),
+                _ => return Err(format!("Symbol '{}' not found in Seal", symbol).into()),
             };
         } else {
             self.variables
@@ -878,7 +1056,7 @@ impl Interpreter {
         Ok(Value::Unit)
     }
 
-    fn execute_manifold(&mut self, decl: &ManifoldDecl) -> Result<Value, String> {
+    fn execute_manifold(&mut self, decl: &ManifoldDecl) -> Result<Value, InterpreterError> {
         let tau = self.extract_tau(&decl.init).unwrap_or(3);
         let mut workspace = ManifoldWorkspace::new(tau);
         workspace.embed_data(&self.sample_data);
@@ -904,7 +1082,7 @@ impl Interpreter {
         None
     }
 
-    fn execute_block(&mut self, decl: &BlockDecl) -> Result<Value, String> {
+    fn execute_block(&mut self, decl: &BlockDecl) -> Result<Value, InterpreterError> {
         let (manifold_handle, start, end) = self.extract_block_range(&decl.source)?;
         if let Some(workspace) = self.manifolds.get(manifold_handle.0) {
             let block = workspace.extract_block(start, end);
@@ -914,11 +1092,14 @@ impl Interpreter {
                 .insert(decl.name.clone(), Value::Block(handle));
             Ok(Value::Block(handle))
         } else {
-            Err("manifold not found".to_string())
+            Err("manifold not found".into())
         }
     }
 
-    fn extract_block_range(&self, expr: &Expr) -> Result<(ManifoldHandle, usize, usize), String> {
+    fn extract_block_range(
+        &self,
+        expr: &Expr,
+    ) -> Result<(ManifoldHandle, usize, usize), InterpreterError> {
         match &expr.node {
             ExprKind::MethodCall { object, args, .. } => {
                 let handle = self.get_manifold_handle(object)?;
@@ -931,15 +1112,15 @@ impl Interpreter {
                 let end = range.end.as_f64() as usize;
                 Ok((handle, start, end))
             }
-            _ => Err("invalid block source".to_string()),
+            _ => Err("invalid block source".into()),
         }
     }
 
-    fn get_manifold_handle(&self, name: &String) -> Result<ManifoldHandle, String> {
+    fn get_manifold_handle(&self, name: &String) -> Result<ManifoldHandle, InterpreterError> {
         if let Some(Value::Manifold(h)) = self.variables.get(name) {
             Ok(*h)
         } else {
-            Err("variable is not a manifold".to_string())
+            Err("variable is not a manifold".into())
         }
     }
 
@@ -969,13 +1150,13 @@ impl Interpreter {
         (start, end)
     }
 
-    fn execute_var(&mut self, decl: &VarDecl) -> Result<Value, String> {
+    fn execute_var(&mut self, decl: &VarDecl) -> Result<Value, InterpreterError> {
         let value = self.evaluate_expr(&decl.value)?;
         self.variables.insert(decl.name.clone(), value.clone());
         Ok(value)
     }
 
-    fn execute_regress(&mut self, stmt: &RegressStmt) -> Result<Value, String> {
+    fn execute_regress(&mut self, stmt: &RegressStmt) -> Result<Value, InterpreterError> {
         let config = &stmt.config;
         let epsilon = match &config.until {
             Some(ConvergenceCond::Epsilon(n)) => n.as_f64(),
@@ -988,27 +1169,79 @@ impl Interpreter {
             let result = regressor.run_escalating(workspace, max_epochs);
             Ok(Value::RegressionResult(result))
         } else {
-            Err("no manifold for regression".to_string())
+            Err("no manifold for regression".into())
         }
     }
 
-    fn execute_render(&mut self, _: &RenderStmt) -> Result<Value, String> {
+    fn execute_render(&mut self, stmt: &RenderStmt) -> Result<Value, InterpreterError> {
+        if self.framebuffer.is_none() {
+            self.framebuffer = Some(Framebuffer::new(80, 24));
+        }
+        let fb = if let Some(ref mut f) = self.framebuffer {
+            f
+        } else {
+            return Ok(Value::Unit);
+        };
+        fb.clear(0x000000);
+
+        // Draw border
+        fb.draw_rect(0, 0, fb.width, 1, 0xFFFFFF);
+        fb.draw_rect(0, fb.height.saturating_sub(1), fb.width, 1, 0xFFFFFF);
+        fb.draw_rect(0, 0, 1, fb.height, 0xFFFFFF);
+        fb.draw_rect(fb.width.saturating_sub(1), 0, 1, fb.height, 0xFFFFFF);
+
+        // Gather points from target manifold
+        let points: Vec<[f64; 3]> =
+            if let Some(Value::Manifold(h)) = self.variables.get(&stmt.target) {
+                if let Some(ws) = self.manifolds.get(h.0) {
+                    ws.points.iter().map(|p| p.coords).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+        fb.draw_text(2, 1, &alloc::format!("render {}", stmt.target), 0x00FF00);
+        fb.draw_text(2, 2, &alloc::format!("points: {}", points.len()), 0x00FF00);
+
+        if !points.is_empty() {
+            let (min_x, max_x, min_y, max_y) = find_bounds(&points);
+            let range_x = (max_x - min_x).max(0.001);
+            let range_y = (max_y - min_y).max(0.001);
+            let fw = (fb.width.saturating_sub(4)) as f64;
+            let fh = (fb.height.saturating_sub(6)) as f64;
+            for p in &points {
+                let px = 2 + (((p[0] - min_x) / range_x) * fw) as u32;
+                let py = 4 + (((p[1] - min_y) / range_y) * fh) as u32;
+                if px < fb.width && py < fb.height {
+                    fb.draw_rect(px, py, 1, 1, 0xFF0000);
+                }
+            }
+        }
+
         Ok(Value::Unit)
     }
 
-    fn execute_stmt_block(&mut self, block: &Block) -> Result<Value, String> {
+    fn execute_stmt_block(&mut self, block: &Block) -> Result<Value, InterpreterError> {
         let mut last_val = Value::Unit;
         for stmt in &block.statements {
-            last_val = self.execute_statement(stmt)?;
+            match self.execute_statement(stmt) {
+                Ok(v) => last_val = v,
+                Err(InterpreterError::Break) => return Err(InterpreterError::Break),
+                Err(InterpreterError::Continue) => return Err(InterpreterError::Continue),
+                Err(InterpreterError::Return(v)) => return Err(InterpreterError::Return(v)),
+                Err(e) => return Err(e),
+            }
         }
         Ok(last_val)
     }
 
-    fn execute_if(&mut self, stmt: &IfStmt) -> Result<Value, String> {
+    fn execute_if(&mut self, stmt: &IfStmt) -> Result<Value, InterpreterError> {
         let cond_val = self.evaluate_expr(&stmt.condition)?;
         let is_true = match cond_val {
             Value::Bool(b) => b,
-            _ => return Err(String::from("condition must be boolean")),
+            _ => return Err(String::from("condition must be boolean").into()),
         };
         if is_true {
             self.execute_stmt_block(&stmt.then_branch)
@@ -1019,32 +1252,42 @@ impl Interpreter {
         }
     }
 
-    fn execute_while(&mut self, stmt: &WhileStmt) -> Result<Value, String> {
+    fn execute_while(&mut self, stmt: &WhileStmt) -> Result<Value, InterpreterError> {
         let mut last_val = Value::Unit;
         loop {
             let cond_val = self.evaluate_expr(&stmt.condition)?;
             let is_true = match cond_val {
                 Value::Bool(b) => b,
-                _ => return Err(String::from("condition must be boolean")),
+                _ => return Err("condition must be boolean".into()),
             };
             if !is_true {
                 break;
             }
-            last_val = self.execute_stmt_block(&stmt.body)?;
+            match self.execute_stmt_block(&stmt.body) {
+                Ok(v) => last_val = v,
+                Err(InterpreterError::Break) => break,
+                Err(InterpreterError::Continue) => continue,
+                Err(e) => return Err(e),
+            }
         }
         Ok(last_val)
     }
 
-    fn execute_seal(&mut self, stmt: &LoopStmt) -> Result<Value, String> {
+    fn execute_seal(&mut self, stmt: &LoopStmt) -> Result<Value, InterpreterError> {
         let max_iters = 1000;
         let mut last_val = Value::Unit;
         for _ in 0..max_iters {
-            last_val = self.execute_stmt_block(&stmt.body)?;
+            match self.execute_stmt_block(&stmt.body) {
+                Ok(v) => last_val = v,
+                Err(InterpreterError::Break) => break,
+                Err(InterpreterError::Continue) => continue,
+                Err(e) => return Err(e),
+            }
         }
         Ok(last_val)
     }
 
-    fn evaluate_expr(&mut self, expr: &Expr) -> Result<Value, String> {
+    fn evaluate_expr(&mut self, expr: &Expr) -> Result<Value, InterpreterError> {
         match &expr.node {
             ExprKind::Literal(lit) => match lit {
                 Literal::Num(n) => Ok(Value::Num(*n)),
@@ -1067,15 +1310,15 @@ impl Interpreter {
                 method,
                 args,
             } => self.evaluate_method_call(object, method, args),
-            ExprKind::Range(_) => Err(String::from(
-                "Ranges cannot be evaluated directly as values",
-            )),
+            ExprKind::Range(_) => {
+                Err(String::from("Ranges cannot be evaluated directly as values").into())
+            }
             ExprKind::BinaryOp(left, op, right) => {
                 let l = self.evaluate_expr(left)?;
                 let r = self.evaluate_expr(right)?;
                 self.evaluate_binary(l, *op, r, Some(left))
             }
-            ExprKind::UnaryOp(_, _) => Err(String::from("Unary ops not implemented yet")),
+            ExprKind::UnaryOp(_, _) => Err(String::from("Unary ops not implemented yet").into()),
             ExprKind::Index { object, range } => {
                 // Simplified: returns a descriptive string or handle?
                 // For now, let's treat it as a lookup that returns a sub-manifold or block value
@@ -1088,12 +1331,12 @@ impl Interpreter {
                     self.blocks.push(block);
                     Ok(Value::Block(block_handle))
                 } else {
-                    Err(format!("Manifold '{}' not found", object))
+                    Err(format!("Manifold '{}' not found", object).into())
                 }
             }
-            ExprKind::Config(_) => Err(String::from(
-                "Raw config blocks cannot be evaluated as expressions",
-            )),
+            ExprKind::Config(_) => {
+                Err(String::from("Raw config blocks cannot be evaluated as expressions").into())
+            }
         }
     }
 
@@ -1103,7 +1346,7 @@ impl Interpreter {
         op: BinaryOp,
         right: Value,
         left_expr: Option<&Expr>,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, InterpreterError> {
         match op {
             BinaryOp::Eq => {
                 // If left is FieldAccess, it's an assignment
@@ -1167,7 +1410,6 @@ impl Interpreter {
                 _ => Err("Invalid le".into()),
             },
             BinaryOp::Neq => Ok(Value::Bool(!self.values_equal(&left, &right))),
-            _ => Err("Invalid binary operation".into()),
         }
     }
 
@@ -1180,7 +1422,7 @@ impl Interpreter {
         }
     }
 
-    fn evaluate_list(&mut self, elements: &Vec<Expr>) -> Result<Value, String> {
+    fn evaluate_list(&mut self, elements: &Vec<Expr>) -> Result<Value, InterpreterError> {
         let mut values = Vec::new();
         for expr in elements {
             values.push(self.evaluate_expr(expr)?);
@@ -1188,35 +1430,31 @@ impl Interpreter {
         Ok(Value::List(values))
     }
 
-    fn evaluate_call(&mut self, name: &Ident, args: &[CallArg]) -> Result<Value, String> {
+    fn evaluate_call(&mut self, name: &Ident, args: &[CallArg]) -> Result<Value, InterpreterError> {
         if let Some(val) = self.variables.get(name) {
             match val.clone() {
                 Value::NativeFn(func) => self.execute_native_fn(func, args),
-                Value::Function(decl) => {
-                    // Create new scope
-                    let old_vars = self.variables.clone();
-                    
+                Value::Function(func) => {
+                    let mut new_vars = func.closure.clone();
+
                     // Bind parameters
-                    for (i, param) in decl.params.iter().enumerate() {
-                        if let Some(arg) = args.get(i) {
-                            if let CallArg::Positional(expr) = arg {
-                                let val = self.evaluate_expr(expr)?;
-                                self.variables.insert(param.clone(), val);
-                            }
+                    for (i, param) in func.decl.params.iter().enumerate() {
+                        if let Some(CallArg::Positional(expr)) = args.get(i) {
+                            let val = self.evaluate_expr(expr)?;
+                            new_vars.insert(param.clone(), val);
                         }
                     }
-                    
-                    let res = self.execute_stmt_block(&decl.body);
-                    
-                    // Restore scope
+
+                    // Enable recursion
+                    new_vars.insert(func.decl.name.clone(), Value::Function(func.clone()));
+
+                    let old_vars = core::mem::replace(&mut self.variables, new_vars);
+                    let res = self.execute_stmt_block(&func.decl.body);
                     self.variables = old_vars;
-                    
+
                     match res {
-                        Err(e) if e.starts_with("RETURN:") => {
-                             // Extract return value
-                             Ok(Value::Num(0.0)) // Need real extraction
-                        }
-                        _ => res
+                        Err(InterpreterError::Return(v)) => Ok(v),
+                        other => other,
                     }
                 }
                 _ => Ok(Value::Unit),
@@ -1230,17 +1468,17 @@ impl Interpreter {
         &mut self,
         func: NativeFunction,
         args: &[CallArg],
-    ) -> Result<Value, String> {
-        let mut get_f64 = |args: &[CallArg]| -> Result<f64, String> {
+    ) -> Result<Value, InterpreterError> {
+        let mut get_f64 = |args: &[CallArg]| -> Result<f64, InterpreterError> {
             if let Some(CallArg::Positional(expr)) = args.first() {
                 let val = self.evaluate_expr(expr)?;
                 if let Value::Num(n) = val {
                     Ok(n)
                 } else {
-                    Err(String::from("Expected number"))
+                    Err(String::from("Expected number").into())
                 }
             } else {
-                Err(String::from("Expected number"))
+                Err(String::from("Expected number").into())
             }
         };
 
@@ -1249,7 +1487,30 @@ impl Interpreter {
             NativeFunction::MathCos => Ok(Value::Num(libm::cos(get_f64(args)?))),
             NativeFunction::MathSqrt => Ok(Value::Num(libm::sqrt(get_f64(args)?))),
             NativeFunction::MathExp => Ok(Value::Num(libm::exp(get_f64(args)?))),
-            NativeFunction::TopoBetti => Ok(Value::List(vec![Value::Num(1.0), Value::Num(0.0)])),
+            NativeFunction::TopoBetti => {
+                let mut bytes = Vec::new();
+                for arg in args {
+                    if let CallArg::Positional(expr) = arg {
+                        let val = self.evaluate_expr(expr)?;
+                        match val {
+                            Value::List(list) => {
+                                for v in list {
+                                    if let Value::Num(n) = v {
+                                        bytes.push(n as u8);
+                                    }
+                                }
+                            }
+                            Value::Num(n) => bytes.push(n as u8),
+                            _ => {}
+                        }
+                    }
+                }
+                let betti0 = aether_core::topology::compute_betti_0(&bytes);
+                Ok(Value::List(vec![
+                    Value::Num(betti0 as f64),
+                    Value::Num(0.0),
+                ]))
+            }
             NativeFunction::Print => {
                 for arg in args {
                     if let CallArg::Positional(expr) = arg {
@@ -1361,16 +1622,20 @@ impl Interpreter {
         }
     }
 
-    fn get_tensor_arg(&mut self, args: &[CallArg], index: usize) -> Result<Tensor, String> {
+    fn get_tensor_arg(
+        &mut self,
+        args: &[CallArg],
+        index: usize,
+    ) -> Result<Tensor, InterpreterError> {
         if let Some(CallArg::Positional(expr)) = args.get(index) {
             let val = self.evaluate_expr(expr)?;
             self.value_to_tensor_core(&val)
         } else {
-            Err(format!("Missing argument {}", index))
+            Err(format!("Missing argument {}", index).into())
         }
     }
 
-    fn value_to_tensor_core(&self, val: &Value) -> Result<Tensor, String> {
+    fn value_to_tensor_core(&self, val: &Value) -> Result<Tensor, InterpreterError> {
         match val {
             Value::Tensor(t) => Ok(t.clone()),
             Value::List(rows) => {
@@ -1425,11 +1690,11 @@ impl Interpreter {
         object_name: &String,
         method: &String,
         args: &[CallArg],
-    ) -> Result<Value, String> {
+    ) -> Result<Value, InterpreterError> {
         let val = if let Some(v) = self.variables.get(object_name) {
             v.clone()
         } else {
-            return Err(format!("Object '{}' not found", object_name));
+            return Err(format!("Object '{}' not found", object_name).into());
         };
         match val {
             Value::List(mut list) => {
@@ -1458,7 +1723,7 @@ impl Interpreter {
                     }
                     _ => Err(format!("Method '{}' not found on List", method)),
                 };
-                res
+                Ok(res?)
             }
             Value::Mlp(mut mlp) => {
                 match method.as_str() {
@@ -1491,7 +1756,7 @@ impl Interpreter {
                         let output = mlp.forward(&input);
                         Ok(Value::Tensor(output))
                     }
-                    _ => Err(format!("Method '{}' not found on MLP", method)),
+                    _ => Err(format!("Method '{}' not found on MLP", method).into()),
                 }
             }
             Value::Module(mod_name) => match (mod_name.as_str(), method.as_str()) {
@@ -1500,21 +1765,26 @@ impl Interpreter {
                 ("Ml", "Conv2D") => self.execute_native_fn(NativeFunction::Conv2DNew, args),
                 ("Seal", "train") => self.execute_native_fn(NativeFunction::SealTrain, args),
                 ("Seal", "mmio_read32") => self.execute_native_fn(NativeFunction::MmioRead32, args),
-                ("Seal", "mmio_write32") => self.execute_native_fn(NativeFunction::MmioWrite32, args),
+                ("Seal", "mmio_write32") => {
+                    self.execute_native_fn(NativeFunction::MmioWrite32, args)
+                }
                 ("Seal", "pci_find") => self.execute_native_fn(NativeFunction::PciFind, args),
-                ("Seal", "pci_find_vendor") => self.execute_native_fn(NativeFunction::PciFindVendor, args),
-                ("Seal", "pci_read_bar0") => self.execute_native_fn(NativeFunction::PciReadBar0, args),
-                ("Seal", "pci_read_bar5") => self.execute_native_fn(NativeFunction::PciReadBar5, args),
-                _ => Err(format!(
-                    "Method '{}' not found in module '{}'",
-                    method, mod_name
-                )),
+                ("Seal", "pci_find_vendor") => {
+                    self.execute_native_fn(NativeFunction::PciFindVendor, args)
+                }
+                ("Seal", "pci_read_bar0") => {
+                    self.execute_native_fn(NativeFunction::PciReadBar0, args)
+                }
+                ("Seal", "pci_read_bar5") => {
+                    self.execute_native_fn(NativeFunction::PciReadBar5, args)
+                }
+                _ => Err(format!("Method '{}' not found in module '{}'", method, mod_name).into()),
             },
             _ => Ok(Value::Unit),
         }
     }
 
-    fn get_arg_num(&mut self, args: &[CallArg], index: usize) -> Result<f64, String> {
+    fn get_arg_num(&mut self, args: &[CallArg], index: usize) -> Result<f64, InterpreterError> {
         if let Some(CallArg::Positional(expr)) = args.get(index) {
             let val = self.evaluate_expr(expr)?;
             if let Value::Num(n) = val {
@@ -1527,7 +1797,7 @@ impl Interpreter {
         }
     }
 
-    fn get_arg_str(&mut self, args: &[CallArg], index: usize) -> Result<String, String> {
+    fn get_arg_str(&mut self, args: &[CallArg], index: usize) -> Result<String, InterpreterError> {
         if let Some(CallArg::Positional(expr)) = args.get(index) {
             let val = self.evaluate_expr(expr)?;
             if let Value::Str(s) = val {
@@ -1540,7 +1810,11 @@ impl Interpreter {
         }
     }
 
-    fn evaluate_field_access(&self, object: &String, field: &String) -> Result<Value, String> {
+    fn evaluate_field_access(
+        &self,
+        object: &String,
+        field: &String,
+    ) -> Result<Value, InterpreterError> {
         if let Some(Value::Object(handle)) = self.variables.get(object) {
             if let Some(obj) = self.objects.get(handle.0) {
                 if let Some(val) = obj.fields.get(field) {
@@ -1560,8 +1834,7 @@ impl Interpreter {
                 ("Ml", "MLP") => Ok(Value::NativeFn(NativeFunction::MlpNew)),
                 _ => Ok(Value::Unit),
             }
-        }
- else {
+        } else {
             Ok(Value::Unit)
         }
     }
@@ -1570,5 +1843,693 @@ impl Interpreter {
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Unit Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{
+        Block, Expr, ExprKind, FnDecl, ForStmt, IfStmt, Literal, Span, Statement, StmtKind,
+        VarDecl, WhileStmt,
+    };
+
+    fn expr_num(n: f64) -> Expr {
+        Expr::new(ExprKind::Literal(Literal::Num(n)), Span::default())
+    }
+
+    fn expr_ident(name: &str) -> Expr {
+        Expr::new(ExprKind::Ident(name.into()), Span::default())
+    }
+
+    fn expr_list(items: Vec<Expr>) -> Expr {
+        Expr::new(ExprKind::List(items), Span::default())
+    }
+
+    fn stmt_var(name: &str, value: Expr) -> Statement {
+        Statement::new(
+            StmtKind::Var(VarDecl {
+                type_hint: None,
+                name: name.into(),
+                value,
+            }),
+            Span::default(),
+        )
+    }
+
+    fn mk_block(stmts: Vec<Statement>) -> Block {
+        Block { statements: stmts }
+    }
+
+    #[test]
+    fn test_for_loop_executes_n_times() {
+        let mut interp = Interpreter::new();
+        // accum = 0
+        let setup = stmt_var("accum", expr_num(0.0));
+        interp.execute_statement(&setup).unwrap();
+
+        // for i in [1,2,3] { accum = accum + i }
+        let body = mk_block(vec![Statement::new(
+            StmtKind::Var(VarDecl {
+                type_hint: None,
+                name: "accum".into(),
+                value: Expr::new(
+                    ExprKind::BinaryOp(
+                        Box::new(expr_ident("accum")),
+                        BinaryOp::Add,
+                        Box::new(expr_ident("i")),
+                    ),
+                    Span::default(),
+                ),
+            }),
+            Span::default(),
+        )]);
+        let for_stmt = Statement::new(
+            StmtKind::For(ForStmt {
+                iterator: "i".into(),
+                iterable: expr_list(vec![expr_num(1.0), expr_num(2.0), expr_num(3.0)]),
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&for_stmt).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("accum").unwrap() {
+            assert_eq!(*n, 6.0);
+        } else {
+            panic!("accum not a number");
+        }
+    }
+
+    #[test]
+    fn test_break_exits_loop() {
+        let mut interp = Interpreter::new();
+        interp
+            .execute_statement(&stmt_var("accum", expr_num(0.0)))
+            .unwrap();
+
+        // for i in [1,2,3,4,5] { accum = accum + i; if i > 2 { break } }
+        let body = mk_block(vec![
+            Statement::new(
+                StmtKind::Var(VarDecl {
+                    type_hint: None,
+                    name: "accum".into(),
+                    value: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("accum")),
+                            BinaryOp::Add,
+                            Box::new(expr_ident("i")),
+                        ),
+                        Span::default(),
+                    ),
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::If(IfStmt {
+                    condition: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("i")),
+                            BinaryOp::Gt,
+                            Box::new(expr_num(2.0)),
+                        ),
+                        Span::default(),
+                    ),
+                    then_branch: mk_block(vec![Statement::new(
+                        StmtKind::Break(BreakStmt),
+                        Span::default(),
+                    )]),
+                    else_branch: None,
+                }),
+                Span::default(),
+            ),
+        ]);
+        let for_stmt = Statement::new(
+            StmtKind::For(ForStmt {
+                iterator: "i".into(),
+                iterable: expr_list(vec![
+                    expr_num(1.0),
+                    expr_num(2.0),
+                    expr_num(3.0),
+                    expr_num(4.0),
+                    expr_num(5.0),
+                ]),
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&for_stmt).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("accum").unwrap() {
+            assert_eq!(*n, 6.0); // 1+2+3, break after third addition
+        } else {
+            panic!("accum not a number");
+        }
+    }
+
+    #[test]
+    fn test_continue_skips_iteration() {
+        let mut interp = Interpreter::new();
+        interp
+            .execute_statement(&stmt_var("accum", expr_num(0.0)))
+            .unwrap();
+
+        // for i in [1,2,3,4,5] { if i == 3 { continue } accum = accum + i }
+        let body = mk_block(vec![
+            Statement::new(
+                StmtKind::If(IfStmt {
+                    condition: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("i")),
+                            BinaryOp::Eq,
+                            Box::new(expr_num(3.0)),
+                        ),
+                        Span::default(),
+                    ),
+                    then_branch: mk_block(vec![Statement::new(
+                        StmtKind::Continue(ContinueStmt),
+                        Span::default(),
+                    )]),
+                    else_branch: None,
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::Var(VarDecl {
+                    type_hint: None,
+                    name: "accum".into(),
+                    value: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("accum")),
+                            BinaryOp::Add,
+                            Box::new(expr_ident("i")),
+                        ),
+                        Span::default(),
+                    ),
+                }),
+                Span::default(),
+            ),
+        ]);
+        let for_stmt = Statement::new(
+            StmtKind::For(ForStmt {
+                iterator: "i".into(),
+                iterable: expr_list(vec![
+                    expr_num(1.0),
+                    expr_num(2.0),
+                    expr_num(3.0),
+                    expr_num(4.0),
+                    expr_num(5.0),
+                ]),
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&for_stmt).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("accum").unwrap() {
+            assert_eq!(*n, 12.0); // 1+2+4+5
+        } else {
+            panic!("accum not a number");
+        }
+    }
+
+    #[test]
+    fn test_return_from_function() {
+        let mut interp = Interpreter::new();
+        // fn double(x) { return x * 2 }
+        let fn_decl = Statement::new(
+            StmtKind::Fn(FnDecl {
+                name: "double".into(),
+                params: vec!["x".into()],
+                body: mk_block(vec![Statement::new(
+                    StmtKind::Return(ReturnStmt {
+                        value: Some(Expr::new(
+                            ExprKind::BinaryOp(
+                                Box::new(expr_ident("x")),
+                                BinaryOp::Mul,
+                                Box::new(expr_num(2.0)),
+                            ),
+                            Span::default(),
+                        )),
+                    }),
+                    Span::default(),
+                )]),
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&fn_decl).unwrap();
+
+        // result = double(5)
+        let call = Statement::new(
+            StmtKind::Var(VarDecl {
+                type_hint: None,
+                name: "result".into(),
+                value: Expr::new(
+                    ExprKind::Call {
+                        name: "double".into(),
+                        args: vec![CallArg::Positional(expr_num(5.0))],
+                    },
+                    Span::default(),
+                ),
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&call).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("result").unwrap() {
+            assert_eq!(*n, 10.0);
+        } else {
+            panic!("result not a number");
+        }
+    }
+
+    #[test]
+    fn test_fn_call_with_closure() {
+        let mut interp = Interpreter::new();
+        // base = 10
+        interp
+            .execute_statement(&stmt_var("base", expr_num(10.0)))
+            .unwrap();
+
+        // fn add_base(x) { return base + x }
+        let fn_decl = Statement::new(
+            StmtKind::Fn(FnDecl {
+                name: "add_base".into(),
+                params: vec!["x".into()],
+                body: mk_block(vec![Statement::new(
+                    StmtKind::Return(ReturnStmt {
+                        value: Some(Expr::new(
+                            ExprKind::BinaryOp(
+                                Box::new(expr_ident("base")),
+                                BinaryOp::Add,
+                                Box::new(expr_ident("x")),
+                            ),
+                            Span::default(),
+                        )),
+                    }),
+                    Span::default(),
+                )]),
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&fn_decl).unwrap();
+
+        // base = 999 // should not affect closure
+        interp
+            .execute_statement(&stmt_var("base", expr_num(999.0)))
+            .unwrap();
+
+        // result = add_base(5)
+        let call = Statement::new(
+            StmtKind::Var(VarDecl {
+                type_hint: None,
+                name: "result".into(),
+                value: Expr::new(
+                    ExprKind::Call {
+                        name: "add_base".into(),
+                        args: vec![CallArg::Positional(expr_num(5.0))],
+                    },
+                    Span::default(),
+                ),
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&call).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("result").unwrap() {
+            assert_eq!(*n, 15.0); // captured base=10
+        } else {
+            panic!("result not a number");
+        }
+    }
+
+    #[test]
+    fn test_function_no_return() {
+        let mut interp = Interpreter::new();
+        // fn forty_two() { return 42 }
+        let body = mk_block(vec![Statement::new(
+            StmtKind::Return(ReturnStmt {
+                value: Some(expr_num(42.0)),
+            }),
+            Span::default(),
+        )]);
+        let fn_decl = Statement::new(
+            StmtKind::Fn(FnDecl {
+                name: "forty_two".into(),
+                params: vec![],
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&fn_decl).unwrap();
+
+        let call = stmt_var(
+            "result",
+            Expr::new(
+                ExprKind::Call {
+                    name: "forty_two".into(),
+                    args: vec![],
+                },
+                Span::default(),
+            ),
+        );
+        interp.execute_statement(&call).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("result").unwrap() {
+            assert_eq!(*n, 42.0);
+        } else {
+            panic!("result not a number");
+        }
+    }
+
+    #[test]
+    fn test_while_loop_condition() {
+        let mut interp = Interpreter::new();
+        interp
+            .execute_statement(&stmt_var("n", expr_num(0.0)))
+            .unwrap();
+
+        // while n < 5 { n = n + 1 }
+        let while_stmt = Statement::new(
+            StmtKind::While(WhileStmt {
+                condition: Expr::new(
+                    ExprKind::BinaryOp(
+                        Box::new(expr_ident("n")),
+                        BinaryOp::Lt,
+                        Box::new(expr_num(5.0)),
+                    ),
+                    Span::default(),
+                ),
+                body: mk_block(vec![Statement::new(
+                    StmtKind::Var(VarDecl {
+                        type_hint: None,
+                        name: "n".into(),
+                        value: Expr::new(
+                            ExprKind::BinaryOp(
+                                Box::new(expr_ident("n")),
+                                BinaryOp::Add,
+                                Box::new(expr_num(1.0)),
+                            ),
+                            Span::default(),
+                        ),
+                    }),
+                    Span::default(),
+                )]),
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&while_stmt).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("n").unwrap() {
+            assert_eq!(*n, 5.0);
+        } else {
+            panic!("n not a number");
+        }
+    }
+
+    #[test]
+    fn test_nested_break_innermost() {
+        let mut interp = Interpreter::new();
+        interp
+            .execute_statement(&stmt_var("outer_sum", expr_num(0.0)))
+            .unwrap();
+        interp
+            .execute_statement(&stmt_var("inner_sum", expr_num(0.0)))
+            .unwrap();
+
+        // for i in [1,2] { for j in [1,2,3] { inner_sum = inner_sum + j; if j == 2 { break } } outer_sum = outer_sum + i }
+        let inner_body = mk_block(vec![
+            Statement::new(
+                StmtKind::Var(VarDecl {
+                    type_hint: None,
+                    name: "inner_sum".into(),
+                    value: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("inner_sum")),
+                            BinaryOp::Add,
+                            Box::new(expr_ident("j")),
+                        ),
+                        Span::default(),
+                    ),
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::If(IfStmt {
+                    condition: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("j")),
+                            BinaryOp::Eq,
+                            Box::new(expr_num(2.0)),
+                        ),
+                        Span::default(),
+                    ),
+                    then_branch: mk_block(vec![Statement::new(
+                        StmtKind::Break(BreakStmt),
+                        Span::default(),
+                    )]),
+                    else_branch: None,
+                }),
+                Span::default(),
+            ),
+        ]);
+        let outer_body = mk_block(vec![
+            Statement::new(
+                StmtKind::For(ForStmt {
+                    iterator: "j".into(),
+                    iterable: expr_list(vec![expr_num(1.0), expr_num(2.0), expr_num(3.0)]),
+                    body: inner_body,
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::Var(VarDecl {
+                    type_hint: None,
+                    name: "outer_sum".into(),
+                    value: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("outer_sum")),
+                            BinaryOp::Add,
+                            Box::new(expr_ident("i")),
+                        ),
+                        Span::default(),
+                    ),
+                }),
+                Span::default(),
+            ),
+        ]);
+        let outer = Statement::new(
+            StmtKind::For(ForStmt {
+                iterator: "i".into(),
+                iterable: expr_list(vec![expr_num(1.0), expr_num(2.0)]),
+                body: outer_body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&outer).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("inner_sum").unwrap() {
+            assert_eq!(*n, 6.0); // (1+2) * 2 iterations
+        } else {
+            panic!("inner_sum not a number");
+        }
+        if let Value::Num(n) = interp.variables.get("outer_sum").unwrap() {
+            assert_eq!(*n, 3.0); // 1+2
+        } else {
+            panic!("outer_sum not a number");
+        }
+    }
+
+    #[test]
+    fn test_return_early_in_loop() {
+        let mut interp = Interpreter::new();
+        // fn find_three() { for i in [1,2,3,4,5] { if i == 3 { return i } } return 0 }
+        let body = mk_block(vec![
+            Statement::new(
+                StmtKind::For(ForStmt {
+                    iterator: "i".into(),
+                    iterable: expr_list(vec![
+                        expr_num(1.0),
+                        expr_num(2.0),
+                        expr_num(3.0),
+                        expr_num(4.0),
+                        expr_num(5.0),
+                    ]),
+                    body: mk_block(vec![Statement::new(
+                        StmtKind::If(IfStmt {
+                            condition: Expr::new(
+                                ExprKind::BinaryOp(
+                                    Box::new(expr_ident("i")),
+                                    BinaryOp::Eq,
+                                    Box::new(expr_num(3.0)),
+                                ),
+                                Span::default(),
+                            ),
+                            then_branch: mk_block(vec![Statement::new(
+                                StmtKind::Return(ReturnStmt {
+                                    value: Some(expr_ident("i")),
+                                }),
+                                Span::default(),
+                            )]),
+                            else_branch: None,
+                        }),
+                        Span::default(),
+                    )]),
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::Return(ReturnStmt {
+                    value: Some(expr_num(0.0)),
+                }),
+                Span::default(),
+            ),
+        ]);
+        let fn_decl = Statement::new(
+            StmtKind::Fn(FnDecl {
+                name: "find_three".into(),
+                params: vec![],
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&fn_decl).unwrap();
+
+        let call = stmt_var(
+            "result",
+            Expr::new(
+                ExprKind::Call {
+                    name: "find_three".into(),
+                    args: vec![],
+                },
+                Span::default(),
+            ),
+        );
+        interp.execute_statement(&call).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("result").unwrap() {
+            assert_eq!(*n, 3.0);
+        } else {
+            panic!("result not a number");
+        }
+    }
+
+    #[test]
+    fn test_recursive_factorial() {
+        let mut interp = Interpreter::new();
+        // fn fact(n) { if n <= 1 { return 1 } return n * fact(n - 1) }
+        let body = mk_block(vec![
+            Statement::new(
+                StmtKind::If(IfStmt {
+                    condition: Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("n")),
+                            BinaryOp::Le,
+                            Box::new(expr_num(1.0)),
+                        ),
+                        Span::default(),
+                    ),
+                    then_branch: mk_block(vec![Statement::new(
+                        StmtKind::Return(ReturnStmt {
+                            value: Some(expr_num(1.0)),
+                        }),
+                        Span::default(),
+                    )]),
+                    else_branch: None,
+                }),
+                Span::default(),
+            ),
+            Statement::new(
+                StmtKind::Return(ReturnStmt {
+                    value: Some(Expr::new(
+                        ExprKind::BinaryOp(
+                            Box::new(expr_ident("n")),
+                            BinaryOp::Mul,
+                            Box::new(Expr::new(
+                                ExprKind::Call {
+                                    name: "fact".into(),
+                                    args: vec![CallArg::Positional(Expr::new(
+                                        ExprKind::BinaryOp(
+                                            Box::new(expr_ident("n")),
+                                            BinaryOp::Sub,
+                                            Box::new(expr_num(1.0)),
+                                        ),
+                                        Span::default(),
+                                    ))],
+                                },
+                                Span::default(),
+                            )),
+                        ),
+                        Span::default(),
+                    )),
+                }),
+                Span::default(),
+            ),
+        ]);
+        let fn_decl = Statement::new(
+            StmtKind::Fn(FnDecl {
+                name: "fact".into(),
+                params: vec!["n".into()],
+                body,
+            }),
+            Span::default(),
+        );
+        interp.execute_statement(&fn_decl).unwrap();
+
+        let call = stmt_var(
+            "result",
+            Expr::new(
+                ExprKind::Call {
+                    name: "fact".into(),
+                    args: vec![CallArg::Positional(expr_num(5.0))],
+                },
+                Span::default(),
+            ),
+        );
+        interp.execute_statement(&call).unwrap();
+
+        if let Value::Num(n) = interp.variables.get("result").unwrap() {
+            assert_eq!(*n, 120.0); // 5!
+        } else {
+            panic!("result not a number");
+        }
+    }
+
+    #[test]
+    fn test_topo_betti_real_call() {
+        let mut interp = Interpreter::new();
+        interp
+            .import_topology(&ImportStmt {
+                module: "topology".into(),
+                symbol: Some("Betti".into()),
+            })
+            .unwrap();
+        // Betti([0, 50, 100]) -> gaps > 15 -> 3 components -> [3.0, 0.0]
+        let call = Expr::new(
+            ExprKind::Call {
+                name: "Betti".into(),
+                args: vec![CallArg::Positional(expr_list(vec![
+                    expr_num(0.0),
+                    expr_num(50.0),
+                    expr_num(100.0),
+                ]))],
+            },
+            Span::default(),
+        );
+        let val = interp.evaluate_expr(&call).unwrap();
+        if let Value::List(vs) = val {
+            assert_eq!(vs.len(), 2);
+            if let Value::Num(b0) = vs[0] {
+                assert_eq!(b0, 1.0); // [0,50,100] has one large-gap component per compute_betti_0 logic
+            } else {
+                panic!("b0 not a number");
+            }
+        } else {
+            panic!("Expected list from Betti");
+        }
     }
 }

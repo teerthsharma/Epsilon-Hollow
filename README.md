@@ -48,6 +48,52 @@ All data = geometry on S². File moves = O(1) topological surgery.
 
 ---
 
+## Honest Status
+
+Seal OS is a research kernel. Here's what's actually running versus what's planned.
+
+### ✅ Real — Running Today
+
+- **Boot**: UEFI PE/COFF → 64-bit long mode, identity-mapped page tables, GDT + TSS
+- **Memory**: Physical frame bitmap, slab allocator (64 B–2 KB), page allocator, VMM with 4-level page tables
+- **Interrupts**: 256-entry IDT, Local APIC + I/O APIC, APIC timer, PS/2 keyboard & mouse
+- **SMP**: INIT-SIPI-SIPI trampoline, per-CPU data, IPIs (reschedule + TLB shootdown)
+- **Drivers**: Serial COM1, PCI enumeration, Intel e1000 (TX/RX descriptor rings), AHCI SATA (read/write sectors)
+- **Graphics**: 1024×768×32 framebuffer, 8×16 bitmap font, anti-aliased text, gradients, rounded rects, alpha blending
+- **Window Manager**: Compositor with z-order, window decorations, software cursor, desktop + taskbar
+- **Filesystem**: ManifoldFS in-memory (Voronoi indexing, O(1) teleport, content-addressable find)
+- **Scheduler**: ManifoldScheduler with Voronoi task groups, governor-based timeslice adaptation
+- **Syscalls**: 14 POSIX-like + 8 Epsilon extensions (exit, read, write, open, close, exec, fork, waitpid, mmap, getpid, stat, mkdir, setuid, setgid, manifold_query, teleport, theorem_status, pkg/wifi/bt/settings stubs)
+- **Security**: ASLR, seccomp filters, SMAP/SMEP detection, KPTI trampoline, audit logging
+- **Math**: aether-core `no_std` library — T1–T5 theorems (Voronoi, spectral contraction, entropy governor, PD control, hyperbolic separation)
+- **Language**: Aether-Lang lexer, parser, AST, interpreter, and VM integrated into the kernel runtime
+- **Applications**: SealShell (30+ commands), terminal emulator, calculator, Snake, Breakout, Warp Racer, Seal IDE, theorem viewer
+- **Media**: WAV/PCM playback with real RIFF/WAVE header parser
+
+### ❌ Not Yet Real — Stubs or PCI Probe Only
+
+- **WiFi**: PCI probe detects Intel/Broadcom/Qualcomm/Realtek chips; no driver firmware loaded
+- **Bluetooth**: PCI probe detects combo cards; no HCI driver
+- **USB**: xHCI register structs defined; no port enumeration or transfer rings
+- **NVMe**: PCI probe only; no submission/completion queues
+- **HDA Audio**: PCI probe only; no DMA engine or codec initialization
+- **GPU**: PCI probe detects Intel/AMD/NVIDIA; no i915-style driver
+- **TLS**: State machine defined; no AES-GCM or handshake logic wired to NIC
+- **HTTP**: Client struct exists; not wired to TCP socket layer
+- **Package Manager**: Registry/manifest types exist; `install` returns "not implemented"
+- **Settings Syscalls**: `setting_get` / `setting_set` return ENOSYS
+
+### 🚧 Partial — Skeleton Working, Missing Integration
+
+- **TCP Stack**: Full RFC state machine (Closed → Listen → SynSent → Established → …), retransmission timer, socket API — built but not yet wired to e1000 TX path (RX works when NIC is present)
+- **DHCP**: Skeleton state machine; discovers OFFER but does not complete REQUEST/ACK
+- **DNS**: Parser + cache work; queries not issued over UDP socket yet
+- **ManifoldFS**: In-memory BTreeMap only; no AHCI persistence layer (no disk format, no journal)
+- **Aether-Lang Stdlib**: `math.pi` / `math.e` return real constants; `fs`, `process`, `net`, `theorem` bindings return errors
+- **Retpoline / KPTI**: Trampoline pages allocated; compiler flags + full mitigation pending
+
+---
+
 ## Architecture
 
 ```mermaid

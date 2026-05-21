@@ -1,7 +1,7 @@
 // Seal OS -- Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Minimal TCP state machine.
+//! Minimal TCP state machine with retransmission timer.
 
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -9,7 +9,9 @@ use spin::Mutex;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TcpState {
     Closed,
+    Listen,
     SynSent,
+    SynReceived,
     Established,
     FinWait1,
     FinWait2,
@@ -20,23 +22,55 @@ pub enum TcpState {
 }
 
 #[repr(C, packed)]
-struct TcpHeader {
-    src_port: u16,
-    dst_port: u16,
-    seq: u32,
-    ack: u32,
-    data_offset_flags: u16,
-    window: u16,
-    checksum: u16,
-    urgent: u16,
+pub struct TcpHeader {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub seq: u32,
+    pub ack: u32,
+    pub data_offset_flags: u16,
+    pub window: u16,
+    pub checksum: u16,
+    pub urgent: u16,
 }
 
 impl TcpHeader {
-    fn data_offset(&self) -> usize {
+    pub fn data_offset(&self) -> usize {
         ((u16::from_be(self.data_offset_flags) >> 12) as usize) * 4
     }
-    fn flags(&self) -> u16 {
+    pub fn flags(&self) -> u16 {
         u16::from_be(self.data_offset_flags) & 0x3F
+    }
+
+    /// Parse a TCP header from exactly 20 bytes.
+    /// Returns `None` if the slice is too short.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 20 {
+            return None;
+        }
+        Some(Self {
+            src_port: u16::from_be_bytes([bytes[0], bytes[1]]),
+            dst_port: u16::from_be_bytes([bytes[2], bytes[3]]),
+            seq: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            ack: u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+            data_offset_flags: u16::from_be_bytes([bytes[12], bytes[13]]),
+            window: u16::from_be_bytes([bytes[14], bytes[15]]),
+            checksum: u16::from_be_bytes([bytes[16], bytes[17]]),
+            urgent: u16::from_be_bytes([bytes[18], bytes[19]]),
+        })
+    }
+
+    /// Serialize the TCP header to a fixed 20-byte array.
+    pub fn to_bytes(&self) -> [u8; 20] {
+        let mut b = [0u8; 20];
+        b[0..2].copy_from_slice(&self.src_port.to_be_bytes());
+        b[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
+        b[4..8].copy_from_slice(&self.seq.to_be_bytes());
+        b[8..12].copy_from_slice(&self.ack.to_be_bytes());
+        b[12..14].copy_from_slice(&self.data_offset_flags.to_be_bytes());
+        b[14..16].copy_from_slice(&self.window.to_be_bytes());
+        b[16..18].copy_from_slice(&self.checksum.to_be_bytes());
+        b[18..20].copy_from_slice(&self.urgent.to_be_bytes());
+        b
     }
 }
 
@@ -45,6 +79,13 @@ const FLAG_SYN: u16 = 2;
 const _FLAG_RST: u16 = 4;
 const FLAG_PSH: u16 = 8;
 const FLAG_ACK: u16 = 16;
+
+struct RetransmitEntry {
+    seq: u32,
+    flags: u16,
+    payload: Vec<u8>,
+    time: u64,
+}
 
 pub struct TcpSocket {
     state: TcpState,
@@ -55,6 +96,8 @@ pub struct TcpSocket {
     ack_num: u32,
     rx_buffer: Vec<u8>,
     tx_buffer: Vec<u8>,
+    retransmit_queue: Vec<RetransmitEntry>,
+    rto: u64,
 }
 
 impl TcpSocket {
@@ -68,6 +111,8 @@ impl TcpSocket {
             ack_num: 0,
             rx_buffer: Vec::new(),
             tx_buffer: Vec::new(),
+            retransmit_queue: Vec::new(),
+            rto: 1000,
         }
     }
 
@@ -111,7 +156,7 @@ impl TcpSocket {
         self.rx_buffer.extend_from_slice(data);
     }
 
-    fn send_tcp_packet(&self, flags: u16, payload: &[u8]) {
+    fn send_tcp_packet(&mut self, flags: u16, payload: &[u8]) {
         let src_ip = crate::net::local_ip();
         let mut hdr = TcpHeader {
             src_port: self.local_port.to_be(),
@@ -129,6 +174,7 @@ impl TcpSocket {
         pseudo.push(0);
         pseudo.push(6);
         pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+        // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
         };
@@ -136,12 +182,40 @@ impl TcpSocket {
         pseudo.extend_from_slice(payload);
         hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
         let mut pkt = Vec::with_capacity(20 + payload.len());
+        // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
         let hdr_bytes = unsafe {
             core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
         };
         pkt.extend_from_slice(hdr_bytes);
         pkt.extend_from_slice(payload);
         crate::net::ipv4::send_ipv4_packet(self.remote_ip, 6, &pkt);
+
+        if !payload.is_empty() || flags & FLAG_SYN != 0 || flags & FLAG_FIN != 0 {
+            self.retransmit_queue.push(RetransmitEntry {
+                seq: self.seq_num,
+                flags,
+                payload: payload.to_vec(),
+                time: crate::drivers::interrupts::ticks(),
+            });
+        }
+    }
+
+    fn purge_acked(&mut self, ack: u32) {
+        self.retransmit_queue.retain(|e| {
+            let end = e.seq + e.payload.len() as u32;
+            end > ack || (ack < 1000 && end < 1000)
+        });
+    }
+
+    fn retransmit_expired(&mut self) {
+        let now = crate::drivers::interrupts::ticks();
+        let found = self.retransmit_queue.iter().find(|entry| {
+            now.wrapping_sub(entry.time) >= self.rto
+        }).map(|entry| (entry.seq, entry.flags, entry.payload.clone()));
+        if let Some((seq, flags, payload)) = found {
+            self.seq_num = seq;
+            self.send_tcp_packet(flags, &payload);
+        }
     }
 }
 
@@ -200,12 +274,25 @@ pub fn close(idx: usize) {
     }
 }
 
-pub fn poll() {}
+pub fn state(idx: usize) -> TcpState {
+    let sockets = TCP_SOCKETS.lock();
+    sockets.get(idx).map_or(TcpState::Closed, |s| s.state())
+}
+
+pub fn poll() {
+    let mut sockets = TCP_SOCKETS.lock();
+    for sock in sockets.iter_mut() {
+        if !sock.retransmit_queue.is_empty() {
+            sock.retransmit_expired();
+        }
+    }
+}
 
 pub fn handle_tcp_packet(_src: [u8; 4], pkt: &[u8]) {
     if pkt.len() < 20 {
         return;
     }
+    // SAFETY: pkt is at least 20 bytes; TcpHeader is repr(C, packed)
     let hdr = unsafe { &*(pkt.as_ptr() as *const TcpHeader) };
     let data_offset = hdr.data_offset();
     if data_offset < 20 || pkt.len() < data_offset {
@@ -240,6 +327,10 @@ pub fn handle_tcp_packet(_src: [u8; 4], pkt: &[u8]) {
                         if flags & FLAG_PSH != 0 || !payload.is_empty() {
                             sock.send_tcp_packet(FLAG_ACK, &[]);
                         }
+                        if flags & FLAG_ACK != 0 {
+                            let ack = u32::from_be(hdr.ack);
+                            sock.purge_acked(ack);
+                        }
                     }
                 }
                 TcpState::FinWait1 => {
@@ -273,5 +364,121 @@ pub fn handle_tcp_packet(_src: [u8; 4], pkt: &[u8]) {
             }
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tcp_header(flags: u16, seq: u32, ack: u32, dst_port: u16) -> Vec<u8> {
+        let hdr = TcpHeader {
+            src_port: 80u16.to_be(),
+            dst_port: dst_port.to_be(),
+            seq: seq.to_be(),
+            ack: ack.to_be(),
+            data_offset_flags: ((5u16 << 12) | flags).to_be(),
+            window: 65535u16.to_be(),
+            checksum: 0,
+            urgent: 0,
+        };
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
+        };
+        bytes.to_vec()
+    }
+
+    #[test]
+    fn test_syn_sent_to_established() {
+        let mut sock = TcpSocket::new(1234);
+        sock.remote_port = 80;
+        sock.state = TcpState::SynSent;
+        let pkt = make_tcp_header(FLAG_SYN | FLAG_ACK, 500, 1001, 1234);
+        let mut sockets = TCP_SOCKETS.lock();
+        let idx = sockets.len();
+        sockets.push(sock);
+        drop(sockets);
+        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].state, TcpState::Established);
+        assert_eq!(sockets[idx].ack_num, 501);
+        assert_eq!(sockets[idx].seq_num, 1001);
+    }
+
+    #[test]
+    fn test_established_to_closewait() {
+        let mut sock = TcpSocket::new(1234);
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        let pkt = make_tcp_header(FLAG_FIN | FLAG_ACK, 500, 1000, 1234);
+        let mut sockets = TCP_SOCKETS.lock();
+        let idx = sockets.len();
+        sockets.push(sock);
+        drop(sockets);
+        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].state, TcpState::CloseWait);
+        assert_eq!(sockets[idx].ack_num, 501);
+    }
+
+    #[test]
+    fn test_fin_wait1_to_timewait() {
+        let mut sock = TcpSocket::new(1234);
+        sock.remote_port = 80;
+        sock.state = TcpState::FinWait1;
+        let pkt = make_tcp_header(FLAG_FIN | FLAG_ACK, 500, 1000, 1234);
+        let mut sockets = TCP_SOCKETS.lock();
+        let idx = sockets.len();
+        sockets.push(sock);
+        drop(sockets);
+        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].state, TcpState::TimeWait);
+    }
+
+    #[test]
+    fn test_close_to_syn_sent() {
+        let mut sock = TcpSocket::new(1234);
+        assert_eq!(sock.state, TcpState::Closed);
+        sock.connect([192, 168, 1, 1], 80);
+        assert_eq!(sock.state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn test_retransmit_queue() {
+        let mut sock = TcpSocket::new(1234);
+        sock.remote_port = 80;
+        sock.remote_ip = [127, 0, 0, 1];
+        sock.seq_num = 1000;
+        sock.state = TcpState::Established;
+        sock.send(b"hello");
+        assert_eq!(sock.retransmit_queue.len(), 1);
+        assert_eq!(sock.retransmit_queue[0].seq, 1000);
+        sock.purge_acked(1005);
+        assert!(sock.retransmit_queue.is_empty());
+    }
+
+    #[test]
+    fn test_tcp_header_roundtrip() {
+        let hdr = TcpHeader {
+            src_port: 1234u16.to_be(),
+            dst_port: 80u16.to_be(),
+            seq: 0xABCDEF01u32.to_be(),
+            ack: 0x12345678u32.to_be(),
+            data_offset_flags: ((5u16 << 12) | FLAG_SYN | FLAG_ACK).to_be(),
+            window: 64000u16.to_be(),
+            checksum: 0xBEEFu16.to_be(),
+            urgent: 0u16.to_be(),
+        };
+        let bytes = hdr.to_bytes();
+        let parsed = TcpHeader::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.src_port, hdr.src_port);
+        assert_eq!(parsed.dst_port, hdr.dst_port);
+        assert_eq!(parsed.seq, hdr.seq);
+        assert_eq!(parsed.ack, hdr.ack);
+        assert_eq!(parsed.data_offset_flags, hdr.data_offset_flags);
+        assert_eq!(parsed.window, hdr.window);
+        assert_eq!(parsed.checksum, hdr.checksum);
+        assert_eq!(parsed.urgent, hdr.urgent);
     }
 }

@@ -22,7 +22,7 @@ impl AetherRuntime {
     pub fn execute_source(&mut self, source: &str) -> Result<String, String> {
         let mut parser = aether_lang::Parser::new(source);
         let program = parser.parse().map_err(|e| format!("parse error: {}", e.message))?;
-        let value = self.interpreter.execute(&program)?;
+        let value = self.interpreter.execute(&program).map_err(|e| format!("{:?}", e))?;
         Ok(format!("{:?}", value))
     }
 

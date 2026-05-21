@@ -5,7 +5,9 @@
 
 pub mod aslr;
 pub mod audit;
+pub mod kpti;
 pub mod mac;
+pub mod retpoline;
 pub mod seccomp;
 pub mod smap_smep;
 
@@ -20,6 +22,8 @@ pub fn init_security() {
     }
     mac::init_default_policy();
     audit::init_audit_log();
+    kpti::init();
+    retpoline::init();
 }
 
 #[cfg(any(test, feature = "test-mode"))]
@@ -35,9 +39,11 @@ pub mod tests {
 
     pub fn register_all() {
         super::aslr::tests::register_all();
+        super::kpti::tests::register_all();
         super::smap_smep::tests::register_all();
         super::seccomp::tests::register_all();
         super::mac::tests::register_all();
+        super::retpoline::tests::register_all();
         super::audit::tests::register_all();
         crate::testing::register_test("security::init", test_security_init_does_not_panic);
     }

@@ -44,23 +44,32 @@ jobs:
         working-directory: kernel/seal-mkimage
         run: cargo +stable run --release
 
+      - name: Build UEFI ISO
+        run: |
+          chmod +x scripts/build_iso.sh
+          scripts/build_iso.sh
+
       - name: Report sizes
         working-directory: kernel/seal-os
         run: |
           echo "Kernel: $(du -h target/x86_64-unknown-uefi/release/seal-os.efi | cut -f1)"
           echo "Image:  $(du -h target/x86_64-unknown-uefi/release/seal-os.img | cut -f1)"
 
-      - name: Upload image artifact
+      - name: Upload image artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: seal-os-img
-          path: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+          name: seal-os-images
+          path: |
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            seal-os.iso
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+          files: |
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            seal-os.iso
           body: |
             ## Seal OS ${{ github.ref_name }}
 
@@ -97,7 +106,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || 'latest' }}
-          files: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+          files: |
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            seal-os.iso
           body: |
             ## Seal OS (dev build)
 

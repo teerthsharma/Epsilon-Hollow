@@ -18,9 +18,21 @@ static LOCAL_IP: Mutex<[u8; 4]> = Mutex::new([0, 0, 0, 0]);
 static GATEWAY: Mutex<[u8; 4]> = Mutex::new([0, 0, 0, 0]);
 static SUBNET: Mutex<[u8; 4]> = Mutex::new([255, 255, 255, 0]);
 
+/// Returns true only if a real NIC driver has been loaded and initialized.
+pub fn has_nic() -> bool {
+    crate::drivers::net::get_mac_address() != [0; 6]
+}
+
 pub fn init() {
     crate::drivers::net::init();
     *LOCAL_MAC.lock() = crate::drivers::net::get_mac_address();
+
+    if has_nic() {
+        crate::serial_println!("[NET] NIC detected — network stack initialized");
+    } else {
+        crate::serial_println!("[NET] No NIC detected — network stack initialized (TX disabled)");
+    }
+
     arp::init();
     dhcp::init();
 }
@@ -29,6 +41,10 @@ pub fn poll() {
     crate::drivers::net::poll();
     dhcp::poll();
     tcp::poll();
+}
+
+pub fn transmit(buf: &[u8]) {
+    crate::drivers::net::transmit(buf);
 }
 
 pub fn process_packet(frame: &[u8]) {

@@ -46,6 +46,41 @@ impl Ipv4Header {
         };
         self.checksum = internet_checksum(bytes);
     }
+
+    /// Parse an IPv4 header from a raw byte slice.
+    /// Returns `None` if the slice is too short, the version is not 4,
+    /// the IHL is < 5, or the header checksum is invalid.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 20 {
+            return None;
+        }
+        let ver_ihl = bytes[0];
+        let version = ver_ihl >> 4;
+        let ihl = (ver_ihl & 0x0F) as usize;
+        if version != 4 || ihl < 5 {
+            return None;
+        }
+        let hdr_len = ihl * 4;
+        if bytes.len() < hdr_len {
+            return None;
+        }
+        // Verify checksum over the header only
+        if internet_checksum(&bytes[..hdr_len]) != 0 {
+            return None;
+        }
+        Some(Self {
+            ver_ihl,
+            tos: bytes[1],
+            total_len: u16::from_be_bytes([bytes[2], bytes[3]]),
+            id: u16::from_be_bytes([bytes[4], bytes[5]]),
+            flags_frag: u16::from_be_bytes([bytes[6], bytes[7]]),
+            ttl: bytes[8],
+            protocol: bytes[9],
+            checksum: u16::from_be_bytes([bytes[10], bytes[11]]),
+            src: [bytes[12], bytes[13], bytes[14], bytes[15]],
+            dst: [bytes[16], bytes[17], bytes[18], bytes[19]],
+        })
+    }
 }
 
 pub fn internet_checksum(data: &[u8]) -> u16 {
@@ -114,7 +149,7 @@ pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
     };
     frame.extend_from_slice(hdr_bytes);
     frame.extend_from_slice(payload);
-    crate::drivers::net::transmit(&frame);
+    crate::net::transmit(&frame);
 }
 
 pub fn handle_ipv4_packet(pkt: &[u8]) {

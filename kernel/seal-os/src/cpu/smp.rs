@@ -127,8 +127,8 @@ pub extern "C" fn ap_main() {
         #[cfg(not(test))]
         crate::drivers::interrupts::reload_idt();
 
-        // Initialize local APIC timer (stub — same frequency as BSP)
-        // TODO: calibrate APIC timer per-CPU
+        // Initialize local APIC timer (same frequency as BSP)
+        crate::drivers::apic::init_local_apic_timer_for_ap();
 
         AP_READY_FLAG.store(true, Ordering::SeqCst);
 

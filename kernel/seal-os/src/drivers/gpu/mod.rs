@@ -3,6 +3,9 @@
 
 //! GPU driver — PCI vendor detection. 2D acceleration and compute dispatch are not yet implemented.
 
+pub mod intel;
+pub mod nvidia;
+
 use alloc::string::String;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,14 +79,22 @@ impl GpuDriver {
 }
 
 pub fn init() {
+    // Try vendor-specific drivers first.
+    if nvidia::init().is_some() {
+        return;
+    }
+    if intel::init().is_some() {
+        return;
+    }
+
+    // Fallback: generic PCI scan for any display controller.
     let mut driver = GpuDriver::new();
     let devices = crate::drivers::pci::enumerate();
     for dev in &devices {
-        // PCI class 0x03 = display controller
         if dev.class == 0x03 {
             driver.init_from_pci(dev.vendor_id, dev.bar_address(0) as u32);
             crate::serial_println!(
-                "[GPU] {} display controller detected ({:04X}:{:04X})",
+                "[GPU] {} display controller detected ({:04X}:{:04X}) -- no vendor driver",
                 driver.vendor().name(),
                 dev.vendor_id,
                 dev.device_id

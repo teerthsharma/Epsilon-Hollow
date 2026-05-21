@@ -9,7 +9,8 @@ use uefi::prelude::*;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::console::gop::GraphicsOutput;
 use uefi::proto::loaded_image::LoadedImage;
-use uefi::table::cfg::ConfigTableEntry;
+use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use uefi::boot::MemoryType;
 
 use super::boot_info::{BootInfo, MemoryDescriptor, MAX_MEMORY_DESCRIPTORS};
 use crate::serial_println;
@@ -26,15 +27,16 @@ pub fn run() -> Status {
     }
 
     // Search UEFI config tables for ACPI 2.0 RSDP
-    let mut acpi_rsdp = 0u64;
-    uefi::system::with_config_table(|tables| {
+    let acpi_rsdp = uefi::system::with_config_table(|tables| {
+        let mut rsdp = 0u64;
         for table in tables {
-            if table.guid == ConfigTableEntry::ACPI2_GUID {
-                acpi_rsdp = table.address as u64;
-                serial_println!("[BOOT] ACPI 2.0 RSDP found @ {:#X}", acpi_rsdp);
+            if table.guid == ACPI2_GUID {
+                rsdp = table.address as u64;
+                serial_println!("[BOOT] ACPI 2.0 RSDP found @ {:#X}", rsdp);
                 break;
             }
         }
+        rsdp
     });
 
     // Query GOP for framebuffer
@@ -55,7 +57,7 @@ pub fn run() -> Status {
 
     // Exit boot services — after this, UEFI is gone and we own the machine
     let memory_map = unsafe {
-        uefi::boot::exit_boot_services(None)
+        uefi::boot::exit_boot_services(MemoryType::LOADER_DATA)
     };
 
     serial_println!("Seal OS — UEFI boot complete, boot services exited");

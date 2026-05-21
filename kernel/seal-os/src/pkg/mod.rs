@@ -29,27 +29,8 @@ impl ManifoldPkg {
         }
     }
 
-    pub fn install(&mut self, name: &str) -> Result<String, String> {
-        if self.registry.is_installed(name) {
-            return Err(format!("'{}' is already installed", name));
-        }
-
-        let deps = self.resolver.resolve(name);
-        for dep in &deps {
-            if !self.registry.is_installed(dep) {
-                let manifest = PackageManifest::new(dep, "1.0.0", carrier::CarrierType::Aether);
-                self.registry.install(manifest);
-            }
-        }
-
-        let manifest = PackageManifest::new(name, "1.0.0", carrier::CarrierType::Aether);
-        self.registry.install(manifest);
-
-        Ok(format!(
-            "Installed '{}' v1.0.0 — metadata stored ({} deps resolved)",
-            name,
-            deps.len()
-        ))
+    pub fn install(&mut self, _name: &str) -> Result<String, String> {
+        Err(String::from("package installation not implemented"))
     }
 
     pub fn remove(&mut self, name: &str) -> Result<String, String> {

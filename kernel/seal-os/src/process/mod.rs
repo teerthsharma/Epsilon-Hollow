@@ -5,6 +5,7 @@
 
 pub mod context_switch;
 pub mod elf;
+pub mod hollow_asm;
 pub mod scheduler;
 pub mod task;
 pub mod userspace;
