@@ -376,6 +376,12 @@ extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
 #[cfg(not(test))]
 extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
     let addr = Cr2::read_raw();
+
+    // Attempt demand paging for known mmap regions.
+    if crate::memory::mmap::handle_page_fault(x86_64::VirtAddr::new(addr)) {
+        return;
+    }
+
     serial_println!("[FAULT] Page fault at {:#x}, error code: {:?}", addr, error_code);
     serial_println!("{:#?}", frame);
     loop { x86_64::instructions::hlt(); }

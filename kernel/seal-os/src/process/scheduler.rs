@@ -20,6 +20,9 @@ use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE};
 use super::task::{Task, TaskState};
 use crate::serial_println;
 
+use x86_64::PhysAddr;
+use x86_64::registers::control::{Cr3, Cr3Flags};
+
 const VORONOI_CELLS: usize = 8;
 
 // ---------------------------------------------------------------------------
@@ -299,7 +302,7 @@ impl ManifoldScheduler {
         }
         cpu.switching = true;
 
-        let mut guard = Some(cpu.scheduler_lock.lock());
+        let guard = cpu.scheduler_lock.lock();
 
         self.schedule_count += 1;
         self.ticks_in_slice = 0;
@@ -375,7 +378,7 @@ impl ManifoldScheduler {
                 None => {
                     serial_println!("[scheduler] schedule: next task {} missing, going idle", next_idx);
                     cpu.is_idle = true;
-                    drop(guard.take());
+                    drop(guard);
                     cpu.switching = false;
                     return;
                 }
@@ -404,25 +407,44 @@ impl ManifoldScheduler {
                 }
             }
 
-            if old_task_dead {
-                drop(guard.take());
-            }
+            // Determine target CR3: user page table for userspace tasks,
+            // kernel BSP PML4 for kernel tasks and idle loop.
+            let target_cr3 = if next_task.is_userspace && next_task.page_table != 0 {
+                next_task.page_table
+            } else {
+                unsafe { crate::memory::virt::bsp_pml4() }
+            };
+
+            // Release the scheduler lock BEFORE context switch.
+            // Holding it across switch_context would deadlock when the
+            // new task's timer fires and tries to acquire the same lock.
+            drop(guard);
 
             x86_64::instructions::interrupts::disable();
+            // Clear switching flag while interrupts are off so that
+            // timer handlers on the new task can preempt correctly.
+            cpu.switching = false;
+
             unsafe {
+                // Switch address space if necessary.  Safe because the
+                // kernel higher-half is identity-mapped in every PML4.
+                let frame = x86_64::structures::paging::PhysFrame::containing_address(
+                    PhysAddr::new(target_cr3)
+                );
+                Cr3::write(frame, Cr3Flags::empty());
                 switch_context(old_ctx, next_ctx);
             }
             x86_64::instructions::interrupts::enable();
 
-            if let Some(g) = guard.take() {
-                drop(g);
-            }
+            // NOTE: when we return here it is because another schedule()
+            // call switched back to this task.  cpu.switching was already
+            // cleared by that other call before its switch_context(), so
+            // nothing further is required.
         } else {
             cpu.is_idle = true;
-            drop(guard.take());
+            drop(guard);
+            cpu.switching = false;
         }
-
-        cpu.switching = false;
     }
 
     /// O(1) task selection: predicted Voronoi cell first, then highest-priority

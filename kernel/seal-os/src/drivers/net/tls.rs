@@ -28,21 +28,16 @@ impl TlsSession {
         }
     }
 
-    /// No network hardware — handshake is a no-op.
     pub fn handshake(&mut self) -> Result<(), &'static str> {
-        Err("No network hardware — TLS handshake requires a NIC")
+        Err("TLS not implemented")
     }
 
-    /// No real encryption — returns plaintext unchanged.
-    pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
-        // No network hardware — AES-256-GCM not performed
-        plaintext.to_vec()
+    pub fn encrypt(&self, _plaintext: &[u8]) -> Result<Vec<u8>, &'static str> {
+        Err("TLS not implemented")
     }
 
-    /// No real decryption — returns ciphertext unchanged.
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Vec<u8> {
-        // No network hardware — decryption not performed
-        ciphertext.to_vec()
+    pub fn decrypt(&self, _ciphertext: &[u8]) -> Result<Vec<u8>, &'static str> {
+        Err("TLS not implemented")
     }
 
     pub fn state(&self) -> TlsState {

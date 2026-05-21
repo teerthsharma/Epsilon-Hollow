@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! USB subsystem — xHCI host controller, HID, mass storage.
-//! NOTE: This is a simulated subsystem. No real USB hardware is accessed.
+//! NOTE: Placeholder — protocol constants defined; full xHCI driver not yet implemented.
 
 pub mod xhci;
 pub mod descriptor;

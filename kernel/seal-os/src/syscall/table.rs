@@ -338,36 +338,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         }
 
         SYS_MMAP => {
-            let addr = arg0;
             let len = arg1 as usize;
-            let _prot = arg2;
+            let prot = arg2;
             let pages = (len + 4095) / 4096;
-            let map_addr = if addr != 0 { addr } else { 0x0000_0000_0010_0000 };
+
+            let mut flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+            if prot & 0x2 != 0 {
+                flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+            }
+            if prot & 0x4 == 0 {
+                flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            }
 
             if let Some(pt) = crate::process::scheduler::current_page_table() {
-                let pml4 = unsafe { &mut *(pt as *mut x86_64::structures::paging::PageTable) };
-                for i in 0..pages {
-                    let virt = x86_64::VirtAddr::new(map_addr + (i as u64) * 4096);
-                    if let Some(frame) = crate::memory::phys::alloc_frame() {
-                        unsafe {
-                            core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
-                            if crate::memory::virt::map_page_to_pml4(
-                                virt,
-                                frame,
-                                x86_64::structures::paging::PageTableFlags::PRESENT
-                                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                                    | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE,
-                                pml4,
-                            ).is_err() {
-                                crate::memory::phys::free_frame(frame);
-                                return SyscallResult::err(12); // ENOMEM
-                            }
-                        }
-                    } else {
-                        return SyscallResult::err(12); // ENOMEM
-                    }
+                match crate::memory::mmap::mmap_user(pages, flags, pt) {
+                    Some(virt) => SyscallResult::ok(virt.as_u64() as i64),
+                    None => SyscallResult::err(12), // ENOMEM
                 }
-                SyscallResult::ok(map_addr as i64)
             } else {
                 SyscallResult::err(1) // EPERM
             }
@@ -452,14 +440,8 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             String::from("T1:ACTIVE T2:ACTIVE T3:ACTIVE T4:ACTIVE T5:ACTIVE"),
         ),
 
-        SYS_PKG_INSTALL => SyscallResult::with_data(
-            0,
-            String::from("pkg_install: not yet implemented"),
-        ),
-        SYS_PKG_REMOVE => SyscallResult::with_data(
-            0,
-            String::from("pkg_remove: not yet implemented"),
-        ),
+        SYS_PKG_INSTALL => SyscallResult::err(38),
+        SYS_PKG_REMOVE => SyscallResult::err(38),
         SYS_PKG_LIST => SyscallResult::with_data(
             0,
             String::from("pkg_list: no packages installed"),
@@ -480,14 +462,8 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             0,
             String::from("bt_pair: no Bluetooth adapter detected"),
         ),
-        SYS_SETTING_GET => SyscallResult::with_data(
-            0,
-            String::from("setting_get: not yet implemented"),
-        ),
-        SYS_SETTING_SET => SyscallResult::with_data(
-            0,
-            String::from("setting_set: not yet implemented"),
-        ),
+        SYS_SETTING_GET => SyscallResult::err(38),
+        SYS_SETTING_SET => SyscallResult::err(38),
 
         SYS_SETUID => {
             crate::process::scheduler::set_current_uid(arg0 as u32);

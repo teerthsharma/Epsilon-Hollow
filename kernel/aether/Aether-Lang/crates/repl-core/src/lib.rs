@@ -79,7 +79,7 @@ fn execute_line(interpreter: &mut Interpreter, source: &str) -> Result<String, S
         .map_err(|e| format!("Parse error: {:?}", e))?;
     let value = interpreter
         .execute(&ast)
-        .map_err(|e| format!("Runtime error: {}", e))?;
+        .map_err(|e| format!("Runtime error: {:?}", e))?;
     Ok(format!("{:?}", value))
 }
 
@@ -138,7 +138,7 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
                 println!("Titan Execution complete. \u{26a1}");
             }
             Err(e) => {
-                eprintln!("Titan Runtime error: {}", e);
+                eprintln!("Titan Runtime error: {:?}", e);
                 std::process::exit(1);
             }
         }
@@ -151,7 +151,7 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
                 println!("Bio-Script Execution complete. \u{1f9ad}");
             }
             Err(e) => {
-                eprintln!("Runtime error: {}", e);
+                eprintln!("Runtime error: {:?}", e);
                 std::process::exit(1);
             }
         }

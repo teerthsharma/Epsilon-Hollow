@@ -18,7 +18,6 @@ pub mod drivers;
 pub mod fs;
 #[cfg(not(test))]
 pub mod graphics;
-#[cfg(not(test))]
 pub mod net;
 #[cfg(not(test))]
 pub mod lang;
@@ -188,6 +187,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
     init_scheduler();
     graphics::splash::draw_progress_bar(fb, 35);
 
+    // Enter the scheduler so that spawned kernel tasks actually execute.
+    // When they yield, we resume here and continue desktop initialisation.
+    process::scheduler::yield_current();
+
     syscall::table::init_syscall_fs();
     graphics::splash::draw_progress_bar(fb, 40);
 
@@ -272,6 +275,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         let now = drivers::interrupts::ticks();
         if now.wrapping_sub(last_tick) >= 3 {
             app_state.tick();
+            net::poll();
             last_tick = now;
         }
 
@@ -282,6 +286,9 @@ fn boot_graphical(fb: &'static Framebuffer) {
             frame_dirty = false;
         }
 
+        // Yield to the scheduler so background tasks (kernel, shell,
+        // compositor) get CPU time.  We resume here on the next tick.
+        process::scheduler::yield_current();
         x86_64::instructions::hlt();
     }
 }
@@ -387,6 +394,15 @@ fn init_drivers() {
     drivers::wifi::init();
     drivers::bluetooth::init();
     drivers::gpu::init();
+    if drivers::nvme::init().is_none() {
+        serial_println!("[NVMe] Initialization failed, continuing without NVMe");
+    }
+    if drivers::audio::hda::init().is_none() {
+        serial_println!("[HDA] Initialization failed, continuing without audio");
+    }
+    if drivers::usb::xhci::init().is_none() {
+        serial_println!("[xHCI] Initialization failed, continuing without USB 3.0");
+    }
     net::init();
 }
 

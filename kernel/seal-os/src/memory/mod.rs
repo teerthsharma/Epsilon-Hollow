@@ -10,6 +10,8 @@ use crate::boot::boot_info::BootInfo;
 
 pub mod gdt;
 pub mod heap;
+pub mod mmap;
+pub mod pgtable_asm;
 pub mod phys;
 pub mod slab;
 pub mod virt;

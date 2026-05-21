@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! Minimal async runtime — single-threaded no-op-waker executor. Not Tokio-compatible.
+//! NOTE: This is a placeholder executor. Real async I/O requires driver interrupt
+//! integration and a proper waker system.
 
 pub mod task;
 pub mod timer;

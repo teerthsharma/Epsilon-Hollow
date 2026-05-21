@@ -10,6 +10,7 @@ pub mod tcp;
 pub mod udp;
 pub mod dhcp;
 pub mod dns;
+pub mod icmp;
 pub mod http;
 pub mod tls;
 

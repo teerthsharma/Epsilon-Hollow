@@ -1,15 +1,49 @@
 #!/usr/bin/env bash
 # Seal OS — Kernel integration test runner
 # Builds the kernel with test-mode, creates a UEFI disk image, and runs it in QEMU.
+# Skips gracefully if QEMU or OVMF firmware is not available.
 
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# ── Detect QEMU ──────────────────────────────────────────────────────────────
+QEMU="qemu-system-x86_64"
+if ! command -v "$QEMU" &>/dev/null; then
+    echo "[SKIP] QEMU not available ($QEMU not in PATH)"
+    exit 0
+fi
+
+# ── Detect OVMF firmware ─────────────────────────────────────────────────────
+OVMF_PATH=""
+for candidate in \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+    /usr/share/qemu/edk2-x86_64-code.fd \
+    /usr/share/qemu-efi-x86_64/QEMU_EFI.fd
+do
+    if [ -f "$candidate" ]; then
+        OVMF_PATH="$candidate"
+        break
+    fi
+done
+
+if [ -z "$OVMF_PATH" ]; then
+    echo "[SKIP] OVMF UEFI firmware not found in any standard location"
+    echo "[SKIP] Checked: /usr/share/OVMF/* /usr/share/edk2-ovmf/* /usr/share/qemu/*"
+    exit 0
+fi
+
+echo "[test_kernel] QEMU: $(command -v "$QEMU")"
+echo "[test_kernel] OVMF: $OVMF_PATH"
+
+# ── Build Seal OS with test-mode ─────────────────────────────────────────────
 echo "[test_kernel] Building Seal OS with test-mode (release)..."
 cd "$PROJECT_ROOT/kernel/seal-os"
 cargo +nightly build --release --features test-mode
 
+# ── Build disk image ─────────────────────────────────────────────────────────
 echo "[test_kernel] Building disk image..."
 cd "$PROJECT_ROOT/kernel/seal-mkimage"
 cargo +stable build --release
@@ -21,12 +55,13 @@ if [ ! -f "$IMG" ]; then
     exit 1
 fi
 
+# ── Run kernel tests in QEMU ─────────────────────────────────────────────────
 echo "[test_kernel] Running kernel tests in QEMU..."
 LOGFILE=$(mktemp)
 QEMU_EXIT=0
-timeout 120 qemu-system-x86_64 \
+timeout 120 "$QEMU" \
     -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+    -drive if=pflash,format=raw,readonly=on,file="$OVMF_PATH" \
     -drive file="$IMG",format=raw \
     -nographic \
     -m 4G \

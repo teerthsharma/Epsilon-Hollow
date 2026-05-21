@@ -729,14 +729,20 @@ impl<'a> Parser<'a> {
                 // For chaining, we'd need to support MethodCall as 'object' in next Dot
                 // For now, AEGIS AST only supports Ident as object.
                 // We'll stop here or update AST.
-                break; 
+                break;
             } else if self.check(TokenKind::Equals) {
                 self.advance();
                 let value = self.parse_expr()?;
                 return Ok(ExprKind::BinaryOp(
-                    Box::new(self.wrap_expr(ExprKind::FieldAccess { object: current_name, field: member }, start_token)),
+                    Box::new(self.wrap_expr(
+                        ExprKind::FieldAccess {
+                            object: current_name,
+                            field: member,
+                        },
+                        start_token,
+                    )),
                     BinaryOp::Eq,
-                    Box::new(value)
+                    Box::new(value),
                 ));
             } else {
                 current_kind = ExprKind::FieldAccess {
@@ -750,19 +756,22 @@ impl<'a> Parser<'a> {
         // Call: embed(...)
         if self.check(TokenKind::LParen) && matches!(current_kind, ExprKind::Ident(_)) {
             let args = self.parse_call_args()?;
-            return Ok(ExprKind::Call { name: current_name, args });
+            return Ok(ExprKind::Call {
+                name: current_name,
+                args,
+            });
         }
 
         // Index: M[0:64] or list[0]
         if self.check(TokenKind::LBracket) {
             self.advance();
             let start_expr = self.parse_expr()?;
-            
+
             if self.check(TokenKind::Colon) {
                 self.advance();
                 let end_expr = self.parse_expr()?;
                 self.expect(TokenKind::RBracket)?;
-                
+
                 let start = self.expr_to_number(&start_expr)?;
                 let end = self.expr_to_number(&end_expr)?;
 
@@ -852,6 +861,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[allow(dead_code)]
     fn parse_number(&mut self) -> Result<Number, ParseError> {
         let token = self.advance();
         match token.kind {

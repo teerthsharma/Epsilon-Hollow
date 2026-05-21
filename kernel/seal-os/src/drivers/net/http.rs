@@ -19,11 +19,11 @@ impl HttpClient {
         Self
     }
 
-    pub fn get(&self, url: &str) -> Result<HttpResponse, String> {
-        Err(alloc::format!("HTTP GET failed for {}: TCP stack requires e1000 NIC", url))
+    pub fn get(&self, _url: &str) -> Result<HttpResponse, String> {
+        Err(String::from("HTTP not implemented"))
     }
 
-    pub fn post(&self, url: &str, body: &[u8]) -> Result<HttpResponse, String> {
-        Err(alloc::format!("HTTP POST failed ({} bytes to {}): TCP stack requires e1000 NIC", body.len(), url))
+    pub fn post(&self, _url: &str, _body: &[u8]) -> Result<HttpResponse, String> {
+        Err(String::from("HTTP not implemented"))
     }
 }

@@ -49,7 +49,7 @@ pub fn lookup(ip: [u8; 4]) -> Option<[u8; 6]> {
         }
     }
     drop(cache);
-    send_arp_request(ip);
+    let _ = send_arp_request(ip);
     None
 }
 
@@ -65,7 +65,10 @@ pub fn insert(ip: [u8; 4], mac: [u8; 6]) {
     cache.push((ip, ArpEntry { mac, expires_at: ticks().wrapping_add(300_000) }));
 }
 
-fn send_arp_request(target_ip: [u8; 4]) {
+fn send_arp_request(target_ip: [u8; 4]) -> Result<(), &'static str> {
+    if !crate::net::has_nic() {
+        return Err("no NIC");
+    }
     let src_mac = crate::net::local_mac();
     let src_ip = crate::net::local_ip();
 
@@ -93,9 +96,13 @@ fn send_arp_request(target_ip: [u8; 4]) {
     };
     frame.extend_from_slice(pkt_bytes);
     crate::drivers::net::transmit(&frame);
+    Ok(())
 }
 
-fn send_arp_reply(target_mac: [u8; 6], target_ip: [u8; 4]) {
+fn send_arp_reply(target_mac: [u8; 6], target_ip: [u8; 4]) -> Result<(), &'static str> {
+    if !crate::net::has_nic() {
+        return Err("no NIC");
+    }
     let src_mac = crate::net::local_mac();
     let src_ip = crate::net::local_ip();
 
@@ -123,6 +130,7 @@ fn send_arp_reply(target_mac: [u8; 6], target_ip: [u8; 4]) {
     };
     frame.extend_from_slice(pkt_bytes);
     crate::drivers::net::transmit(&frame);
+    Ok(())
 }
 
 pub fn handle_arp_packet(pkt: &[u8]) {
@@ -144,7 +152,7 @@ pub fn handle_arp_packet(pkt: &[u8]) {
     match oper {
         ARP_OP_REQUEST => {
             if arp.tpa == local_ip {
-                send_arp_reply(arp.sha, arp.spa);
+                let _ = send_arp_reply(arp.sha, arp.spa);
             }
         }
         ARP_OP_REPLY => {}

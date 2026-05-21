@@ -4,6 +4,7 @@
 
 //! ManifoldFS — all data is geometry on S². File moves = O(1) topological surgery.
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -88,6 +89,121 @@ pub struct ManifoldFS {
 
 impl ManifoldFS {
     pub fn new() -> Self {
+        match BlockStore::mount_ahci() {
+            Ok(store) => Self::init_with_store(store),
+            Err(_) => Self::fresh(),
+        }
+    }
+
+    pub fn new_with_mock_store(num_sectors: usize) -> Self {
+        let store = BlockStore::with_mock(num_sectors);
+        Self::init_with_store(store)
+    }
+
+    fn init_with_store(store: BlockStore) -> Self {
+        let inodes = store.load_inodes();
+        if inodes.iter().any(|i| i.name == "/") {
+            return Self::from_store(store, inodes);
+        }
+        let mut fs = Self::fresh();
+        fs.store = store;
+        if let Some(root) = fs.inodes.get(fs.root_id).cloned() {
+            let _ = fs.store.write_inode(&root, &[]);
+            let _ = fs.store.flush_all();
+        }
+        fs
+    }
+
+    fn from_store(store: BlockStore, inodes: Vec<Inode>) -> Self {
+        let mut slab = InodeSlab::new();
+        let mut dirs = DirHash::new(0);
+        let path_cache = PathCache::with_capacity(8);
+        let mut voronoi = VoronoiCap::new();
+        let mut cluster_sizes = vec![0; VORONOI_CELLS];
+        let mut root_id = 0u64;
+
+        for inode in inodes {
+            let id = match slab.insert_at(inode.id, inode.clone()) {
+                Ok(id) => id,
+                Err(()) => slab.alloc(inode.clone()),
+            };
+            if inode.name == "/" {
+                root_id = id;
+            }
+            let (cell, _subcell) = voronoi.insert(id, &inode.payload);
+            if let Some(ino) = slab.get_mut(id) {
+                ino.voronoi_cell = cell;
+                ino.cluster_id = cell as i32;
+            }
+            if cell < cluster_sizes.len() {
+                cluster_sizes[cell] += 1;
+            }
+        }
+
+        // Rebuild dirs and sibling links from parent pointers.
+        let mut children: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        for id in slab.iter().map(|i| i.id).collect::<Vec<_>>() {
+            let inode = match slab.get(id) {
+                Some(i) => i,
+                None => continue,
+            };
+            if inode.name != "/" {
+                dirs.insert(inode.parent, &inode.name, id);
+            }
+            if inode.parent != id || inode.name == "/" {
+                children.entry(inode.parent).or_default().push(id);
+            }
+        }
+
+        for (parent_id, mut child_ids) in children {
+            child_ids.sort_by_key(|&id| slab.get(id).map(|i| i.name.clone()).unwrap_or_default());
+            for i in 0..child_ids.len() {
+                let curr = child_ids[i];
+                let next = child_ids.get(i + 1).copied();
+                let prev = if i > 0 { child_ids.get(i - 1).copied() } else { None };
+                if let Some(ino) = slab.get_mut(curr) {
+                    ino.sibling_next = next;
+                    ino.sibling_prev = prev;
+                }
+            }
+            if let Some(first) = child_ids.first() {
+                if let Some(parent) = slab.get_mut(parent_id) {
+                    parent.dir_first_child = Some(*first);
+                }
+            }
+        }
+
+        dirs.insert(root_id, ".", root_id);
+        dirs.insert(root_id, "..", root_id);
+
+        let mut fs = Self {
+            inodes: slab,
+            dirs,
+            path_cache,
+            store,
+            voronoi,
+            root_id,
+            scm: SpectralContractionOperator::new(0.7),
+            access_state: [0.0; 3],
+            last_prefetch_prediction: None,
+            prefetch_hits: 0,
+            prefetch_misses: 0,
+            cluster_sizes,
+            entropy_merges: 0,
+            current_entropy: 0.0,
+            governor: GeometricGovernor::new(),
+            governor_ticks: 0,
+            max_depth: 0,
+            hyperbolic_ratio: f64::INFINITY,
+            total_teleports: 0,
+            total_lookups: 0,
+            activity_log: Vec::new(),
+        };
+        fs.update_entropy();
+        fs
+    }
+
+    fn fresh() -> Self {
         let root_payload = encoder::encode_text("/");
 
         let mut inodes = InodeSlab::new();
@@ -117,9 +233,9 @@ impl ManifoldFS {
         dirs.insert(root_id, "..", root_id);
 
         let mut cluster_sizes = vec![0; VORONOI_CELLS];
-        cluster_sizes[0] = 1; // root
+        cluster_sizes[0] = 1;
 
-        let mut fs = Self {
+        Self {
             inodes,
             dirs,
             path_cache: PathCache::with_capacity(8),
@@ -141,17 +257,7 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
-        };
-
-        fs.store.try_mount_ahci();
-        fs.store.flush_all().ok();
-        fs
-    }
-
-    pub fn new_with_mock_store(num_sectors: usize) -> Self {
-        let mut fs = Self::new();
-        fs.store = BlockStore::with_mock(num_sectors);
-        fs
+        }
     }
 
     pub fn store(&mut self, name: &str, data: &[u8], parent_id: u64) -> Result<u64, FsError> {
@@ -163,7 +269,7 @@ impl ManifoldFS {
         }
 
         let payload = encoder::encode_data(data);
-        let (cell, subcell) = self.voronoi.insert(0, &payload); // placeholder id
+        let (cell, subcell) = self.voronoi.insert(0, &payload);
 
         let inode = Inode {
             id: 0,
@@ -186,9 +292,12 @@ impl ManifoldFS {
         };
 
         let id = self.inodes.alloc(inode);
-        // Re-insert into voronoi with correct id
         self.voronoi.remove(0, cell, subcell);
-        let (cell, subcell) = self.voronoi.insert(id, &self.inodes.get(id).unwrap().payload);
+        let payload_ref = match self.inodes.get(id) {
+            Some(i) => &i.payload,
+            None => return Err(FsError::NotFound),
+        };
+        let (cell, _subcell) = self.voronoi.insert(id, payload_ref);
         if let Some(ino) = self.inodes.get_mut(id) {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
@@ -200,7 +309,9 @@ impl ManifoldFS {
         self.update_entropy();
         self.governor_tick(1.0);
         self.path_cache.bump_generation();
-        self.store.write_inode(self.inodes.get(id).unwrap(), data);
+        if let Some(ino) = self.inodes.get(id) {
+            let _ = self.store.write_inode(ino, data);
+        }
         self.log_event("T1/TSS", format!("stored '{}' -> cell {}", name, cell));
 
         Ok(id)
@@ -262,7 +373,8 @@ impl ManifoldFS {
 
         self.path_cache.bump_generation();
         if let Some(inode) = self.inodes.get(inode_id) {
-            self.store.write_inode(inode, &inode.data.clone());
+            let data = inode.data.clone();
+            let _ = self.store.write_inode(inode, &data);
         }
 
         self.check_entropy_and_merge();
@@ -703,7 +815,11 @@ impl ManifoldFS {
         };
 
         let id = self.inodes.alloc(new_inode);
-        self.voronoi.insert(id, &self.inodes.get(id).unwrap().payload);
+        let payload_ref = match self.inodes.get(id) {
+            Some(i) => &i.payload,
+            None => return Err(FsError::NotFound),
+        };
+        self.voronoi.insert(id, payload_ref);
         self.dirs.insert(dst_dir, name, id);
         self.link_child(dst_dir, id);
         self.cluster_sizes[cell] += 1;
@@ -772,7 +888,6 @@ impl ManifoldFS {
                 p.sibling_next = child.sibling_next;
             }
         } else {
-            // child was head
             if let Some(parent) = self.inodes.get_mut(parent_id) {
                 parent.dir_first_child = child.sibling_next;
             }
@@ -840,7 +955,8 @@ impl FileSystem for ManifoldFS {
         inode.data = Vec::from(buf);
         inode.metadata.original_size = buf.len() as u64;
         inode.metadata.modified_ms = now_ms();
-        self.store.write_inode(inode, buf);
+        let data = inode.data.clone();
+        let _ = self.store.write_inode(inode, &data);
         Ok(buf.len())
     }
 

@@ -4,6 +4,9 @@
 //! xHCI (USB 3.x) host controller driver — MMIO register interface.
 //! NOTE: Register structs are defined but hardware init is not yet implemented.
 
+use crate::drivers::pci::get_device_by_class;
+use crate::serial_println;
+
 pub const XHCI_CLASS: u8 = 0x0C;
 pub const XHCI_SUBCLASS: u8 = 0x03;
 pub const XHCI_PROG_IF: u8 = 0x30;
@@ -39,10 +42,11 @@ impl XhciController {
         }
     }
 
-    /// Simulated reset — no real xHCI hardware is accessed.
+    /// Honest reset — returns error because full xHCI init is not yet implemented.
     pub fn reset(&mut self) -> Result<(), &'static str> {
-        // Simulation: mark as initialized without real hardware handshake
-        self.initialized = true;
+        if !self.initialized {
+            return Err("xHCI reset not yet implemented");
+        }
         Ok(())
     }
 
@@ -53,4 +57,37 @@ impl XhciController {
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
+
+    pub fn probe() -> Option<Self> {
+        serial_println!("[xHCI] Probing PCI class 0x0C/0x03 (USB xHCI host controller)...");
+
+        let dev = match get_device_by_class(XHCI_CLASS, XHCI_SUBCLASS, XHCI_PROG_IF) {
+            Some(d) => d,
+            None => {
+                serial_println!("[xHCI] No xHCI controller detected");
+                return None;
+            }
+        };
+
+        serial_println!(
+            "[xHCI] Found controller at {:02x}:{:02x}.{} — {:04X}:{:04X}",
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id
+        );
+
+        Some(Self::new(dev.bar_address(0)))
+    }
+}
+
+pub fn init() -> Option<()> {
+    let mut ctrl = XhciController::probe()?;
+    serial_println!("[xHCI] Controller detected — full driver not yet implemented");
+    // Do not fake initialization success
+    if let Err(e) = ctrl.reset() {
+        serial_println!("[xHCI] {}", e);
+    }
+    None
 }

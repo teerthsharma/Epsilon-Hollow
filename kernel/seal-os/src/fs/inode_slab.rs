@@ -4,7 +4,7 @@
 //! O(1) inode allocator — Vec-indexed slab with generation counters.
 
 use alloc::vec::Vec;
-use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
+use super::manifold_fs::Inode;
 
 struct SlotState {
     generation: u32,
@@ -50,6 +50,50 @@ impl InodeSlab {
             }
             id
         }
+    }
+
+    /// Insert an inode at a specific id, preserving generation and index.
+    /// Used during mount to restore persisted inodes.
+    pub fn insert_at(&mut self, id: u64, mut inode: Inode) -> Result<u64, ()> {
+        let idx = (id & 0xFFFF_FFFF) as usize;
+        let gen = (id >> 32) as u32;
+
+        while self.slots.len() <= idx {
+            let new_idx = self.slots.len() as u32;
+            self.slots.push(SlotState {
+                generation: gen,
+                inode: None,
+                next_free: self.free_head,
+            });
+            self.free_head = Some(new_idx);
+        }
+
+        {
+            let slot = &mut self.slots[idx];
+            if slot.inode.is_some() {
+                return Err(());
+            }
+        }
+
+        // Remove idx from free list.
+        let next_free = self.slots[idx].next_free;
+        if self.free_head == Some(idx as u32) {
+            self.free_head = next_free;
+        } else {
+            for i in 0..self.slots.len() {
+                if self.slots[i].next_free == Some(idx as u32) {
+                    self.slots[i].next_free = next_free;
+                    break;
+                }
+            }
+        }
+
+        let slot = &mut self.slots[idx];
+        slot.generation = gen;
+        inode.id = id;
+        slot.inode = Some(inode);
+        slot.next_free = None;
+        Ok(id)
     }
 
     /// Free a slot by id. Returns the evicted inode if the id was valid.
@@ -107,6 +151,7 @@ impl InodeSlab {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
+    use crate::fs::manifold_fs::{InodeKind, InodeMetadata};
     use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
     use alloc::string::String;
@@ -138,7 +183,10 @@ pub mod tests {
         let mut slab = InodeSlab::new();
         let id = slab.alloc(dummy_inode(0, "a"));
         test_assert!(id != 0, "alloc returned zero id");
-        test_assert_eq!(slab.get(id).unwrap().name, "a");
+        match slab.get(id) {
+            Some(i) => test_assert_eq!(i.name, "a"),
+            None => return TestResult::Fail("get returned None"),
+        }
         TestResult::Pass
     }
 
@@ -159,7 +207,10 @@ pub mod tests {
         test_assert_eq!((id2 & 0xFFFF_FFFF) as usize, slot);
         test_assert!((id2 >> 32) != (id1 >> 32), "generation should increment");
         test_assert!(slab.get(id1).is_none(), "old generation invalid");
-        test_assert_eq!(slab.get(id2).unwrap().name, "b");
+        match slab.get(id2) {
+            Some(i) => test_assert_eq!(i.name, "b"),
+            None => return TestResult::Fail("get returned None"),
+        }
         TestResult::Pass
     }
 
