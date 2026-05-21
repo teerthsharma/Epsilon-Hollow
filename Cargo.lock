@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "repl-core",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libm",
  "nalgebra",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "aether-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "repl-core",
@@ -44,7 +44,7 @@ dependencies = [
 
 [[package]]
 name = "aether-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "heapless",
  "libm",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "aether-lang"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aether-core",
  "bytemuck",
@@ -2642,7 +2642,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repl-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aether-lang",
  "clap",
