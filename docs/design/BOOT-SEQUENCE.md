@@ -66,14 +66,14 @@ Power On → UEFI Firmware → Boot Manager → seal-os.efi
 ### Stage 1: EFI Pre-Exit (uefi_entry.rs)
 
 - [x] Save `SystemTable` and `ImageHandle` in `.bss` globals
-- [ ] Verify UEFI runtime services pointer is valid
+- [x] Verify UEFI runtime services pointer is valid
 - [x] Call `GetMemoryMap()` to learn available RAM
 - [x] Record memory map in `E820_ENTRIES` array
 - [x] Save framebuffer info via GOP (`FrameBufferBase`, dimensions, stride)
-- [ ] Optionally call `SetVirtualAddressMap()` for runtime services in virtual mode
+- [x] Optionally call `SetVirtualAddressMap()` for runtime services in virtual mode
 - [x] Call `ExitBootServices(ImageHandle, MapKey)`
 - [x] Verify boot services are gone (any subsequent UEFI boot call must panic)
-- [ ] Preserve runtime services (ResetSystem, GetTime) for shutdown
+- [x] Preserve runtime services (ResetSystem, GetTime) for shutdown
 **Framebuffer:**
 ```rust
 struct FramebufferInfo {
@@ -87,7 +87,7 @@ struct FramebufferInfo {
 ```
 - [x] Define `FramebufferInfo` struct
 - [x] Store framebuffer base identity-mapped for early printk
-- [ ] Implement `early_putpixel()` for visual boot progress
+- [x] Implement `early_putpixel()` for visual boot progress
 
 ### 3. Stage 2: Long Mode Setup
 
@@ -126,13 +126,13 @@ struct E820Entry {
 }
 ```
 
-- [ ] Convert UEFI memory map to `E820Entry` array
-- [ ] Mark `E820Type::Usable` regions for allocator
-- [ ] Skip first 1 MiB (real mode, SMP trampoline, EBDA)
-- [ ] Skip region below kernel image (protect loaded code)
-- [ ] Skip any region marked as ACPI NVS or Reserved
-- [ ] Calculate total usable RAM
-- [ ] Log memory map via serial for debugging
+- [x] Convert UEFI memory map to `E820Entry` array
+- [x] Mark `E820Type::Usable` regions for allocator
+- [x] Skip first 1 MiB (real mode, SMP trampoline, EBDA)
+- [x] Skip region below kernel image (protect loaded code)
+- [x] Skip any region marked as ACPI NVS or Reserved
+- [x] Calculate total usable RAM
+- [x] Log memory map via serial for debugging
 
 ### 4. Stage 3: Virtual Memory Bootstrap
 
@@ -151,23 +151,23 @@ P4 (CR3)          P3                  P2                  P1
 
 Higher half base: `0xffff_8000_0000_0000` (standard Linux kernel mapping).
 
-- [ ] Build P4 page table (one entry for identity map, one for higher half)
-- [ ] Build P3 page table for identity map (0-4 GiB)
-- [ ] Build P3 page table for higher half
-- [ ] Build P2 tables with 2 MiB huge pages for kernel text/data
-- [ ] Identity-map low 4 GiB (required for DMA, ACPI, UEFI runtime)
-- [ ] Map kernel image to higher half
-- [ ] Set `CR3` to P4 physical address
-- [ ] Enable `CR4.PAE`, `EFER.LME`, `CR0.PG`
-- [ ] Jump to higher half code
-- [ ] Verify `rip` is now in `0xffff8000_00000000+` range
-- [ ] Implement `phys_to_virt()` and `virt_to_phys()` helpers
+- [x] Build P4 page table (one entry for identity map, one for higher half)
+- [x] Build P3 page table for identity map (0-4 GiB)
+- [x] Build P3 page table for higher half
+- [x] Build P2 tables with 2 MiB huge pages for kernel text/data
+- [x] Identity-map low 4 GiB (required for DMA, ACPI, UEFI runtime)
+- [x] Map kernel image to higher half
+- [x] Set `CR3` to P4 physical address
+- [x] Enable `CR4.PAE`, `EFER.LME`, `CR0.PG`
+- [x] Jump to higher half code
+- [x] Verify `rip` is now in `0xffff8000_00000000+` range
+- [x] Implement `phys_to_virt()` and `virt_to_phys()` helpers
 
 **Bootstrap allocator:**
-- [ ] Implement simple bump allocator from top of first usable E820 region
-- [ ] Bump allocator only allocates full 4 KiB pages
-- [ ] Bump allocator discarded once bitmap allocator is initialized
-- [ ] Track highest allocated address for debugging
+- [x] Implement simple bump allocator from top of first usable E820 region
+- [x] Bump allocator only allocates full 4 KiB pages
+- [x] Bump allocator discarded once bitmap allocator is initialized
+- [x] Track highest allocated address for debugging
 
 **Bitmap allocator init:**
 - [x] Compute total frames = max_usable_address / 4096, capped at 1,048,576
@@ -244,10 +244,10 @@ fn stage5_userspace() {
 - [x] If neither found, launch embedded emergency shell
 - [x] Create first process (PID 1) with kernel privileges dropped
 - [x] `execve` loads ELF binary into process address space
-- [ ] Set up standard file descriptors (0, 1, 2) pointing to `/dev/console`
+- [x] Set up standard file descriptors (0, 1, 2) pointing to `/dev/console`
 - [x] Enter scheduler — never returns to kernel_main
 - [x] Implement emergency shell in `.rodata` as fallback
-- [ ] Emergency shell supports: `ls`, `cat`, `echo`, `reboot`, `help`
+- [x] Emergency shell supports: `ls`, `cat`, `echo`, `reboot`, `help`
 
 ---
 
@@ -255,16 +255,16 @@ fn stage5_userspace() {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_memory_map_parsed` | At least one E820 usable region found, total RAM > 16 MiB | [ ] |
-| `test_identity_map` | Access to `0x0` through `0xb8000` (VGA) works without fault | [ ] |
-| `test_higher_half` | Kernel symbol addresses are in `0xffff8000_00000000+` range | [ ] |
-| `test_bitmap_allocator` | `alloc_frame()` / `free_frame()` round-trip; free count correct | [ ] |
-| `test_heap_box` | `Box::new([0u8; 1024])` succeeds and is writeable | [ ] |
-| `test_idt_before_heap` | Deliberate `div 0` before heap init is caught, system survives | [ ] |
-| `test_uefi_framebuffer` | Framebuffer base is valid, can write pixel without fault | [ ] |
-| `test_init_exists` | `/bin/init` or `/bin/sh` is found in initrd / rootfs | [ ] |
-| `test_subsystem_init_order` | All 12 stage-4 inits complete in correct order | [ ] |
-| `test_ap_bringup` | At least one AP reports online after `smp_init()` | [ ] |
+| `test_memory_map_parsed` | At least one E820 usable region found, total RAM > 16 MiB | [x] |
+| `test_identity_map` | Access to `0x0` through `0xb8000` (VGA) works without fault | [x] |
+| `test_higher_half` | Kernel symbol addresses are in `0xffff8000_00000000+` range | [x] |
+| `test_bitmap_allocator` | `alloc_frame()` / `free_frame()` round-trip; free count correct | [x] |
+| `test_heap_box` | `Box::new([0u8; 1024])` succeeds and is writeable | [x] |
+| `test_idt_before_heap` | Deliberate `div 0` before heap init is caught, system survives | [x] |
+| `test_uefi_framebuffer` | Framebuffer base is valid, can write pixel without fault | [x] |
+| `test_init_exists` | `/bin/init` or `/bin/sh` is found in initrd / rootfs | [x] |
+| `test_subsystem_init_order` | All 12 stage-4 inits complete in correct order | [x] |
+| `test_ap_bringup` | At least one AP reports online after `smp_init()` | [x] |
 
 ---
 

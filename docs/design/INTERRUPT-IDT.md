@@ -42,12 +42,12 @@ struct GateDescriptor {
 }
 ```
 
-- [ ] Define `GateDescriptor` struct in `kernel/seal-os/src/interrupts/idt.rs`
-- [ ] Implement `set_handler()` method on `GateDescriptor`
-- [ ] Distinguish trap gates (debug, breakpoint) vs interrupt gates (all others)
-- [ ] Define `IDT: [GateDescriptor; 256]` static array with proper alignment (16-byte)
-- [ ] Implement `lidt()` wrapper loading `IDTR` with base + limit
-- [ ] Define vector number constants for all 256 entries
+- [x] Define `GateDescriptor` struct in `kernel/seal-os/src/interrupts/idt.rs`
+- [x] Implement `set_handler()` method on `GateDescriptor`
+- [x] Distinguish trap gates (debug, breakpoint) vs interrupt gates (all others)
+- [x] Define `IDT: [GateDescriptor; 256]` static array with proper alignment (16-byte)
+- [x] Implement `lidt()` wrapper loading `IDTR` with base + limit
+- [x] Define vector number constants for all 256 entries
 
 ### 2. Exception Handling
 
@@ -112,11 +112,11 @@ fn handle_page_fault(addr: VirtAddr, error_code: PageFaultErrorCode) {
 
 - [x] Extract fault address from `CR2`
 - [x] Parse error code (P, W/R, U/S, RSVD, I/D, PK, SS)
-- [ ] COW break handler
-- [ ] Lazy zero-page allocation for anonymous mappings
-- [ ] Demand paging for file-backed mappings
-- [ ] Stack guard page detection + auto-growth
-- [ ] Kernel-to-user fixup tables for `copy_to_user` / `copy_from_user`
+- [x] COW break handler
+- [x] Lazy zero-page allocation for anonymous mappings
+- [x] Demand paging for file-backed mappings
+- [x] Stack guard page detection + auto-growth
+- [x] Kernel-to-user fixup tables for `copy_to_user` / `copy_from_user`
 - [x] Kernel bad pointer → panic (not silent corruption)
 - [x] Double page fault detection (level > 1) → double fault
 
@@ -151,12 +151,12 @@ TSS provides 7 IST stacks. We use:
 | IST6 | Reserved | — |
 | IST7 | Reserved | — |
 
-- [ ] Define `TaskStateSegment` struct with 7 IST entries
-- [ ] Allocate IST stacks via `alloc_frame()` during CPU bringup
-- [ ] Place guard pages between IST stacks (unmapped pages)
-- [ ] Load TSS via `ltr` instruction
-- [ ] Set IST index in `#DF`, `#NMI`, `#MC`, `#DB` IDT entries
-- [ ] Verify IST switch via deliberate stack overflow test
+- [x] Define `TaskStateSegment` struct with 7 IST entries
+- [x] Allocate IST stacks via `alloc_frame()` during CPU bringup
+- [x] Place guard pages between IST stacks (unmapped pages)
+- [x] Load TSS via `ltr` instruction
+- [x] Set IST index in `#DF`, `#NMI`, `#MC`, `#DB` IDT entries
+- [x] Verify IST switch via deliberate stack overflow test
 
 ### 6. Interrupt-Safe Abstractions
 
@@ -168,12 +168,12 @@ impl IrqGuard {
 impl Drop for IrqGuard { fn drop(&mut self) { sti(); } }
 ```
 
-- [ ] Implement `IrqGuard` with `cli()` / `sti()` in `Drop`
-- [ ] Implement `save_flags()` / `restore_flags()` wrappers
-- [ ] Audit all existing `Mutex` usage for IRQ safety
-- [ ] Convert spinlocks to save/restore IRQ state (not blind `sti`)
-- [ ] Add `assert!(!interrupts_enabled())` in allocator hot paths
-- [ ] Implement `pause()` / `rep; nop` hint in spin-wait loops
+- [x] Implement `IrqGuard` with `cli()` / `sti()` in `Drop`
+- [x] Implement `save_flags()` / `restore_flags()` wrappers
+- [x] Audit all existing `Mutex` usage for IRQ safety
+- [x] Convert spinlocks to save/restore IRQ state (not blind `sti`)
+- [x] Add `assert!(!interrupts_enabled())` in allocator hot paths
+- [x] Implement `pause()` / `rep; nop` hint in spin-wait loops
 
 ### 7. Deferred Work: Softirqs and Tasklets
 
@@ -185,16 +185,16 @@ Not all IRQ work runs at top half. Two-tier model:
 | Bottom half (softirq) | < 1 ms | AHCI completion processing, network RX batch |
 | Tasklet / workqueue | process context | Heavy lifting: fsync, log flush, page reclaim |
 
-- [ ] Define `Softirq` enum with 8 classes
-- [ ] Implement per-CPU `softirq_pending` bitmask
-- [ ] Implement `raise_softirq()` — atomic OR of pending bit
-- [ ] Implement `do_softirq()` — process all pending softirqs
-- [ ] Hook `do_softirq()` into `iret` path and syscall exit
-- [ ] Implement softirq handler for block I/O completions
-- [ ] Implement softirq handler for network RX
-- [ ] Implement softirq handler for timer tick deferred work
-- [ ] Define `Tasklet` / `Work` structs for process-context deferred work
-- [ ] Implement workqueue (single-threaded for v1, per-CPU for v2)
+- [x] Define `Softirq` enum with 8 classes
+- [x] Implement per-CPU `softirq_pending` bitmask
+- [x] Implement `raise_softirq()` — atomic OR of pending bit
+- [x] Implement `do_softirq()` — process all pending softirqs
+- [x] Hook `do_softirq()` into `iret` path and syscall exit
+- [x] Implement softirq handler for block I/O completions
+- [x] Implement softirq handler for network RX
+- [x] Implement softirq handler for timer tick deferred work
+- [x] Define `Tasklet` / `Work` structs for process-context deferred work
+- [x] Implement workqueue (single-threaded for v1, per-CPU for v2)
 
 ---
 
@@ -202,14 +202,14 @@ Not all IRQ work runs at top half. Two-tier model:
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_idt_loaded` | IDTR points to valid IDT, all 256 entries present | [ ] |
-| `test_divide_by_zero` | Exception 0 delivered, task killed cleanly, system survives | [ ] |
-| `test_page_fault_user` | User-mode page fault resolved via COW; no kernel panic | [ ] |
-| `test_page_fault_kernel_panic` | Kernel bad pointer → panic (not silent corruption) | [ ] |
-| `test_irq_timer_fires` | Local APIC timer IRQ fires at expected rate (1 kHz) | [ ] |
-| `test_irq_ahci_completes` | AHCI DMA completion interrupts fire; no polling needed | [ ] |
-| `test_irq_disable_latency` | `save_irq_disable()` + `restore_irq()` round-trip < 50 ns | [ ] |
-| `test_ist_double_fault` | Deliberate stack overflow triggers #DF, IST1 catches it, halts cleanly | [ ] |
+| `test_idt_loaded` | IDTR points to valid IDT, all 256 entries present | [x] |
+| `test_divide_by_zero` | Exception 0 delivered, task killed cleanly, system survives | [x] |
+| `test_page_fault_user` | User-mode page fault resolved via COW; no kernel panic | [x] |
+| `test_page_fault_kernel_panic` | Kernel bad pointer → panic (not silent corruption) | [x] |
+| `test_irq_timer_fires` | Local APIC timer IRQ fires at expected rate (1 kHz) | [x] |
+| `test_irq_ahci_completes` | AHCI DMA completion interrupts fire; no polling needed | [x] |
+| `test_irq_disable_latency` | `save_irq_disable()` + `restore_irq()` round-trip < 50 ns | [x] |
+| `test_ist_double_fault` | Deliberate stack overflow triggers #DF, IST1 catches it, halts cleanly | [x] |
 
 ---
 

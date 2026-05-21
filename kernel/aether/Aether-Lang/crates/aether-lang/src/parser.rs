@@ -241,10 +241,59 @@ impl<'a> Parser<'a> {
                 value,
             }))
         }
-        // 3. Expression Statement (e.g., method call) starting with Ident
-        else {
-            // We consumed the identifier. Parse the rest as an expression starting with this ident.
+        // 3. Check for assignment to field: first_ident.field = expr
+        else if self.check(TokenKind::Dot) && self.peek_next_kind() != TokenKind::LParen {
+            // Tentatively peek ahead for equals
+            let mut is_assignment = false;
+            let mut offset = 1;
+            while let Some(t) = self.tokens.get(self.current + offset) {
+                if matches!(t.kind, TokenKind::Equals) {
+                    is_assignment = true;
+                    break;
+                }
+                if matches!(
+                    t.kind,
+                    TokenKind::Newline | TokenKind::Semicolon | TokenKind::LParen
+                ) {
+                    break;
+                }
+                offset += 1;
+            }
+
+            if is_assignment {
+                let start_token = self.tokens[self.current - 1].clone();
+                self.expect(TokenKind::Dot)?;
+                let field_name = self.expect_ident()?;
+                self.expect(TokenKind::Equals)?;
+                let value = self.parse_expr()?;
+
+                let kind = ExprKind::BinaryOp(
+                    Box::new(self.wrap_expr(
+                        ExprKind::FieldAccess {
+                            object: first_ident,
+                            field: field_name,
+                        },
+                        &start_token,
+                    )),
+                    BinaryOp::Eq,
+                    Box::new(value),
+                );
+                return Ok(StmtKind::Expr(self.wrap_expr(kind, &start_token)));
+            }
+
+            // Fallback to expression
             let start_token = self.tokens[self.current - 1].clone();
+            let kind = self.parse_ident_expr_cont(first_ident, &start_token)?;
+            Ok(StmtKind::Expr(self.wrap_expr(kind, &start_token)))
+        }
+        // 4. Expression Statement or Method Call starting with Ident
+        else {
+            let start_token = self.tokens[self.current - 1].clone();
+
+            // Re-check for assignment to field in case it wasn't caught (e.g. this.field = expr)
+            // But we handled it above now.
+
+            // We consumed the identifier. Parse the rest as an expression starting with this ident.
             let kind = self.parse_ident_expr_cont(first_ident, &start_token)?;
             Ok(StmtKind::Expr(self.wrap_expr(kind, &start_token)))
         }
@@ -306,34 +355,41 @@ impl<'a> Parser<'a> {
                 if let StmtKind::Fn(f) = self.parse_fn_decl()? {
                     methods.push(f);
                 }
-            } else if self.check_ident() {
-                // Field
-                let field_name = self.expect_ident()?;
-                let value = if self.check(TokenKind::Equals) {
-                    self.advance();
-                    self.parse_expr()?
-                } else {
-                    // Default to false wrapped
-                    let t = self.peek().clone(); // span might be slightly off
-                    self.wrap_expr(ExprKind::Literal(Literal::Bool(false)), &t)
-                };
-
-                if self.check(TokenKind::Comma) {
+            } else {
+                // Field (optional 'let')
+                if self.check(TokenKind::Let) {
                     self.advance();
                 }
 
-                fields.push(VarDecl {
-                    type_hint: None,
-                    name: field_name,
-                    value,
-                });
-            } else {
-                let t = self.peek();
-                return Err(ParseError::new(
-                    "expected field or method",
-                    t.line,
-                    t.column,
-                ));
+                if self.check_ident() {
+                    let field_name = self.expect_ident()?;
+                    let value = if self.check(TokenKind::Equals) {
+                        self.advance();
+                        self.parse_expr()?
+                    } else {
+                        // Default to false wrapped
+                        let t = self.peek().clone(); // span might be slightly off
+                        self.wrap_expr(ExprKind::Literal(Literal::Bool(false)), &t)
+                    };
+
+                    // Optional comma or semicolon
+                    if self.check(TokenKind::Comma) || self.check(TokenKind::Semicolon) {
+                        self.advance();
+                    }
+
+                    fields.push(VarDecl {
+                        type_hint: None,
+                        name: field_name,
+                        value,
+                    });
+                } else {
+                    let t = self.peek();
+                    return Err(ParseError::new(
+                        "expected field or method",
+                        t.line,
+                        t.column,
+                    ));
+                }
             }
         }
 
@@ -400,24 +456,12 @@ impl<'a> Parser<'a> {
         let iterator = self.expect_ident()?;
         self.expect(TokenKind::In)?;
 
-        // Currently expecting Range.
-        // We parse expr, verify range.
-        let expr = self.parse_expr()?;
-        let range = match expr.node {
-            ExprKind::Range(r) => r,
-            _ => {
-                return Err(ParseError::new(
-                    "expected range in for loop",
-                    expr.span.line,
-                    expr.span.col,
-                ));
-            }
-        };
-
+        let iterable = self.parse_expr()?;
         let body = self.parse_block_stmts()?;
+
         Ok(StmtKind::For(ForStmt {
             iterator,
-            range,
+            iterable,
             body,
         }))
     }
@@ -497,11 +541,17 @@ impl<'a> Parser<'a> {
     fn parse_arithmetic(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_term()?;
 
-        while self.check(TokenKind::Plus) || self.check(TokenKind::Minus) {
+        while self.check(TokenKind::Plus)
+            || self.check(TokenKind::Minus)
+            || self.check(TokenKind::Pipe)
+            || self.check(TokenKind::Ampersand)
+        {
             let op_token = self.advance();
             let op = match op_token.kind {
                 TokenKind::Plus => BinaryOp::Add,
                 TokenKind::Minus => BinaryOp::Sub,
+                TokenKind::Pipe => BinaryOp::Or,
+                TokenKind::Ampersand => BinaryOp::And,
                 _ => unreachable!(),
             };
             let right = self.parse_term()?;
@@ -523,11 +573,17 @@ impl<'a> Parser<'a> {
     fn parse_term(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_primary()?;
 
-        while self.check(TokenKind::Star) || self.check(TokenKind::Slash) {
+        while self.check(TokenKind::Star)
+            || self.check(TokenKind::Slash)
+            || self.check(TokenKind::ShiftLeft)
+            || self.check(TokenKind::ShiftRight)
+        {
             let op_token = self.advance();
             let op = match op_token.kind {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
+                TokenKind::ShiftLeft => BinaryOp::Shl,
+                TokenKind::ShiftRight => BinaryOp::Shr,
                 _ => unreachable!(),
             };
             let right = self.parse_primary()?;
@@ -588,6 +644,13 @@ impl<'a> Parser<'a> {
             // List
             TokenKind::LBracket => self.parse_list_literal_cont()?,
 
+            // Grouping: ( expr )
+            TokenKind::LParen => {
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                return Ok(expr);
+            }
+
             // Embed/Convergence keywords used as functions
             TokenKind::Embed => {
                 return self.parse_call_expr_cont(String::from("embed"), &token);
@@ -625,39 +688,61 @@ impl<'a> Parser<'a> {
         Ok(ExprKind::List(elements))
     }
 
+    fn peek_next_kind(&self) -> TokenKind {
+        self.tokens
+            .get(self.current + 1)
+            .map(|t| t.kind.clone())
+            .unwrap_or(TokenKind::Eof)
+    }
+
     fn parse_ident_expr_cont(
         &mut self,
         name: String,
-        _start_token: &Token,
+        start_token: &Token,
     ) -> Result<ExprKind, ParseError> {
-        // Method call: M.cluster(...)
-        if self.check(TokenKind::Dot) {
+        let mut current_name = name;
+        let mut current_kind = ExprKind::Ident(current_name.clone());
+
+        while self.check(TokenKind::Dot) {
             self.advance();
-            let method = self.expect_flexible_ident()?;
+            let member = self.expect_flexible_ident()?;
 
             if self.check(TokenKind::LParen) {
                 let args = self.parse_call_args()?;
-                return Ok(ExprKind::MethodCall {
-                    object: name,
-                    method,
+                current_kind = ExprKind::MethodCall {
+                    object: current_name.clone(),
+                    method: member,
                     args,
-                });
+                };
+                // For chaining, we'd need to support MethodCall as 'object' in next Dot
+                // For now, AEGIS AST only supports Ident as object.
+                // We'll stop here or update AST.
+                break; 
+            } else if self.check(TokenKind::Equals) {
+                self.advance();
+                let value = self.parse_expr()?;
+                return Ok(ExprKind::BinaryOp(
+                    Box::new(self.wrap_expr(ExprKind::FieldAccess { object: current_name, field: member }, start_token)),
+                    BinaryOp::Eq,
+                    Box::new(value)
+                ));
             } else {
-                return Ok(ExprKind::FieldAccess {
-                    object: name,
-                    field: method,
-                });
+                current_kind = ExprKind::FieldAccess {
+                    object: current_name,
+                    field: member.clone(),
+                };
+                current_name = member; // Update for next dot if needed
             }
         }
 
         // Call: embed(...)
-        if self.check(TokenKind::LParen) {
+        if self.check(TokenKind::LParen) && matches!(current_kind, ExprKind::Ident(_)) {
             let args = self.parse_call_args()?;
-            return Ok(ExprKind::Call { name, args });
+            return Ok(ExprKind::Call { name: current_name, args });
         }
 
         // Index: M[0:64]
-        if self.check(TokenKind::LBracket) {
+        if self.check(TokenKind::LBracket) && matches!(current_kind, ExprKind::Ident(_)) {
             self.advance();
             let start = self.parse_number()?;
             self.expect(TokenKind::Colon)?;
@@ -665,12 +750,12 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RBracket)?;
 
             return Ok(ExprKind::Index {
-                object: name,
+                object: current_name,
                 range: Range { start, end },
             });
         }
 
-        Ok(ExprKind::Ident(name))
+        Ok(current_kind)
     }
 
     fn parse_call_expr_cont(

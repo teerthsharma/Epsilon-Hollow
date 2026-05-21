@@ -149,6 +149,14 @@ pub enum NativeFunction {
     MlUpdate,
     MlLoadLlama,
     MlGenerate,
+    // Driver MMIO/PCI
+    MmioRead32,
+    MmioWrite32,
+    PciFind,
+    PciFindVendor,
+    PciReadBar0,
+    PciReadBar5,
+    MathRange,
 }
 
 /// Handle to a manifold workspace
@@ -569,6 +577,23 @@ impl Interpreter {
         Ok(last_value)
     }
 
+    fn execute_for(&mut self, stmt: &ForStmt) -> Result<Value, String> {
+        let iterable_val = self.evaluate_expr(&stmt.iterable)?;
+        let mut last_val = Value::Unit;
+
+        match iterable_val {
+            Value::List(elements) => {
+                for el in elements {
+                    self.variables.insert(stmt.iterator.clone(), el);
+                    last_val = self.execute_stmt_block(&stmt.body)?;
+                }
+            }
+            _ => return Err("Expected list or iterable in for loop".into()),
+        }
+
+        Ok(last_val)
+    }
+
     fn execute_statement(&mut self, stmt: &Statement) -> Result<Value, String> {
         match &stmt.node {
             StmtKind::Manifold(decl) => self.execute_manifold(decl),
@@ -581,8 +606,11 @@ impl Interpreter {
             StmtKind::If(stmt) => self.execute_if(stmt),
             StmtKind::While(stmt) => self.execute_while(stmt),
             StmtKind::Loop(stmt) => self.execute_seal(stmt),
-            StmtKind::For(_) => Ok(Value::Unit),
-            StmtKind::Fn(_) => Ok(Value::Unit),
+            StmtKind::For(stmt) => self.execute_for(stmt),
+            StmtKind::Fn(decl) => {
+                self.variables.insert(decl.name.clone(), Value::Unit); // Function handle?
+                Ok(Value::Unit)
+            }
             StmtKind::Return(_) => Ok(Value::Unit),
             StmtKind::Break(_) => Ok(Value::Unit),
             StmtKind::Continue(_) => Ok(Value::Unit),
@@ -677,6 +705,12 @@ impl Interpreter {
                     self.variables.insert(
                         String::from("exp"),
                         Value::NativeFn(NativeFunction::MathExp),
+                    );
+                }
+                "range" => {
+                    self.variables.insert(
+                        String::from("range"),
+                        Value::NativeFn(NativeFunction::MathRange),
                     );
                 }
                 _ => return Err(format!("Symbol '{}' not found in math", symbol)),
@@ -800,6 +834,30 @@ impl Interpreter {
                     self.variables.insert(
                         String::from("train"),
                         Value::NativeFn(NativeFunction::SealTrain),
+                    );
+                    self.variables.insert(
+                        String::from("mmio_read32"),
+                        Value::NativeFn(NativeFunction::MmioRead32),
+                    );
+                    self.variables.insert(
+                        String::from("mmio_write32"),
+                        Value::NativeFn(NativeFunction::MmioWrite32),
+                    );
+                    self.variables.insert(
+                        String::from("pci_find"),
+                        Value::NativeFn(NativeFunction::PciFind),
+                    );
+                    self.variables.insert(
+                        String::from("pci_find_vendor"),
+                        Value::NativeFn(NativeFunction::PciFindVendor),
+                    );
+                    self.variables.insert(
+                        String::from("pci_read_bar0"),
+                        Value::NativeFn(NativeFunction::PciReadBar0),
+                    );
+                    self.variables.insert(
+                        String::from("pci_read_bar5"),
+                        Value::NativeFn(NativeFunction::PciReadBar5),
                     );
                 }
                 _ => return Err(format!("Symbol '{}' not found in Seal", symbol)),
@@ -1006,7 +1064,7 @@ impl Interpreter {
             ExprKind::BinaryOp(left, op, right) => {
                 let l = self.evaluate_expr(left)?;
                 let r = self.evaluate_expr(right)?;
-                self.evaluate_binary(l, *op, r)
+                self.evaluate_binary(l, *op, r, Some(left))
             }
             ExprKind::UnaryOp(_, _) => Err(String::from("Unary ops not implemented yet")),
             ExprKind::Index { object, range } => {
@@ -1030,13 +1088,69 @@ impl Interpreter {
         }
     }
 
-    fn evaluate_binary(&self, left: Value, op: BinaryOp, right: Value) -> Result<Value, String> {
-        match (left, op, right) {
-            (Value::Num(a), BinaryOp::Add, Value::Num(b)) => Ok(Value::Num(a + b)),
-            (Value::Num(a), BinaryOp::Sub, Value::Num(b)) => Ok(Value::Num(a - b)),
-            (Value::Num(a), BinaryOp::Mul, Value::Num(b)) => Ok(Value::Num(a * b)),
-            (Value::Num(a), BinaryOp::Div, Value::Num(b)) => Ok(Value::Num(a / b)),
+    fn evaluate_binary(
+        &mut self,
+        left: Value,
+        op: BinaryOp,
+        right: Value,
+        left_expr: Option<&Expr>,
+    ) -> Result<Value, String> {
+        match op {
+            BinaryOp::Eq => {
+                // If left is FieldAccess, it's an assignment
+                if let Some(lexpr) = left_expr {
+                    if let ExprKind::FieldAccess { object, field: _ } = &lexpr.node {
+                        if object == "this" {
+                            // In real impl, we'd need to find 'this' in scope
+                            // For mock: just return right
+                            return Ok(right);
+                        }
+                    }
+                }
+                Ok(Value::Bool(self.values_equal(&left, &right)))
+            }
+            BinaryOp::Add => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
+                _ => Err("Invalid add".into()),
+            },
+            BinaryOp::Sub => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a - b)),
+                _ => Err("Invalid sub".into()),
+            },
+            BinaryOp::Mul => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a * b)),
+                _ => Err("Invalid mul".into()),
+            },
+            BinaryOp::Div => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a / b)),
+                _ => Err("Invalid div".into()),
+            },
+            BinaryOp::Or => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num((a as u64 | b as u64) as f64)),
+                _ => Err("Invalid or".into()),
+            },
+            BinaryOp::And => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num((a as u64 & b as u64) as f64)),
+                _ => Err("Invalid and".into()),
+            },
+            BinaryOp::Shl => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(((a as u64) << (b as u64)) as f64)),
+                _ => Err("Invalid shl".into()),
+            },
+            BinaryOp::Shr => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(((a as u64) >> (b as u64)) as f64)),
+                _ => Err("Invalid shr".into()),
+            },
             _ => Err("Invalid binary operation".into()),
+        }
+    }
+
+    fn values_equal(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Num(x), Value::Num(y)) => x == y,
+            (Value::Bool(x), Value::Bool(y)) => x == y,
+            (Value::Str(x), Value::Str(y)) => x == y,
+            _ => false,
         }
     }
 
@@ -1148,6 +1262,40 @@ impl Interpreter {
                 // Args: model, input
                 // Actually this might be MethodCall on Mlp object
                 Ok(Value::Unit)
+            }
+            NativeFunction::MmioRead32 => {
+                let _addr = get_f64(args)?;
+                // Kernel call here
+                Ok(Value::Num(0.0))
+            }
+            NativeFunction::MmioWrite32 => {
+                let _addr = get_f64(args)?;
+                if let Some(CallArg::Positional(expr)) = args.get(1) {
+                    let _val = self.evaluate_expr(expr)?;
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::PciFind => {
+                // Returns [bus, slot]
+                Ok(Value::List(vec![Value::Num(0.0), Value::Num(0.0)]))
+            }
+            NativeFunction::PciFindVendor => {
+                Ok(Value::List(vec![Value::Num(0.0), Value::Num(0.0)]))
+            }
+            NativeFunction::PciReadBar0 => {
+                Ok(Value::Num(0xFD000000u64 as f64)) // Mock NVIDIA base
+            }
+            NativeFunction::PciReadBar5 => {
+                Ok(Value::Num(0xFE000000u64 as f64)) // Mock AHCI base
+            }
+            NativeFunction::MathRange => {
+                let start = self.get_arg_num(args, 0)? as i64;
+                let end = self.get_arg_num(args, 1)? as i64;
+                let mut list = Vec::new();
+                for i in start..end {
+                    list.push(Value::Num(i as f64));
+                }
+                Ok(Value::List(list))
             }
             _ => Ok(Value::Unit),
         }

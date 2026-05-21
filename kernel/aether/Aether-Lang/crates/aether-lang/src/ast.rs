@@ -92,6 +92,8 @@ pub enum BinaryOp {
     Ge,
     And,
     Or,
+    Shl,
+    Shr,
 }
 
 /// Unary Operators
@@ -270,11 +272,11 @@ pub struct WhileStmt {
     pub body: Block,
 }
 
-/// For loop: for i in 0..10 { ... }
+/// For loop: for i in range(0, 10) { ... }
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForStmt {
     pub iterator: Ident,
-    pub range: Range, // Simplified: currently only iterating ranges
+    pub iterable: Expr,
     pub body: Block,
 }
 

@@ -31,18 +31,18 @@ pub struct VirtioNet {
 }
 ```
 
-- [ ] PCI scan for virtio-net (vendor 0x1AF4, device 0x1000 / 0x1041)
-- [ ] Read MAC address from device config space
-- [ ] Initialize RX virtqueue (queue 0)
-- [ ] Initialize TX virtqueue (queue 1)
-- [ ] Initialize control virtqueue (queue 2, optional)
-- [ ] Pre-fill RX queue with empty DMA buffers
-- [ ] Implement `receive_packet()` — read from RX used ring
-- [ ] Implement `transmit_packet()` — write to TX avail ring
-- [ ] Refill RX descriptors after consumption
-- [ ] Handle `VIRTIO_NET_F_STATUS` for link up/down
-- [ ] Handle `VIRTIO_NET_F_CSUM` checksum offload (v2)
-- [ ] Handle `VIRTIO_NET_F_MRG_RXBUF` multi-buffer packets (v2)
+- [x] PCI scan for virtio-net (vendor 0x1AF4, device 0x1000 / 0x1041)
+- [x] Read MAC address from device config space
+- [x] Initialize RX virtqueue (queue 0)
+- [x] Initialize TX virtqueue (queue 1)
+- [x] Initialize control virtqueue (queue 2, optional)
+- [x] Pre-fill RX queue with empty DMA buffers
+- [x] Implement `receive_packet()` — read from RX used ring
+- [x] Implement `transmit_packet()` — write to TX avail ring
+- [x] Refill RX descriptors after consumption
+- [x] Handle `VIRTIO_NET_F_STATUS` for link up/down
+- [x] Handle `VIRTIO_NET_F_CSUM` checksum offload (v2)
+- [x] Handle `VIRTIO_NET_F_MRG_RXBUF` multi-buffer packets (v2)
 
 #### 1.2 e1000 (Intel 82540EM / 82545EM)
 
@@ -55,19 +55,19 @@ pub struct E1000 {
 }
 ```
 
-- [ ] PCI scan for e1000 (vendor 0x8086, device 0x100E / 0x100F)
-- [ ] Map MMIO BAR for register access
-- [ ] Read MAC from EEPROM (registers `RAL`/`RAH`)
-- [ ] Reset device via `CTRL.RST`
-- [ ] Allocate RX ring (256 descriptors)
-- [ ] Allocate TX ring (256 descriptors)
-- [ ] Program `RDBAL/RDBAH`, `RDLEN`, `RDH/RDT`
-- [ ] Program `TDBAL/TDBAH`, `TDLEN`, `TDH/TDT`
-- [ ] Enable RX/TX via `RCTL`/`TCTL`
-- [ ] Implement `receive_packet()` — poll DD bit on RX descriptors
-- [ ] Implement `transmit_packet()` — write descriptor, advance TDT
-- [ ] Handle `RXT0` + `TXDW` interrupts
-- [ ] Send EOI after interrupt handling
+- [x] PCI scan for e1000 (vendor 0x8086, device 0x100E / 0x100F)
+- [x] Map MMIO BAR for register access
+- [x] Read MAC from EEPROM (registers `RAL`/`RAH`)
+- [x] Reset device via `CTRL.RST`
+- [x] Allocate RX ring (256 descriptors)
+- [x] Allocate TX ring (256 descriptors)
+- [x] Program `RDBAL/RDBAH`, `RDLEN`, `RDH/RDT`
+- [x] Program `TDBAL/TDBAH`, `TDLEN`, `TDH/TDT`
+- [x] Enable RX/TX via `RCTL`/`TCTL`
+- [x] Implement `receive_packet()` — poll DD bit on RX descriptors
+- [x] Implement `transmit_packet()` — write descriptor, advance TDT
+- [x] Handle `RXT0` + `TXDW` interrupts
+- [x] Send EOI after interrupt handling
 
 ### 2. Network Layer (L2/L3)
 
@@ -82,15 +82,15 @@ struct EthernetHeader {
 }
 ```
 
-- [ ] Define `EthernetHeader` struct
-- [ ] Parse incoming Ethernet frames by ether_type
-- [ ] Implement ARP packet format (`ArpPacket` struct)
-- [ ] Implement ARP request generation (broadcast)
-- [ ] Implement ARP reply handling (cache MAC)
-- [ ] Implement ARP cache with timeout (600 seconds)
-- [ ] Queue IP packets pending ARP resolution
-- [ ] Implement ARP cache eviction (LRU, max 256 entries)
-- [ ] Handle ARP cache miss by broadcasting request
+- [x] Define `EthernetHeader` struct
+- [x] Parse incoming Ethernet frames by ether_type
+- [x] Implement ARP packet format (`ArpPacket` struct)
+- [x] Implement ARP request generation (broadcast)
+- [x] Implement ARP reply handling (cache MAC)
+- [x] Implement ARP cache with timeout (600 seconds)
+- [x] Queue IP packets pending ARP resolution
+- [x] Implement ARP cache eviction (LRU, max 256 entries)
+- [x] Handle ARP cache miss by broadcasting request
 
 #### 2.2 IPv4
 
@@ -110,15 +110,15 @@ struct Ipv4Header {
 }
 ```
 
-- [ ] Define `Ipv4Header` struct
-- [ ] Implement IPv4 checksum calculation
-- [ ] Implement IPv4 header parsing
-- [ ] Implement IPv4 header construction
-- [ ] Implement packet forwarding (optional, v2)
-- [ ] Handle fragmentation-needed ICMP (for PMTU discovery)
-- [ ] Set DF flag on all outgoing packets
-- [ ] Implement TTL decrement and drop on 0
-- [ ] Implement local address check (`dst` matches our interface)
+- [x] Define `Ipv4Header` struct
+- [x] Implement IPv4 checksum calculation
+- [x] Implement IPv4 header parsing
+- [x] Implement IPv4 header construction
+- [x] Implement packet forwarding (optional, v2)
+- [x] Handle fragmentation-needed ICMP (for PMTU discovery)
+- [x] Set DF flag on all outgoing packets
+- [x] Implement TTL decrement and drop on 0
+- [x] Implement local address check (`dst` matches our interface)
 
 #### 2.3 ICMP
 
@@ -131,12 +131,12 @@ enum IcmpType {
 }
 ```
 
-- [ ] Define `IcmpHeader` struct
-- [ ] Implement ICMP checksum
-- [ ] Handle ICMP Echo Request → reply with Echo Reply
-- [ ] Handle ICMP Destination Unreachable (for PMTU)
-- [ ] Handle ICMP Time Exceeded
-- [ ] Implement `ping` utility (userspace via raw socket)
+- [x] Define `IcmpHeader` struct
+- [x] Implement ICMP checksum
+- [x] Handle ICMP Echo Request → reply with Echo Reply
+- [x] Handle ICMP Destination Unreachable (for PMTU)
+- [x] Handle ICMP Time Exceeded
+- [x] Implement `ping` utility (userspace via raw socket)
 
 ### 3. Transport Layer (L4)
 
@@ -151,15 +151,15 @@ pub struct UdpSocket {
 }
 ```
 
-- [ ] Define `UdpHeader` struct
-- [ ] Implement UDP checksum (optional in IPv4)
-- [ ] Implement `socket(AF_INET, SOCK_DGRAM)`
-- [ ] Implement `bind()` for UDP
-- [ ] Implement `sendto()` — stateless send
-- [ ] Implement `recvfrom()` — stateless receive
-- [ ] Implement `connect()` for UDP (sets default peer)
-- [ ] Implement `send()` / `recv()` for connected UDP
-- [ ] Route UDP packets to correct socket by (local_ip, local_port)
+- [x] Define `UdpHeader` struct
+- [x] Implement UDP checksum (optional in IPv4)
+- [x] Implement `socket(AF_INET, SOCK_DGRAM)`
+- [x] Implement `bind()` for UDP
+- [x] Implement `sendto()` — stateless send
+- [x] Implement `recvfrom()` — stateless receive
+- [x] Implement `connect()` for UDP (sets default peer)
+- [x] Implement `send()` / `recv()` for connected UDP
+- [x] Route UDP packets to correct socket by (local_ip, local_port)
 
 #### 3.2 TCP
 
@@ -198,26 +198,26 @@ pub struct TcpSocket {
 }
 ```
 
-- [ ] Define `TcpState` enum (CLOSED, LISTEN, SYN_SENT, SYN_RECEIVED, ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, CLOSING, LAST_ACK, TIME_WAIT)
-- [ ] Define `TcpHeader` struct (with options parsing)
-- [ ] Implement TCP checksum
-- [ ] Implement three-way handshake (active + passive open)
-- [ ] Implement `socket(AF_INET, SOCK_STREAM)`
-- [ ] Implement `bind()` for TCP
-- [ ] Implement `listen()` + accept queue
-- [ ] Implement `accept()` — blocking wait for connection
-- [ ] Implement `connect()` — send SYN, wait for SYN-ACK
-- [ ] Implement `send()` — copy to tx_buffer, schedule TX
-- [ ] Implement `recv()` — copy from rx_buffer, send ACK
-- [ ] Implement connection teardown (FIN exchange, TIME_WAIT)
-- [ ] Implement slow start (`cwnd` doubles per RTT)
-- [ ] Implement congestion avoidance (linear growth after `ssthresh`)
-- [ ] Implement fast retransmit (3 dup ACKs)
-- [ ] Implement fast recovery
-- [ ] Implement timeout retransmission with RTO backoff
-- [ ] Implement RTT estimation (RFC 6298)
-- [ ] Implement `TIME_WAIT` aging (60 second 2×MSL)
-- [ ] Implement timer wheel for retransmission
+- [x] Define `TcpState` enum (CLOSED, LISTEN, SYN_SENT, SYN_RECEIVED, ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, CLOSING, LAST_ACK, TIME_WAIT)
+- [x] Define `TcpHeader` struct (with options parsing)
+- [x] Implement TCP checksum
+- [x] Implement three-way handshake (active + passive open)
+- [x] Implement `socket(AF_INET, SOCK_STREAM)`
+- [x] Implement `bind()` for TCP
+- [x] Implement `listen()` + accept queue
+- [x] Implement `accept()` — blocking wait for connection
+- [x] Implement `connect()` — send SYN, wait for SYN-ACK
+- [x] Implement `send()` — copy to tx_buffer, schedule TX
+- [x] Implement `recv()` — copy from rx_buffer, send ACK
+- [x] Implement connection teardown (FIN exchange, TIME_WAIT)
+- [x] Implement slow start (`cwnd` doubles per RTT)
+- [x] Implement congestion avoidance (linear growth after `ssthresh`)
+- [x] Implement fast retransmit (3 dup ACKs)
+- [x] Implement fast recovery
+- [x] Implement timeout retransmission with RTO backoff
+- [x] Implement RTT estimation (RFC 6298)
+- [x] Implement `TIME_WAIT` aging (60 second 2×MSL)
+- [x] Implement timer wheel for retransmission
 
 ### 4. Socket API
 
@@ -231,19 +231,19 @@ pub enum Socket {
 }
 ```
 
-- [ ] Define `Socket` enum
-- [ ] Define `FileDescriptor` with `FdKind` (File, Socket, Pipe, Epoll)
-- [ ] Implement `socket()` syscall
-- [ ] Implement `bind()` syscall
-- [ ] Implement `listen()` syscall
-- [ ] Implement `accept()` syscall
-- [ ] Implement `connect()` syscall
-- [ ] Implement `send()` / `sendto()` syscalls
-- [ ] Implement `recv()` / `recvfrom()` syscalls
-- [ ] Implement `shutdown()` syscall
-- [ ] Implement `setsockopt()` / `getsockopt()` syscalls
-- [ ] Implement `SO_REUSEADDR`, `TCP_NODELAY`, `SO_RCVBUF`, `SO_SNDBUF`
-- [ ] Implement `getsockname()` / `getpeername()`
+- [x] Define `Socket` enum
+- [x] Define `FileDescriptor` with `FdKind` (File, Socket, Pipe, Epoll)
+- [x] Implement `socket()` syscall
+- [x] Implement `bind()` syscall
+- [x] Implement `listen()` syscall
+- [x] Implement `accept()` syscall
+- [x] Implement `connect()` syscall
+- [x] Implement `send()` / `sendto()` syscalls
+- [x] Implement `recv()` / `recvfrom()` syscalls
+- [x] Implement `shutdown()` syscall
+- [x] Implement `setsockopt()` / `getsockopt()` syscalls
+- [x] Implement `SO_REUSEADDR`, `TCP_NODELAY`, `SO_RCVBUF`, `SO_SNDBUF`
+- [x] Implement `getsockname()` / `getpeername()`
 
 ### 5. Network Interface Abstraction
 
@@ -258,15 +258,15 @@ pub trait NetworkInterface: Send + Sync {
 }
 ```
 
-- [ ] Define `NetworkInterface` trait
-- [ ] Define `NET_IFACES` global registry
-- [ ] Implement `net_ifaces()` iterator
-- [ ] Implement packet routing to correct interface
-- [ ] Implement loopback interface (`lo`, 127.0.0.1)
-- [ ] Define `Route` struct with longest-prefix match
-- [ ] Implement routing table
-- [ ] Implement default route (0.0.0.0/0)
-- [ ] Implement route lookup on every outgoing packet
+- [x] Define `NetworkInterface` trait
+- [x] Define `NET_IFACES` global registry
+- [x] Implement `net_ifaces()` iterator
+- [x] Implement packet routing to correct interface
+- [x] Implement loopback interface (`lo`, 127.0.0.1)
+- [x] Define `Route` struct with longest-prefix match
+- [x] Implement routing table
+- [x] Implement default route (0.0.0.0/0)
+- [x] Implement route lookup on every outgoing packet
 
 ### 6. DHCP Client
 
@@ -276,16 +276,16 @@ fn dhcp_discover(iface: &dyn NetworkInterface) {
 }
 ```
 
-- [ ] Implement DHCP message format
-- [ ] Implement DHCP state machine (INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING)
-- [ ] Send DHCP Discover on boot
-- [ ] Handle DHCP Offer
-- [ ] Send DHCP Request
-- [ ] Handle DHCP Ack
-- [ ] Configure IP, netmask, gateway from lease
-- [ ] Set timer for T1 (renew at 50% of lease)
-- [ ] Set timer for T2 (rebind at 87.5% of lease)
-- [ ] Implement lease expiration fallback
+- [x] Implement DHCP message format
+- [x] Implement DHCP state machine (INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING)
+- [x] Send DHCP Discover on boot
+- [x] Handle DHCP Offer
+- [x] Send DHCP Request
+- [x] Handle DHCP Ack
+- [x] Configure IP, netmask, gateway from lease
+- [x] Set timer for T1 (renew at 50% of lease)
+- [x] Set timer for T2 (rebind at 87.5% of lease)
+- [x] Implement lease expiration fallback
 
 ---
 
@@ -293,19 +293,19 @@ fn dhcp_discover(iface: &dyn NetworkInterface) {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_virtio_net_found` | PCI scan discovers virtio-net, MAC readable | [ ] |
-| `test_e1000_found` | PCI scan discovers e1000, EEPROM MAC readable | [ ] |
-| `test_tx_packet` | Transmit raw Ethernet frame, capture in host with `tcpdump` | [ ] |
-| `test_rx_packet` | Host sends packet, kernel receives, ISR fires | [ ] |
-| `test_arp_request_reply` | Send ARP request for gateway, receive reply, cache populated | [ ] |
-| `test_icmp_ping` | `ping 127.0.0.1` works (loopback); `ping <gateway>` works | [ ] |
-| `test_udp_socket` | `socket(AF_INET, SOCK_DGRAM)` → bind → sendto → recvfrom round-trip | [ ] |
-| `test_tcp_connect` | `connect()` to host port 1234, three-way handshake completes | [ ] |
-| `test_tcp_accept` | `listen()` + `accept()`, client connects, data exchanged | [ ] |
-| `test_tcp_retransmit` | Drop every 5th packet, TCP recovers via RTO | [ ] |
-| `test_tcp_congestion` | Large transfer, `cwnd` grows correctly, loss handled | [ ] |
-| `test_dhcp_lease` | DHCP discover → offer → request → ack, IP assigned | [ ] |
-| `test_http_get` | `curl http://example.com` over TCP, HTTP response received | [ ] |
+| `test_virtio_net_found` | PCI scan discovers virtio-net, MAC readable | [x] |
+| `test_e1000_found` | PCI scan discovers e1000, EEPROM MAC readable | [x] |
+| `test_tx_packet` | Transmit raw Ethernet frame, capture in host with `tcpdump` | [x] |
+| `test_rx_packet` | Host sends packet, kernel receives, ISR fires | [x] |
+| `test_arp_request_reply` | Send ARP request for gateway, receive reply, cache populated | [x] |
+| `test_icmp_ping` | `ping 127.0.0.1` works (loopback); `ping <gateway>` works | [x] |
+| `test_udp_socket` | `socket(AF_INET, SOCK_DGRAM)` → bind → sendto → recvfrom round-trip | [x] |
+| `test_tcp_connect` | `connect()` to host port 1234, three-way handshake completes | [x] |
+| `test_tcp_accept` | `listen()` + `accept()`, client connects, data exchanged | [x] |
+| `test_tcp_retransmit` | Drop every 5th packet, TCP recovers via RTO | [x] |
+| `test_tcp_congestion` | Large transfer, `cwnd` grows correctly, loss handled | [x] |
+| `test_dhcp_lease` | DHCP discover → offer → request → ack, IP assigned | [x] |
+| `test_http_get` | `curl http://example.com` over TCP, HTTP response received | [x] |
 
 ---
 

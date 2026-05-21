@@ -79,31 +79,36 @@ pub enum TokenKind {
     StringLit(String),
 
     // Operators & Punctuation
-    Equals,   // =
-    Colon,    // :
-    Comma,    // ,
-    Dot,      // .
-    LBrace,   // {
-    RBrace,   // }
-    LBracket, // [
-    RBracket, // ]
-    LParen,   // (
-    RParen,   // )
+    Equals,    // =
+    Colon,     // :
+    Comma,     // ,
+    Dot,       // .
+    LBrace,    // {
+    RBrace,    // }
+    LBracket,  // [
+    RBracket,  // ]
+    LParen,    // (
+    RParen,    // )
+    Semicolon, // ;
 
     // Arithmetic operators - NEW
-    Plus,    // +
-    Minus,   // -
-    Star,    // *
-    Slash,   // /
-    Percent, // %
+    Plus,      // +
+    Minus,     // -
+    Star,      // *
+    Slash,     // /
+    Percent,   // %
+    Pipe,      // |
+    Ampersand, // &
 
     // Comparison operators - NEW
-    Less,      // <
-    Greater,   // >
-    LessEq,    // <=
-    GreaterEq, // >=
-    EqEq,      // ==
-    NotEq,     // !=
+    Less,       // <
+    Greater,    // >
+    ShiftLeft,  // <<
+    ShiftRight, // >>
+    LessEq,     // <=
+    GreaterEq,  // >=
+    EqEq,       // ==
+    NotEq,      // !=
 
     // Logical operators - NEW
     And, // &&
@@ -268,6 +273,23 @@ impl<'a> Lexer<'a> {
 
     /// Read a number (integer or float)
     fn read_number(&mut self, first: char) -> TokenKind {
+        // Check for hex: 0x...
+        if first == '0' {
+            if let Some(&'x') = self.peek() {
+                self.advance(); // consume 'x'
+                let mut hex_val: i64 = 0;
+                while let Some(&c) = self.peek() {
+                    if let Some(digit) = c.to_digit(16) {
+                        hex_val = hex_val * 16 + (digit as i64);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                return TokenKind::Number(hex_val);
+            }
+        }
+
         let mut int_part: i64 = (first as i64) - ('0' as i64);
 
         // Read integer part
@@ -368,11 +390,19 @@ impl<'a> Lexer<'a> {
                 TokenKind::NotEq
             }
             '!' => TokenKind::Not,
+            '<' if self.peek() == Some(&'<') => {
+                self.advance();
+                TokenKind::ShiftLeft
+            }
             '<' if self.peek() == Some(&'=') => {
                 self.advance();
                 TokenKind::LessEq
             }
             '<' => TokenKind::Less,
+            '>' if self.peek() == Some(&'>') => {
+                self.advance();
+                TokenKind::ShiftRight
+            }
             '>' if self.peek() == Some(&'=') => {
                 self.advance();
                 TokenKind::GreaterEq
@@ -402,6 +432,7 @@ impl<'a> Lexer<'a> {
             ']' => TokenKind::RBracket,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
+            ';' => TokenKind::Semicolon,
             '\n' => TokenKind::Newline,
 
             // Arithmetic operators - NEW
@@ -409,6 +440,8 @@ impl<'a> Lexer<'a> {
             '-' => TokenKind::Minus,
             '*' => TokenKind::Star,
             '%' => TokenKind::Percent,
+            '|' => TokenKind::Pipe,
+            '&' => TokenKind::Ampersand,
 
             // String literals
             '"' => self.read_string(),

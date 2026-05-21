@@ -43,15 +43,15 @@ enum BufferState {
 }
 ```
 
-- [ ] Define `Buffer` struct with all fields
-- [ ] Define `BufferState` enum
-- [ ] Define `BufferRef` RAII guard (increments ref_count on clone, decrements on drop)
-- [ ] Allocate buffer metadata from slab (≤ 128 bytes)
-- [ ] Allocate buffer data as 4 KiB DMA pages
-- [ ] Implement `Buffer::data()` returning `&[u8]` / `&mut [u8]`
-- [ ] Implement `Buffer::mark_dirty()`
-- [ ] Implement `Buffer::mark_clean()`
-- [ ] Implement `Buffer::lock()` / `Buffer::unlock()` for I/O serialization
+- [x] Define `Buffer` struct with all fields
+- [x] Define `BufferState` enum
+- [x] Define `BufferRef` RAII guard (increments ref_count on clone, decrements on drop)
+- [x] Allocate buffer metadata from slab (≤ 128 bytes)
+- [x] Allocate buffer data as 4 KiB DMA pages
+- [x] Implement `Buffer::data()` returning `&[u8]` / `&mut [u8]`
+- [x] Implement `Buffer::mark_dirty()`
+- [x] Implement `Buffer::mark_clean()`
+- [x] Implement `Buffer::lock()` / `Buffer::unlock()` for I/O serialization
 
 ### 2. Hash Table
 
@@ -64,14 +64,14 @@ fn hash(dev: DeviceId, block: u64) -> usize {
 }
 ```
 
-- [ ] Define `HASH_BUCKETS = 1024`
-- [ ] Allocate hash table array
-- [ ] Implement `hash(dev, block)` function
-- [ ] Implement `bfind(dev, block)` — lookup with ref_count increment
-- [ ] Implement `binsert(buf)` — add to hash chain
-- [ ] Implement `bremove(dev, block)` — remove from hash chain
-- [ ] Protect hash bucket operations with spinlock
-- [ ] Measure hash collision rate under load
+- [x] Define `HASH_BUCKETS = 1024`
+- [x] Allocate hash table array
+- [x] Implement `hash(dev, block)` function
+- [x] Implement `bfind(dev, block)` — lookup with ref_count increment
+- [x] Implement `binsert(buf)` — add to hash chain
+- [x] Implement `bremove(dev, block)` — remove from hash chain
+- [x] Protect hash bucket operations with spinlock
+- [x] Measure hash collision rate under load
 
 ### 3. LRU Eviction
 
@@ -81,15 +81,15 @@ static LRU_TAIL: Mutex<*mut Buffer>;
 static FREE_COUNT: AtomicUsize;
 ```
 
-- [ ] Define intrusive doubly-linked LRU list
-- [ ] Implement `lru_add_head(buf)` — most recently used
-- [ ] Implement `lru_move_to_head(buf)` — on access
-- [ ] Implement `lru_remove(buf)` — on eviction
-- [ ] Implement `alloc_buffer()` — pop from free list or evict LRU tail
-- [ ] Eviction policy: prefer `Clean` buffers with `ref_count == 0`
-- [ ] If no clean buffers, synchronous write-back of oldest `Dirty` buffer
-- [ ] Track `FREE_COUNT` (buffers available without eviction)
-- [ ] Implement `brelease(buf)` — decrement ref_count, move to LRU tail if 0
+- [x] Define intrusive doubly-linked LRU list
+- [x] Implement `lru_add_head(buf)` — most recently used
+- [x] Implement `lru_move_to_head(buf)` — on access
+- [x] Implement `lru_remove(buf)` — on eviction
+- [x] Implement `alloc_buffer()` — pop from free list or evict LRU tail
+- [x] Eviction policy: prefer `Clean` buffers with `ref_count == 0`
+- [x] If no clean buffers, synchronous write-back of oldest `Dirty` buffer
+- [x] Track `FREE_COUNT` (buffers available without eviction)
+- [x] Implement `brelease(buf)` — decrement ref_count, move to LRU tail if 0
 
 ### 4. Read Path
 
@@ -114,12 +114,12 @@ pub fn bread(dev: DeviceId, block: u64) -> Result<BufferRef, Error> {
 }
 ```
 
-- [ ] Implement `bread(dev, block)` — cache hit fast path
-- [ ] Implement cache miss allocation + I/O submission
-- [ ] Synchronous interface: spin/sleep until `state != Locked`
-- [ ] Return `BufferRef` so caller can access data
-- [ ] Async interface `bread_a(dev, block, callback)` for v2
-- [ ] Count cache hits vs misses for telemetry
+- [x] Implement `bread(dev, block)` — cache hit fast path
+- [x] Implement cache miss allocation + I/O submission
+- [x] Synchronous interface: spin/sleep until `state != Locked`
+- [x] Return `BufferRef` so caller can access data
+- [x] Async interface `bread_a(dev, block, callback)` for v2
+- [x] Count cache hits vs misses for telemetry
 
 ### 5. Write Path
 
@@ -137,11 +137,11 @@ pub fn bflush(dev: Option<DeviceId>) {
 }
 ```
 
-- [ ] Implement `bwrite(buf)` — mark dirty, no immediate I/O
-- [ ] Implement `bflush(dev)` — write all dirty buffers for device
-- [ ] Implement `bflush_all()` — write all dirty buffers globally
-- [ ] Implement `bsync(buf)` — synchronous write of single buffer
-- [ ] Track dirty buffer count for telemetry
+- [x] Implement `bwrite(buf)` — mark dirty, no immediate I/O
+- [x] Implement `bflush(dev)` — write all dirty buffers for device
+- [x] Implement `bflush_all()` — write all dirty buffers globally
+- [x] Implement `bsync(buf)` — synchronous write of single buffer
+- [x] Track dirty buffer count for telemetry
 
 ### 6. Read-Ahead
 
@@ -161,13 +161,13 @@ fn maybe_readahead(dev: DeviceId, block: u64, access_pattern: &Pattern) {
 }
 ```
 
-- [ ] Implement per-file-descriptor `AccessPattern` tracking
-- [ ] Detect sequential access (`block == last_block + 1` for N consecutive reads)
-- [ ] Define `READAHEAD_WINDOW` (default 32 blocks = 128 KiB)
-- [ ] Submit read-ahead requests without blocking caller
-- [ ] Do NOT trigger read-ahead for random access patterns
-- [ ] Cap total read-ahead in-flight per device
-- [ ] Measure read-ahead hit rate
+- [x] Implement per-file-descriptor `AccessPattern` tracking
+- [x] Detect sequential access (`block == last_block + 1` for N consecutive reads)
+- [x] Define `READAHEAD_WINDOW` (default 32 blocks = 128 KiB)
+- [x] Submit read-ahead requests without blocking caller
+- [x] Do NOT trigger read-ahead for random access patterns
+- [x] Cap total read-ahead in-flight per device
+- [x] Measure read-ahead hit rate
 
 ### 7. Write-Back vs Write-Through
 
@@ -177,13 +177,13 @@ fn maybe_readahead(dev: DeviceId, block: u64, access_pattern: &Pattern) {
 | Write-through | ms | Immediate | Metadata blocks (inode, superblock), `O_SYNC` files |
 | Barrier | ms | Ordered | `fsync()`, journal commits |
 
-- [ ] Default all regular blocks to write-back
-- [ ] Mark metadata blocks as write-through
-- [ ] Honor `O_SYNC` flag on file open
-- [ ] Implement `fsync()` as full flush + barrier
-- [ ] Implement periodic flush timer (5-second interval)
-- [ ] Implement low-memory-triggered flush
-- [ ] Add `sync_required` flag to `Buffer` for prioritized flush
+- [x] Default all regular blocks to write-back
+- [x] Mark metadata blocks as write-through
+- [x] Honor `O_SYNC` flag on file open
+- [x] Implement `fsync()` as full flush + barrier
+- [x] Implement periodic flush timer (5-second interval)
+- [x] Implement low-memory-triggered flush
+- [x] Add `sync_required` flag to `Buffer` for prioritized flush
 
 ### 8. mmap File Backing
 
@@ -198,12 +198,12 @@ fn file_mmap(vma: &mut VmArea, file: &File, offset: u64) {
 }
 ```
 
-- [ ] Implement `file_mmap()` creating buffer-cache-backed VMA
-- [ ] Page fault on file-backed VMA → `bread(dev, block)`
-- [ ] Map buffer's physical page directly into process page table (read-only for MAP_SHARED)
-- [ ] Write to MAP_SHARED page → COW page fault → mark buffer Dirty
-- [ ] Implement `msync()` flushing dirty file-backed pages
-- [ ] Implement `munmap()` releasing buffer references
+- [x] Implement `file_mmap()` creating buffer-cache-backed VMA
+- [x] Page fault on file-backed VMA → `bread(dev, block)`
+- [x] Map buffer's physical page directly into process page table (read-only for MAP_SHARED)
+- [x] Write to MAP_SHARED page → COW page fault → mark buffer Dirty
+- [x] Implement `msync()` flushing dirty file-backed pages
+- [x] Implement `munmap()` releasing buffer references
 
 ---
 
@@ -211,16 +211,16 @@ fn file_mmap(vma: &mut VmArea, file: &File, offset: u64) {
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_bread_cache_hit` | Second `bread(dev, block)` returns without disk I/O | [ ] |
-| `test_bread_cache_miss` | First read goes to disk, returns correct data | [ ] |
-| `test_bwrite_dirty` | `bwrite()` marks dirty, data not on disk yet | [ ] |
-| `test_bflush_persist` | After `bflush()`, power-loss simulation reads correct data | [ ] |
-| `test_lru_eviction` | Fill cache + 1; oldest clean block evicted, not dirty | [ ] |
-| `test_lru_dirty_stall` | All buffers dirty + alloc → synchronous write-back, no data loss | [ ] |
-| `test_readahead_sequential` | Sequential read of 1 MiB file issues ≤ 10 disk commands | [ ] |
-| `test_readahead_random` | Random read pattern does NOT trigger read-ahead | [ ] |
-| `test_mmap_file_backing` | `mmap` file, read via pointer → no `read()` syscall, data correct | [ ] |
-| `test_mmap_shared_write` | Write via mmap pointer, `msync()` → disk contains written data | [ ] |
+| `test_bread_cache_hit` | Second `bread(dev, block)` returns without disk I/O | [x] |
+| `test_bread_cache_miss` | First read goes to disk, returns correct data | [x] |
+| `test_bwrite_dirty` | `bwrite()` marks dirty, data not on disk yet | [x] |
+| `test_bflush_persist` | After `bflush()`, power-loss simulation reads correct data | [x] |
+| `test_lru_eviction` | Fill cache + 1; oldest clean block evicted, not dirty | [x] |
+| `test_lru_dirty_stall` | All buffers dirty + alloc → synchronous write-back, no data loss | [x] |
+| `test_readahead_sequential` | Sequential read of 1 MiB file issues ≤ 10 disk commands | [x] |
+| `test_readahead_random` | Random read pattern does NOT trigger read-ahead | [x] |
+| `test_mmap_file_backing` | `mmap` file, read via pointer → no `read()` syscall, data correct | [x] |
+| `test_mmap_shared_write` | Write via mmap pointer, `msync()` → disk contains written data | [x] |
 
 ---
 

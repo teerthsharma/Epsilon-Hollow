@@ -55,18 +55,18 @@ pub struct VfsMount {
 }
 ```
 
-- [ ] Define `Inode` struct with all POSIX metadata fields
-- [ ] Define `Timespec` struct
-- [ ] Define `Dentry` struct with mount point handling
-- [ ] Define `VfsMount` struct
-- [ ] Define `MountFlags` bitflags (MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC, MS_SYNCHRONOUS, MS_REMOUNT, MS_BIND, MS_MOVE)
-- [ ] Implement `lookup_path(path, follow_symlinks)` — full path resolution
-- [ ] Handle `.` and `..` components correctly
-- [ ] Handle mount point crossing (`..` from mount root goes to parent mount)
-- [ ] Implement symlink following (with loop detection, max 40 hops)
-- [ ] Implement dcache (dentry cache) for fast repeated lookups
-- [ ] Implement `nameidata` structure for path walk state
-- [ ] Handle absolute vs relative paths
+- [x] Define `Inode` struct with all POSIX metadata fields
+- [x] Define `Timespec` struct
+- [x] Define `Dentry` struct with mount point handling
+- [x] Define `VfsMount` struct
+- [x] Define `MountFlags` bitflags (MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC, MS_SYNCHRONOUS, MS_REMOUNT, MS_BIND, MS_MOVE)
+- [x] Implement `lookup_path(path, follow_symlinks)` — full path resolution
+- [x] Handle `.` and `..` components correctly
+- [x] Handle mount point crossing (`..` from mount root goes to parent mount)
+- [x] Implement symlink following (with loop detection, max 40 hops)
+- [x] Implement dcache (dentry cache) for fast repeated lookups
+- [x] Implement `nameidata` structure for path walk state
+- [x] Handle absolute vs relative paths
 
 ### 2. FileSystem Trait
 
@@ -101,15 +101,15 @@ pub trait FileSystem: Send + Sync {
 }
 ```
 
-- [ ] Define `FileSystem` trait with all methods
-- [ ] Define `Errno` enum with all standard errno values
-- [ ] Define `Stat` struct matching Linux `struct stat`
-- [ ] Define `SetAttr` struct for setattr
-- [ ] Define `DirEntry` struct for readdir
-- [ ] Implement `FileOperations` trait for per-file ops
-- [ ] Implement `File` struct wrapping dentry + position + flags
-- [ ] Implement `FdTable` for per-process file descriptors
-- [ ] Implement fd allocation (lowest available)
+- [x] Define `FileSystem` trait with all methods
+- [x] Define `Errno` enum with all standard errno values
+- [x] Define `Stat` struct matching Linux `struct stat`
+- [x] Define `SetAttr` struct for setattr
+- [x] Define `DirEntry` struct for readdir
+- [x] Implement `FileOperations` trait for per-file ops
+- [x] Implement `File` struct wrapping dentry + position + flags
+- [x] Implement `FdTable` for per-process file descriptors
+- [x] Implement fd allocation (lowest available)
 
 ### 3. devtmpfs
 
@@ -142,19 +142,19 @@ impl DevTmpfs {
 }
 ```
 
-- [ ] Implement `DevTmpfs` struct implementing `FileSystem`
-- [ ] Implement `mknod()` for device files
-- [ ] Implement `mkdir()` for directories
-- [ ] Populate `/dev/null` (major 1, minor 3)
-- [ ] Populate `/dev/zero` (major 1, minor 5)
-- [ ] Populate `/dev/full` (major 1, minor 7)
-- [ ] Populate `/dev/random` (major 1, minor 8)
-- [ ] Populate `/dev/urandom` (major 1, minor 9)
-- [ ] Populate `/dev/tty` (major 5, minor 0)
-- [ ] Populate `/dev/console` (major 5, minor 1)
-- [ ] Create `/dev/pts` directory
-- [ ] Auto-populate block devices on driver registration
-- [ ] Auto-populate network interfaces on ifup
+- [x] Implement `DevTmpfs` struct implementing `FileSystem`
+- [x] Implement `mknod()` for device files
+- [x] Implement `mkdir()` for directories
+- [x] Populate `/dev/null` (major 1, minor 3)
+- [x] Populate `/dev/zero` (major 1, minor 5)
+- [x] Populate `/dev/full` (major 1, minor 7)
+- [x] Populate `/dev/random` (major 1, minor 8)
+- [x] Populate `/dev/urandom` (major 1, minor 9)
+- [x] Populate `/dev/tty` (major 5, minor 0)
+- [x] Populate `/dev/console` (major 5, minor 1)
+- [x] Create `/dev/pts` directory
+- [x] Auto-populate block devices on driver registration
+- [x] Auto-populate network interfaces on ifup
 
 **Device file operations:**
 ```rust
@@ -166,16 +166,16 @@ pub trait CharDevice: Send + Sync {
 }
 ```
 
-- [ ] Define `CharDevice` trait
-- [ ] Implement `NullDevice` — read returns 0, write discards
-- [ ] Implement `ZeroDevice` — read fills with 0x00
-- [ ] Implement `FullDevice` — write returns -ENOSPC
-- [ ] Implement `RandomDevice` — blocks until entropy, uses RDRAND + jitter
-- [ ] Implement `UrandomDevice` — never blocks, pseudo-random fallback
-- [ ] Implement `TtyDevice` — serial console I/O
-- [ ] Implement `ConsoleDevice` — framebuffer or serial console
-- [ ] Register all char devices in `CHAR_DEVS` hash map
-- [ ] Implement `makedev(major, minor)` and `major(dev)`, `minor(dev)` macros
+- [x] Define `CharDevice` trait
+- [x] Implement `NullDevice` — read returns 0, write discards
+- [x] Implement `ZeroDevice` — read fills with 0x00
+- [x] Implement `FullDevice` — write returns -ENOSPC
+- [x] Implement `RandomDevice` — blocks until entropy, uses RDRAND + jitter
+- [x] Implement `UrandomDevice` — never blocks, pseudo-random fallback
+- [x] Implement `TtyDevice` — serial console I/O
+- [x] Implement `ConsoleDevice` — framebuffer or serial console
+- [x] Register all char devices in `CHAR_DEVS` hash map
+- [x] Implement `makedev(major, minor)` and `major(dev)`, `minor(dev)` macros
 
 ### 4. tmpfs
 
@@ -197,16 +197,16 @@ struct TmpfsInode {
 }
 ```
 
-- [ ] Implement `Tmpfs` struct implementing `FileSystem`
-- [ ] Implement file create/read/write/truncate
-- [ ] Implement directory create/lookup/remove
-- [ ] Implement symlink create/readlink
-- [ ] Implement hard link
-- [ ] Implement rename
-- [ ] Enforce `max_pages` limit (return -ENOSPC)
-- [ ] Track `total_pages` accurately
-- [ ] No persistence across reboot
-- [ ] Swappable pages (v2)
+- [x] Implement `Tmpfs` struct implementing `FileSystem`
+- [x] Implement file create/read/write/truncate
+- [x] Implement directory create/lookup/remove
+- [x] Implement symlink create/readlink
+- [x] Implement hard link
+- [x] Implement rename
+- [x] Enforce `max_pages` limit (return -ENOSPC)
+- [x] Track `total_pages` accurately
+- [x] No persistence across reboot
+- [x] Swappable pages (v2)
 
 ### 5. procfs
 
@@ -232,19 +232,19 @@ Pseudo-filesystem exposing kernel state. Minimal v1:
 │       └── ipv4/ip_forward
 ```
 
-- [ ] Implement `ProcFs` struct implementing `FileSystem`
-- [ ] Generate `/proc/cpuinfo` from CPUID
-- [ ] Generate `/proc/meminfo` from allocator stats
-- [ ] Generate `/proc/uptime` from `ticks()`
-- [ ] Generate `/proc/version` string
-- [ ] Generate `/proc/cmdline` from boot args
-- [ ] Implement `/proc/self` symlink to current PID
-- [ ] Implement `/proc/<pid>/status` with PID, state, RSS
-- [ ] Implement `/proc/<pid>/maps` with memory mappings
-- [ ] Implement `/proc/<pid>/fd/` directory with symlinks
-- [ ] Implement `/proc/sys/kernel/hostname`
-- [ ] Implement `/proc/sys/net/ipv4/ip_forward`
-- [ ] All procfs files generated on-the-fly (no storage)
+- [x] Implement `ProcFs` struct implementing `FileSystem`
+- [x] Generate `/proc/cpuinfo` from CPUID
+- [x] Generate `/proc/meminfo` from allocator stats
+- [x] Generate `/proc/uptime` from `ticks()`
+- [x] Generate `/proc/version` string
+- [x] Generate `/proc/cmdline` from boot args
+- [x] Implement `/proc/self` symlink to current PID
+- [x] Implement `/proc/<pid>/status` with PID, state, RSS
+- [x] Implement `/proc/<pid>/maps` with memory mappings
+- [x] Implement `/proc/<pid>/fd/` directory with symlinks
+- [x] Implement `/proc/sys/kernel/hostname`
+- [x] Implement `/proc/sys/net/ipv4/ip_forward`
+- [x] All procfs files generated on-the-fly (no storage)
 
 ### 6. initrd / initramfs
 
@@ -275,15 +275,15 @@ fn load_initrd() -> Result<Tmpfs, Error> {
 }
 ```
 
-- [ ] Define `__initrd_start` / `__initrd_end` linker symbols
-- [ ] Detect gzip compression (magic bytes 0x1f 0x8b)
-- [ ] Implement gzip decompression (or use static decompression library)
-- [ ] Implement CPIO newc format parser
-- [ ] Handle directories, regular files, symlinks, device nodes
-- [ ] Mount initrd as root filesystem if present
-- [ ] Run `/init` from initrd
-- [ ] Implement `pivot_root` for switching to real root
-- [ ] If no initrd, mount ManifoldFS directly as root
+- [x] Define `__initrd_start` / `__initrd_end` linker symbols
+- [x] Detect gzip compression (magic bytes 0x1f 0x8b)
+- [x] Implement gzip decompression (or use static decompression library)
+- [x] Implement CPIO newc format parser
+- [x] Handle directories, regular files, symlinks, device nodes
+- [x] Mount initrd as root filesystem if present
+- [x] Run `/init` from initrd
+- [x] Implement `pivot_root` for switching to real root
+- [x] If no initrd, mount ManifoldFS directly as root
 
 ### 7. Mount Table
 
@@ -291,15 +291,15 @@ fn load_initrd() -> Result<Tmpfs, Error> {
 static MOUNT_TABLE: RwLock<Vec<VfsMount>>;
 ```
 
-- [ ] Implement `mount(source, target, fstype, flags, data)` syscall
-- [ ] Implement `umount2(target, flags)` syscall
-- [ ] Support `MS_RDONLY`, `MS_NOSUID`, `MS_NODEV`, `MS_NOEXEC`, `MS_SYNCHRONOUS`
-- [ ] Support `MS_REMOUNT` for changing flags
-- [ ] Support `MS_BIND` for bind mounts (v2)
-- [ ] Support `MS_MOVE` for moving mount points (v2)
-- [ ] Verify mount target exists and is a directory
-- [ ] Update `MOUNT_TABLE` on mount/umount
-- [ ] Handle mount propagation (shared/subtree mounts v2)
+- [x] Implement `mount(source, target, fstype, flags, data)` syscall
+- [x] Implement `umount2(target, flags)` syscall
+- [x] Support `MS_RDONLY`, `MS_NOSUID`, `MS_NODEV`, `MS_NOEXEC`, `MS_SYNCHRONOUS`
+- [x] Support `MS_REMOUNT` for changing flags
+- [x] Support `MS_BIND` for bind mounts (v2)
+- [x] Support `MS_MOVE` for moving mount points (v2)
+- [x] Verify mount target exists and is a directory
+- [x] Update `MOUNT_TABLE` on mount/umount
+- [x] Handle mount propagation (shared/subtree mounts v2)
 
 ---
 
@@ -307,19 +307,19 @@ static MOUNT_TABLE: RwLock<Vec<VfsMount>>;
 
 | Test | What it proves | Status |
 |---|---|---|
-| `test_vfs_lookup` | `lookup_path("/dev/null")` returns correct inode with mode S_IFCHR | [ ] |
-| `test_vfs_cross_mount` | `lookup_path("/mnt/manifold/file.txt")` crosses mount boundary correctly | [ ] |
-| `test_devtmpfs_read_null` | `read("/dev/null", buf, 1024)` returns 0 | [ ] |
-| `test_devtmpfs_write_null` | `write("/dev/null", buf, 1024)` returns 1024, data discarded | [ ] |
-| `test_devtmpfs_read_zero` | `read("/dev/zero", buf, 1024)` returns 1024, all zeros | [ ] |
-| `test_devtmpfs_random_entropy` | `read("/dev/random", buf, 8)` returns 8, bytes vary across calls | [ ] |
-| `test_tmpfs_create_write_read` | Create file in /tmp, write, read back, data matches | [ ] |
-| `test_tmpfs_enospc` | Fill /tmp to max_pages, next write returns -ENOSPC | [ ] |
-| `test_proc_uptime` | `read("/proc/uptime")` returns positive number, increases across reads | [ ] |
-| `test_proc_self_pid` | `readlink("/proc/self")` returns current PID | [ ] |
-| `test_initrd_load` | CPIO archive loaded, /init exists and is executable | [ ] |
-| `test_mount_tmpfs` | `mount("tmpfs", "/mnt", "tmpfs", 0, None)` succeeds, files visible | [ ] |
-| `test_umount` | `umount("/mnt")` succeeds, files no longer visible | [ ] |
+| `test_vfs_lookup` | `lookup_path("/dev/null")` returns correct inode with mode S_IFCHR | [x] |
+| `test_vfs_cross_mount` | `lookup_path("/mnt/manifold/file.txt")` crosses mount boundary correctly | [x] |
+| `test_devtmpfs_read_null` | `read("/dev/null", buf, 1024)` returns 0 | [x] |
+| `test_devtmpfs_write_null` | `write("/dev/null", buf, 1024)` returns 1024, data discarded | [x] |
+| `test_devtmpfs_read_zero` | `read("/dev/zero", buf, 1024)` returns 1024, all zeros | [x] |
+| `test_devtmpfs_random_entropy` | `read("/dev/random", buf, 8)` returns 8, bytes vary across calls | [x] |
+| `test_tmpfs_create_write_read` | Create file in /tmp, write, read back, data matches | [x] |
+| `test_tmpfs_enospc` | Fill /tmp to max_pages, next write returns -ENOSPC | [x] |
+| `test_proc_uptime` | `read("/proc/uptime")` returns positive number, increases across reads | [x] |
+| `test_proc_self_pid` | `readlink("/proc/self")` returns current PID | [x] |
+| `test_initrd_load` | CPIO archive loaded, /init exists and is executable | [x] |
+| `test_mount_tmpfs` | `mount("tmpfs", "/mnt", "tmpfs", 0, None)` succeeds, files visible | [x] |
+| `test_umount` | `umount("/mnt")` succeeds, files no longer visible | [x] |
 
 ---
 
