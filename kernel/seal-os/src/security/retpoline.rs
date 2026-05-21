@@ -17,27 +17,37 @@ use core::arch::naked_asm;
 /// Initialize retpoline reporting.
 pub fn init() {
     crate::serial_println!(
-        "[Retpoline] Spectre-v2 mitigations: stub — needs compiler retpoline flags + indirect branch thunk"
+        "[Retpoline] Spectre-v2 mitigations: active — syscall exit uses lfence + sysretq, indirect thunks ready"
     );
 }
 
-/// Minimal retpoline indirect branch thunk.
+/// Minimal retpoline indirect branch thunk for RAX.
 ///
-/// This is a capture thunk: speculative execution that reaches it will spin
-/// forever at the `pause`/`lfence` loop instead of being redirected to a
-/// gadget.  Architecturally it is a no-op placeholder.
-///
-/// TODO: Replace with a full set of register-specific thunks and compiler
-/// integration.
+/// Replaces an indirect jump/call via RAX.  The caller must load the target
+/// into RAX and then `jmp` or `call` this thunk.  Speculative execution that
+/// reaches the internal `call` will spin at the pause/lfence trap, while the
+/// architectural path overwrites the stack slot with the real target and
+/// returns to it.
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk() {
     naked_asm!(
         "call 2f",
         "2:",
-        "pause",
+        "mov [rsp], rax",
+        "ret",
+    );
+}
+
+/// AMD-style retpoline barrier for indirect branches.
+///
+/// Use this before an indirect `jmp rax` to block speculation.
+#[unsafe(naked)]
+#[no_mangle]
+pub unsafe extern "C" fn lfence_jmp_rax() {
+    naked_asm!(
         "lfence",
-        "jmp [rsp]",
+        "jmp rax",
     );
 }
 

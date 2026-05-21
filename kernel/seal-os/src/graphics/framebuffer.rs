@@ -41,6 +41,19 @@ impl Framebuffer {
         !self.buffer.is_null()
     }
 
+    pub fn is_ready(&self) -> bool {
+        if !self.is_available() {
+            return false;
+        }
+        let test_x = self.width / 2;
+        let test_y = self.height / 2;
+        let test_color = 0xDEADBEEF;
+        self.put_pixel(test_x, test_y, test_color);
+        let read_back = self.get_pixel(test_x, test_y);
+        self.put_pixel(test_x, test_y, 0);
+        read_back == test_color
+    }
+
     pub fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height || self.buffer.is_null() {
             return;

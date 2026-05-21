@@ -41,7 +41,7 @@ use boot::boot_info::BootInfo;
 #[cfg(not(test))]
 use graphics::framebuffer::Framebuffer;
 
-pub const VERSION: &str = "1.0.0-alpha";
+pub const VERSION: &str = "0.3.1";
 
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
@@ -174,52 +174,81 @@ fn boot_graphical(fb: &'static Framebuffer) {
     }
     serial_println!("[LOGIN] Authenticated");
 
+    if wm::welcome::is_first_boot() {
+        serial_println!("[WELCOME] Showing first-run welcome wizard");
+        let mut welcome = wm::welcome::WelcomeScreen::new();
+        welcome.render(fb);
+        loop {
+            if let Some(event) = drivers::interrupts::poll_event() {
+                if welcome.handle_event(event) {
+                    wm::welcome::mark_first_boot_done();
+                    break;
+                }
+                welcome.render(fb);
+            }
+            x86_64::instructions::hlt();
+        }
+        serial_println!("[WELCOME] Completed");
+    }
+
     let mut console = graphics::console::Console::new(fb);
     graphics::splash::render_splash(&mut console);
-    graphics::splash::draw_progress_bar(fb, 10);
+    graphics::splash::draw_progress_bar(fb, 10, "Memory & paging");
 
     init_theorems();
-    graphics::splash::draw_progress_bar(fb, 20);
+    graphics::splash::draw_progress_bar(fb, 20, "Topology theorems");
 
     serial_println!("[ManifoldFS] Initialized");
-    graphics::splash::draw_progress_bar(fb, 30);
+    graphics::splash::draw_progress_bar(fb, 30, "");
 
     init_scheduler();
-    graphics::splash::draw_progress_bar(fb, 35);
+    graphics::splash::draw_progress_bar(fb, 35, "Task scheduler");
 
     // Enter the scheduler so that spawned kernel tasks actually execute.
     // When they yield, we resume here and continue desktop initialisation.
     process::scheduler::yield_current();
 
     syscall::table::init_syscall_fs();
-    graphics::splash::draw_progress_bar(fb, 40);
+    graphics::splash::draw_progress_bar(fb, 40, "");
 
     init_manifold_pkg();
-    graphics::splash::draw_progress_bar(fb, 50);
+    graphics::splash::draw_progress_bar(fb, 50, "Network stack");
 
     init_aether_lang();
-    graphics::splash::draw_progress_bar(fb, 55);
+    graphics::splash::draw_progress_bar(fb, 55, "");
 
     init_drivers();
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     }
-    graphics::splash::draw_progress_bar(fb, 65);
+    graphics::splash::draw_progress_bar(fb, 65, "Window manager");
+
+    // Boot-time DHCP poll with 3-second timeout
+    let dhcp_start = drivers::interrupts::ticks();
+    while !net::dhcp::has_lease() && drivers::interrupts::ticks().wrapping_sub(dhcp_start) < 3000 {
+        net::poll();
+        x86_64::instructions::hlt();
+    }
+    if net::dhcp::has_lease() {
+        serial_println!("[DHCP] Lease acquired during boot");
+    } else {
+        serial_println!("[DHCP] Timeout — continuing without lease");
+    }
 
     init_usb();
-    graphics::splash::draw_progress_bar(fb, 70);
+    graphics::splash::draw_progress_bar(fb, 70, "");
 
     init_prefetch();
-    graphics::splash::draw_progress_bar(fb, 75);
+    graphics::splash::draw_progress_bar(fb, 75, "");
 
     init_async_runtime();
-    graphics::splash::draw_progress_bar(fb, 80);
+    graphics::splash::draw_progress_bar(fb, 80, "Desktop");
 
     init_games();
-    graphics::splash::draw_progress_bar(fb, 85);
+    graphics::splash::draw_progress_bar(fb, 85, "");
 
     serial_println!("[BOOT] All layers initialized.");
-    graphics::splash::draw_progress_bar(fb, 95);
+    graphics::splash::draw_progress_bar(fb, 95, "");
 
     // Stage 5: Userspace Init Handoff
     let init = process::create("/bin/init");
@@ -229,7 +258,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         core::hint::spin_loop();
     }
 
-    graphics::splash::draw_progress_bar(fb, 100);
+    graphics::splash::draw_progress_bar(fb, 100, "Ready");
 
     for _ in 0..20_000_000u64 {
         core::hint::spin_loop();

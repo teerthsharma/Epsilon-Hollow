@@ -5,6 +5,7 @@
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{fence, Ordering};
 
 const NUM_TX_DESC: usize = 256;
 const NUM_RX_DESC: usize = 256;
@@ -222,6 +223,8 @@ impl E1000 {
             desc.length = buf.len() as u16;
             desc.cmd = TX_CMD_EOP | TX_CMD_IFCS | TX_CMD_RS;
             desc.status = 0;
+            // Ensure descriptor writes are visible before doorbell (TDT).
+            fence(Ordering::SeqCst);
             let new_tail = (tail + 1) % NUM_TX_DESC;
             self.write_reg(REG_TDT, new_tail as u32);
 

@@ -18,7 +18,10 @@ static NET_DEVICE: Mutex<Option<e1000::E1000>> = Mutex::new(None);
 
 pub fn init() {
     for dev in crate::drivers::pci::get_devices() {
-        if dev.class == 0x02 && dev.subclass == 0x00 {
+        // Intel e1000 family — include 0x100E (VirtualBox) and 0x100F (QEMU)
+        let is_intel_e1000 = dev.vendor_id == 0x8086
+            && (dev.device_id == 0x100E || dev.device_id == 0x100F);
+        if dev.class == 0x02 && dev.subclass == 0x00 && is_intel_e1000 {
             crate::serial_println!(
                 "[e1000] Found NIC at {}:{}.{} BAR0={:08X}",
                 dev.bus, dev.device, dev.function, dev.bar0

@@ -12,6 +12,7 @@ use super::cursor;
 use super::event::MouseState;
 use super::window::{Window, WindowState};
 use crate::graphics::framebuffer::Framebuffer;
+use crate::wm::themes;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Rect {
@@ -170,12 +171,26 @@ impl Compositor {
         }
     }
 
+    pub fn request_full_redraw(&mut self) {
+        for win in &mut self.windows {
+            if win.state != WindowState::Closed && win.state != WindowState::Minimized {
+                win.render_decorations();
+            }
+        }
+    }
+
     pub fn compose(&mut self, fb: &Framebuffer) {
         self.frame_count += 1;
 
+        let theme_dirty = themes::theme_changed();
+        if theme_dirty {
+            self.request_full_redraw();
+            self.mark_dirty(0, 0, fb.width, fb.height);
+        }
+
         // T4: Adaptive FPS — skip frames when idle
         let eps = self.governor.epsilon();
-        if eps < 0.3 && self.frame_count % 4 != 0 {
+        if !theme_dirty && eps < 0.3 && self.frame_count % 4 != 0 {
             return; // 15fps when idle
         }
 
@@ -218,6 +233,8 @@ impl Compositor {
             self.blit_window(fb, win, &clip);
         }
 
+        // Context-aware cursor shape
+        self.update_cursor_shape();
         // Cursor on top
         cursor::draw_cursor(fb, self.mouse.x, self.mouse.y);
 
@@ -259,5 +276,49 @@ impl Compositor {
             .find(|w| w.focused && w.state != WindowState::Closed)
             .map(|w| w.id)
             .unwrap_or(0)
+    }
+
+    fn update_cursor_shape(&self) {
+        let mx = self.mouse.x as u32;
+        let my = self.mouse.y as u32;
+
+        for win in self.windows.iter().rev() {
+            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
+                continue;
+            }
+            if !win.contains(mx, my) {
+                continue;
+            }
+
+            if win.in_close_button(mx, my) {
+                cursor::set_shape(cursor::CursorShape::Hand);
+                return;
+            }
+            if win.in_title_bar(mx, my) {
+                cursor::set_shape(cursor::CursorShape::Arrow);
+                return;
+            }
+
+            // Edges within 4px of border
+            let in_left = mx >= win.x && mx < win.x + 4;
+            let in_right = mx >= win.x + win.width.saturating_sub(4);
+            let in_top = my >= win.y && my < win.y + 4;
+            let in_bottom = my >= win.y + win.height.saturating_sub(4);
+
+            if in_left || in_right {
+                cursor::set_shape(cursor::CursorShape::ResizeH);
+                return;
+            }
+            if in_top || in_bottom {
+                cursor::set_shape(cursor::CursorShape::ResizeV);
+                return;
+            }
+
+            // Client area
+            cursor::set_shape(cursor::CursorShape::IBeam);
+            return;
+        }
+
+        cursor::set_shape(cursor::CursorShape::Arrow);
     }
 }

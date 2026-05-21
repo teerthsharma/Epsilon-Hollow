@@ -8,11 +8,10 @@ use crate::graphics::framebuffer::Framebuffer;
 
 use super::taskbar;
 
-const BG_COLOR: u32 = 0x000A0A0F;
-
 pub fn render_desktop(fb: &Framebuffer) {
-    // Clear to dark background
-    fb.clear(BG_COLOR);
+    let theme = crate::wm::themes::current_theme();
+    // Clear to theme background
+    fb.clear(theme.desktop_bg);
 
     // Render decorative background art
     render_equation_wallpaper(fb);
@@ -25,15 +24,16 @@ pub fn render_desktop(fb: &Framebuffer) {
 }
 
 fn render_equation_wallpaper(fb: &Framebuffer) {
+    let theme = crate::wm::themes::current_theme();
     // Decorative grid pattern (subtle)
     for y in (0..fb.height - 28).step_by(64) {
         for x in 0..fb.width {
-            fb.put_pixel(x, y, 0x00101018);
+            fb.put_pixel(x, y, theme.bg);
         }
     }
     for x in (0..fb.width).step_by(64) {
         for y in 0..fb.height - 28 {
-            fb.put_pixel(x, y, 0x00101018);
+            fb.put_pixel(x, y, theme.bg);
         }
     }
 
@@ -94,25 +94,22 @@ fn render_equation_wallpaper(fb: &Framebuffer) {
 }
 
 fn render_equations_text(fb: &Framebuffer) {
+    let theme = crate::wm::themes::current_theme();
     const TEXT_X: u32 = 20;
     const TEXT_Y: u32 = 20;
     const LINE_HEIGHT: u32 = 18;
     const PAD: u32 = 8;
     const BG_ALPHA: u8 = 180;
-    const BG_PANEL: u32 = 0x0005080A;
-    const TEXT_COLOR: u32 = 0x00C8C8D0;
-    const LABEL_COLOR: u32 = 0x00606070;
-    const GOLD_COLOR: u32 = 0x00D4A847;
 
     let lines: &[(u32, &str)] = &[
-        (LABEL_COLOR, "Schwarzschild metric:"),
-        (GOLD_COLOR, "ds^2 = -(1-2GM/rc^2)dt^2 + (1-2GM/rc^2)^-1 dr^2 + r^2 dO^2"),
-        (TEXT_COLOR, ""),
-        (LABEL_COLOR, "Faraday tensor F^uv:"),
-        (TEXT_COLOR, "[ 0   -Ex  -Ey  -Ez ]"),
-        (TEXT_COLOR, "[ Ex   0   -Bz   By ]"),
-        (TEXT_COLOR, "[ Ey   Bz   0   -Bx ]"),
-        (TEXT_COLOR, "[ Ez  -By   Bx   0  ]"),
+        (theme.border, "Schwarzschild metric:"),
+        (theme.accent, "ds^2 = -(1-2GM/rc^2)dt^2 + (1-2GM/rc^2)^-1 dr^2 + r^2 dO^2"),
+        (theme.fg, ""),
+        (theme.border, "Faraday tensor F^uv:"),
+        (theme.fg, "[ 0   -Ex  -Ey  -Ez ]"),
+        (theme.fg, "[ Ex   0   -Bz   By ]"),
+        (theme.fg, "[ Ey   Bz   0   -Bx ]"),
+        (theme.fg, "[ Ez  -By   Bx   0  ]"),
     ];
 
     // Compute bounding box from longest line
@@ -134,7 +131,7 @@ fn render_equations_text(fb: &Framebuffer) {
     for row in bg_y..(bg_y + bg_h).min(fb.height) {
         for col in bg_x..(bg_x + bg_w).min(fb.width) {
             let bg_pixel = fb.get_pixel(col, row);
-            let blended = alpha_blend(bg_pixel, BG_PANEL, BG_ALPHA);
+            let blended = alpha_blend(bg_pixel, theme.bg, BG_ALPHA);
             fb.put_pixel(col, row, blended);
         }
     }

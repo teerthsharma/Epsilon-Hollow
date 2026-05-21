@@ -303,6 +303,10 @@ pub fn is_bound() -> bool {
     *DHCP_STATE.lock() == DhcpState::Bound
 }
 
+pub fn has_lease() -> bool {
+    is_bound() || crate::net::local_ip() != [0, 0, 0, 0]
+}
+
 pub fn state() -> DhcpState {
     *DHCP_STATE.lock()
 }

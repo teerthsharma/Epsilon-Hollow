@@ -6,16 +6,7 @@
 use super::framebuffer::Framebuffer;
 use super::font::{CHAR_WIDTH, CHAR_HEIGHT};
 
-const BG_COLOR: u32 = 0x00080810;
-const TITLE_COLOR: u32 = 0x004488CC;
-const SUBTITLE_COLOR: u32 = 0x00808090;
-const INPUT_BG: u32 = 0x001A1A2A;
-const INPUT_BORDER: u32 = 0x004488CC;
-const INPUT_TEXT: u32 = 0x00E0E0E0;
-const PROMPT_COLOR: u32 = 0x0090B0D0;
-const DOT_COLOR: u32 = 0x00FFFFFF;
-
-// Mascot palette
+// Mascot palette — fixed 16-color palette, DO NOT change these values
 const DARK_BG: u32 = 0x00080810;
 const PENGUIN_BODY: u32 = 0x002A2A5A;
 const PENGUIN_BELLY: u32 = 0x00E8E8F0;
@@ -112,7 +103,8 @@ impl LoginScreen {
     }
 
     pub fn render(&self, fb: &Framebuffer) {
-        fb.clear(BG_COLOR);
+        let theme = crate::wm::themes::current_theme();
+        fb.clear(theme.login_bg);
 
         // Draw the mascot sprite scaled up, centered horizontally
         let sprite_w = 32 * SCALE;
@@ -166,12 +158,12 @@ impl LoginScreen {
 
         // Title below mascot
         let title_y = sprite_y + 32 * SCALE + 20;
-        self.draw_centered_text(fb, "S E A L   O S", title_y, TITLE_COLOR);
-        self.draw_centered_text(fb, "The Geometrical Operating System", title_y + CHAR_HEIGHT + 4, SUBTITLE_COLOR);
+        self.draw_centered_text(fb, "S E A L   O S", title_y, theme.fg);
+        self.draw_centered_text(fb, "The Geometrical Operating System", title_y + CHAR_HEIGHT + 4, theme.fg);
 
         // Password prompt
         let prompt_y = title_y + CHAR_HEIGHT * 3 + 20;
-        self.draw_centered_text(fb, "Enter password:", prompt_y, PROMPT_COLOR);
+        self.draw_centered_text(fb, "Enter password:", prompt_y, theme.fg);
 
         // Password input box
         let box_w = 200u32;
@@ -180,9 +172,9 @@ impl LoginScreen {
         let box_y = prompt_y + CHAR_HEIGHT + 10;
 
         // Border
-        fb.fill_rect(box_x - 2, box_y - 2, box_w + 4, box_h + 4, INPUT_BORDER);
+        fb.fill_rect(box_x - 2, box_y - 2, box_w + 4, box_h + 4, theme.border);
         // Background
-        fb.fill_rect(box_x, box_y, box_w, box_h, INPUT_BG);
+        fb.fill_rect(box_x, box_y, box_w, box_h, theme.bg);
 
         // Password dots
         let dot_size = 6u32;
@@ -196,18 +188,18 @@ impl LoginScreen {
         let dots_y = box_y + (box_h - dot_size) / 2;
 
         for i in 0..self.password_len as u32 {
-            fb.fill_rect(dots_x + i * dot_gap, dots_y, dot_size, dot_size, DOT_COLOR);
+            fb.fill_rect(dots_x + i * dot_gap, dots_y, dot_size, dot_size, theme.fg);
         }
 
         // Error message
         if self.failed_attempts > 0 {
             let err_y = box_y + box_h + 12;
-            self.draw_centered_text(fb, "Incorrect password. Try again.", err_y, 0x00CC4444);
+            self.draw_centered_text(fb, "Incorrect password. Try again.", err_y, theme.close_btn);
         }
 
         // Hint at bottom
         let hint_y = fb.height - CHAR_HEIGHT - 20;
-        self.draw_centered_text(fb, "Default password: seal", hint_y, 0x00505060);
+        self.draw_centered_text(fb, "Default password: seal", hint_y, theme.border);
     }
 
     fn draw_centered_text(&self, fb: &Framebuffer, text: &str, y: u32, color: u32) {
