@@ -7,8 +7,9 @@ use super::font::{self, CHAR_HEIGHT, CHAR_WIDTH};
 use super::framebuffer::Framebuffer;
 use core::fmt;
 
-const FG_COLOR: u32 = 0x00E0E0E0; // light gray
-const BG_COLOR: u32 = 0x000A0A0F; // dark background
+// Colors are read from the active theme at runtime so the console
+// respects theme changes.  During early boot the dark theme (index 0)
+// is active, yielding the same colors that were previously hard-coded.
 
 pub struct Console {
     fb: &'static Framebuffer,
@@ -32,7 +33,8 @@ impl Console {
     }
 
     pub fn clear(&mut self) {
-        self.fb.clear(BG_COLOR);
+        let theme = crate::wm::themes::current_theme();
+        self.fb.clear(theme.console_bg);
         self.col = 0;
         self.row = 0;
     }
@@ -76,14 +78,15 @@ impl Console {
     }
 
     fn draw_glyph(&self, x: u32, y: u32, ch: u8) {
+        let theme = crate::wm::themes::current_theme();
         let glyph = font::glyph(ch);
         for row in 0..CHAR_HEIGHT {
             let bits = glyph[row as usize];
             for col in 0..CHAR_WIDTH {
                 let color = if bits & (0x80 >> col) != 0 {
-                    FG_COLOR
+                    theme.console_fg
                 } else {
-                    BG_COLOR
+                    theme.console_bg
                 };
                 self.fb.put_pixel(x + col, y + row, color);
             }
@@ -105,11 +108,12 @@ impl Console {
                 core::ptr::copy(src, dst, row_bytes as usize);
             }
             // Clear the last row
+            let theme = crate::wm::themes::current_theme();
             for line in (total_lines - scroll_lines)..total_lines {
                 let dst = buf.add((line * row_bytes) as usize);
                 for x in 0..self.fb.width {
                     let pixel = dst.add((x * bytes_per_pixel) as usize) as *mut u32;
-                    pixel.write_volatile(BG_COLOR);
+                    pixel.write_volatile(theme.console_bg);
                 }
             }
         }
@@ -145,11 +149,12 @@ impl Console {
     }
 
     fn draw_glyph_colored(&self, x: u32, y: u32, ch: u8, fg: u32) {
+        let theme = crate::wm::themes::current_theme();
         let glyph = font::glyph(ch);
         for row in 0..CHAR_HEIGHT {
             let bits = glyph[row as usize];
             for col in 0..CHAR_WIDTH {
-                let color = if bits & (0x80 >> col) != 0 { fg } else { BG_COLOR };
+                let color = if bits & (0x80 >> col) != 0 { fg } else { theme.console_bg };
                 self.fb.put_pixel(x + col, y + row, color);
             }
         }

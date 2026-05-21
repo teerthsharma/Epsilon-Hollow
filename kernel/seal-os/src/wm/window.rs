@@ -7,6 +7,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::wm::themes;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WindowState {
     Normal,
@@ -31,15 +33,12 @@ pub struct Window {
 
 pub const TITLE_BAR_HEIGHT: u32 = 24;
 pub const BORDER_WIDTH: u32 = 2;
-const TITLE_BG: u32 = 0x002040A0;
-const TITLE_BG_UNFOCUSED: u32 = 0x00404050;
-const BORDER_COLOR: u32 = 0x00505060;
-const CLOSE_BTN: u32 = 0x00CC4444;
 
 impl Window {
     pub fn new(id: u32, title: &str, x: u32, y: u32, width: u32, height: u32) -> Self {
         let total_w = width + BORDER_WIDTH * 2;
         let total_h = height + TITLE_BAR_HEIGHT + BORDER_WIDTH;
+        let theme = themes::current_theme();
         Self {
             id,
             title: String::from(title),
@@ -50,7 +49,7 @@ impl Window {
             z_order: id,
             state: WindowState::Normal,
             focused: false,
-            buffer: vec![0x00181820; (total_w * total_h) as usize],
+            buffer: vec![theme.bg; (total_w * total_h) as usize],
             dirty: true,
         }
     }
@@ -100,10 +99,11 @@ impl Window {
     pub fn render_decorations(&mut self) {
         let w = self.width;
         let h = self.height;
+        let theme = themes::current_theme();
         let title_bg = if self.focused {
-            TITLE_BG
+            theme.titlebar
         } else {
-            TITLE_BG_UNFOCUSED
+            theme.titlebar_unfocused
         };
 
         // Title bar
@@ -117,7 +117,7 @@ impl Window {
         let btn_x = w - 20;
         for y in 4..20 {
             for x in btn_x..(btn_x + 16) {
-                self.buffer[(y * w + x) as usize] = CLOSE_BTN;
+                self.buffer[(y * w + x) as usize] = theme.close_btn;
             }
         }
 
@@ -127,16 +127,16 @@ impl Window {
         // Borders
         for y in 0..h {
             for bx in 0..BORDER_WIDTH {
-                self.buffer[(y * w + bx) as usize] = BORDER_COLOR;
+                self.buffer[(y * w + bx) as usize] = theme.border;
                 if bx + w - BORDER_WIDTH < w {
-                    self.buffer[(y * w + w - BORDER_WIDTH + bx) as usize] = BORDER_COLOR;
+                    self.buffer[(y * w + w - BORDER_WIDTH + bx) as usize] = theme.border;
                 }
             }
         }
         // Bottom border
         for y in (h - BORDER_WIDTH)..h {
             for x in 0..w {
-                self.buffer[(y * w + x) as usize] = BORDER_COLOR;
+                self.buffer[(y * w + x) as usize] = theme.border;
             }
         }
 

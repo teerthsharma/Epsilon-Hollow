@@ -14,6 +14,8 @@ use uefi::boot::MemoryType;
 
 use super::boot_info::{BootInfo, MemoryDescriptor, MAX_MEMORY_DESCRIPTORS};
 use crate::serial_println;
+#[cfg(not(test))]
+use crate::graphics::framebuffer::Framebuffer;
 
 pub fn run() -> Status {
     // Initialize serial port FIRST — before any fallible UEFI operation.
@@ -142,22 +144,24 @@ fn get_framebuffer() -> BootInfo {
         }
     };
 
-    // Try to find 1024x768x32 mode, fall back to current mode
-    let target_w = 1024;
-    let target_h = 768;
-
+    // Iterate all GOP modes and select the largest resolution.
+    // VirtualBox's UEFI GOP often exposes only one mode; in that case we use it.
     let mut best_mode = None;
+    let mut best_area = 0usize;
     for mode in gop.modes() {
         let info = mode.info();
         let (w, h) = info.resolution();
-        if w == target_w && h == target_h {
+        let area = w * h;
+        if area > best_area {
+            best_area = area;
             best_mode = Some(mode);
-            break;
         }
     }
 
     if let Some(mode) = best_mode {
+        let (w, h) = mode.info().resolution();
         let _ = gop.set_mode(&mode);
+        serial_println!("[BOOT] GOP mode set to {}x{} (area={})", w, h, best_area);
     }
 
     let mode_info = gop.current_mode_info();
@@ -165,6 +169,18 @@ fn get_framebuffer() -> BootInfo {
     let stride = mode_info.stride();
     let mut fb = gop.frame_buffer();
     let fb_addr = fb.as_mut_ptr() as u64;
+
+    #[cfg(not(test))]
+    {
+        let fb_test = unsafe {
+            Framebuffer::new(fb_addr, width as u32, height as u32, (stride * 4) as u32, 32)
+        };
+        if fb_test.is_ready() {
+            serial_println!("[BOOT] Framebuffer accessibility test passed");
+        } else {
+            serial_println!("[WARN] Framebuffer accessibility test failed — GOP mode may be incompatible");
+        }
+    }
 
     BootInfo {
         fb_addr,

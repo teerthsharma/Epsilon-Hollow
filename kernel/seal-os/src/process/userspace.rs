@@ -49,12 +49,9 @@ impl UserContext {
 /// Must be called with interrupts disabled.  The `context` must describe a
 /// fully initialised userspace task (valid page table, stack, entry point).
 pub unsafe fn enter_userspace(context: &UserContext) -> ! {
-    // Load user page tables.
-    asm!(
-        "mov cr3, {cr3}",
-        cr3 = in(reg) context.page_table,
-        options(nomem, nostack, preserves_flags)
-    );
+    // Load user page tables via KPTI primitive.
+    crate::security::kpti::set_user_cr3(context.page_table);
+    crate::security::kpti::switch_to_user_pt();
 
     // Build the interrupt-return stack frame.
     let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
@@ -156,6 +153,7 @@ global_asm!(
     "pop r13",
     "pop r14",
     "pop r15",
+    "lfence",
     "sysretq",
 );
 
@@ -170,6 +168,8 @@ extern "C" {
 #[no_mangle]
 pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
     unsafe {
+        crate::security::kpti::switch_to_kernel_pt();
+
         let f = &mut *frame;
         let num = f.rax;
         let arg0 = f.rdi;
@@ -178,6 +178,8 @@ pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
 
         let result = crate::syscall::table::dispatch(num, arg0, arg1, arg2);
         f.rax = result.code as u64;
+
+        crate::security::kpti::switch_to_user_pt();
     }
 }
 

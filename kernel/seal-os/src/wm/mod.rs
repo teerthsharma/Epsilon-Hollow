@@ -10,4 +10,5 @@ pub mod desktop;
 pub mod event;
 pub mod taskbar;
 pub mod themes;
+pub mod welcome;
 pub mod window;
