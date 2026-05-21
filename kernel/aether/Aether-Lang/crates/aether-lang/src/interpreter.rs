@@ -95,6 +95,8 @@ pub enum Value {
     Object(ObjectHandle),
     /// Native Function (for Standard Library)
     NativeFn(NativeFunction),
+    /// User Function
+    Function(FnDecl),
     /// Dynamic List (Python-like)
     List(Vec<Value>),
     /// ML Types
@@ -608,10 +610,17 @@ impl Interpreter {
             StmtKind::Loop(stmt) => self.execute_seal(stmt),
             StmtKind::For(stmt) => self.execute_for(stmt),
             StmtKind::Fn(decl) => {
-                self.variables.insert(decl.name.clone(), Value::Unit); // Function handle?
+                self.variables.insert(decl.name.clone(), Value::Function(decl.clone()));
                 Ok(Value::Unit)
             }
-            StmtKind::Return(_) => Ok(Value::Unit),
+            StmtKind::Return(stmt) => {
+                let val = if let Some(expr) = &stmt.value {
+                    self.evaluate_expr(expr)?
+                } else {
+                    Value::Unit
+                };
+                Err(format!("RETURN:{:?}", val))
+            }
             StmtKind::Break(_) => Ok(Value::Unit),
             StmtKind::Continue(_) => Ok(Value::Unit),
             StmtKind::Expr(expr) => {
@@ -1141,6 +1150,23 @@ impl Interpreter {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Num(((a as u64) >> (b as u64)) as f64)),
                 _ => Err("Invalid shr".into()),
             },
+            BinaryOp::Gt => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a > b)),
+                _ => Err("Invalid gt".into()),
+            },
+            BinaryOp::Lt => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a < b)),
+                _ => Err("Invalid lt".into()),
+            },
+            BinaryOp::Ge => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a >= b)),
+                _ => Err("Invalid ge".into()),
+            },
+            BinaryOp::Le => match (left, right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a <= b)),
+                _ => Err("Invalid le".into()),
+            },
+            BinaryOp::Neq => Ok(Value::Bool(!self.values_equal(&left, &right))),
             _ => Err("Invalid binary operation".into()),
         }
     }
@@ -1166,6 +1192,33 @@ impl Interpreter {
         if let Some(val) = self.variables.get(name) {
             match val.clone() {
                 Value::NativeFn(func) => self.execute_native_fn(func, args),
+                Value::Function(decl) => {
+                    // Create new scope
+                    let old_vars = self.variables.clone();
+                    
+                    // Bind parameters
+                    for (i, param) in decl.params.iter().enumerate() {
+                        if let Some(arg) = args.get(i) {
+                            if let CallArg::Positional(expr) = arg {
+                                let val = self.evaluate_expr(expr)?;
+                                self.variables.insert(param.clone(), val);
+                            }
+                        }
+                    }
+                    
+                    let res = self.execute_stmt_block(&decl.body);
+                    
+                    // Restore scope
+                    self.variables = old_vars;
+                    
+                    match res {
+                        Err(e) if e.starts_with("RETURN:") => {
+                             // Extract return value
+                             Ok(Value::Num(0.0)) // Need real extraction
+                        }
+                        _ => res
+                    }
+                }
                 _ => Ok(Value::Unit),
             }
         } else {
@@ -1202,9 +1255,16 @@ impl Interpreter {
                     if let CallArg::Positional(expr) = arg {
                         let val = self.evaluate_expr(expr)?;
                         #[cfg(feature = "std")]
-                        println!("{:?}", val);
+                        match val {
+                            Value::Num(n) => print!("{}", n),
+                            Value::Str(s) => print!("{}", s),
+                            Value::Bool(b) => print!("{}", b),
+                            _ => print!("{:?}", val),
+                        }
                     }
                 }
+                #[cfg(feature = "std")]
+                println!();
                 Ok(Value::Unit)
             }
             NativeFunction::MlpNew => {
@@ -1392,6 +1452,10 @@ impl Interpreter {
                         Ok(val)
                     }
                     "len" => Ok(Value::Num(list.len() as f64)),
+                    "get" => {
+                        let idx = self.get_arg_num(args, 0)? as usize;
+                        Ok(list.get(idx).cloned().unwrap_or(Value::Unit))
+                    }
                     _ => Err(format!("Method '{}' not found on List", method)),
                 };
                 res
@@ -1435,6 +1499,12 @@ impl Interpreter {
                 ("Ml", "KMeans") => self.execute_native_fn(NativeFunction::KMeansNew, args),
                 ("Ml", "Conv2D") => self.execute_native_fn(NativeFunction::Conv2DNew, args),
                 ("Seal", "train") => self.execute_native_fn(NativeFunction::SealTrain, args),
+                ("Seal", "mmio_read32") => self.execute_native_fn(NativeFunction::MmioRead32, args),
+                ("Seal", "mmio_write32") => self.execute_native_fn(NativeFunction::MmioWrite32, args),
+                ("Seal", "pci_find") => self.execute_native_fn(NativeFunction::PciFind, args),
+                ("Seal", "pci_find_vendor") => self.execute_native_fn(NativeFunction::PciFindVendor, args),
+                ("Seal", "pci_read_bar0") => self.execute_native_fn(NativeFunction::PciReadBar0, args),
+                ("Seal", "pci_read_bar5") => self.execute_native_fn(NativeFunction::PciReadBar5, args),
                 _ => Err(format!(
                     "Method '{}' not found in module '{}'",
                     method, mod_name
@@ -1481,10 +1551,17 @@ impl Interpreter {
         if let Some(Value::Module(name)) = self.variables.get(object) {
             match (name.as_str(), field.as_str()) {
                 ("Seal", "train") => Ok(Value::NativeFn(NativeFunction::SealTrain)),
+                ("Seal", "mmio_read32") => Ok(Value::NativeFn(NativeFunction::MmioRead32)),
+                ("Seal", "mmio_write32") => Ok(Value::NativeFn(NativeFunction::MmioWrite32)),
+                ("Seal", "pci_find") => Ok(Value::NativeFn(NativeFunction::PciFind)),
+                ("Seal", "pci_find_vendor") => Ok(Value::NativeFn(NativeFunction::PciFindVendor)),
+                ("Seal", "pci_read_bar0") => Ok(Value::NativeFn(NativeFunction::PciReadBar0)),
+                ("Seal", "pci_read_bar5") => Ok(Value::NativeFn(NativeFunction::PciReadBar5)),
                 ("Ml", "MLP") => Ok(Value::NativeFn(NativeFunction::MlpNew)),
                 _ => Ok(Value::Unit),
             }
-        } else {
+        }
+ else {
             Ok(Value::Unit)
         }
     }

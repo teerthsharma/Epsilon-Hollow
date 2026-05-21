@@ -545,6 +545,12 @@ impl<'a> Parser<'a> {
             || self.check(TokenKind::Minus)
             || self.check(TokenKind::Pipe)
             || self.check(TokenKind::Ampersand)
+            || self.check(TokenKind::Greater)
+            || self.check(TokenKind::Less)
+            || self.check(TokenKind::GreaterEq)
+            || self.check(TokenKind::LessEq)
+            || self.check(TokenKind::EqEq)
+            || self.check(TokenKind::NotEq)
         {
             let op_token = self.advance();
             let op = match op_token.kind {
@@ -552,6 +558,12 @@ impl<'a> Parser<'a> {
                 TokenKind::Minus => BinaryOp::Sub,
                 TokenKind::Pipe => BinaryOp::Or,
                 TokenKind::Ampersand => BinaryOp::And,
+                TokenKind::Greater => BinaryOp::Gt,
+                TokenKind::Less => BinaryOp::Lt,
+                TokenKind::GreaterEq => BinaryOp::Ge,
+                TokenKind::LessEq => BinaryOp::Le,
+                TokenKind::EqEq => BinaryOp::Eq,
+                TokenKind::NotEq => BinaryOp::Neq,
                 _ => unreachable!(),
             };
             let right = self.parse_term()?;
@@ -741,18 +753,33 @@ impl<'a> Parser<'a> {
             return Ok(ExprKind::Call { name: current_name, args });
         }
 
-        // Index: M[0:64]
-        if self.check(TokenKind::LBracket) && matches!(current_kind, ExprKind::Ident(_)) {
+        // Index: M[0:64] or list[0]
+        if self.check(TokenKind::LBracket) {
             self.advance();
-            let start = self.parse_number()?;
-            self.expect(TokenKind::Colon)?;
-            let end = self.parse_number()?;
-            self.expect(TokenKind::RBracket)?;
+            let start_expr = self.parse_expr()?;
+            
+            if self.check(TokenKind::Colon) {
+                self.advance();
+                let end_expr = self.parse_expr()?;
+                self.expect(TokenKind::RBracket)?;
+                
+                let start = self.expr_to_number(&start_expr)?;
+                let end = self.expr_to_number(&end_expr)?;
 
-            return Ok(ExprKind::Index {
-                object: current_name,
-                range: Range { start, end },
-            });
+                return Ok(ExprKind::Index {
+                    object: current_name,
+                    range: Range { start, end },
+                });
+            } else {
+                self.expect(TokenKind::RBracket)?;
+                // Handle single index as method call 'get(idx)' or update AST
+                // For now, let's mock it as a special method call or range of size 1
+                return Ok(ExprKind::MethodCall {
+                    object: current_name,
+                    method: "get".to_string(),
+                    args: vec![CallArg::Positional(start_expr)],
+                });
+            }
         }
 
         Ok(current_kind)
