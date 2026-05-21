@@ -1,0 +1,104 @@
+import math
+import topology
+import Seal
+
+// AHCI Driver Implementation in Aegis
+// Target: HBA (Host Bus Adapter) MMIO
+
+class AHCI_Port {
+    let base_addr = 0
+    let port_index = 0
+    
+    fn init(addr, idx) {
+        this.base_addr = addr
+        this.port_index = idx
+    }
+
+    fn read_reg(offset) {
+        return Seal.mmio_read32(this.base_addr + offset)
+    }
+
+    fn write_reg(offset, val) {
+        Seal.mmio_write32(this.base_addr + offset, val)
+    }
+
+    fn start() {
+        // Command List Base Address
+        let clb = this.read_reg(0x00)
+        let clbu = this.read_reg(0x04)
+        
+        // Command list must be 1K aligned
+        print("Starting Port ", this.port_index)
+        
+        // ST (Start) bit in PxCMD
+        let cmd = this.read_reg(0x18)
+        cmd = cmd | 0x01 // Set ST
+        cmd = cmd | 0x10 // Set FRE (FIS Receive Enable)
+        this.write_reg(0x18, cmd)
+    }
+}
+
+class AHCI_Driver {
+    let hba_base = 0
+    let ports = []
+
+    fn init(pci_bus, pci_slot) {
+        this.hba_base = Seal.pci_read_bar5(pci_bus, pci_slot)
+        print("HBA Base: ", this.hba_base)
+        
+        // Capabilities
+        let cap = Seal.mmio_read32(this.hba_base + 0x00)
+        let pi = Seal.mmio_read32(this.hba_base + 0x0C) // Ports Implemented
+        
+        for i in range(0, 32) {
+            if (pi & (1 << i)) {
+                let p = new AHCI_Port(this.hba_base + 0x100 + (i * 0x80), i)
+                this.ports.push(p)
+            }
+        }
+    }
+
+    fn start_all() {
+        for p in this.ports {
+            p.start()
+        }
+    }
+}
+
+// NVIDIA Driver Implementation in Aegis
+// Target: Basic MMIO / PCI discovery
+
+class NVIDIA_Driver {
+    let mmio_base = 0
+    
+    fn init(pci_bus, pci_slot) {
+        // NVIDIA BAR0 is usually MMIO
+        this.mmio_base = Seal.pci_read_bar0(pci_bus, pci_slot)
+        print("NVIDIA MMIO Base: ", this.mmio_base)
+    }
+
+    fn get_gpu_id() {
+        // PMC (Power Management Controller) boot register
+        return Seal.mmio_read32(this.mmio_base + 0x000000)
+    }
+}
+
+fn main() {
+    print("Initializing Aegis Drivers...")
+    
+    // Scan PCI for AHCI (Class 01, Subclass 06)
+    let ahci_pci = Seal.pci_find(0x01, 0x06)
+    if (ahci_pci.len() > 0) {
+        let ahci = new AHCI_Driver(ahci_pci[0], ahci_pci[1])
+        ahci.start_all()
+    }
+
+    // Scan PCI for NVIDIA (Vendor 0x10DE)
+    let nv_pci = Seal.pci_find_vendor(0x10DE)
+    if (nv_pci.len() > 0) {
+        let nv = new NVIDIA_Driver(nv_pci[0], nv_pci[1])
+        print("NVIDIA GPU ID: ", nv.get_gpu_id())
+    }
+}
+
+main()
