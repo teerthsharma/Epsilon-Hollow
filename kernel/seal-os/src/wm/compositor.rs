@@ -10,9 +10,23 @@ use aether_core::tss::SphericalVoronoiIndex;
 
 use super::cursor;
 use super::event::MouseState;
+use super::taskbar;
 use super::window::{Window, WindowState};
 use crate::graphics::framebuffer::Framebuffer;
+use crate::graphics::font;
 use crate::wm::themes;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ResizeEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Rect {
@@ -51,7 +65,10 @@ pub struct Compositor {
     governor: GeometricGovernor,
     frame_count: u64,
     dragging: Option<(u32, i32, i32)>, // window_id, offset_x, offset_y
+    dragging_resize: Option<(u32, ResizeEdge)>,
     dirty_rects: Vec<Rect>,
+    screen_w: u32,
+    screen_h: u32,
 }
 
 impl Compositor {
@@ -74,7 +91,10 @@ impl Compositor {
             governor: GeometricGovernor::new(),
             frame_count: 0,
             dragging: None,
+            dragging_resize: None,
             dirty_rects: Vec::new(),
+            screen_w: 1024,
+            screen_h: 768,
         }
     }
 
@@ -100,6 +120,8 @@ impl Compositor {
 
     pub fn mouse_move(&mut self, dx: i32, dy: i32, screen_w: i32, screen_h: i32) {
         self.mouse.apply_move(dx, dy, screen_w, screen_h);
+        self.screen_w = screen_w as u32;
+        self.screen_h = screen_h as u32;
 
         if let Some((win_id, ox, oy)) = self.dragging {
             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
@@ -117,6 +139,95 @@ impl Compositor {
                 }
             }
         }
+
+        if let Some((win_id, edge)) = self.dragging_resize {
+            if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                let old_x = self.windows[idx].x;
+                let old_y = self.windows[idx].y;
+                let old_w = self.windows[idx].width;
+                let old_h = self.windows[idx].height;
+
+                let mut new_x = old_x as i32;
+                let mut new_y = old_y as i32;
+                let mut new_w = old_w as i32;
+                let mut new_h = old_h as i32;
+
+                match edge {
+                    ResizeEdge::Left => {
+                        new_x += dx;
+                        new_w -= dx;
+                    }
+                    ResizeEdge::Right => {
+                        new_w += dx;
+                    }
+                    ResizeEdge::Top => {
+                        new_y += dy;
+                        new_h -= dy;
+                    }
+                    ResizeEdge::Bottom => {
+                        new_h += dy;
+                    }
+                    ResizeEdge::TopLeft => {
+                        new_x += dx;
+                        new_w -= dx;
+                        new_y += dy;
+                        new_h -= dy;
+                    }
+                    ResizeEdge::TopRight => {
+                        new_w += dx;
+                        new_y += dy;
+                        new_h -= dy;
+                    }
+                    ResizeEdge::BottomLeft => {
+                        new_x += dx;
+                        new_w -= dx;
+                        new_h += dy;
+                    }
+                    ResizeEdge::BottomRight => {
+                        new_w += dx;
+                        new_h += dy;
+                    }
+                }
+
+                const MIN_W: i32 = 100;
+                const MIN_H: i32 = 60;
+
+                if new_w < MIN_W {
+                    new_w = MIN_W;
+                    if matches!(edge, ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft) {
+                        new_x = (old_x + old_w) as i32 - MIN_W;
+                    }
+                }
+                if new_h < MIN_H {
+                    new_h = MIN_H;
+                    if matches!(edge, ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight) {
+                        new_y = (old_y + old_h) as i32 - MIN_H;
+                    }
+                }
+
+                let new_win_x = new_x.max(0) as u32;
+                let new_win_y = new_y.max(0) as u32;
+                let new_win_w = new_w as u32;
+                let new_win_h = new_h as u32;
+
+                let win = &mut self.windows[idx];
+                win.x = new_win_x;
+                win.y = new_win_y;
+                win.width = new_win_w;
+                win.height = new_win_h;
+
+                let needed = (win.width * win.height) as usize;
+                if win.buffer.len() != needed {
+                    let theme = themes::current_theme();
+                    win.buffer.resize(needed, theme.bg);
+                }
+                win.render_decorations();
+                win.dirty = true;
+
+                self.mark_dirty(old_x, old_y, old_w, old_h);
+                self.mark_dirty(new_win_x, new_win_y, new_win_w, new_win_h);
+            }
+        }
     }
 
     pub fn mouse_click(&mut self, pressed: bool) {
@@ -125,6 +236,14 @@ impl Compositor {
 
         if !pressed {
             self.dragging = None;
+            self.dragging_resize = None;
+            return;
+        }
+
+        // Taskbar click: check for minimized window restore
+        let taskbar_h = taskbar::taskbar_height();
+        if my >= self.screen_h.saturating_sub(taskbar_h) {
+            self.handle_taskbar_click(mx, my);
             return;
         }
 
@@ -132,7 +251,7 @@ impl Compositor {
         // (simplified: linear scan since window count is small)
         let mut hit = None;
         for (i, win) in self.windows.iter().enumerate().rev() {
-            if win.state == WindowState::Closed {
+            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
                 continue;
             }
             if win.contains(mx, my) {
@@ -154,6 +273,8 @@ impl Compositor {
             let win_w = self.windows[idx].width;
             let win_h = self.windows[idx].height;
             let in_close = self.windows[idx].in_close_button(mx, my);
+            let in_minimize = self.windows[idx].in_minimize_button(mx, my);
+            let in_maximize = self.windows[idx].in_maximize_button(mx, my);
             let in_title = self.windows[idx].in_title_bar(mx, my);
 
             self.mark_dirty(win_x, win_y, win_w, win_h);
@@ -161,12 +282,93 @@ impl Compositor {
             if in_close {
                 self.windows[idx].state = WindowState::Closed;
                 self.mark_dirty(win_x, win_y, win_w, win_h);
+            } else if in_minimize {
+                self.windows[idx].state = WindowState::Minimized;
+                self.mark_dirty(win_x, win_y, win_w, win_h);
+            } else if in_maximize {
+                if self.windows[idx].state == WindowState::Maximized {
+                    let old_x = self.windows[idx].x;
+                    let old_y = self.windows[idx].y;
+                    let old_w = self.windows[idx].width;
+                    let old_h = self.windows[idx].height;
+                    let prev_x = self.windows[idx].prev_x;
+                    let prev_y = self.windows[idx].prev_y;
+                    let prev_w = self.windows[idx].prev_w;
+                    let prev_h = self.windows[idx].prev_h;
+                    self.windows[idx].state = WindowState::Normal;
+                    self.windows[idx].x = prev_x;
+                    self.windows[idx].y = prev_y;
+                    self.windows[idx].width = prev_w;
+                    self.windows[idx].height = prev_h;
+                    let needed = (prev_w * prev_h) as usize;
+                    if self.windows[idx].buffer.len() != needed {
+                        let theme = themes::current_theme();
+                        self.windows[idx].buffer.resize(needed, theme.bg);
+                    }
+                    self.windows[idx].render_decorations();
+                    self.mark_dirty(old_x, old_y, old_w, old_h);
+                    self.mark_dirty(prev_x, prev_y, prev_w, prev_h);
+                } else {
+                    let prev_x = self.windows[idx].x;
+                    let prev_y = self.windows[idx].y;
+                    let prev_w = self.windows[idx].width;
+                    let prev_h = self.windows[idx].height;
+                    self.windows[idx].prev_x = prev_x;
+                    self.windows[idx].prev_y = prev_y;
+                    self.windows[idx].prev_w = prev_w;
+                    self.windows[idx].prev_h = prev_h;
+
+                    self.windows[idx].state = WindowState::Maximized;
+                    self.windows[idx].x = 0;
+                    self.windows[idx].y = 0;
+                    self.windows[idx].width = self.screen_w;
+                    self.windows[idx].height = self.screen_h - taskbar_h;
+                    let needed = (self.windows[idx].width * self.windows[idx].height) as usize;
+                    if self.windows[idx].buffer.len() != needed {
+                        let theme = themes::current_theme();
+                        self.windows[idx].buffer.resize(needed, theme.bg);
+                    }
+                    self.windows[idx].render_decorations();
+                    self.mark_dirty(prev_x, prev_y, prev_w, prev_h);
+                    self.mark_dirty(0, 0, self.screen_w, self.screen_h - taskbar_h);
+                }
             } else if in_title {
                 self.dragging = Some((
                     win_id,
                     self.mouse.x - win_x as i32,
                     self.mouse.y - win_y as i32,
                 ));
+            } else {
+                // Check for resize edge hit
+                let win = &self.windows[idx];
+                let in_left = mx >= win.x && mx < win.x + 4;
+                let in_right = mx >= win.x + win.width.saturating_sub(4);
+                let in_top = my >= win.y && my < win.y + 4;
+                let in_bottom = my >= win.y + win.height.saturating_sub(4);
+
+                let edge = if in_top && in_left {
+                    Some(ResizeEdge::TopLeft)
+                } else if in_top && in_right {
+                    Some(ResizeEdge::TopRight)
+                } else if in_bottom && in_left {
+                    Some(ResizeEdge::BottomLeft)
+                } else if in_bottom && in_right {
+                    Some(ResizeEdge::BottomRight)
+                } else if in_left {
+                    Some(ResizeEdge::Left)
+                } else if in_right {
+                    Some(ResizeEdge::Right)
+                } else if in_top {
+                    Some(ResizeEdge::Top)
+                } else if in_bottom {
+                    Some(ResizeEdge::Bottom)
+                } else {
+                    None
+                };
+
+                if let Some(e) = edge {
+                    self.dragging_resize = Some((win_id, e));
+                }
             }
         }
     }
@@ -238,6 +440,9 @@ impl Compositor {
         // Cursor on top
         cursor::draw_cursor(fb, self.mouse.x, self.mouse.y);
 
+        // Minimized window indicators on taskbar
+        self.draw_taskbar_indicators(fb);
+
         self.dirty_rects.clear();
         self.governor.adapt(1.0, 0.01);
     }
@@ -290,7 +495,10 @@ impl Compositor {
                 continue;
             }
 
-            if win.in_close_button(mx, my) {
+            if win.in_close_button(mx, my)
+                || win.in_minimize_button(mx, my)
+                || win.in_maximize_button(mx, my)
+            {
                 cursor::set_shape(cursor::CursorShape::Hand);
                 return;
             }
@@ -320,5 +528,80 @@ impl Compositor {
         }
 
         cursor::set_shape(cursor::CursorShape::Arrow);
+    }
+
+    fn handle_taskbar_click(&mut self, mx: u32, my: u32) {
+        let taskbar_h = taskbar::taskbar_height();
+        let y = self.screen_h - taskbar_h;
+        if my < y + 4 || my >= y + 24 {
+            return;
+        }
+
+        let minimized: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|w| w.state == WindowState::Minimized)
+            .map(|w| w.id)
+            .collect();
+
+        if minimized.is_empty() {
+            return;
+        }
+
+        let mut x = 350u32;
+        const BTN_W: u32 = 80;
+        for win_id in minimized {
+            if mx >= x && mx < x + BTN_W {
+                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
+                    self.windows[idx].state = WindowState::Normal;
+                    self.windows[idx].focused = true;
+                    self.windows[idx].render_decorations();
+                    let wx = self.windows[idx].x;
+                    let wy = self.windows[idx].y;
+                    let ww = self.windows[idx].width;
+                    let wh = self.windows[idx].height;
+                    self.mark_dirty(wx, wy, ww, wh);
+                }
+                break;
+            }
+            x += BTN_W + 4;
+        }
+    }
+
+    fn draw_taskbar_indicators(&self, fb: &Framebuffer) {
+        let theme = themes::current_theme();
+        let taskbar_h = taskbar::taskbar_height();
+        let y = fb.height.saturating_sub(taskbar_h);
+
+        let minimized: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|w| w.state == WindowState::Minimized)
+            .collect();
+
+        if minimized.is_empty() {
+            return;
+        }
+
+        let mut x = 350u32;
+        const BTN_W: u32 = 80;
+        for win in minimized {
+            // Button background
+            fb.fill_rect(x, y + 4, BTN_W, 20, theme.bg);
+            // Accent strip on left
+            fb.fill_rect(x, y + 4, 3, 20, theme.accent);
+            // Draw truncated title
+            let name = if win.title.len() > 8 {
+                &win.title[..8]
+            } else {
+                &win.title
+            };
+            let text_x = x + 6;
+            let text_y = y + 6;
+            for (i, ch) in name.bytes().enumerate() {
+                font::draw_char(fb, text_x + (i as u32) * font::CHAR_WIDTH, text_y, ch, theme.fg);
+            }
+            x += BTN_W + 4;
+        }
     }
 }
