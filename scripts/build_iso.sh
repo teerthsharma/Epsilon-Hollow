@@ -40,6 +40,10 @@ if command -v grub-mkrescue &>/dev/null; then
 set timeout=3
 set default=0
 
+insmod efi_gop
+insmod efi_uga
+insmod part_gpt
+
 menuentry "Seal OS" {
     chainloader /EFI/BOOT/BOOTX64.EFI
 }
@@ -71,7 +75,7 @@ if command -v xorriso &>/dev/null; then
         -V "SEALOS" \
         -J -R \
         -eltorito-platform efi \
-        -eltorito-boot EFI/BOOT/BOOTX64.EFI \
+        -e EFI/BOOT/BOOTX64.EFI \
         -no-emul-boot \
         "$ISO_STAGING" 2>/dev/null || true
 
@@ -100,7 +104,7 @@ if [ -n "$MKISOFS" ]; then
         -V "SEALOS" \
         -J -R \
         -eltorito-platform efi \
-        -eltorito-boot EFI/BOOT/BOOTX64.EFI \
+        -e EFI/BOOT/BOOTX64.EFI \
         -no-emul-boot \
         "$ISO_STAGING" 2>/dev/null || true
 

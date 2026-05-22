@@ -11,9 +11,11 @@ use crate::serial_println;
 
 /// Initialise the ACPI subsystem from the UEFI-provided RSDP (if any).
 pub fn init(boot_info: &BootInfo) {
-    if boot_info.acpi_rsdp != 0 {
-        serial_println!("[ACPI] Using RSDP from UEFI @ {:#X}", boot_info.acpi_rsdp);
+    if boot_info.acpi_rsdp == 0 {
+        serial_println!("[ACPI] No RSDP found — skipping ACPI init");
+        return;
     }
+    serial_println!("[ACPI] Using RSDP from UEFI @ {:#X}", boot_info.acpi_rsdp);
     let rsdp = match rsdp::find_rsdp(boot_info.acpi_rsdp) {
         Some(addr) => addr,
         None => {

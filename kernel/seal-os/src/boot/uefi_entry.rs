@@ -57,7 +57,9 @@ pub fn run() -> Status {
         }
     };
 
-    // Exit boot services — after this, UEFI is gone and we own the machine
+    // Exit boot services — after this, UEFI is gone and we own the machine.
+    // uefi-rs 0.32 already retries once internally on INVALID_PARAMETER
+    // (VirtualBox quirk), matching the Linux kernel behaviour.
     let memory_map = unsafe {
         uefi::boot::exit_boot_services(MemoryType::LOADER_DATA)
     };
@@ -166,6 +168,16 @@ fn get_framebuffer() -> BootInfo {
 
     let mode_info = gop.current_mode_info();
     let (width, height) = mode_info.resolution();
+
+    // VirtualBox sometimes reports tiny framebuffers during GOP init;
+    // log a warning but continue so serial-only fallback still works.
+    if width < 640 || height < 480 {
+        serial_println!(
+            "[WARN] Framebuffer resolution {}x{} is smaller than expected, continuing anyway",
+            width, height
+        );
+    }
+
     let stride = mode_info.stride();
     let mut fb = gop.frame_buffer();
     let fb_addr = fb.as_mut_ptr() as u64;
