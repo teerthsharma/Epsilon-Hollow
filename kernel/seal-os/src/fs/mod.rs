@@ -22,7 +22,19 @@ use alloc::boxed::Box;
 /// Must be called after driver init (so sysfs sees PCI devices).
 pub fn init_vfs() -> Result<(), vfs::VfsError> {
     let mut v = vfs::Vfs::new();
-    v.mount("/", Box::new(manifold_fs::ManifoldFS::new()))?;
+
+    let root_fs = match manifold_fs::ManifoldFS::try_mount_disk() {
+        Ok(fs) => {
+            crate::serial_println!("[VFS] ManifoldFS mounted from disk");
+            fs
+        }
+        Err(e) => {
+            crate::serial_println!("[VFS] ManifoldFS disk mount failed: {}. Falling back to ramfs.", e);
+            manifold_fs::ManifoldFS::new_ramfs()
+        }
+    };
+
+    v.mount("/", Box::new(root_fs))?;
     v.mount("/proc", Box::new(procfs::ProcFs::new()))?;
     v.mount("/sys", Box::new(sysfs::SysFs::new()))?;
     let mut devfs = devtmpfs::DevTmpFs::new();

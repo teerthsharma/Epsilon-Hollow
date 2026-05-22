@@ -6,6 +6,7 @@ pub mod apic;
 pub mod audio;
 pub mod bluetooth;
 pub mod block;
+pub mod disk;
 pub mod gpu;
 pub mod interrupts;
 pub mod net;

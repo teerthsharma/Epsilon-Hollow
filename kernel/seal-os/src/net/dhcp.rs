@@ -154,6 +154,8 @@ static XID: Mutex<u32> = Mutex::new(0x12345678);
 
 pub fn init() {
     *DHCP_STATE.lock() = DhcpState::Init;
+    dhcp_discover();
+    *DHCP_STATE.lock() = DhcpState::Discover;
 }
 
 pub fn poll() {
@@ -368,9 +370,9 @@ mod tests {
     #[test]
     fn test_dhcp_state_transitions() {
         init();
-        assert_eq!(state(), DhcpState::Init);
+        assert_eq!(state(), DhcpState::Discover);
 
-        poll();
+        poll(); // no-op when already in Discover
         assert_eq!(state(), DhcpState::Discover);
 
         let offer = build_dhcp_offer([192, 168, 1, 100], [192, 168, 1, 1]);

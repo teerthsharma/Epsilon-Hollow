@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
 
-use super::block_store::BlockStore;
+use super::block_store::{BlockStore, MountError};
 use super::dir_hash::DirHash;
 use super::encoder::{self, ManifoldPayload};
 use super::inode_slab::InodeSlab;
@@ -87,12 +87,43 @@ pub struct ManifoldFS {
     activity_log: Vec<TheoremEvent>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifoldError {
+    NoDisk,
+    NoSuperblock,
+}
+
+impl core::fmt::Display for ManifoldError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NoDisk => write!(f, "No AHCI disk detected"),
+            Self::NoSuperblock => write!(f, "Disk present but no ManifoldFS superblock found"),
+        }
+    }
+}
+
 impl ManifoldFS {
     pub fn new() -> Self {
         match BlockStore::mount_ahci() {
             Ok(store) => Self::init_with_store(store),
             Err(_) => Self::fresh(),
         }
+    }
+
+    pub fn new_ramfs() -> Self {
+        Self::fresh()
+    }
+
+    pub fn try_mount_disk() -> Result<Self, ManifoldError> {
+        crate::drivers::disk::ahci::first_disk()
+            .map_err(|_| ManifoldError::NoDisk)?;
+
+        let store = BlockStore::try_mount_ahci().map_err(|e| match e {
+            MountError::NoDevice => ManifoldError::NoDisk,
+            MountError::NoSuperblock => ManifoldError::NoSuperblock,
+        })?;
+
+        Ok(Self::init_with_store(store))
     }
 
     pub fn new_with_mock_store(num_sectors: usize) -> Self {

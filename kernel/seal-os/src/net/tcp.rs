@@ -98,6 +98,7 @@ pub struct TcpSocket {
     tx_buffer: Vec<u8>,
     retransmit_queue: Vec<RetransmitEntry>,
     rto: u64,
+    pending_accept: Vec<usize>,
 }
 
 impl TcpSocket {
@@ -113,6 +114,7 @@ impl TcpSocket {
             tx_buffer: Vec::new(),
             retransmit_queue: Vec::new(),
             rto: 1000,
+            pending_accept: Vec::new(),
         }
     }
 
@@ -121,6 +123,10 @@ impl TcpSocket {
         self.remote_port = port;
         self.state = TcpState::SynSent;
         self.send_tcp_packet(FLAG_SYN, &[]);
+    }
+
+    pub fn listen(&mut self) {
+        self.state = TcpState::Listen;
     }
 
     pub fn send(&mut self, data: &[u8]) {
@@ -221,6 +227,7 @@ impl TcpSocket {
 
 static TCP_SOCKETS: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
 static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(40000);
+static PENDING_SYN_QUEUE: Mutex<Vec<(u16, [u8; 4], u16, u32)>> = Mutex::new(Vec::new());
 
 pub fn init() {}
 
@@ -242,6 +249,23 @@ pub fn bind(idx: usize, port: u16) {
     if let Some(sock) = sockets.get_mut(idx) {
         sock.local_port = port;
     }
+}
+
+pub fn listen(idx: usize) {
+    let mut sockets = TCP_SOCKETS.lock();
+    if let Some(sock) = sockets.get_mut(idx) {
+        sock.listen();
+    }
+}
+
+pub fn accept(idx: usize) -> Option<usize> {
+    let mut sockets = TCP_SOCKETS.lock();
+    if let Some(sock) = sockets.get_mut(idx) {
+        if sock.state == TcpState::Listen {
+            return sock.pending_accept.pop();
+        }
+    }
+    None
 }
 
 pub fn connect(idx: usize, ip: [u8; 4], port: u16) {
@@ -280,6 +304,38 @@ pub fn state(idx: usize) -> TcpState {
 }
 
 pub fn poll() {
+    let pending: Vec<_> = {
+        let mut q = PENDING_SYN_QUEUE.lock();
+        q.drain(..).collect()
+    };
+
+    for (dst_port, remote_ip, remote_port, seq) in pending {
+        let mut sockets = TCP_SOCKETS.lock();
+        if let Some(listener_idx) = sockets.iter().position(|s| s.local_port == dst_port && s.state == TcpState::Listen) {
+            let new_port = {
+                let mut p = NEXT_TCP_PORT.lock();
+                let port = *p;
+                *p += 1;
+                port
+            };
+            let new_idx = sockets.len();
+            let mut new_sock = TcpSocket::new(new_port);
+            new_sock.local_port = dst_port;
+            new_sock.remote_ip = remote_ip;
+            new_sock.remote_port = remote_port;
+            new_sock.state = TcpState::SynReceived;
+            new_sock.ack_num = seq + 1;
+            sockets.push(new_sock);
+            if let Some(new_sock) = sockets.get_mut(new_idx) {
+                new_sock.send_tcp_packet(FLAG_SYN | FLAG_ACK, &[]);
+                new_sock.seq_num += 1;
+            }
+            if let Some(listener) = sockets.get_mut(listener_idx) {
+                listener.pending_accept.push(new_idx);
+            }
+        }
+    }
+
     let mut sockets = TCP_SOCKETS.lock();
     for sock in sockets.iter_mut() {
         if !sock.retransmit_queue.is_empty() {
@@ -288,7 +344,7 @@ pub fn poll() {
     }
 }
 
-pub fn handle_tcp_packet(_src: [u8; 4], pkt: &[u8]) {
+pub fn handle_tcp_packet(src: [u8; 4], pkt: &[u8]) {
     if pkt.len() < 20 {
         return;
     }
@@ -306,6 +362,13 @@ pub fn handle_tcp_packet(_src: [u8; 4], pkt: &[u8]) {
     for sock in sockets.iter_mut() {
         if sock.local_port == dst_port {
             match sock.state {
+                TcpState::Listen => {
+                    if flags & FLAG_SYN != 0 {
+                        let remote_port = u16::from_be(hdr.src_port);
+                        let seq = u32::from_be(hdr.seq);
+                        PENDING_SYN_QUEUE.lock().push((dst_port, src, remote_port, seq));
+                    }
+                }
                 TcpState::SynSent => {
                     if flags & FLAG_SYN != 0 && flags & FLAG_ACK != 0 {
                         sock.ack_num = u32::from_be(hdr.seq) + 1;
@@ -480,5 +543,36 @@ mod tests {
         assert_eq!(parsed.window, hdr.window);
         assert_eq!(parsed.checksum, hdr.checksum);
         assert_eq!(parsed.urgent, hdr.urgent);
+    }
+
+    #[test]
+    fn test_tcp_syn() {
+        let idx = socket();
+        connect(idx, [127, 0, 0, 1], 80);
+        let sockets = TCP_SOCKETS.lock();
+        let sock = &sockets[idx];
+        assert_eq!(sock.state, TcpState::SynSent);
+        assert_eq!(sock.retransmit_queue.len(), 1);
+        assert_eq!(sock.retransmit_queue[0].flags, FLAG_SYN);
+    }
+
+    #[test]
+    fn test_tcp_listen_accept() {
+        let listener = socket();
+        bind(listener, 8080);
+        listen(listener);
+        assert_eq!(state(listener), TcpState::Listen);
+
+        // Simulate an incoming SYN to port 8080
+        let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
+        handle_tcp_packet([192, 168, 1, 1], &syn_pkt);
+
+        // Process pending SYNs
+        poll();
+
+        let accepted = accept(listener);
+        assert!(accepted.is_some());
+        let new_sock = accepted.unwrap();
+        assert_eq!(state(new_sock), TcpState::SynReceived);
     }
 }
