@@ -7,7 +7,7 @@ A bare-metal x86_64 operating system built for **ML model training** and **high-
 Written in Rust. No libc. No POSIX. No compromises.
 
 ```
-Seal OS v1.0.0-alpha — The Geometrical Operating System
+Seal OS v0.3.1 — The Geometrical Operating System
 All data = geometry on S². File moves = O(1) topological surgery.
 
 [BOOT] Heap initialized (16 MB)
@@ -59,12 +59,12 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **Interrupts**: 256-entry IDT, Local APIC + I/O APIC, APIC timer, PS/2 keyboard & mouse
 - **SMP**: INIT-SIPI-SIPI trampoline, per-CPU data, IPIs (reschedule + TLB shootdown)
 - **Drivers**: Serial COM1, PCI enumeration, Intel e1000 (TX/RX descriptor rings), AHCI SATA (read/write sectors)
-- **Graphics**: 1024×768×32 framebuffer, 8×16 bitmap font, anti-aliased text, gradients, rounded rects, alpha blending
-- **Window Manager**: Compositor with z-order, window decorations, software cursor, desktop + taskbar
+- **Graphics**: 1024×768×32 framebuffer, 8×16 bitmap font, anti-aliased text, gradients, rounded rects, alpha blending, 4 themes (dark/light/seal/matrix), boot splash with subsystem labels
+- **Window Manager**: Compositor with z-order, window decorations, minimize/maximize/resize, 5 cursor shapes (arrow/I-beam/hand/resize), desktop + taskbar, first-run welcome wizard
 - **Filesystem**: ManifoldFS in-memory (Voronoi indexing, O(1) teleport, content-addressable find)
 - **Scheduler**: ManifoldScheduler with Voronoi task groups, governor-based timeslice adaptation
 - **Syscalls**: 14 POSIX-like + 8 Epsilon extensions (exit, read, write, open, close, exec, fork, waitpid, mmap, getpid, stat, mkdir, setuid, setgid, manifold_query, teleport, theorem_status, pkg/wifi/bt/settings stubs)
-- **Security**: ASLR, seccomp filters, SMAP/SMEP detection, KPTI trampoline, audit logging
+- **Security**: ASLR, seccomp filters, SMAP/SMEP detection, KPTI with real CR3 swap, retpoline thunks (rax–r15), lfence barriers, audit logging
 - **Math**: aether-core `no_std` library — T1–T5 theorems (Voronoi, spectral contraction, entropy governor, PD control, hyperbolic separation)
 - **Language**: Aether-Lang lexer, parser, AST, interpreter, and VM integrated into the kernel runtime
 - **Applications**: SealShell (30+ commands), terminal emulator, calculator, Snake, Breakout, Warp Racer, Seal IDE, theorem viewer
@@ -83,14 +83,20 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **Package Manager**: Registry/manifest types exist; `install` returns "not implemented"
 - **Settings Syscalls**: `setting_get` / `setting_set` return ENOSYS
 
-### 🚧 Partial — Skeleton Working, Missing Integration
+### 🚧 Partial — Honest Stubs
 
-- **TCP Stack**: Full RFC state machine (Closed → Listen → SynSent → Established → …), retransmission timer, socket API — built but not yet wired to e1000 TX path (RX works when NIC is present)
-- **DHCP**: Skeleton state machine; discovers OFFER but does not complete REQUEST/ACK
-- **DNS**: Parser + cache work; queries not issued over UDP socket yet
-- **ManifoldFS**: In-memory BTreeMap only; no AHCI persistence layer (no disk format, no journal)
-- **Aether-Lang Stdlib**: `math.pi` / `math.e` return real constants; `fs`, `process`, `net`, `theorem` bindings return errors
-- **Retpoline / KPTI**: Trampoline pages allocated; compiler flags + full mitigation pending
+- **WiFi / Bluetooth / USB / NVMe / GPU**: PCI probe detects chips; drivers return honest "not implemented" errors
+- **TLS / HTTP**: State machines defined; not wired to TCP socket layer
+- **Package Manager**: Registry types exist; `install` returns honest "not implemented"
+
+### ✅ Previously Partial — Now Live
+
+- **TCP Stack**: Wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring. Listen/accept backlog, SYN queue, retransmission timer all active.
+- **DHCP**: Full state machine (Init → Discover → Request → Bound). Auto-sends DISCOVER on boot, polls for 3-second timeout.
+- **DNS**: Builds proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) and sends via UDP to port 53.
+- **ManifoldFS**: AHCI SATA driver probes PCI class 0x01/0x06. `try_mount_disk()` reads first sector and checks superblock. Falls back to ramfs with honest log.
+- **Aether-Lang Stdlib**: `math.pi` / `math.e` real constants. `fs` (read/write/exists/mkdir), `process` (pid, exit), `net` (local_ip, has_nic) modules available.
+- **Retpoline / KPTI**: Compiler flags in `.cargo/config.toml` (`+retpoline`, `--cfg retpoline`). All 16 register thunks. Trampoline page table allocated and installed. `lfence` before `sysretq`.
 
 ---
 
@@ -943,13 +949,13 @@ cd kernel/seal-os
 cargo +nightly build --release
 
 # Create bootable ISO (Linux only — needs grub-mkrescue, xorriso, mtools)
-mkdir -p iso/boot/grub
-cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
-cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
-grub-mkrescue -o seal-os.iso iso/
+./scripts/build_iso.sh
 
 # Run in QEMU
 qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 4G -vga std
+
+# Run in VirtualBox (UEFI — OVMF required)
+# Create VM → System → Enable EFI → Storage → attach seal-os.iso → Boot
 
 # Run headless (serial only)
 qemu-system-x86_64 -cdrom seal-os.iso -nographic -m 4G
@@ -978,9 +984,9 @@ cd kernel/seal-os && docker compose up --build
 
 ## Seal OS vs The World
 
-How does a geometry-native research kernel compare to production operating systems? This table is honest — Seal OS is v1.0.0-alpha. It wins on ideas, not on driver count.
+How does a geometry-native research kernel compare to production operating systems? This table is honest — Seal OS is v0.3.1. It wins on ideas, not on driver count.
 
-| Feature | **Seal OS v1.0.0-alpha** | **Redox OS 0.9.0** | **Ubuntu 24.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
+| Feature | **Seal OS v0.3.1** | **Redox OS 0.9.0** | **Ubuntu 24.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
 |---|---|---|---|---|---|---|
 | **Language** | Rust (100%, `no_std`) | Rust (microkernel) | C (Linux kernel) | C (Linux kernel) | C/C++ (NT kernel) | C/C++/Obj-C (XNU) |
 | **Architecture** | Monolithic | Microkernel | Monolithic + modules | Monolithic + modules | Hybrid | Hybrid (Mach + BSD) |
