@@ -73,6 +73,10 @@ pub fn transmit(buf: &[u8]) {
     }
 }
 
+pub fn has_nic() -> bool {
+    NET_DEVICE.lock().is_some()
+}
+
 pub fn get_mac_address() -> [u8; 6] {
     let dev = NET_DEVICE.lock();
     if let Some(ref nic) = *dev {
