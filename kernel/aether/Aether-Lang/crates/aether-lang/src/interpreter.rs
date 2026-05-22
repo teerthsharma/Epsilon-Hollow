@@ -65,6 +65,70 @@ use candle_transformers::models::quantized_llama::ModelWeights as LlamaWeights;
 #[cfg(feature = "ml")]
 use tokenizers::Tokenizer;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Kernel Callback Registry — allows the host kernel to inject real OS bindings
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type FsReadFn =
+    extern "C" fn(path: *const u8, path_len: usize, buf: *mut u8, buf_len: usize) -> isize;
+type FsWriteFn =
+    extern "C" fn(path: *const u8, path_len: usize, buf: *const u8, buf_len: usize) -> isize;
+type FsExistsFn = extern "C" fn(path: *const u8, path_len: usize) -> bool;
+type FsMkdirFn = extern "C" fn(path: *const u8, path_len: usize) -> isize;
+
+/// Callbacks for filesystem operations.
+pub struct FsCallbacks {
+    pub read: Option<FsReadFn>,
+    pub write: Option<FsWriteFn>,
+    pub exists: Option<FsExistsFn>,
+    pub mkdir: Option<FsMkdirFn>,
+}
+
+/// Callbacks for process operations.
+pub struct ProcessCallbacks {
+    pub pid: Option<extern "C" fn() -> u64>,
+    pub exit: Option<extern "C" fn(code: i32) -> !>,
+}
+
+/// Callbacks for network operations.
+pub struct NetCallbacks {
+    pub local_ip: Option<extern "C" fn(buf: *mut u8, buf_len: usize) -> isize>,
+    pub has_nic: Option<extern "C" fn() -> bool>,
+}
+
+/// Global callback registry. The kernel calls `register_kernel_callbacks` at boot.
+pub static mut KERNEL_CALLBACKS: (FsCallbacks, ProcessCallbacks, NetCallbacks) = (
+    FsCallbacks {
+        read: None,
+        write: None,
+        exists: None,
+        mkdir: None,
+    },
+    ProcessCallbacks {
+        pid: None,
+        exit: None,
+    },
+    NetCallbacks {
+        local_ip: None,
+        has_nic: None,
+    },
+);
+
+/// Register kernel-provided OS callbacks. Call once from kernel_main.
+///
+/// # Safety
+/// Must be called before any Aether-Lang code executes, and only once.
+/// The caller must ensure the provided function pointers remain valid
+/// for the lifetime of the interpreter.
+pub unsafe fn register_kernel_callbacks(
+    fs: FsCallbacks,
+    proc: ProcessCallbacks,
+    net: NetCallbacks,
+) {
+    KERNEL_CALLBACKS = (fs, proc, net);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 /// Interpreter errors
 #[derive(Debug, Clone)]
 pub enum InterpreterError {
@@ -180,6 +244,15 @@ pub enum NativeFunction {
     PciReadBar0,
     PciReadBar5,
     MathRange,
+    // OS Bindings — real via kernel callbacks
+    FsRead,
+    FsWrite,
+    FsExists,
+    FsMkdir,
+    ProcessPid,
+    ProcessExit,
+    NetLocalIp,
+    NetHasNic,
 }
 
 /// Handle to a manifold workspace
@@ -1068,9 +1141,29 @@ impl Interpreter {
     fn import_fs(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
         if let Some(symbol) = &stmt.symbol {
             match symbol.as_str() {
-                "read" | "write" | "exists" | "mkdir" => {
-                    self.variables
-                        .insert(symbol.clone(), Value::NativeFn(NativeFunction::Print));
+                "read" => {
+                    self.variables.insert(
+                        String::from("read"),
+                        Value::NativeFn(NativeFunction::FsRead),
+                    );
+                }
+                "write" => {
+                    self.variables.insert(
+                        String::from("write"),
+                        Value::NativeFn(NativeFunction::FsWrite),
+                    );
+                }
+                "exists" => {
+                    self.variables.insert(
+                        String::from("exists"),
+                        Value::NativeFn(NativeFunction::FsExists),
+                    );
+                }
+                "mkdir" => {
+                    self.variables.insert(
+                        String::from("mkdir"),
+                        Value::NativeFn(NativeFunction::FsMkdir),
+                    );
                 }
                 _ => return Err(format!("Symbol '{}' not found in fs", symbol).into()),
             };
@@ -1108,12 +1201,14 @@ impl Interpreter {
                 "local_ip" => {
                     self.variables.insert(
                         String::from("local_ip"),
-                        Value::Str(String::from("127.0.0.1")),
+                        Value::NativeFn(NativeFunction::NetLocalIp),
                     );
                 }
                 "has_nic" => {
-                    self.variables
-                        .insert(String::from("has_nic"), Value::Bool(false));
+                    self.variables.insert(
+                        String::from("has_nic"),
+                        Value::NativeFn(NativeFunction::NetHasNic),
+                    );
                 }
                 _ => return Err(format!("Symbol '{}' not found in net", symbol).into()),
             };
@@ -1647,10 +1742,27 @@ impl Interpreter {
                 }
             }
             NativeFunction::MlForward => {
-                // Map "forward"
-                // Args: model, input
-                // Actually this might be MethodCall on Mlp object
-                Ok(Value::Unit)
+                // forward(model, input) — dispatch based on model type
+                if args.len() < 2 {
+                    return Err("forward(model, input) requires 2 args".into());
+                }
+                let model_expr = if let Some(CallArg::Positional(e)) = args.first() {
+                    e
+                } else {
+                    return Err("Missing model arg".into());
+                };
+                let input_expr = if let Some(CallArg::Positional(e)) = args.get(1) {
+                    e
+                } else {
+                    return Err("Missing input arg".into());
+                };
+                let model_val = self.evaluate_expr(model_expr)?;
+                let input_val = self.evaluate_expr(input_expr)?;
+                let input = self.value_to_tensor_core(&input_val)?;
+                match model_val {
+                    Value::Mlp(mut mlp) => Ok(Value::Tensor(mlp.forward(&input))),
+                    _ => Err("forward: first arg must be an MLP model".into()),
+                }
             }
             NativeFunction::MmioRead32 => {
                 let _addr = get_f64(args)?;
@@ -1685,6 +1797,107 @@ impl Interpreter {
                     list.push(Value::Num(i as f64));
                 }
                 Ok(Value::List(list))
+            }
+            // ═══════════════════════════════════════════════════════════════════
+            // OS Bindings — call into kernel via registered callbacks
+            // ═══════════════════════════════════════════════════════════════════
+            NativeFunction::FsRead => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    let path = self.get_arg_str(args, 0)?;
+                    let mut buf = vec![0u8; 4096];
+                    if let Some(cb) = KERNEL_CALLBACKS.0.read {
+                        let n = cb(path.as_ptr(), path.len(), buf.as_mut_ptr(), buf.len());
+                        if n >= 0 {
+                            buf.truncate(n as usize);
+                            return Ok(Value::Str(String::from_utf8_lossy(&buf).into()));
+                        }
+                        return Err("fs.read: kernel error".into());
+                    }
+                }
+                Err("fs.read: no kernel callback registered".into())
+            }
+            NativeFunction::FsWrite => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    let path = self.get_arg_str(args, 0)?;
+                    let data = self.get_arg_str(args, 1)?;
+                    if let Some(cb) = KERNEL_CALLBACKS.0.write {
+                        let n = cb(path.as_ptr(), path.len(), data.as_ptr(), data.len());
+                        if n >= 0 {
+                            return Ok(Value::Num(n as f64));
+                        }
+                        return Err("fs.write: kernel error".into());
+                    }
+                }
+                Err("fs.write: no kernel callback registered".into())
+            }
+            NativeFunction::FsExists => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    let path = self.get_arg_str(args, 0)?;
+                    if let Some(cb) = KERNEL_CALLBACKS.0.exists {
+                        return Ok(Value::Bool(cb(path.as_ptr(), path.len())));
+                    }
+                }
+                Err("fs.exists: no kernel callback registered".into())
+            }
+            NativeFunction::FsMkdir => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    let path = self.get_arg_str(args, 0)?;
+                    if let Some(cb) = KERNEL_CALLBACKS.0.mkdir {
+                        let n = cb(path.as_ptr(), path.len());
+                        if n >= 0 {
+                            return Ok(Value::Num(n as f64));
+                        }
+                        return Err("fs.mkdir: kernel error".into());
+                    }
+                }
+                Err("fs.mkdir: no kernel callback registered".into())
+            }
+            NativeFunction::ProcessPid => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.1.pid {
+                        return Ok(Value::Num(cb() as f64));
+                    }
+                }
+                Ok(Value::Num(1.0))
+            }
+            NativeFunction::ProcessExit => {
+                let _code = self.get_arg_num(args, 0)? as i32;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.1.exit {
+                        cb(_code);
+                    }
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::NetLocalIp => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    let mut buf = [0u8; 64];
+                    if let Some(cb) = KERNEL_CALLBACKS.2.local_ip {
+                        let n = cb(buf.as_mut_ptr(), buf.len());
+                        if n > 0 {
+                            return Ok(Value::Str(
+                                String::from_utf8_lossy(&buf[..n as usize]).into(),
+                            ));
+                        }
+                    }
+                }
+                Ok(Value::Str(String::from("127.0.0.1")))
+            }
+            NativeFunction::NetHasNic => {
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.2.has_nic {
+                        return Ok(Value::Bool(cb()));
+                    }
+                }
+                Ok(Value::Bool(false))
             }
             _ => Ok(Value::Unit),
         }
