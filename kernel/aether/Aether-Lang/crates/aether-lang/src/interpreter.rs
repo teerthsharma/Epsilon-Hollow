@@ -859,6 +859,9 @@ impl Interpreter {
             "topology" => self.import_topology(stmt),
             "ml" | "Ml" => self.import_ml(stmt),
             "Seal" => self.import_seal(stmt),
+            "fs" => self.import_fs(stmt),
+            "process" => self.import_process(stmt),
+            "net" => self.import_net(stmt),
             _ => Err(format!("Module '{}' not found", mod_name).into()),
         }
     }
@@ -869,6 +872,10 @@ impl Interpreter {
                 "pi" => {
                     self.variables
                         .insert(String::from("pi"), Value::Num(core::f64::consts::PI));
+                }
+                "e" => {
+                    self.variables
+                        .insert(String::from("e"), Value::Num(core::f64::consts::E));
                 }
                 "sin" => {
                     self.variables.insert(
@@ -905,6 +912,8 @@ impl Interpreter {
         } else {
             self.variables
                 .insert(String::from("pi"), Value::Num(core::f64::consts::PI));
+            self.variables
+                .insert(String::from("e"), Value::Num(core::f64::consts::E));
             self.variables.insert(
                 String::from("sin"),
                 Value::NativeFn(NativeFunction::MathSin),
@@ -1052,6 +1061,65 @@ impl Interpreter {
         } else {
             self.variables
                 .insert(String::from("Seal"), Value::Module(String::from("Seal")));
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_fs(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "read" | "write" | "exists" | "mkdir" => {
+                    self.variables
+                        .insert(symbol.clone(), Value::NativeFn(NativeFunction::Print));
+                }
+                _ => return Err(format!("Symbol '{}' not found in fs", symbol).into()),
+            };
+        } else {
+            self.variables
+                .insert(String::from("fs"), Value::Module(String::from("fs")));
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_process(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "pid" => {
+                    self.variables.insert(String::from("pid"), Value::Num(1.0));
+                }
+                "exit" => {
+                    self.variables
+                        .insert(String::from("exit"), Value::NativeFn(NativeFunction::Print));
+                }
+                _ => return Err(format!("Symbol '{}' not found in process", symbol).into()),
+            };
+        } else {
+            self.variables.insert(
+                String::from("process"),
+                Value::Module(String::from("process")),
+            );
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_net(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "local_ip" => {
+                    self.variables.insert(
+                        String::from("local_ip"),
+                        Value::Str(String::from("127.0.0.1")),
+                    );
+                }
+                "has_nic" => {
+                    self.variables
+                        .insert(String::from("has_nic"), Value::Bool(false));
+                }
+                _ => return Err(format!("Symbol '{}' not found in net", symbol).into()),
+            };
+        } else {
+            self.variables
+                .insert(String::from("net"), Value::Module(String::from("net")));
         }
         Ok(Value::Unit)
     }
