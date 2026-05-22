@@ -26,6 +26,7 @@ pub fn init() {
         "[KPTI] Kernel Page-Table Isolation initialized — kernel CR3 = {:#x}",
         phys
     );
+    init_trampoline_pt();
 }
 
 /// Switch from the current page table to the kernel page table.
@@ -64,6 +65,44 @@ pub fn switch_to_user_pt() {
 /// at least the trampoline, user memory, and minimal kernel entry stubs.
 pub unsafe fn set_user_cr3(pt_phys: u64) {
     USER_CR3.store(pt_phys, Ordering::SeqCst);
+}
+
+/// Allocate and install a trampoline page table that copies kernel PML4
+/// entries (upper half) but leaves the lower half unmapped.
+pub fn init_trampoline_pt() {
+    // Allocate a PML4 frame
+    let frame = match crate::memory::phys::alloc_frame() {
+        Some(f) => f,
+        None => {
+            crate::serial_println!("[KPTI] Failed to allocate trampoline PML4");
+            return;
+        }
+    };
+    // Physical memory below 4 GiB is identity-mapped by the boot page tables.
+    let pml4 = frame.as_u64() as *mut u64;
+
+    // Zero it
+    unsafe { core::ptr::write_bytes(pml4, 0, 4096); }
+
+    // Copy kernel PML4 entries (upper half) — entry 256+ map kernel
+    let (kernel_frame, _) = Cr3::read();
+    let kernel_pml4 = kernel_frame.start_address().as_u64();
+    let kernel_virt = kernel_pml4 as *mut u64;
+    for i in 256..512 {
+        unsafe {
+            let entry = *kernel_virt.add(i);
+            *pml4.add(i) = entry;
+        }
+    }
+
+    // Set as user CR3
+    unsafe { set_user_cr3(frame.as_u64()); }
+    crate::serial_println!("[KPTI] Trampoline page table installed @ {:#x}", frame.as_u64());
+}
+
+/// Return true if both kernel and user CR3 values have been initialized.
+pub fn has_kpti() -> bool {
+    KERNEL_CR3.load(Ordering::SeqCst) != 0 && USER_CR3.load(Ordering::SeqCst) != 0
 }
 
 #[cfg(any(test, feature = "test-mode"))]
