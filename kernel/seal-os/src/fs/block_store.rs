@@ -41,6 +41,12 @@ impl BlockStoreBackend for AhciBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MountError {
+    NoDevice,
+    NoSuperblock,
+}
+
 /// In-memory mock for host testing.
 pub struct MockBackend {
     sectors: Vec<[u8; SECTOR_SIZE]>,
@@ -391,18 +397,26 @@ impl BlockStore {
         Ok(s)
     }
 
-    pub fn try_mount_ahci(&mut self) -> bool {
-        match Self::mount_ahci() {
-            Ok(store) => {
-                *self = store;
-                true
-            }
-            Err(e) => {
-                serial_println!("[BlockStore] AHCI mount failed: {:?}", e);
-                false
-            }
+    pub fn try_mount_ahci() -> Result<Self, MountError> {
+        let backend = AhciBackend;
+        let mut buf = [0u8; SECTOR_SIZE];
+        backend.read_sector(0, &mut buf).map_err(|e| match e {
+            BlockError::NoDevice => MountError::NoDevice,
+            _ => MountError::NoSuperblock,
+        })?;
+        if Superblock::from_bytes(&buf).is_none() {
+            return Err(MountError::NoSuperblock);
         }
+        let mut s = Self::new();
+        s.backend = Some(Box::new(backend));
+        s.read_superblock().map_err(|_| MountError::NoSuperblock)?;
+        s.read_bitmap().map_err(|_| MountError::NoSuperblock)?;
+        s.read_inode_table().map_err(|_| MountError::NoSuperblock)?;
+        s.replay_journal().map_err(|_| MountError::NoSuperblock)?;
+        Ok(s)
     }
+
+
 
     pub fn format(&mut self, total_blocks: u64) -> Result<(), BlockError> {
         if total_blocks < JOURNAL_BLOCKS + 10 {

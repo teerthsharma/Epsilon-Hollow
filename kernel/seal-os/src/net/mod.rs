@@ -35,6 +35,8 @@ pub fn init() {
 
     arp::init();
     dhcp::init();
+    tcp::init();
+    dns::init();
 }
 
 pub fn poll() {

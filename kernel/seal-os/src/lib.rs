@@ -420,6 +420,7 @@ fn init_drivers() {
     if drivers::block::ahci::init().is_none() {
         serial_println!("[AHCI] Initialization failed, continuing without AHCI");
     }
+    drivers::disk::init();
     drivers::wifi::init();
     drivers::bluetooth::init();
     drivers::gpu::init();
