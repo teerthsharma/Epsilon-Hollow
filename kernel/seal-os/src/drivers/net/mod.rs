@@ -6,6 +6,7 @@
 use spin::Mutex;
 
 pub mod e1000;
+pub mod virtio_net;
 pub mod tcp;
 pub mod udp;
 pub mod dhcp;
@@ -13,6 +14,7 @@ pub mod dns;
 pub mod icmp;
 pub mod http;
 pub mod tls;
+pub mod tls_socket;
 
 static NET_DEVICE: Mutex<Option<e1000::E1000>> = Mutex::new(None);
 
@@ -42,7 +44,14 @@ pub fn init() {
             }
         }
     }
-    crate::serial_println!("[e1000] No NIC found");
+
+    // Fallback: Virtio-Net
+    if let Ok(_net) = virtio_net::VirtioNet::discover_and_init() {
+        crate::serial_println!("[virtio-net] Found and initialized NIC");
+        // For now NET_DEVICE expects E1000, we need a trait or a better abstraction.
+        // But we at least probed it.
+    }
+    crate::serial_println!("[NET] No supported NIC found");
 }
 
 pub fn poll() {

@@ -12,8 +12,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{PageTable, PageTableFlags},
-    PhysAddr, VirtAddr,
+    structures::paging::{PageTable, PageTableFlags}, VirtAddr,
 };
 
 /// A lazily-backed mmap region.

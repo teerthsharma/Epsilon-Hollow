@@ -96,8 +96,15 @@ pub struct NetCallbacks {
     pub has_nic: Option<extern "C" fn() -> bool>,
 }
 
+/// Callbacks for hardware (MMIO/PCI) operations.
+pub struct HwCallbacks {
+    pub mmio_read32: Option<extern "C" fn(addr: u64) -> u32>,
+    pub mmio_write32: Option<extern "C" fn(addr: u64, val: u32)>,
+    pub pci_read_config: Option<extern "C" fn(bus: u8, slot: u8, func: u8, offset: u8) -> u32>,
+}
+
 /// Global callback registry. The kernel calls `register_kernel_callbacks` at boot.
-pub static mut KERNEL_CALLBACKS: (FsCallbacks, ProcessCallbacks, NetCallbacks) = (
+pub static mut KERNEL_CALLBACKS: (FsCallbacks, ProcessCallbacks, NetCallbacks, HwCallbacks) = (
     FsCallbacks {
         read: None,
         write: None,
@@ -112,6 +119,11 @@ pub static mut KERNEL_CALLBACKS: (FsCallbacks, ProcessCallbacks, NetCallbacks) =
         local_ip: None,
         has_nic: None,
     },
+    HwCallbacks {
+        mmio_read32: None,
+        mmio_write32: None,
+        pci_read_config: None,
+    },
 );
 
 /// Register kernel-provided OS callbacks. Call once from kernel_main.
@@ -124,8 +136,9 @@ pub unsafe fn register_kernel_callbacks(
     fs: FsCallbacks,
     proc: ProcessCallbacks,
     net: NetCallbacks,
+    hw: HwCallbacks,
 ) {
-    KERNEL_CALLBACKS = (fs, proc, net);
+    KERNEL_CALLBACKS = (fs, proc, net, hw);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1765,29 +1778,96 @@ impl Interpreter {
                 }
             }
             NativeFunction::MmioRead32 => {
-                let _addr = get_f64(args)?;
-                // Kernel call here
+                let addr = get_f64(args)? as u64;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.3.mmio_read32 {
+                        return Ok(Value::Num(cb(addr) as f64));
+                    }
+                }
                 Ok(Value::Num(0.0))
             }
             NativeFunction::MmioWrite32 => {
-                let _addr = get_f64(args)?;
+                let addr = get_f64(args)? as u64;
                 if let Some(CallArg::Positional(expr)) = args.get(1) {
-                    let _val = self.evaluate_expr(expr)?;
+                    let val = self.evaluate_expr(expr)?;
+                    if let Value::Num(n) = val {
+                        #[cfg(not(feature = "std"))]
+                        unsafe {
+                            if let Some(cb) = KERNEL_CALLBACKS.3.mmio_write32 {
+                                cb(addr, n as u32);
+                            }
+                        }
+                    }
                 }
                 Ok(Value::Unit)
             }
             NativeFunction::PciFind => {
-                // Returns [bus, slot]
-                Ok(Value::List(vec![Value::Num(0.0), Value::Num(0.0)]))
+                // pci_find(vendor, device)
+                let vendor = self.get_arg_num(args, 0)? as u16;
+                let device = self.get_arg_num(args, 1)? as u16;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.3.pci_read_config {
+                        // Brute force search using callback
+                        for bus in 0..255 {
+                            for slot in 0..32 {
+                                let id = cb(bus, slot, 0, 0);
+                                if (id & 0xFFFF) as u16 == vendor && (id >> 16) as u16 == device {
+                                    return Ok(Value::List(vec![
+                                        Value::Num(bus as f64),
+                                        Value::Num(slot as f64),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::List(vec![Value::Num(255.0), Value::Num(255.0)]))
             }
             NativeFunction::PciFindVendor => {
-                Ok(Value::List(vec![Value::Num(0.0), Value::Num(0.0)]))
+                let vendor = self.get_arg_num(args, 0)? as u16;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.3.pci_read_config {
+                        for bus in 0..255 {
+                            for slot in 0..32 {
+                                let id = cb(bus, slot, 0, 0);
+                                if (id & 0xFFFF) as u16 == vendor {
+                                    return Ok(Value::List(vec![
+                                        Value::Num(bus as f64),
+                                        Value::Num(slot as f64),
+                                    ]));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Value::List(vec![Value::Num(255.0), Value::Num(255.0)]))
             }
             NativeFunction::PciReadBar0 => {
-                Ok(Value::Num(0xFD000000u64 as f64)) // Mock NVIDIA base
+                let bus = self.get_arg_num(args, 0)? as u8;
+                let slot = self.get_arg_num(args, 1)? as u8;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.3.pci_read_config {
+                        let bar0 = cb(bus, slot, 0, 0x10);
+                        return Ok(Value::Num(bar0 as f64));
+                    }
+                }
+                Ok(Value::Num(0.0))
             }
             NativeFunction::PciReadBar5 => {
-                Ok(Value::Num(0xFE000000u64 as f64)) // Mock AHCI base
+                let bus = self.get_arg_num(args, 0)? as u8;
+                let slot = self.get_arg_num(args, 1)? as u8;
+                #[cfg(not(feature = "std"))]
+                unsafe {
+                    if let Some(cb) = KERNEL_CALLBACKS.3.pci_read_config {
+                        let bar5 = cb(bus, slot, 0, 0x24);
+                        return Ok(Value::Num(bar5 as f64));
+                    }
+                }
+                Ok(Value::Num(0.0))
             }
             NativeFunction::MathRange => {
                 let start = self.get_arg_num(args, 0)? as i64;

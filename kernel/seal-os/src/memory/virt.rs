@@ -145,14 +145,14 @@ pub unsafe fn map_page_to_pml4(virt: VirtAddr, phys: PhysAddr, flags: PageTableF
 /// # Safety
 /// Caller must ensure the mapping does not violate invariants.
 pub unsafe fn map_page(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) -> Result<(), MapError> {
-    let mut ptr_opt = PML4_VIRT.lock();
+    let ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };
     map_page_inner(virt, phys, flags, pml4)
 }
 
 /// Unmap a 4 KiB page and return the previously mapped physical address.
 pub unsafe fn unmap_page(virt: VirtAddr) -> Option<PhysAddr> {
-    let mut ptr_opt = PML4_VIRT.lock();
+    let ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };
 
     let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
@@ -193,7 +193,7 @@ pub unsafe fn unmap_page(virt: VirtAddr) -> Option<PhysAddr> {
 
 /// Walk the page tables to find the physical address mapped at `virt`.
 pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
-    let mut ptr_opt = PML4_VIRT.lock();
+    let ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };
 
     let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;

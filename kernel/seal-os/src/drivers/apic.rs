@@ -5,7 +5,6 @@
 //!
 //! Replaces the legacy 8259 PIC with memory-mapped APIC controllers.
 
-use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

@@ -171,6 +171,15 @@ impl FileSystem for DevTmpFs {
         Ok(())
     }
 
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> {
+        // DevTmpFs is flat; rmdir behaves like unlink for non-root entries.
+        self.unlink(path)
+    }
+
+    fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
+        Err(VfsError::NotSupported)
+    }
+
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
         if handle.inode != self.root_id {
             return Err(VfsError::NotSupported);
@@ -212,6 +221,8 @@ impl FileSystem for DevTmpFs {
             atime: 0,
             mtime: 0,
             node_type: node.node_type,
+            major: node.major,
+            minor: node.minor,
         })
     }
 

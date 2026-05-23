@@ -4,7 +4,6 @@
 //! Terminal emulator — renders shell output into a window buffer.
 
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::shell::Shell;
@@ -107,7 +106,7 @@ impl Terminal {
         let input_row = (visible_end - visible_start) as u32;
         if input_row < self.rows {
             let prompt = self.shell.prompt();
-            let full = alloc::format!("{}{}", prompt, self.input_buf);
+            let _full = alloc::format!("{}{}", prompt, self.input_buf);
             // Prompt in blue
             self.render_line_colored(win, input_row, &prompt, PROMPT_COLOR);
             // Input after prompt

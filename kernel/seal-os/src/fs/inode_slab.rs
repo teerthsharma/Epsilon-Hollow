@@ -26,7 +26,7 @@ impl InodeSlab {
     }
 
     /// Allocate a slot, assign a fresh inode_id, and return it.
-    pub fn alloc(&mut self, mut inode: Inode) -> u64 {
+    pub fn alloc(&mut self, inode: Inode) -> u64 {
         if let Some(idx) = self.free_head {
             let idx = idx as usize;
             let slot = &mut self.slots[idx];

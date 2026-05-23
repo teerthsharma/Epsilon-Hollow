@@ -21,7 +21,7 @@ const IRQ_OFFSET: u8 = 32;
 
 const VECTOR_TIMER_APIC: u8 = 48;
 const VECTOR_IPI_TLB_SHOOTDOWN: u8 = 0xFD;
-const VECTOR_IPI_RESCHEDULE: u8 = 0xFE;
+pub const VECTOR_IPI_RESCHEDULE: u8 = 0xFE;
 
 #[derive(Clone, Copy)]
 #[repr(u8)]
@@ -285,10 +285,20 @@ pub fn poll_event() -> Option<InputEvent> {
     }
 }
 
+#[cfg(not(test))]
+pub fn push_event(event: InputEvent) {
+    if let Some(mut queue) = EVENT_QUEUE.try_lock() {
+        queue.push(event);
+    }
+}
+
 #[cfg(test)]
 pub fn poll_event() -> Option<crate::wm::event::InputEvent> {
     None
 }
+
+#[cfg(test)]
+pub fn push_event(_event: crate::wm::event::InputEvent) {}
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
@@ -304,6 +314,7 @@ extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::process::scheduler::scheduler_tick();
+    crate::drivers::watchdog::check();
     unsafe {
         crate::drivers::apic::LOCAL_APIC.eoi();
     }

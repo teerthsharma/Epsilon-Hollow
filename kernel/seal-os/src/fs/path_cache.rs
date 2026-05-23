@@ -3,7 +3,6 @@
 
 //! O(1) hot-path resolution cache — CLOCK (second-chance) eviction.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 const DEFAULT_CAPACITY: usize = 8;

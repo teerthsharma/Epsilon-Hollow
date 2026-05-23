@@ -61,6 +61,11 @@ impl PciDevice {
             (val & !0x03) as u64
         }
     }
+
+    pub fn enable_bus_mastering(&self) {
+        let cmd = pci_read32(self.bus, self.device, self.function, 0x04);
+        pci_write32(self.bus, self.device, self.function, 0x04, cmd | (1 << 2));
+    }
 }
 
 pub fn pci_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
@@ -75,6 +80,21 @@ pub fn pci_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let mut data_port = Port::<u32>::new(PCI_CONFIG_DATA);
         addr_port.write(addr);
         data_port.read()
+    }
+}
+
+pub fn pci_write32(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    let addr: u32 = 0x80000000
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xFC);
+
+    unsafe {
+        let mut addr_port = Port::<u32>::new(PCI_CONFIG_ADDR);
+        let mut data_port = Port::<u32>::new(PCI_CONFIG_DATA);
+        addr_port.write(addr);
+        data_port.write(value);
     }
 }
 

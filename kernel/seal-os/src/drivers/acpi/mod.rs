@@ -59,6 +59,14 @@ pub fn ioapic_base() -> u64 {
     madt::ioapic_base()
 }
 
+/// Attempt ACPI power-off.
+/// Returns `true` if a shutdown command was issued.
+/// Currently a placeholder — full FACP/DSDT parsing for S5 state
+/// is required for a complete implementation.
+pub fn power_off() -> bool {
+    false
+}
+
 /// Quick sanity print of ACPI discovery results.
 pub fn test_acpi() {
     serial_println!(

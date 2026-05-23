@@ -94,26 +94,44 @@ impl Console {
     }
 
     fn scroll(&mut self) {
-        // Shift all rows up by one character height using raw pixel copy
-        let bytes_per_pixel = (self.fb.bpp as u32) / 8;
-        let row_bytes = self.fb.pitch;
         let scroll_lines = CHAR_HEIGHT;
-        let total_lines = self.fb.height;
+        let theme = crate::wm::themes::current_theme();
 
-        unsafe {
-            let buf = self.fb.buffer_ptr();
-            for line in 0..(total_lines - scroll_lines) {
-                let dst = buf.add((line * row_bytes) as usize);
-                let src = buf.add(((line + scroll_lines) * row_bytes) as usize);
-                core::ptr::copy(src, dst, row_bytes as usize);
+        if self.fb.has_back_buffer() {
+            let total_pixels = (self.fb.height * self.fb.width) as usize;
+            let scroll_pixels = (scroll_lines * self.fb.width) as usize;
+            unsafe {
+                let buf = self.fb.back_buffer_ptr();
+                if !buf.is_null() {
+                    core::ptr::copy(
+                        buf.add(scroll_pixels),
+                        buf,
+                        total_pixels - scroll_pixels,
+                    );
+                    let start = total_pixels - scroll_pixels;
+                    for i in start..total_pixels {
+                        core::ptr::write_volatile(buf.add(i), theme.console_bg);
+                    }
+                }
             }
-            // Clear the last row
-            let theme = crate::wm::themes::current_theme();
-            for line in (total_lines - scroll_lines)..total_lines {
-                let dst = buf.add((line * row_bytes) as usize);
-                for x in 0..self.fb.width {
-                    let pixel = dst.add((x * bytes_per_pixel) as usize) as *mut u32;
-                    pixel.write_volatile(theme.console_bg);
+        } else {
+            let bytes_per_pixel = (self.fb.bpp as u32) / 8;
+            let row_bytes = self.fb.pitch;
+            let total_lines = self.fb.height;
+
+            unsafe {
+                let buf = self.fb.buffer_ptr();
+                for line in 0..(total_lines - scroll_lines) {
+                    let dst = buf.add((line * row_bytes) as usize);
+                    let src = buf.add(((line + scroll_lines) * row_bytes) as usize);
+                    core::ptr::copy(src, dst, row_bytes as usize);
+                }
+                for line in (total_lines - scroll_lines)..total_lines {
+                    let dst = buf.add((line * row_bytes) as usize);
+                    for x in 0..self.fb.width {
+                        let pixel = dst.add((x * bytes_per_pixel) as usize) as *mut u32;
+                        pixel.write_volatile(theme.console_bg);
+                    }
                 }
             }
         }

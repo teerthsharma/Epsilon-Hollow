@@ -16,8 +16,8 @@ use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
 use aether_core::tss::SphericalVoronoiIndex;
 
-use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE};
-use super::task::{Task, TaskState};
+use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE, xsave_area_size};
+use super::task::{Task, TaskState, align_up};
 use crate::serial_println;
 
 use x86_64::PhysAddr;
@@ -82,6 +82,12 @@ impl TaskSlab {
 
     fn iter(&self) -> impl Iterator<Item = &Task> {
         self.slots.iter().filter_map(|s| s.task.as_ref())
+    }
+
+    fn find_by_id(&self, id: u64) -> Option<usize> {
+        self.slots.iter().enumerate().find(|(_, s)| {
+            s.task.as_ref().map(|t| t.id == id).unwrap_or(false)
+        }).map(|(idx, _)| idx)
     }
 }
 
@@ -243,7 +249,7 @@ impl ManifoldScheduler {
         let loaded = super::elf::load(elf_data, aslr_base)?;
 
         let user_stack_size = 65536usize;
-        let mut user_stack = vec![0u8; user_stack_size];
+        let user_stack = vec![0u8; user_stack_size];
         let user_stack_top = user_stack.as_ptr() as u64 + user_stack_size as u64;
         let user_stack_top = user_stack_top & !0xF;
 
@@ -567,6 +573,33 @@ impl ManifoldScheduler {
         Some(self.slab.get(idx)?.page_table)
     }
 
+    pub fn current_brk_end(&self) -> u64 {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .map(|t| t.brk_end)
+            .unwrap_or(0)
+    }
+
+    pub fn set_current_brk_end(&mut self, brk: u64) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.brk_end = brk;
+            }
+        }
+    }
+
+    pub fn find_task_by_id(&self, id: u64) -> Option<usize> {
+        self.slab.find_by_id(id)
+    }
+
+    pub fn task_mut(&mut self, idx: usize) -> Option<&mut Task> {
+        self.slab.get_mut(idx)
+    }
+
+    pub fn task_is_current(&self, idx: usize) -> bool {
+        self.current == Some(idx)
+    }
+
     pub fn governor_epsilon(&self) -> f64 {
         self.governor.epsilon()
     }
@@ -582,6 +615,92 @@ impl ManifoldScheduler {
             }
         }
     }
+
+    pub fn fork_current(&mut self) -> Option<u64> {
+        let idx = self.current?;
+
+        // Collect parent data while holding immutable borrow.
+        let (new_id, priority, child) = {
+            let parent = self.slab.get(idx)?;
+            let new_id = self.next_id;
+            self.next_id += 1;
+
+            let mut kernel_stack = vec![0u8; KERNEL_STACK_SIZE];
+            kernel_stack.copy_from_slice(&parent.kernel_stack);
+
+            let xsave_size = xsave_area_size();
+            let mut xsave_storage = vec![0u8; xsave_size + 64];
+            xsave_storage.copy_from_slice(&parent.xsave_storage);
+            let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
+
+            let mut context = parent.context;
+            context.rax = 0; // child returns 0 from fork
+            context.xsave_ptr = xsave_ptr;
+
+            let child = Task {
+                id: new_id,
+                name: parent.name.clone(),
+                state: TaskState::Ready,
+                manifold_embedding: parent.manifold_embedding,
+                voronoi_cell: parent.voronoi_cell,
+                priority: parent.priority,
+                ticks_used: 0,
+                entry: parent.entry,
+                is_userspace: parent.is_userspace,
+                user_stack: parent.user_stack.clone(),
+                page_table: parent.page_table,
+                context,
+                xsave_storage,
+                kernel_stack,
+                uid: parent.uid,
+                gid: parent.gid,
+                cwd: parent.cwd.clone(),
+                brk_end: parent.brk_end,
+                pending_signals: 0,
+                signal_mask: parent.signal_mask,
+                signal_handlers: parent.signal_handlers,
+                signal_saved_context: None,
+            };
+            (new_id, parent.priority, child)
+        };
+
+        let child_idx = self.slab.alloc(child);
+        {
+            if let Some(task_ref) = self.slab.get_mut(child_idx) {
+                task_ref.voronoi_cell =
+                    Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+            } else {
+                serial_println!("[scheduler] fork_current: slab index {} invalid after alloc", child_idx);
+                return None;
+            }
+        }
+        let cell = match self.slab.get(child_idx) {
+            Some(t) => t.voronoi_cell,
+            None => {
+                serial_println!("[scheduler] fork_current: slab index {} vanished after update", child_idx);
+                return None;
+            }
+        };
+        self.cell_queues[cell].push(child_idx, priority);
+        self.cell_bitmap |= 1 << cell;
+        Some(new_id)
+    }
+
+    pub fn current_task_cwd(&self) -> String {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .map(|t| t.cwd.clone())
+            .unwrap_or_else(|| String::from("/"))
+    }
+
+    pub fn set_current_cwd(&mut self, cwd: String) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.cwd = cwd;
+            }
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +860,51 @@ pub fn current_page_table() -> Option<u64> {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
         cpu.scheduler.current_page_table()
+    }
+}
+
+/// Return the current program break of the running task.
+pub fn current_brk_end() -> u64 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.current_brk_end()
+    }
+}
+
+/// Set the current program break of the running task.
+pub fn set_current_brk_end(brk: u64) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.set_current_brk_end(brk);
+    }
+}
+
+/// Fork the current task. Returns the new child task ID.
+pub fn fork_current() -> Option<u64> {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.fork_current()
+    }
+}
+
+/// Return the current working directory of the running task.
+pub fn current_task_cwd() -> String {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.current_task_cwd()
+    }
+}
+
+/// Set the current working directory of the running task.
+pub fn set_current_cwd(cwd: String) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.set_current_cwd(cwd);
     }
 }
 

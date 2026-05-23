@@ -9,7 +9,7 @@ use uefi::prelude::*;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::console::gop::GraphicsOutput;
 use uefi::proto::loaded_image::LoadedImage;
-use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use uefi::table::cfg::ACPI2_GUID;
 use uefi::boot::MemoryType;
 
 use super::boot_info::{BootInfo, MemoryDescriptor, MAX_MEMORY_DESCRIPTORS};
@@ -41,7 +41,7 @@ pub fn run() -> Status {
         rsdp
     });
 
-    // Query GOP for framebuffer
+    // Query GOP for framebuffer; fall back to Bochs VBE dispi on VirtualBox.
     let boot_info = get_framebuffer();
 
     // Get kernel image base and size before exiting boot services
@@ -73,7 +73,7 @@ pub fn run() -> Status {
             boot_info.fb_addr, boot_info.fb_pitch
         );
     } else {
-        serial_println!("[BOOT] No GOP framebuffer available");
+        serial_println!("[BOOT] No framebuffer available");
     }
 
     // Copy memory map descriptors into BootInfo
@@ -108,46 +108,41 @@ pub fn run() -> Status {
 }
 
 fn get_framebuffer() -> BootInfo {
-    let gop_handle = match uefi::boot::get_handle_for_protocol::<GraphicsOutput>() {
-        Ok(h) => h,
-        Err(_) => {
-            serial_println!("[BOOT] No GOP handle — falling back to serial-only");
-            return BootInfo {
-                fb_addr: 0,
-                fb_width: 0,
-                fb_height: 0,
-                fb_pitch: 0,
-                fb_bpp: 0,
-                kernel_base: 0,
-                kernel_size: 0,
-                memory_map: [MemoryDescriptor { phys_start: 0, page_count: 0, ty: 0 }; MAX_MEMORY_DESCRIPTORS],
-                memory_map_len: 0,
-                acpi_rsdp: 0,
-            };
-        }
-    };
+    // Try UEFI GOP first.
+    if let Some(gop_info) = try_gop_framebuffer() {
+        return gop_info;
+    }
 
-    let mut gop = match uefi::boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle) {
-        Ok(g) => g,
-        Err(_) => {
-            serial_println!("[BOOT] Failed to open GOP protocol — falling back to serial-only");
-            return BootInfo {
-                fb_addr: 0,
-                fb_width: 0,
-                fb_height: 0,
-                fb_pitch: 0,
-                fb_bpp: 0,
-                kernel_base: 0,
-                kernel_size: 0,
-                memory_map: [MemoryDescriptor { phys_start: 0, page_count: 0, ty: 0 }; MAX_MEMORY_DESCRIPTORS],
-                memory_map_len: 0,
-                acpi_rsdp: 0,
-            };
-        }
-    };
+    // GOP failed — try Bochs VBE dispi (VirtualBox fallback).
+    serial_println!("[BOOT] GOP unavailable — probing Bochs VBE dispi...");
+    if let Some(vbe_info) = try_vbe_framebuffer() {
+        return vbe_info;
+    }
+
+    serial_println!("[BOOT] No graphics available — falling back to serial-only");
+    empty_boot_info()
+}
+
+fn empty_boot_info() -> BootInfo {
+    BootInfo {
+        fb_addr: 0,
+        fb_width: 0,
+        fb_height: 0,
+        fb_pitch: 0,
+        fb_bpp: 0,
+        kernel_base: 0,
+        kernel_size: 0,
+        memory_map: [MemoryDescriptor { phys_start: 0, page_count: 0, ty: 0 }; MAX_MEMORY_DESCRIPTORS],
+        memory_map_len: 0,
+        acpi_rsdp: 0,
+    }
+}
+
+fn try_gop_framebuffer() -> Option<BootInfo> {
+    let gop_handle = uefi::boot::get_handle_for_protocol::<GraphicsOutput>().ok()?;
+    let mut gop = uefi::boot::open_protocol_exclusive::<GraphicsOutput>(gop_handle).ok()?;
 
     // Iterate all GOP modes and select the largest resolution.
-    // VirtualBox's UEFI GOP often exposes only one mode; in that case we use it.
     let mut best_mode = None;
     let mut best_area = 0usize;
     for mode in gop.modes() {
@@ -162,25 +157,34 @@ fn get_framebuffer() -> BootInfo {
 
     if let Some(mode) = best_mode {
         let (w, h) = mode.info().resolution();
-        let _ = gop.set_mode(&mode);
+        if let Err(e) = gop.set_mode(&mode) {
+            serial_println!("[BOOT] GOP set_mode({}x{}) failed: {:?}", w, h, e.status());
+            return None;
+        }
         serial_println!("[BOOT] GOP mode set to {}x{} (area={})", w, h, best_area);
+    } else {
+        serial_println!("[BOOT] No GOP modes found");
+        return None;
     }
 
     let mode_info = gop.current_mode_info();
     let (width, height) = mode_info.resolution();
-
-    // VirtualBox sometimes reports tiny framebuffers during GOP init;
-    // log a warning but continue so serial-only fallback still works.
-    if width < 640 || height < 480 {
-        serial_println!(
-            "[WARN] Framebuffer resolution {}x{} is smaller than expected, continuing anyway",
-            width, height
-        );
-    }
-
     let stride = mode_info.stride();
     let mut fb = gop.frame_buffer();
     let fb_addr = fb.as_mut_ptr() as u64;
+
+    // Reject clearly invalid framebuffers.
+    if fb_addr == 0 || width == 0 || height == 0 {
+        serial_println!("[BOOT] GOP returned invalid framebuffer (addr={:#X}, {}x{})", fb_addr, width, height);
+        return None;
+    }
+
+    if width < 640 || height < 480 {
+        serial_println!(
+            "[WARN] GOP framebuffer resolution {}x{} is smaller than expected",
+            width, height
+        );
+    }
 
     #[cfg(not(test))]
     {
@@ -194,16 +198,88 @@ fn get_framebuffer() -> BootInfo {
         }
     }
 
-    BootInfo {
+    Some(BootInfo {
         fb_addr,
         fb_width: width as u32,
         fb_height: height as u32,
-        fb_pitch: (stride * 4) as u32, // 4 bytes per pixel (32bpp)
+        fb_pitch: (stride * 4) as u32,
         fb_bpp: 32,
         kernel_base: 0,
         kernel_size: 0,
         memory_map: [MemoryDescriptor { phys_start: 0, page_count: 0, ty: 0 }; MAX_MEMORY_DESCRIPTORS],
         memory_map_len: 0,
         acpi_rsdp: 0,
+    })
+}
+
+/// Bochs VBE dispi fallback — used when VirtualBox GOP fails or is missing.
+/// Sets 1024×768×32 via port I/O and returns the linear framebuffer address.
+fn try_vbe_framebuffer() -> Option<BootInfo> {
+    const VBE_INDEX: u16 = 0x1CE;
+    const VBE_DATA: u16 = 0x1CF;
+
+    unsafe fn inw(port: u16) -> u16 {
+        let value: u16;
+        core::arch::asm!("in ax, dx", out("ax") value, in("dx") port, options(nomem, nostack));
+        value
+    }
+
+    unsafe fn outw(port: u16, value: u16) {
+        core::arch::asm!("out dx, ax", in("dx") port, in("ax") value, options(nomem, nostack));
+    }
+
+    unsafe {
+        outw(VBE_INDEX, 0x00); // ID register
+        let id = inw(VBE_DATA);
+        if id != 0xB0C5 && id != 0xB0C4 {
+            serial_println!("[VBE] Bochs VBE not detected (id={:#X})", id);
+            return None;
+        }
+        serial_println!("[VBE] Bochs VBE detected (id={:#X})", id);
+
+        // Set 1024×768×32
+        outw(VBE_INDEX, 0x01); outw(VBE_DATA, 1024); // XRES
+        outw(VBE_INDEX, 0x02); outw(VBE_DATA, 768);  // YRES
+        outw(VBE_INDEX, 0x03); outw(VBE_DATA, 32);   // BPP
+        outw(VBE_INDEX, 0x04); outw(VBE_DATA, 0x41); // ENABLE + linear framebuffer
+
+        // Try to read the linear framebuffer address (registers 0x0D/0x0E).
+        // Some implementations return it split across two 16-bit registers.
+        outw(VBE_INDEX, 0x0D);
+        let fb_lo = inw(VBE_DATA) as u32;
+        outw(VBE_INDEX, 0x0E);
+        let fb_hi = inw(VBE_DATA) as u32;
+        let fb_addr = ((fb_hi << 16) | fb_lo) as u64;
+
+        let fb_addr = if fb_addr != 0 {
+            serial_println!("[VBE] Linear framebuffer @ {:#X}", fb_addr);
+            fb_addr
+        } else {
+            // VirtualBox / Bochs standard default.
+            serial_println!("[VBE] Using default framebuffer address {:#X}", 0xE000_0000u64);
+            0xE000_0000
+        };
+
+        let width = 1024u32;
+        let height = 768u32;
+        let pitch = width * 4;
+        let bpp = 32u8;
+
+        // Skip the accessibility test here: in UEFI context the VBE framebuffer
+        // may not be mapped yet, but our kernel identity-maps the first 16 GiB
+        // so it will be accessible after virt::init().
+
+        Some(BootInfo {
+            fb_addr,
+            fb_width: width,
+            fb_height: height,
+            fb_pitch: pitch,
+            fb_bpp: bpp,
+            kernel_base: 0,
+            kernel_size: 0,
+            memory_map: [MemoryDescriptor { phys_start: 0, page_count: 0, ty: 0 }; MAX_MEMORY_DESCRIPTORS],
+            memory_map_len: 0,
+            acpi_rsdp: 0,
+        })
     }
 }

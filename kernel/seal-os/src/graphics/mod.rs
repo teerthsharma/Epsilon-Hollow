@@ -9,4 +9,5 @@ pub mod framebuffer;
 pub mod htek;
 pub mod login;
 pub mod splash;
+pub mod topo_render;
 pub mod wallpaper;

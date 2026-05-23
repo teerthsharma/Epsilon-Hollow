@@ -22,7 +22,7 @@ pub fn draw_taskbar(fb: &Framebuffer) {
 
     // Theorem indicators (small colored squares)
     let names = ["T1", "T2", "T3", "T4", "T5"];
-    for (i, name) in names.iter().enumerate() {
+    for (i, _name) in names.iter().enumerate() {
         let active = THEOREM_STATES[i].load(Ordering::Relaxed);
         let x = 10 + i as u32 * 50;
         let color = if active { theme.accent } else { 0x00404040 };

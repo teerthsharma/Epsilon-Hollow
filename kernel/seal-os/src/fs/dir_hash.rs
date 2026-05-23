@@ -180,7 +180,7 @@ impl DirHash {
         }
     }
 
-    pub fn contains_dir(&self, dir_id: u64) -> bool {
+    pub fn contains_dir(&self, _dir_id: u64) -> bool {
         // A directory exists if it has an entry in any bucket as a parent,
         // OR if it's the root (dir_id == 0). For root, we handle outside.
         // This is an approximation; the real check is via InodeSlab.

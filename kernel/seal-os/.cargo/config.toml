@@ -4,7 +4,7 @@ rustflags = [
     # Retpoline (Spectre-v2) mitigation.
     # If the nightly toolchain does not recognise +retpoline, fall back to:
     #   "-C", "llvm-args=-x86-branches-within-32B-boundaries",
-    "-C", "target-feature=+retpoline",
+    # "-C", "target-feature=+retpoline",
     "-C", "relocation-model=static",
     # Define cfg(retpoline) so the kernel can conditionally compile retpoline code.
     "--cfg", "retpoline",

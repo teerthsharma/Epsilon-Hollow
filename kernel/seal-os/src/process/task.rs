@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::context_switch::{TaskContext, KERNEL_STACK_SIZE, init_task_context, xsave_area_size};
+use super::userspace::UserContext;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TaskState {
@@ -28,6 +29,7 @@ pub struct Task {
     pub is_userspace: bool,
     pub user_stack: Vec<u8>,
     pub page_table: u64,
+    pub brk_end: u64,
 
     // Real multitasking support
     pub context: TaskContext,
@@ -37,6 +39,15 @@ pub struct Task {
     // Security identity
     pub uid: u32,
     pub gid: u32,
+
+    // Working directory
+    pub cwd: String,
+
+    // Signal state
+    pub pending_signals: u64,
+    pub signal_mask: u64,
+    pub signal_handlers: [u64; 32],
+    pub signal_saved_context: Option<UserContext>,
 }
 
 impl Task {
@@ -45,7 +56,7 @@ impl Task {
         let mut kernel_stack = vec![0u8; KERNEL_STACK_SIZE];
 
         let xsave_size = xsave_area_size();
-        let mut xsave_storage = vec![0u8; xsave_size + 64];
+        let xsave_storage = vec![0u8; xsave_size + 64];
         let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
 
         let context = init_task_context(&mut kernel_stack, entry, xsave_ptr);
@@ -62,11 +73,17 @@ impl Task {
             is_userspace: false,
             user_stack: Vec::new(),
             page_table: 0,
+            brk_end: 0,
             context,
             xsave_storage,
             kernel_stack,
             uid: 0,
             gid: 0,
+            cwd: String::from("/"),
+            pending_signals: 0,
+            signal_mask: 0,
+            signal_handlers: [0; 32],
+            signal_saved_context: None,
         }
     }
 
@@ -80,13 +97,13 @@ impl Task {
         page_table: u64,
     ) -> Self {
         let embedding = Self::compute_embedding(id);
-        let mut kernel_stack = vec![0u8; KERNEL_STACK_SIZE];
+        let kernel_stack = vec![0u8; KERNEL_STACK_SIZE];
 
         let stack_top = kernel_stack.as_ptr() as u64 + kernel_stack.len() as u64;
         let stack_top = stack_top & !0xF;
 
         let xsave_size = xsave_area_size();
-        let mut xsave_storage = vec![0u8; xsave_size + 64];
+        let xsave_storage = vec![0u8; xsave_size + 64];
         let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
 
         let mut context = TaskContext::zero();
@@ -111,11 +128,17 @@ impl Task {
             is_userspace: true,
             user_stack: Vec::new(),
             page_table,
+            brk_end: 0x1000_0000,
             context,
             xsave_storage,
             kernel_stack,
             uid: 1000,
             gid: 1000,
+            cwd: String::from("/"),
+            pending_signals: 0,
+            signal_mask: 0,
+            signal_handlers: [0; 32],
+            signal_saved_context: None,
         }
     }
 
@@ -136,6 +159,6 @@ impl Task {
     }
 }
 
-fn align_up(addr: usize, align: usize) -> usize {
+pub(crate) fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }

@@ -15,7 +15,7 @@ const MAX_RAM_GB: usize = 16;
 const MAX_FRAMES: usize = (MAX_RAM_GB * 1024 * 1024 * 1024) / 4096;
 /// Frames above 4 GiB are not identity-mapped by the current page tables, so we
 /// restrict allocations to the low 4 GiB for simplicity.
-const USABLE_FRAMES: usize = (4 * 1024 * 1024 * 1024) / 4096;
+pub const USABLE_FRAMES: usize = (4 * 1024 * 1024 * 1024) / 4096;
 const BITMAP_U64S: usize = MAX_FRAMES / 64;
 
 /// One bit per 4 KiB frame.  `1` = used, `0` = free.
@@ -71,6 +71,39 @@ pub unsafe fn init(
             *count += 1;
         }
     }
+}
+
+/// Mark a single frame as used. Returns `true` if the frame was previously free.
+pub fn mark_used(addr: PhysAddr) -> bool {
+    let frame = (addr.as_u64() / 4096) as usize;
+    if frame >= USABLE_FRAMES {
+        return false;
+    }
+    let (word, bit) = frame_bit(frame);
+    let mut bitmap = BITMAP.lock();
+    let was_free = (bitmap[word] >> bit) & 1 == 0;
+    bitmap[word] |= 1 << bit;
+    drop(bitmap);
+    if was_free {
+        let mut count = FREE_COUNT.lock();
+        *count = count.saturating_sub(1);
+    }
+    was_free
+}
+
+/// Run a closure with mutable access to the underlying bitmap words.
+pub fn with_bitmap_mut<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut [u64]) -> R,
+{
+    let mut bitmap = BITMAP.lock();
+    f(&mut bitmap[..])
+}
+
+/// Decrement the cached free-frame counter by `n`.
+pub fn decr_free_count(n: usize) {
+    let mut count = FREE_COUNT.lock();
+    *count = count.saturating_sub(n);
 }
 
 fn overlaps(addr: PhysAddr, start: PhysAddr, end: PhysAddr) -> bool {

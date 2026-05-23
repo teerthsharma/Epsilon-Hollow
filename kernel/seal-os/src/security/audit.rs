@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::fs::vfs::{with_vfs, VfsError};
+use crate::fs::vfs::with_vfs;
 
 #[derive(Debug, Clone)]
 pub enum AuditEvent {

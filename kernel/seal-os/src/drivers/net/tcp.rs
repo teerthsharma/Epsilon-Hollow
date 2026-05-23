@@ -87,16 +87,19 @@ pub fn send_tcp_packet(remote_ip: [u8; 4], remote_port: u16, local_port: u16, se
     pseudo.push(0);
     pseudo.push(6);
     pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-    // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
+    // SAFETY: TcpHeader is repr(C, packed), exactly 20 bytes, and &hdr is a
+    // reference to the whole struct (not a field), so E0793 does not apply.
     let hdr_bytes = unsafe {
         core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
     };
     pseudo.extend_from_slice(hdr_bytes);
     pseudo.extend_from_slice(payload);
-    hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+    let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+    // SAFETY: Use addr_of_mut! to avoid unaligned reference to packed field.
+    unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
 
     let mut tcp_seg = Vec::with_capacity(20 + payload.len());
-    // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
+    // SAFETY: Same as above — whole-struct reference is allowed.
     let hdr_bytes = unsafe {
         core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
     };

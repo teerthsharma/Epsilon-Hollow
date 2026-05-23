@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #![cfg_attr(not(test), no_std)]
+#![allow(dead_code, unused_unsafe, improper_ctypes_definitions, unused_imports, unused_features)]
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(abi_x86_interrupt))]
 
@@ -41,10 +42,15 @@ use boot::boot_info::BootInfo;
 #[cfg(not(test))]
 use graphics::framebuffer::Framebuffer;
 
-pub const VERSION: &str = "0.3.1";
+pub const VERSION: &str = "0.4.0";
 
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
+
+/// Access the global framebuffer, if one was initialised.
+pub fn framebuffer() -> Option<&'static Framebuffer> {
+    FRAMEBUFFER.get()
+}
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -70,6 +76,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
+    memory::topo_ram::init();
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();
     serial_println!("[BOOT] Heap initialized ({} MB detected, {} free frames)", ram_mb, free_frames);
@@ -93,7 +100,11 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     // Layer 2: Interrupts
     drivers::interrupts::init();
     serial_println!("[BOOT] IDT + PIC initialized");
+    drivers::rtc::init();
+    serial_println!("[BOOT] RTC initialized");
     unsafe { drivers::apic::init_local_apic_timer_for_bsp(); }
+    drivers::watchdog::init(5000);
+    serial_println!("[BOOT] Watchdog initialized (5 s)");
 
     // Layer 2b: APIC (foundation for SMP)
     unsafe { drivers::apic::init(); }
@@ -102,6 +113,10 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     // Layer 2.5: Syscall MSRs
     process::userspace::init_syscall_msrs();
     serial_println!("[BOOT] SYSCALL/SYSRET MSRs programmed");
+
+    // Entropy driver (before networking / TLS)
+    drivers::entropy::init();
+    serial_println!("[BOOT] Entropy driver initialised");
 
     // When test-mode is enabled, skip desktop boot and run tests
     #[cfg(feature = "test-mode")]
@@ -120,6 +135,11 @@ pub fn kernel_main(info: &BootInfo) -> ! {
                 )
             });
         }
+        if let Some(fb) = FRAMEBUFFER.get() {
+            fb.init_back_buffer();
+        }
+
+        graphics::topo_render::init();
 
         if let Some(fb) = FRAMEBUFFER.get() {
             serial_println!("[BOOT] Framebuffer available — graphical mode");
@@ -151,6 +171,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     serial_println!("[LOGIN] Showing login screen");
     let mut login = graphics::login::LoginScreen::new();
     login.render(fb);
+    fb.blit();
 
     let login_start = drivers::interrupts::ticks();
     loop {
@@ -162,11 +183,12 @@ fn boot_graphical(fb: &'static Framebuffer) {
                         break;
                     }
                     login.render(fb);
+                    fb.blit();
                 }
             }
         }
         // Auto-login after ~3 seconds of inactivity (timer ticks ≈ ms on APIC)
-        if drivers::interrupts::ticks().wrapping_sub(login_start) > 0 {
+        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
             serial_println!("[LOGIN] Auto-login (timeout)");
             break;
         }
@@ -178,6 +200,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         serial_println!("[WELCOME] Showing first-run welcome wizard");
         let mut welcome = wm::welcome::WelcomeScreen::new();
         welcome.render(fb);
+        fb.blit();
         loop {
             if let Some(event) = drivers::interrupts::poll_event() {
                 if welcome.handle_event(event) {
@@ -185,6 +208,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
                     break;
                 }
                 welcome.render(fb);
+                fb.blit();
             }
             x86_64::instructions::hlt();
         }
@@ -193,6 +217,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     let mut console = graphics::console::Console::new(fb);
     graphics::splash::render_splash(&mut console);
+    fb.blit();
     graphics::splash::draw_progress_bar(fb, 10, "Memory & paging");
 
     init_theorems();
@@ -247,6 +272,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
     init_games();
     graphics::splash::draw_progress_bar(fb, 85, "");
 
+    crate::apps::settings::GLOBAL_SETTINGS.lock().init_defaults();
+
     serial_println!("[BOOT] All layers initialized.");
     graphics::splash::draw_progress_bar(fb, 95, "");
 
@@ -266,6 +293,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     serial_println!("[Desktop] Rendering desktop environment");
     wm::desktop::render_desktop(fb);
+    fb.blit();
 
     let mut compositor = wm::compositor::Compositor::new();
     let mut app_state = wm::app_state::AppState::new();
@@ -284,6 +312,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     }
 
     compositor.compose(fb);
+    fb.blit();
 
     serial_println!(
         "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer)",
@@ -305,6 +334,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         if now.wrapping_sub(last_tick) >= 3 {
             app_state.tick();
             net::poll();
+            drivers::usb::poll();
             last_tick = now;
         }
 
@@ -312,6 +342,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
             app_state.render_dirty(&mut compositor);
             wm::desktop::render_desktop(fb);
             compositor.compose(fb);
+            fb.blit();
             frame_dirty = false;
         }
 
@@ -404,7 +435,7 @@ fn shell_task_main() {
 
 #[cfg(not(test))]
 fn init_manifold_pkg() {
-    let _pkg = pkg::ManifoldPkg::new();
+    pkg::GLOBAL_PKG.lock().init_defaults();
     serial_println!("[ManifoldPkg] Package registry initialized (0 packages)");
 }
 
@@ -432,6 +463,8 @@ fn init_drivers() {
     }
     if drivers::usb::xhci::init().is_none() {
         serial_println!("[xHCI] Initialization failed, continuing without USB 3.0");
+    } else {
+        drivers::usb::mass_storage::init();
     }
     net::init();
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Epsilon-Hollow — Bootable ISO generator for Seal OS
-# Creates a UEFI-bootable ISO from the seal-os.efi binary.
+# Epsilon-Hollow — Bootable ISO generator for Seal OS v0.4.0
+# Creates a UEFI-bootable ISO that works in VirtualBox, QEMU, and real hardware.
 #
-# Requires: grub-mkrescue (recommended), xorriso, or mkisofs
-# On Debian/Ubuntu: sudo apt-get install grub-common grub-efi-amd64-bin xorriso
+# Uses El Torito UEFI boot with embedded FAT12 EFI image.
+# Requires: xorriso (recommended), grub-mkrescue, or mkisofs
 
 set -euo pipefail
 
@@ -27,33 +27,63 @@ fi
 
 echo "[build_iso] Input EFI: $EFI_BINARY ($(du -h "$EFI_BINARY" | cut -f1))"
 
-# ── Prepare staging directory ────────────────────────────────────────────────
-rm -rf "$ISO_STAGING"
-mkdir -p "$ISO_STAGING/EFI/BOOT"
-cp "$EFI_BINARY" "$ISO_STAGING/EFI/BOOT/BOOTX64.EFI"
+# ── Build the mkimage tool to generate EFI boot image ────────────────────────
+echo "[build_iso] Building mkimage tool..."
+cd "$PROJECT_ROOT/kernel/seal-mkimage"
+cargo +stable build --release
+cargo +stable run --release
 
-# ── Method 1: grub-mkrescue (most compatible) ────────────────────────────────
+EFI_IMG="$PROJECT_ROOT/kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img"
+if [ ! -f "$EFI_IMG" ]; then
+    echo "[build_iso] ERROR: EFI boot image not generated."
+    exit 1
+fi
+
+# ── Prepare ISO staging ──────────────────────────────────────────────────────
+rm -rf "$ISO_STAGING"
+mkdir -p "$ISO_STAGING"
+
+# Copy the FAT12 EFI boot image into staging
+cp "$EFI_IMG" "$ISO_STAGING/efi.img"
+
+# Also copy the EFI binary for direct access
+cp "$EFI_BINARY" "$ISO_STAGING/seal-os.efi"
+
+# ── Method 1: xorriso with proper El Torito UEFI boot ────────────────────────
+if command -v xorriso &>/dev/null; then
+    echo "[build_iso] Using xorriso with El Torito UEFI boot..."
+    xorriso -as mkisofs \
+        -iso-level 3 \
+        -V "SEALOS" \
+        -J -R \
+        -eltorito-platform efi \
+        -eltorito-boot efi.img \
+        -no-emul-boot \
+        -o "$OUTPUT_ISO" \
+        "$ISO_STAGING"
+
+    if [ -f "$OUTPUT_ISO" ]; then
+        echo "[build_iso] OK: $OUTPUT_ISO ($(du -h "$OUTPUT_ISO" | cut -f1))"
+        rm -rf "$ISO_STAGING"
+        exit 0
+    fi
+    echo "[build_iso] xorriso failed, trying next method..."
+fi
+
+# ── Method 2: grub-mkrescue (fallback) ───────────────────────────────────────
 if command -v grub-mkrescue &>/dev/null; then
-    echo "[build_iso] Using grub-mkrescue (recommended)..."
+    echo "[build_iso] Using grub-mkrescue..."
     mkdir -p "$ISO_STAGING/boot/grub"
     cat > "$ISO_STAGING/boot/grub/grub.cfg" <<'GRUB'
 set timeout=3
 set default=0
-
-insmod efi_gop
-insmod efi_uga
-insmod part_gpt
-
 menuentry "Seal OS" {
-    chainloader /EFI/BOOT/BOOTX64.EFI
+    chainloader /seal-os.efi
 }
 GRUB
     set +e
     grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" \
         --modules="part_gpt fat iso9660 chainloader efi_uga efi_gop" 2>/dev/null
-    if [ ! -f "$OUTPUT_ISO" ]; then
-        grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" 2>/dev/null
-    fi
     set -e
 
     if [ -f "$OUTPUT_ISO" ]; then
@@ -62,30 +92,6 @@ GRUB
         exit 0
     fi
     echo "[build_iso] grub-mkrescue failed, trying next method..."
-fi
-
-# ── Method 2: xorriso with UEFI direct boot ──────────────────────────────────
-if command -v xorriso &>/dev/null; then
-    echo "[build_iso] Using xorriso (UEFI direct boot)..."
-    # Some UEFI firmware can boot an ISO 9660 filesystem directly if
-    # /EFI/BOOT/BOOTX64.EFI exists. We add an El Torito UEFI catalog entry.
-    xorriso -as mkisofs \
-        -o "$OUTPUT_ISO" \
-        -iso-level 3 \
-        -V "SEALOS" \
-        -J -R \
-        -eltorito-platform efi \
-        -e EFI/BOOT/BOOTX64.EFI \
-        -no-emul-boot \
-        "$ISO_STAGING" 2>/dev/null || true
-
-    if [ -f "$OUTPUT_ISO" ]; then
-        echo "[build_iso] OK: $OUTPUT_ISO ($(du -h "$OUTPUT_ISO" | cut -f1))"
-        echo "[build_iso] NOTE: UEFI direct-boot ISO. May not work on all firmware."
-        rm -rf "$ISO_STAGING"
-        exit 0
-    fi
-    echo "[build_iso] xorriso failed, trying next method..."
 fi
 
 # ── Method 3: mkisofs / genisoimage ──────────────────────────────────────────
@@ -97,20 +103,19 @@ elif command -v genisoimage &>/dev/null; then
 fi
 
 if [ -n "$MKISOFS" ]; then
-    echo "[build_iso] Using $MKISOFS (UEFI direct boot)..."
+    echo "[build_iso] Using $MKISOFS..."
     "$MKISOFS" \
-        -o "$OUTPUT_ISO" \
         -iso-level 3 \
         -V "SEALOS" \
         -J -R \
         -eltorito-platform efi \
-        -e EFI/BOOT/BOOTX64.EFI \
+        -eltorito-boot efi.img \
         -no-emul-boot \
-        "$ISO_STAGING" 2>/dev/null || true
+        -o "$OUTPUT_ISO" \
+        "$ISO_STAGING"
 
     if [ -f "$OUTPUT_ISO" ]; then
         echo "[build_iso] OK: $OUTPUT_ISO ($(du -h "$OUTPUT_ISO" | cut -f1))"
-        echo "[build_iso] NOTE: UEFI direct-boot ISO. May not work on all firmware."
         rm -rf "$ISO_STAGING"
         exit 0
     fi
@@ -121,7 +126,7 @@ fi
 rm -rf "$ISO_STAGING"
 echo "[build_iso] ERROR: No working ISO tool found."
 echo "[build_iso] Please install one of the following:"
-echo "  - grub-mkrescue  (grub-common / grub2-tools)  <-- RECOMMENDED"
-echo "  - xorriso"
+echo "  - xorriso        <-- RECOMMENDED for UEFI"
+echo "  - grub-mkrescue  (grub-common / grub2-tools)"
 echo "  - mkisofs / genisoimage"
 exit 1

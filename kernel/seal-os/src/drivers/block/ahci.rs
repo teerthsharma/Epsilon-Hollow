@@ -641,7 +641,7 @@ pub fn init() -> Option<()> {
             (fis_phys as *mut u8).add(j).write_volatile(0);
         }
 
-        let mut port = AhciPort {
+        let port = AhciPort {
             port_idx,
             port_base: base + 0x100 + port_idx as u64 * 0x80,
             cl: cl_phys as *mut CommandList,
@@ -691,7 +691,7 @@ pub fn init() -> Option<()> {
         }
 
         // Add to HBA
-        let mut hba = AhciHba {
+        let _hba = AhciHba {
             base,
             ports: Vec::new(),
         };

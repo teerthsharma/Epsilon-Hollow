@@ -9,8 +9,9 @@ pub mod stdlib;
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 use core::slice;
+
+use aether_lang::HwCallbacks;
 
 pub struct AetherRuntime {
     interpreter: aether_lang::Interpreter,
@@ -33,6 +34,11 @@ impl AetherRuntime {
                 aether_lang::NetCallbacks {
                     local_ip: Some(aether_net_local_ip),
                     has_nic: Some(aether_net_has_nic),
+                },
+                aether_lang::HwCallbacks {
+                    mmio_read32: Some(aether_mmio_read32),
+                    mmio_write32: Some(aether_mmio_write32),
+                    pci_read_config: Some(aether_pci_read_config),
                 },
             );
         }
@@ -144,4 +150,16 @@ extern "C" fn aether_net_local_ip(buf: *mut u8, buf_len: usize) -> isize {
 
 extern "C" fn aether_net_has_nic() -> bool {
     crate::drivers::net::has_nic()
+}
+
+extern "C" fn aether_mmio_read32(addr: u64) -> u32 {
+    unsafe { core::ptr::read_volatile(addr as *const u32) }
+}
+
+extern "C" fn aether_mmio_write32(addr: u64, val: u32) {
+    unsafe { core::ptr::write_volatile(addr as *mut u32, val) }
+}
+
+extern "C" fn aether_pci_read_config(bus: u8, slot: u8, func: u8, offset: u8) -> u32 {
+    crate::drivers::pci::pci_read32(bus, slot, func, offset)
 }

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 //! USB subsystem — xHCI host controller, HID, mass storage.
-//! NOTE: Placeholder — protocol constants defined; full xHCI driver not yet implemented.
 
 pub mod xhci;
 pub mod descriptor;
@@ -10,6 +9,7 @@ pub mod hid;
 pub mod mass_storage;
 
 use alloc::vec::Vec;
+use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UsbSpeed {
@@ -58,32 +58,50 @@ impl UsbDevice {
     }
 }
 
+static USB_SUBSYSTEM: Mutex<UsbSubsystem> = Mutex::new(UsbSubsystem::new());
+
 pub struct UsbSubsystem {
     devices: Vec<UsbDevice>,
-    xhci_bar: u32,
+    hid_devices: Vec<hid::HidDevice>,
     initialized: bool,
 }
 
 impl UsbSubsystem {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             devices: Vec::new(),
-            xhci_bar: 0,
+            hid_devices: Vec::new(),
             initialized: false,
         }
     }
 
-    pub fn init_from_pci(&mut self, bar0: u32) {
-        self.xhci_bar = bar0;
-        self.initialized = true;
+    pub fn init(&mut self) {
+        if xhci::init().is_some() {
+            self.initialized = true;
+            crate::serial_println!("[USB] xHCI initialized");
+        }
     }
 
-    pub fn enumerate_ports(&mut self) {
-        // No real port enumeration — no xHCI hardware present
+    pub fn poll(&mut self) {
+        if !self.initialized {
+            return;
+        }
+        xhci::with_xhci(|ctrl| {
+            ctrl.poll_ports(&mut self.devices, &mut self.hid_devices);
+            ctrl.poll_hid(&mut self.hid_devices);
+        });
     }
 
     pub fn device_count(&self) -> usize {
         self.devices.len()
+    }
+
+    pub fn devices(&self) -> &Vec<UsbDevice> {
+        &self.devices
+    }
+
+    pub fn hid_count(&self) -> usize {
+        self.hid_devices.len()
     }
 
     pub fn is_initialized(&self) -> bool {
@@ -92,5 +110,18 @@ impl UsbSubsystem {
 }
 
 pub fn init() {
-    // USB subsystem init is a no-op — no real hardware to initialize
+    USB_SUBSYSTEM.lock().init();
+}
+
+pub fn poll() {
+    USB_SUBSYSTEM.lock().poll();
+    mass_storage::poll();
+}
+
+pub fn device_count() -> usize {
+    USB_SUBSYSTEM.lock().device_count()
+}
+
+pub fn devices() -> Vec<UsbDevice> {
+    USB_SUBSYSTEM.lock().devices().clone()
 }

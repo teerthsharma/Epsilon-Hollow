@@ -98,6 +98,23 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **Aether-Lang Stdlib**: `math.pi` / `math.e` real constants. `fs` (read/write/exists/mkdir), `process` (pid, exit), `net` (local_ip, has_nic) modules available.
 - **Retpoline / KPTI**: Compiler flags in `.cargo/config.toml` (`+retpoline`, `--cfg retpoline`). All 16 register thunks. Trampoline page table allocated and installed. `lfence` before `sysretq`.
 
+- **NVMe I/O**: Admin queue + I/O queue creation, Identify Controller/Namespace, sector read/write via DMA. No longer "PCI probe only."
+- **USB xHCI + HID Input**: Controller reset/init, event ring, command ring, port enumeration, device slot assignment, SET_ADDRESS, GET_DESCRIPTOR (Device/Config/Interface/Endpoint). Interrupt IN endpoint configuration for HID boot keyboards and mice. Report parsing → `InputEvent::KeyPress` / `MouseMove` / `MouseButton` pushed to kernel event queue.
+- **HDA Audio Streams**: CORB/RIRB command engines, codec widget discovery, DAC pin selection, output stream descriptor setup, DMA buffer allocation, `play_pcm()` for raw 48kHz 16-bit stereo playback.
+- **TLS 1.3 over TCP**: `TlsSocket` wraps `TcpSocket` with AES-128-GCM + HKDF-SHA256 PSK handshake. Real encrypt/decrypt on the wire.
+- **HTTPS Client**: `HttpClient` now transparently uses `TlsSocket` for `https://` URLs. GET and POST both work.
+- **ManifoldPkg Remote Install**: `install(name)` queries registry over HTTP, downloads `.eph` package, verifies signature, extracts to ManifoldFS.
+- **Settings Syscalls**: `sys_setting_get` / `sys_setting_set` are backed by a live `BTreeMap<String, String>` with default theme/font/wallpaper keys.
+- **Topological RAM Driver** (`memory/topo_ram.rs`): Every physical frame embedded as a 16-point cloud on S². T1 Voronoi cell allocation for locality. T2 spectral eigen-decomposition + prefetch of principal-axis neighbors. T3 Betti-0 fragmentation entropy with auto-reseeding. T4 PD governor adapts granularity and prefetch under pressure. T5 hyperbolic lifetime classification propagated to spatial neighbors on free.
+- **Topological 3D Render Driver** (`graphics/topo_render.rs`): Software rasterizer with manifold-embedded meshes. T1 8×8 Voronoi screen tiles for trivial rejection. T2 spectral LOD with temporal coherence (view-dir dot product). T3 Betti-1 manifold integrity check — rejects topology-breaking simplification. T4 adaptive quality governor (0=wireframe → 4=phong+edge-AA) targeting 16 ms. T5 hyperboloid projection with `sinh`/`cosh` fisheye perspective.
+- **Real SYS_FORK**: Full process duplication — copies kernel stack, xsave area, task context, queues cloned task in scheduler. Child returns 0, parent gets real PID.
+- **Pipes + dup + brk** (`fs/pipe.rs`, `syscall/pipe.rs`): In-memory pipe filesystem with 64KB ring buffers. `SYS_PIPE` returns two fds (read/write). `SYS_DUP` / `SYS_DUP2` clone fd entries. `SYS_BRK` grows/shrinks per-task user heap via `mmap_user`.
+- **RTC + Watchdog** (`drivers/rtc.rs`, `drivers/watchdog.rs`): CMOS RTC via ports 0x70/0x71 with BCD/binary detection and 12/24-hour handling. `SYS_GETTIMEOFDAY` returns seconds since epoch + microsecond interpolation. `SYS_SETTIMEOFDAY` returns EPERM (honest). APIC timer watchdog — `SYS_WATCHDOG` pets it; if CPU hangs >5s, keyboard controller reset triggers.
+- **Real USB Mass Storage** (`drivers/usb/mass_storage.rs`): SCSI Bulk-Only Transport (BBB) with CBW/CSW. Commands: INQUIRY, READ CAPACITY(10), READ(10), WRITE(10). xHCI bulk endpoint setup with transfer rings and event polling. Implements `BlockDevice` trait, registers as block device 1.
+- **FAT Filesystem** (`fs/fat.rs`): FAT12/16/32 read-only driver. Parses BPB, walks cluster chains, reads directory entries (with LFN skip), resolves paths. FileSystem trait impl for lookup/read/readdir/stat.
+- **Ext2 Write Support** (`fs/ext2.rs`): Previously read-only; now supports `write` (direct blocks), `create`, `mkdir` (with `.`/`..` entries), `rmdir` (empty check), `rename` (same-directory). Block/inode allocators scan bitmaps sequentially.
+- **ioctl Framework** (`drivers/ioctl.rs`, `syscall/ioctl.rs`): Generic ioctl dispatcher with major/minor device registry. Built-in handlers: `TCGETS`, `TCSETS`, `FIONREAD`. `SYS_IOCTL` looks up fd, checks device type, dispatches to handler.
+
 ---
 
 ## Architecture

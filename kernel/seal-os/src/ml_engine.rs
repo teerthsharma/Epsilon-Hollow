@@ -373,7 +373,7 @@ pub fn save_model_bytes(name: &str, bytes: &[u8]) -> Result<String, String> {
 
 /// Load an MLP from ManifoldFS.
 pub fn load_model(name: &str) -> Result<MLP, String> {
-    let mut fs = crate::fs::manifold_fs::ManifoldFS::new();
+    let fs = crate::fs::manifold_fs::ManifoldFS::new();
     let root = 0u64;
     let inode_id = fs.resolve_path_from(name, root)
         .map_err(|_| format!("Model '{}' not found", name))?;
@@ -435,7 +435,7 @@ impl MarkovChain {
 
     fn sample_next(&self, key: &str) -> Option<char> {
         let counts = self.transitions.get(key)?;
-        let total = self.total_counts.get(key)?;
+        let _total = self.total_counts.get(key)?;
         // Deterministic: pick the most likely next char
         let mut best_char = ' ';
         let mut best_count = 0;

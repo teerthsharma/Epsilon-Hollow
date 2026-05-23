@@ -1,204 +1,164 @@
-# Epsilon-Hollow — Complexity Escalation Tracker (Phase X)
+# Complexity Escalation Phase (Phase X) — Deferred Tasks
 
-> **Rule**: No feature is too hard. Every deferred task has a design document and a concrete implementation plan.
-
----
-
-## Current Phase X Status
-
-| Phase | Status |
-|-------|--------|
-| Initial Attempts (Agents 1–60) | **COMPLETE** |
-| Initial Attempts (Agents 61–100) | **COMPLETE** |
-| Phase X Planning | **IN PROGRESS** |
-| Phase X Implementation | **PENDING** |
-| Phase X Verification | **PENDING** |
+## Philosophy
+No feature remains "too hard". Every deferred task gets:
+1. Research plan (existing crates, Linux code, papers)
+2. Design doc in `docs/design/complex_<task>.md`
+3. Atomic sub-tasks (each ≤1 day)
+4. Incremental implementation with tests
 
 ---
 
-## Deferred Tasks
+## CX-1: NVMe Driver (Agent 25)
 
-### CX-001: HollowLang Compiler Bootstrap (Tier 0)
-
-**Complexity**: Multi-year effort. Requires full compiler pipeline.
-
-**Why Deferred**: Building a self-hosting systems language from scratch exceeds the scope of a single development sprint. The kernel must be functional before migrating to a new language.
-
-**Design Document**: `docs/design/hollowlang_bootstrapping.md` (to be written)
-
-**Sub-tasks**:
-1. Write language specification (grammar, type system, memory model)
-2. Implement lexer in Rust
-3. Implement recursive-descent parser
-4. Implement AST -> LLVM IR codegen
-5. Implement minimal stdlib (alloc, string, vec)
-6. Write HollowLang compiler in HollowLang (self-host)
-7. Port kernel modules incrementally
-
-**Estimated Effort**: 12 months
+**Complexity:** PCIe MSI-X, admin SQ/CQ, I/O SQ/CQ, PRP lists, doorbell registers.
+**Why deferred:** Queue pair management + DMA PRP list construction is ~500 lines of精密 register work.
+**Research:**
+- NVMe 1.4 spec (chapter 3-6)
+- `nvme_driver` crate (Rust embedded)
+- Linux `drivers/nvme/host/pci.c`
+**Sub-tasks:**
+- [ ] Define register structs (CAP, VS, CC, CSTS, ASQ, ACQ)
+- [ ] Allocate aligned admin SQ/CQ in physically contiguous memory
+- [ ] Submit Identify Controller / Identify Namespace commands
+- [ ] Build PRP list for 4KB page scatter-gather
+- [ ] Create I/O completion queue with MSI-X interrupt vector
+- [ ] Benchmark: `fio` randread 10M target >10k IOPS
 
 ---
 
-### CX-002: SMP / Multi-Core APIC Support (Tier 2)
+## CX-2: USB xHCI (Agent 26)
 
-**Complexity**: Requires ACPI MADT parsing, per-CPU data structures, IPI, and lockless algorithms.
-
-**Why Deferred**: The single-core scheduler works correctly. SMP introduces cache coherency, TLB shootdowns, and complex locking.
-
-**Design Document**: `docs/design/smp_apic.md` (to be written)
-
-**Sub-tasks**:
-1. Parse ACPI RSDP -> RSDT -> MADT
-2. Detect local APIC IDs for all CPUs
-3. Allocate per-CPU stacks and TSS
-4. Send INIT-SIPI-SIPI to APs
-5. AP startup code (real mode -> protected mode -> long mode)
-6. Per-CPU scheduler runqueues
-7. IPI for TLB shootdown and reschedule
-8. Lockless RCU for read-mostly data
-
-**Estimated Effort**: 2 months
+**Complexity:** MMIO extended capabilities, port routing, endpoint context, transfer rings.
+**Why deferred:** USB descriptor parsing + HID report decoding is state-machine heavy.
+**Research:**
+- xHCI spec 1.2 (chapters 4-6)
+- `usb-host` crate (Rust no_std)
+- Linux `drivers/usb/host/xhci.c`
+**Sub-tasks:**
+- [ ] Read extended capabilities (USBLEGCTL, XECP)
+- [ ] Initialize DCBAAP, CRCR command ring
+- [ ] Port reset → enable → slot assignment
+- [ ] Address Device command
+- [ ] Configure Endpoint for HID interrupt IN
+- [ ] Parse HID report descriptor for keyboard scancodes
+- [ ] Type "hello" in shell as end-to-end test
 
 ---
 
-### CX-003: Full TCP Congestion Control (Tier 4)
+## CX-3: HDA Audio Driver (Agent 30)
 
-**Complexity**: TCP is notoriously difficult (slow start, congestion avoidance, fast retransmit, SACK, timestamps).
-
-**Why Deferred**: Minimal TCP 3-way handshake and data transfer exist. Production TCP requires extensive tuning.
-
-**Design Document**: `docs/design/tcp_congestion_control.md` (to be written)
-
-**Sub-tasks**:
-1. Implement dynamic RTO calculation (Jacobson/Karn algorithm)
-2. Implement sliding window with SACK
-3. Implement slow start and congestion avoidance
-4. Implement fast retransmit / fast recovery
-5. Add TCP timestamps for PAWS
-6. Validate with `iperf3` and `curl`
-
-**Estimated Effort**: 1 month
-
----
-
-### CX-004: TLS 1.3 Implementation (Tier 4)
-
-**Complexity**: Cryptographic protocol requiring formal verification for safety.
-
-**Why Deferred**: No crypto primitive library exists in the kernel yet.
-
-**Design Document**: `docs/design/tls13_kernel.md` (to be written)
-
-**Sub-tasks**:
-1. Port or implement ChaCha20-Poly1305 and AES-GCM
-2. Implement X25519 key exchange
-3. Implement HKDF key derivation
-4. Implement TLS 1.3 state machine
-5. Formal verification of handshake state machine (TLA+)
-
-**Estimated Effort**: 3 months
+**Complexity:** Codec verb negotiation, DMA buffer descriptors, PCM ring buffer.
+**Why deferred:** Audio requires real-time buffer management + codec discovery graph.
+**Research:**
+- Intel HDA spec (chapter 3: codec, chapter 4: controller)
+- `hda-driver` (Redox OS, MIT license)
+- Linux `sound/pci/hda/hda_intel.c`
+**Sub-tasks:**
+- [ ] Reset HDA controller, read CORB/RIRB capabilities
+- [ ] Send GET_PARAM verbs to codec to discover widgets
+- [ ] Find DAC (pin 0x02) and configure output path
+- [ ] Allocate DMA buffer for 48kHz stereo 16-bit
+- [ ] Program stream descriptor with buffer address
+- [ ] Play sine wave generated in kernel
+- [ ] `aplay` equivalent in userspace
 
 ---
 
-### CX-005: Wayland Compositor (Userspace) (Tier 4)
+## CX-4: musl libc Port + Cross-Compilation Toolchain (Agents 31, 33, 34, 52)
 
-**Complexity**: Complex protocol with shared-memory buffers and event loops.
-
-**Why Deferred**: Current compositor is kernel-internal and sufficient for boot demo.
-
-**Design Document**: `docs/design/wayland_userspace.md` (to be written)
-
-**Sub-tasks**:
-1. Implement Wayland wire protocol parser
-2. Implement `wl_compositor`, `wl_surface`, `wl_shell`
-3. Move compositor from kernel to userspace process
-4. Add DRM/KMS ioctl interface for modesetting
-5. Add evdev input event reading
-
-**Estimated Effort**: 2 months
-
----
-
-### CX-006: musl libc / BusyBox Port (Tier 4)
-
-**Complexity**: Cross-compilation toolchain and POSIX compatibility layer.
-
-**Why Deferred**: Syscall ABI is still stabilizing.
-
-**Design Document**: `docs/design/posix_userspace.md` (to be written)
-
-**Sub-tasks**:
-1. Stabilize syscall numbers and calling convention
-2. Port musl libc syscall wrappers
-3. Cross-compile BusyBox with musl
-4. Build initramfs with coreutils
-5. Port Bash or implement SealShell as default shell
-
-**Estimated Effort**: 2 months
+**Complexity:** musl needs ~300 syscall wrappers, startup files (crt1.o), linker scripts.
+**Why deferred:** Requires a working cross-compiler (x86_64-seal-linux-musl-gcc) or Rust-based libc.
+**Research:**
+- musl libc `arch/x86_64/syscall_arch.h`
+- `rustix` crate (no_std syscall wrappers in Rust)
+- Use `rustc` with custom target JSON for userspace
+**Sub-tasks:**
+- [ ] Define `x86_64-seal-os.json` target spec (no red-zone, soft-float, no-default-libs)
+- [ ] Write `crt0.S` — stack setup, call main, exit syscall
+- [ ] Implement 20 most common syscalls in Rust (`write`, `read`, `open`, `close`, `mmap`, etc.)
+- [ ] Compile `hello.c` with `clang --target=x86_64-seal-os` and run under kernel
+- [ ] Port BusyBox config for seal-os (disable features requiring missing syscalls)
+- [ ] Port Bash 5.2 (minimal readline + job control)
+- [ ] Build script `scripts/build_userspace.sh` produces ELF binaries + `.eph` packages
 
 ---
 
-### CX-007: Journaling Filesystem (Tier 1)
+## CX-5: Dynamic Linker (Agent 32)
 
-**Complexity**: Write-ahead logging with crash recovery.
-
-**Why Deferred**: Block layer exists but no persistent format designed.
-
-**Design Document**: `docs/design/manifoldfs_journal.md` (to be written)
-
-**Sub-tasks**:
-1. Design superblock format for ManifoldFS-on-block
-2. Implement inode table serialization
-3. Implement write-ahead log (journal)
-4. Implement fsck recovery tool
-5. Validate with power-fail testing in QEMU
-
-**Estimated Effort**: 1 month
+**Complexity:** ELF PT_DYNAMIC parsing, PLT/GOT relocation, symbol hash table.
+**Why deferred:** Needs working userspace C toolchain first (produces `.so` files).
+**Research:**
+- ELF gABI (chapter 2: dynamic linking)
+- `ld.so` source (glibc `elf/` directory)
+- `mold` linker source for relocation types
+**Sub-tasks:**
+- [ ] Parse `.dynamic` section (DT_NEEDED, DT_HASH, DT_STRTAB, DT_SYMTAB)
+- [ ] Process `R_X86_64_RELATIVE`, `R_X86_64_GLOB_DAT`, `R_X86_64_JUMP_SLOT`
+- [ ] Load shared libraries from `/lib` in dependency order
+- [ ] Implement `dlopen`, `dlsym`, `dlclose` syscalls
+- [ ] Test: shared library with global variable, executable reads it correctly
 
 ---
 
-### CX-008: Real Hardware Validation (Tier 5)
+## CX-6: pthread + ThreadSanitizer (Agent 38)
 
-**Complexity**: Physical hardware has infinite variability.
-
-**Why Deferred**: QEMU provides reproducible test environment.
-
-**Design Document**: `docs/design/hardware_validation.md` (to be written)
-
-**Sub-tasks**:
-1. Create bootable USB image
-2. Test on ThinkPad X230 (classic test machine)
-3. Test on modern UEFI laptop
-4. Test on Intel NUC (NUC8i5)
-5. Document hardware compatibility list
-
-**Estimated Effort**: 2 weeks
+**Complexity:** `clone()` flags (CLONE_VM, CLONE_FS, CLONE_FILES), futex emulation.
+**Why deferred:** Needs userspace libc + TLS (thread-local storage) support.
+**Research:**
+- Linux `clone(2)` man page
+- `futex(2)` emulation using kernel wait queues
+- `pthread` implementation in musl (`src/thread/`)
+**Sub-tasks:**
+- [ ] Implement `clone()` syscall with stack pointer argument
+- [ ] Set up `%fs` base for TLS (arch_prctl equivalent)
+- [ ] Implement `futex_wait` / `futex_wake` in kernel
+- [ ] Build `pthread_create`, `pthread_join`, `pthread_mutex_lock` in userspace
+- [ ] ThreadSanitizer pass on 10-thread counter test
 
 ---
 
-## Phase X Schedule
+## CX-7: Secure Boot Shim (Agent 58)
 
-| Quarter | Focus |
-|---------|-------|
-| Q3 2026 | SMP/APIC, TCP congestion control, Journaling FS |
-| Q4 2026 | TLS 1.3, musl/BusyBox port, Wayland userspace |
-| Q1 2027 | HollowLang bootstrap (lexer/parser) |
-| Q2 2027 | HollowLang codegen, self-hosting attempt |
-| Q3 2027 | Kernel migration to HollowLang (incremental) |
-| Q4 2027 | Real hardware validation, final certification |
-
----
-
-## Phase X Success Criteria
-
-1. All deferred tasks have design documents by end of Q3 2026.
-2. SMP boots on `-smp 4` in QEMU with 80% scalability efficiency.
-3. TCP passes `iperf3` at ≥100 Mbps in QEMU.
-4. musl/BusyBox produce a working shell and coreutils.
-5. HollowLang compiles a "Hello World" program.
-6. Real hardware boots to desktop on at least 3 machines.
+**Complexity:** UEFI PE/COFF signature parsing, PKCS#7 verification, embedded public key.
+**Why deferred:** Cryptographic verification of PE binaries requires ASN.1 + RSA/ECDSA.
+**Research:**
+- UEFI spec (chapter 32: secure boot)
+- `sbsigntools` source
+- `minicrypto` or `rsa` crate for no_std
+**Sub-tasks:**
+- [ ] Embed ed25519 public key in UEFI shim binary
+- [ ] Parse PE data directory for certificate table
+- [ ] Verify signed kernel hash against embedded key
+- [ ] Reject unsigned kernel with error message
+- [ ] Chain-load verified kernel via ExitBootServices
 
 ---
 
-*Phase X orchestrated by Epsilon-Hollow Ultimate Audit Orchestrator*
-*2026-05-18*
+## CX-8: ext4 Driver (Agent 11)
+
+**Complexity:** Extents, journal replay, checksums, large directory hashing.
+**Why deferred:** Full ext4 is ~10k lines; read-only ext2 exists but ext4 needs extents.
+**Research:**
+- `rust-ext4` crate (if no_std compatible)
+- Linux `fs/ext4/` — especially `ext4_extents.c`
+- Write simple extent tree parser first
+**Sub-tasks:**
+- [ ] Parse ext4 superblock (s_inodes_count, s_blocks_count, s_feature_incompat)
+- [ ] Read inode via extent tree (i_block as ext4_extent_header)
+- [ ] Implement directory traversal (htree or linear)
+- [ ] Add journal replay for crash safety (optional v2)
+- [ ] Mount ext4 at `/mnt/ext4`, pass `fsck` after write
+
+---
+
+## Phase X Process
+
+1. Pick one CX task
+2. Write `docs/design/complex_<task>.md`
+3. Implement sub-tasks one at a time
+4. Each sub-task: compile → unit test → integration test → commit
+5. When all sub-tasks done, mark agent ✅ in TASKS.md
+6. Repeat until no ❌ or 🔄 remain
+
+**Current Phase X queue:** CX-1, CX-2, CX-3, CX-4, CX-5, CX-6, CX-7, CX-8

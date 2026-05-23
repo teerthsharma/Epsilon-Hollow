@@ -27,6 +27,28 @@ pub const SYS_STAT: u64 = 10;
 pub const SYS_MKDIR: u64 = 11;
 pub const SYS_SETUID: u64 = 12;
 pub const SYS_SETGID: u64 = 13;
+pub const SYS_CHDIR: u64 = 14;
+pub const SYS_GETCWD: u64 = 15;
+pub const SYS_GETPPID: u64 = 16;
+pub const SYS_NANOSLEEP: u64 = 17;
+pub const SYS_REBOOT: u64 = 18;
+pub const SYS_LSEEK: u64 = 19;
+pub const SYS_UNLINK: u64 = 20;
+pub const SYS_RMDIR: u64 = 21;
+pub const SYS_RENAME: u64 = 22;
+pub const SYS_GETRANDOM: u64 = 23;
+pub const SYS_KMSG_READ: u64 = 24;
+pub const SYS_KILL: u64 = 25;
+pub const SYS_SIGACTION: u64 = 26;
+pub const SYS_SIGRETURN: u64 = 27;
+pub const SYS_PIPE: u64 = 28;
+pub const SYS_DUP: u64 = 29;
+pub const SYS_DUP2: u64 = 30;
+pub const SYS_BRK: u64 = 31;
+pub const SYS_GETTIMEOFDAY: u64 = 32;
+pub const SYS_SETTIMEOFDAY: u64 = 33;
+pub const SYS_WATCHDOG: u64 = 34;
+pub const SYS_IOCTL: u64 = 35;
 
 // Epsilon extensions
 pub const SYS_MANIFOLD_QUERY: u64 = 100;
@@ -107,14 +129,15 @@ static SYSCALL_FS: Mutex<Option<ManifoldFS>> = Mutex::new(None);
 static SYSCALL_PATH: Mutex<String> = Mutex::new(String::new());
 
 /// File descriptor table entry.
-struct FdEntry {
-    handle: VfsHandle,
-    path: String,
-    offset: usize,
+#[derive(Clone)]
+pub(crate) struct FdEntry {
+    pub(crate) handle: VfsHandle,
+    pub(crate) path: String,
+    pub(crate) offset: usize,
 }
 
-static FILE_TABLE: Mutex<BTreeMap<u64, FdEntry>> = Mutex::new(BTreeMap::new());
-static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0=stdin, 1=stdout, 2=stderr
+pub(crate) static FILE_TABLE: Mutex<BTreeMap<u64, FdEntry>> = Mutex::new(BTreeMap::new());
+pub(crate) static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0=stdin, 1=stdout, 2=stderr
 
 /// Initialize the syscall filesystem with a fresh ManifoldFS.
 /// Called once during kernel boot.
@@ -235,7 +258,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             if fd == 0 {
                 return SyscallResult::err(5); // EIO — stdin not implemented
             }
-            let mut table = FILE_TABLE.lock();
+            let table = FILE_TABLE.lock();
             if let Some(entry) = table.get(&fd) {
                 let handle = entry.handle;
                 drop(table);
@@ -291,7 +314,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     SyscallResult::ok(fd as i64)
                 }
                 Err(VfsError::NotFound) if flags & 0x40 != 0 => {
-                    // O_CREAT flag simulated — create the file
+                    // O_CREAT flag — create the file
                     match with_vfs(|vfs| vfs.create(&path)) {
                         Ok(handle) => {
                             let fd = NEXT_FD.fetch_add(1, Ordering::SeqCst);
@@ -324,13 +347,106 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         }
 
         SYS_EXEC => {
-            // Simplified exec — return ENOSYS for now.
-            SyscallResult::err(38)
+            let path_ptr = arg0 as *const u8;
+            let path = unsafe {
+                match copy_path_from_user(path_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            {
+                let mut guard = SYSCALL_PATH.lock();
+                guard.clear();
+                guard.push_str(&path);
+            }
+
+            let handle = match with_vfs(|vfs| vfs.lookup_follow(&path)) {
+                Ok(h) => h,
+                Err(e) => return SyscallResult::err(vfs_error_to_errno(e)),
+            };
+
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let mut offset = 0u64;
+            loop {
+                match with_vfs(|vfs| vfs.read(handle, &mut chunk, offset)) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buf.extend_from_slice(&chunk[..n]);
+                        offset += n as u64;
+                    }
+                    Err(_) => return SyscallResult::err(5), // EIO
+                }
+            }
+
+            if buf.is_empty() {
+                return SyscallResult::err(8); // ENOEXEC
+            }
+
+            if buf.starts_with(b"\x7FELF") {
+                let aslr_base = crate::security::aslr::randomize_mmap_base();
+                match crate::process::elf::load(&buf, aslr_base) {
+                    Ok(_loaded) => {
+                        let name: &'static str = if path == "/bin/init" { "init" } else { "userspace" };
+                        let _ = crate::process::scheduler::spawn_user(name, 5, &buf);
+                    }
+                    Err(_) => return SyscallResult::err(8), // ENOEXEC
+                }
+            } else if buf.starts_with(b"#!") {
+                let line_end = buf.iter().position(|&b| b == b'\n').unwrap_or(buf.len());
+                let shebang = core::str::from_utf8(&buf[2..line_end]).unwrap_or("").trim();
+                if shebang.is_empty() {
+                    return SyscallResult::err(22); // EINVAL
+                }
+                let interp_handle = match with_vfs(|vfs| vfs.lookup_follow(shebang)) {
+                    Ok(h) => h,
+                    Err(_) => return SyscallResult::err(2), // ENOENT
+                };
+                let mut interp_buf = Vec::new();
+                let mut interp_offset = 0u64;
+                loop {
+                    match with_vfs(|vfs| vfs.read(interp_handle, &mut chunk, interp_offset)) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            interp_buf.extend_from_slice(&chunk[..n]);
+                            interp_offset += n as u64;
+                        }
+                        Err(_) => return SyscallResult::err(5), // EIO
+                    }
+                }
+                if !interp_buf.starts_with(b"\x7FELF") {
+                    return SyscallResult::err(8); // ENOEXEC
+                }
+                let aslr_base = crate::security::aslr::randomize_mmap_base();
+                match crate::process::elf::load(&interp_buf, aslr_base) {
+                    Ok(_loaded) => {
+                        let _ = crate::process::scheduler::spawn_user("interpreter", 5, &interp_buf);
+                    }
+                    Err(_) => return SyscallResult::err(8), // ENOEXEC
+                }
+            } else if path.ends_with(".aether") {
+                let source = String::from_utf8_lossy(&buf);
+                match crate::lang::AetherRuntime::new().execute_file(&path, &source) {
+                    Ok(_) => {}
+                    Err(_) => return SyscallResult::err(8), // ENOEXEC
+                }
+            } else {
+                return SyscallResult::err(22); // EINVAL
+            }
+
+            crate::process::scheduler::mark_current_dead();
+            crate::process::scheduler::yield_current();
+            SyscallResult::ok(0)
         }
 
         SYS_FORK => {
-            let parent = crate::process::scheduler::current_task_id();
-            SyscallResult::ok((parent + 1) as i64)
+            match crate::process::scheduler::fork_current() {
+                Some(child_id) => SyscallResult::ok(child_id as i64),
+                None => SyscallResult::err(11), // EAGAIN
+            }
         }
 
         SYS_WAITPID => {
@@ -440,12 +556,34 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             String::from("T1:ACTIVE T2:ACTIVE T3:ACTIVE T4:ACTIVE T5:ACTIVE"),
         ),
 
-        SYS_PKG_INSTALL => SyscallResult::err(38),
-        SYS_PKG_REMOVE => SyscallResult::err(38),
-        SYS_PKG_LIST => SyscallResult::with_data(
-            0,
-            String::from("pkg_list: no packages installed"),
-        ),
+        SYS_PKG_INSTALL => {
+            let name_ptr = arg0 as *const u8;
+            let name = unsafe { copy_path_from_user(name_ptr).unwrap_or_default() };
+            if name.is_empty() {
+                return SyscallResult::err(22);
+            }
+            match crate::pkg::GLOBAL_PKG.lock().install(&name) {
+                Ok(msg) => SyscallResult::with_data(0, msg),
+                Err(e) => SyscallResult::with_data(-1, e),
+            }
+        }
+        SYS_PKG_REMOVE => {
+            let name_ptr = arg0 as *const u8;
+            let name = unsafe { copy_path_from_user(name_ptr).unwrap_or_default() };
+            match crate::pkg::GLOBAL_PKG.lock().remove(&name) {
+                Ok(msg) => SyscallResult::with_data(0, msg),
+                Err(e) => SyscallResult::with_data(-1, e),
+            }
+        }
+        SYS_PKG_LIST => {
+            let pkg = crate::pkg::GLOBAL_PKG.lock();
+            let list: String = if pkg.package_count() == 0 {
+                String::from("no packages installed")
+            } else {
+                pkg.list().iter().map(|m| format!("{} v{}\n", m.name, m.version)).collect()
+            };
+            SyscallResult::with_data(0, list)
+        }
         SYS_WIFI_SCAN => SyscallResult::with_data(
             0,
             String::from("wifi_scan: no wireless hardware detected"),
@@ -462,8 +600,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             0,
             String::from("bt_pair: no Bluetooth adapter detected"),
         ),
-        SYS_SETTING_GET => SyscallResult::err(38),
-        SYS_SETTING_SET => SyscallResult::err(38),
+        SYS_SETTING_GET => {
+            let key_ptr = arg0 as *const u8;
+            let key = unsafe { copy_path_from_user(key_ptr).unwrap_or_default() };
+            let settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
+            match settings.get(&key) {
+                Some(val) => SyscallResult::with_data(0, String::from(val)),
+                None => SyscallResult::err(2), // ENOENT
+            }
+        }
+        SYS_SETTING_SET => {
+            let key_ptr = arg0 as *const u8;
+            let val_ptr = arg1 as *const u8;
+            let key = unsafe { copy_path_from_user(key_ptr).unwrap_or_default() };
+            let val = unsafe { copy_path_from_user(val_ptr).unwrap_or_default() };
+            let mut settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
+            settings.set(&key, &val);
+            SyscallResult::ok(0)
+        }
 
         SYS_SETUID => {
             crate::process::scheduler::set_current_uid(arg0 as u32);
@@ -474,6 +628,230 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             crate::process::scheduler::set_current_gid(arg0 as u32);
             SyscallResult::ok(0)
         }
+
+        SYS_CHDIR => {
+            let path_ptr = arg0 as *const u8;
+            let path = unsafe {
+                match copy_path_from_user(path_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            {
+                let mut guard = SYSCALL_PATH.lock();
+                guard.clear();
+                guard.push_str(&path);
+            }
+            // Verify the path exists and is a directory
+            match with_vfs(|vfs| vfs.lookup_follow(&path)) {
+                Ok(handle) => match with_vfs(|vfs| vfs.stat(handle)) {
+                    Ok(node) => {
+                        if node.node_type != crate::fs::vfs::VfsNodeType::Directory {
+                            return SyscallResult::err(20); // ENOTDIR
+                        }
+                        crate::process::scheduler::set_current_cwd(path);
+                        SyscallResult::ok(0)
+                    }
+                    Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+                },
+                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+            }
+        }
+
+        SYS_GETCWD => {
+            let cwd = crate::process::scheduler::current_task_cwd();
+            SyscallResult::with_data(0, cwd)
+        }
+
+        SYS_GETPPID => {
+            // Parent tracking is not yet implemented.
+            // Return 1 (init) as a convention.
+            SyscallResult::ok(1)
+        }
+
+        SYS_NANOSLEEP => {
+            let ms = arg0;
+            let target = crate::drivers::interrupts::ticks() + ms;
+            while crate::drivers::interrupts::ticks() < target {
+                crate::process::scheduler::yield_current();
+            }
+            SyscallResult::ok(0)
+        }
+
+        SYS_REBOOT => {
+            match arg0 {
+                0 => {
+                    // ACPI power off
+                    if crate::drivers::acpi::power_off() {
+                        SyscallResult::ok(0)
+                    } else {
+                        SyscallResult::err(38) // ENOSYS fallback
+                    }
+                }
+                1 => {
+                    // Keyboard controller reset
+                    unsafe {
+                        use x86_64::instructions::port::Port;
+                        let mut cmd: Port<u8> = Port::new(0x64);
+                        cmd.write(0xFE);
+                    }
+                    SyscallResult::ok(0)
+                }
+                2 => {
+                    // Triple fault: load a null IDT descriptor and trigger an interrupt.
+                    // A zero-limit IDT causes a double fault on the first interrupt;
+                    // the double fault handler then triple faults because the IDT is still invalid.
+                    unsafe {
+                        let null_idt = x86_64::structures::DescriptorTablePointer {
+                            base: x86_64::VirtAddr::new(0),
+                            limit: 0,
+                        };
+                        core::arch::asm!("lidt [{}]", in(reg) &null_idt, options(nostack, preserves_flags));
+                        core::arch::asm!("int 3");
+                    }
+                    SyscallResult::ok(0)
+                }
+                _ => SyscallResult::err(22), // EINVAL
+            }
+        }
+
+        SYS_LSEEK => {
+            let fd = arg0;
+            let offset = arg1 as i64;
+            let whence = arg2;
+            let mut table = FILE_TABLE.lock();
+            if let Some(entry) = table.get_mut(&fd) {
+                let new_offset = match whence {
+                    0 => offset, // SEEK_SET
+                    1 => entry.offset as i64 + offset, // SEEK_CUR
+                    2 => {
+                        let size = with_vfs(|vfs| vfs.stat(entry.handle))
+                            .map(|n| n.size as i64)
+                            .unwrap_or(0);
+                        size + offset // SEEK_END
+                    }
+                    _ => return SyscallResult::err(22), // EINVAL
+                };
+                if new_offset < 0 {
+                    return SyscallResult::err(22); // EINVAL
+                }
+                entry.offset = new_offset as usize;
+                SyscallResult::ok(new_offset)
+            } else {
+                SyscallResult::err(9) // EBADF
+            }
+        }
+
+        SYS_UNLINK => {
+            let path_ptr = arg0 as *const u8;
+            let path = unsafe {
+                match copy_path_from_user(path_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            {
+                let mut guard = SYSCALL_PATH.lock();
+                guard.clear();
+                guard.push_str(&path);
+            }
+            match with_vfs(|vfs| vfs.unlink(&path)) {
+                Ok(_) => SyscallResult::ok(0),
+                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+            }
+        }
+
+        SYS_RMDIR => {
+            let path_ptr = arg0 as *const u8;
+            let path = unsafe {
+                match copy_path_from_user(path_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            {
+                let mut guard = SYSCALL_PATH.lock();
+                guard.clear();
+                guard.push_str(&path);
+            }
+            match with_vfs(|vfs| vfs.rmdir(&path)) {
+                Ok(_) => SyscallResult::ok(0),
+                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+            }
+        }
+
+        SYS_RENAME => {
+            let old_ptr = arg0 as *const u8;
+            let new_ptr = arg1 as *const u8;
+            let old = unsafe {
+                match copy_path_from_user(old_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            let new = unsafe {
+                match copy_path_from_user(new_ptr) {
+                    Ok(p) => p,
+                    Err(_) => return SyscallResult::err(14), // EFAULT
+                }
+            };
+            match with_vfs(|vfs| vfs.rename(&old, &new)) {
+                Ok(_) => SyscallResult::ok(0),
+                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+            }
+        }
+
+        SYS_GETRANDOM => {
+            let buf_ptr = arg0 as *mut u8;
+            let len = (arg1 as usize).min(256);
+            if len == 0 {
+                return SyscallResult::ok(0);
+            }
+            let mut buf = alloc::vec![0u8; len];
+            if crate::drivers::entropy::getrandom(&mut buf) {
+                unsafe {
+                    if crate::security::smap_smep::copy_to_user(buf_ptr, &buf).is_err() {
+                        return SyscallResult::err(14); // EFAULT
+                    }
+                }
+                SyscallResult::ok(buf.len() as i64)
+            } else {
+                SyscallResult::err(5) // EIO
+            }
+        }
+
+        SYS_KMSG_READ => {
+            let buf_ptr = arg0 as *mut u8;
+            let len = arg1 as usize;
+            if len == 0 {
+                return SyscallResult::ok(0);
+            }
+            let mut buf = alloc::vec![0u8; len.min(4096)];
+            let read = crate::drivers::kmsg::kmsg_read(&mut buf);
+            if read > 0 {
+                unsafe {
+                    if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read]).is_err() {
+                        return SyscallResult::err(14); // EFAULT
+                    }
+                }
+            }
+            SyscallResult::ok(read as i64)
+        }
+
+        SYS_KILL => SyscallResult::ok(crate::process::signal::sys_kill(arg0, arg1 as u8)),
+        SYS_SIGACTION => SyscallResult::ok(crate::process::signal::sys_sigaction(arg0 as u8, arg1, arg2)),
+        SYS_SIGRETURN => crate::process::signal::sys_sigreturn_call(),
+        SYS_PIPE => crate::syscall::pipe::dispatch_pipe(arg0),
+        SYS_DUP => crate::syscall::pipe::dispatch_dup(arg0),
+        SYS_DUP2 => crate::syscall::pipe::dispatch_dup2(arg0, arg1),
+        SYS_BRK => crate::syscall::pipe::dispatch_brk(arg0),
+        SYS_GETTIMEOFDAY => crate::syscall::time::dispatch_gettimeofday(arg0),
+        SYS_SETTIMEOFDAY => crate::syscall::time::dispatch_settimeofday(arg0, arg1),
+        SYS_WATCHDOG => crate::syscall::time::dispatch_watchdog(arg0),
+        SYS_IOCTL => crate::syscall::ioctl::dispatch_ioctl(arg0, arg1, arg2),
 
         _ => SyscallResult::err(38), // ENOSYS
     };

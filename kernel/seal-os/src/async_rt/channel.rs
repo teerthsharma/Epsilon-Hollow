@@ -5,9 +5,6 @@
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use spin::Mutex;
 
 pub struct Sender<T> {

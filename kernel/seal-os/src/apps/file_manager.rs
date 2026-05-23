@@ -5,7 +5,6 @@
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::fs::manifold_fs::ManifoldFS;
 use crate::graphics::font;

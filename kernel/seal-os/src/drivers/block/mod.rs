@@ -4,6 +4,7 @@
 //! Block device abstraction layer.
 
 pub mod ahci;
+pub mod virtio_blk;
 
 use alloc::vec::Vec;
 use spin::Mutex;

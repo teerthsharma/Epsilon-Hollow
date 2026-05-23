@@ -4,4 +4,8 @@
 //! System call interface — kernel services accessible to userspace.
 //! Includes Epsilon extensions for manifold operations.
 
+pub mod signal;
+pub mod pipe;
+pub mod ioctl;
 pub mod table;
+pub mod time;

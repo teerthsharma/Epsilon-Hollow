@@ -93,6 +93,14 @@ impl FileSystem for SysFs {
         Err(VfsError::NotSupported)
     }
 
+    fn rmdir(&mut self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::NotSupported)
+    }
+
+    fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
+        Err(VfsError::NotSupported)
+    }
+
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
         match handle.inode {
             i if i == Self::path_inode("") => Ok(vec![VfsDirEntry {
@@ -132,6 +140,8 @@ impl FileSystem for SysFs {
                     atime: 0,
                     mtime: 0,
                     node_type: VfsNodeType::Directory,
+                    major: 0,
+                    minor: 0,
                 });
             }
         }
@@ -147,6 +157,8 @@ impl FileSystem for SysFs {
                     atime: 0,
                     mtime: 0,
                     node_type: VfsNodeType::File,
+                    major: 0,
+                    minor: 0,
                 });
             }
         }

@@ -4,7 +4,7 @@
 //! TOPO-ASM integration — topological computation primitives in x86_64 assembly.
 //!
 //! Implements scalar (and AVX-512) versions of:
-//!   - L^∞ landscape distance: max_i |a[i] - b[i]|
+//!   - L^∞ landscape distance: max_i |a\[i\] - b\[i\]|
 //!   - Betti accumulator: count finite birth/death pairs
 //!
 //! The AVX-512 path is compiled unconditionally but must only be called after

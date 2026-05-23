@@ -62,14 +62,18 @@ impl TcpHeader {
     /// Serialize the TCP header to a fixed 20-byte array.
     pub fn to_bytes(&self) -> [u8; 20] {
         let mut b = [0u8; 20];
-        b[0..2].copy_from_slice(&self.src_port.to_be_bytes());
-        b[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
-        b[4..8].copy_from_slice(&self.seq.to_be_bytes());
-        b[8..12].copy_from_slice(&self.ack.to_be_bytes());
-        b[12..14].copy_from_slice(&self.data_offset_flags.to_be_bytes());
-        b[14..16].copy_from_slice(&self.window.to_be_bytes());
-        b[16..18].copy_from_slice(&self.checksum.to_be_bytes());
-        b[18..20].copy_from_slice(&self.urgent.to_be_bytes());
+        // SAFETY: All fields are at naturally aligned offsets within the struct.
+        // We use addr_of! to avoid creating references to packed struct fields.
+        unsafe {
+            b[0..2].copy_from_slice(&core::ptr::addr_of!((*self).src_port).read_unaligned().to_be_bytes());
+            b[2..4].copy_from_slice(&core::ptr::addr_of!((*self).dst_port).read_unaligned().to_be_bytes());
+            b[4..8].copy_from_slice(&core::ptr::addr_of!((*self).seq).read_unaligned().to_be_bytes());
+            b[8..12].copy_from_slice(&core::ptr::addr_of!((*self).ack).read_unaligned().to_be_bytes());
+            b[12..14].copy_from_slice(&core::ptr::addr_of!((*self).data_offset_flags).read_unaligned().to_be_bytes());
+            b[14..16].copy_from_slice(&core::ptr::addr_of!((*self).window).read_unaligned().to_be_bytes());
+            b[16..18].copy_from_slice(&core::ptr::addr_of!((*self).checksum).read_unaligned().to_be_bytes());
+            b[18..20].copy_from_slice(&core::ptr::addr_of!((*self).urgent).read_unaligned().to_be_bytes());
+        }
         b
     }
 }
@@ -180,19 +184,14 @@ impl TcpSocket {
         pseudo.push(0);
         pseudo.push(6);
         pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-        // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
-        let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-        };
-        pseudo.extend_from_slice(hdr_bytes);
+        let hdr_bytes = hdr.to_bytes();
+        pseudo.extend_from_slice(&hdr_bytes);
         pseudo.extend_from_slice(payload);
-        hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+        let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+        // SAFETY: Use addr_of_mut! to avoid unaligned reference to packed field.
+        unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
         let mut pkt = Vec::with_capacity(20 + payload.len());
-        // SAFETY: TcpHeader is repr(C, packed) and exactly 20 bytes
-        let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-        };
-        pkt.extend_from_slice(hdr_bytes);
+        pkt.extend_from_slice(&hdr.to_bytes());
         pkt.extend_from_slice(payload);
         crate::net::ipv4::send_ipv4_packet(self.remote_ip, 6, &pkt);
 
@@ -348,8 +347,8 @@ pub fn handle_tcp_packet(src: [u8; 4], pkt: &[u8]) {
     if pkt.len() < 20 {
         return;
     }
-    // SAFETY: pkt is at least 20 bytes; TcpHeader is repr(C, packed)
-    let hdr = unsafe { &*(pkt.as_ptr() as *const TcpHeader) };
+    // SAFETY: pkt is at least 20 bytes; read_unaligned avoids UB on unaligned pointers.
+    let hdr = unsafe { core::ptr::read_unaligned(pkt.as_ptr() as *const TcpHeader) };
     let data_offset = hdr.data_offset();
     if data_offset < 20 || pkt.len() < data_offset {
         return;
@@ -445,10 +444,7 @@ mod tests {
             checksum: 0,
             urgent: 0,
         };
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-        };
-        bytes.to_vec()
+        hdr.to_bytes().to_vec()
     }
 
     #[test]

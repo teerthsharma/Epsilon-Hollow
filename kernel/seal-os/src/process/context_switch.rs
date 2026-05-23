@@ -333,7 +333,7 @@ pub fn init_task_context(stack: &mut [u8], entry: fn(), xsave_ptr: *mut u8) -> T
     let stack_top = stack_top & !0xF;
 
     let mut ctx = TaskContext::zero();
-    ctx.rip = kernel_task_wrapper as u64;
+    ctx.rip = kernel_task_wrapper as *const () as u64;
     ctx.rdi = entry as u64;
     ctx.rsp = stack_top;
     ctx.rflags = 0x202; // Interrupt enable (IF) bit set
