@@ -5,7 +5,7 @@
 
 use crate::wm::window::Window;
 
-use super::game_engine::{self, GAME_BG, SCORE_COLOR};
+use super::game_engine::{self, SCORE_COLOR};
 
 const PADDLE_W: u32 = 80;
 const PADDLE_H: u32 = 10;
@@ -41,7 +41,7 @@ pub struct BreakoutGame {
 
 impl BreakoutGame {
     pub fn new(client_w: u32, client_h: u32) -> Self {
-        let mut game = Self {
+        let game = Self {
             width: client_w,
             height: client_h,
             paddle_x: (client_w / 2 - PADDLE_W / 2) as i32,

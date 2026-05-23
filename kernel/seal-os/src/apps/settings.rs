@@ -5,19 +5,24 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use spin::Mutex;
+
+pub static GLOBAL_SETTINGS: Mutex<Settings> = Mutex::new(Settings::new());
 
 pub struct Settings {
     store: BTreeMap<String, String>,
 }
 
 impl Settings {
-    pub fn new() -> Self {
-        let mut store = BTreeMap::new();
-        store.insert(String::from("theme"), String::from("dark"));
-        store.insert(String::from("font-size"), String::from("14"));
-        store.insert(String::from("wallpaper"), String::from("default"));
-        store.insert(String::from("shell-prompt"), String::from("seal"));
-        Self { store }
+    pub const fn new() -> Self {
+        Self { store: BTreeMap::new() }
+    }
+
+    pub fn init_defaults(&mut self) {
+        self.store.insert(String::from("theme"), String::from("dark"));
+        self.store.insert(String::from("font-size"), String::from("14"));
+        self.store.insert(String::from("wallpaper"), String::from("default"));
+        self.store.insert(String::from("shell-prompt"), String::from("seal"));
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

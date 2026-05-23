@@ -6,7 +6,7 @@
 
 use crate::wm::window::Window;
 
-use super::game_engine::{self, GAME_BG, SCORE_COLOR};
+use super::game_engine::{self, SCORE_COLOR};
 
 const BLOCK_W: u32 = 20;
 const BLOCK_H: u32 = 16;

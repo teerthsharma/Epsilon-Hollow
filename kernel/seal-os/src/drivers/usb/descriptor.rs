@@ -34,6 +34,19 @@ pub struct ConfigDescriptor {
 }
 
 #[repr(C, packed)]
+pub struct InterfaceDescriptor {
+    pub length: u8,
+    pub descriptor_type: u8,
+    pub interface_number: u8,
+    pub alternate_setting: u8,
+    pub num_endpoints: u8,
+    pub interface_class: u8,
+    pub interface_subclass: u8,
+    pub interface_protocol: u8,
+    pub interface_string_idx: u8,
+}
+
+#[repr(C, packed)]
 pub struct EndpointDescriptor {
     pub length: u8,
     pub descriptor_type: u8,
@@ -50,5 +63,9 @@ impl EndpointDescriptor {
 
     pub fn transfer_type(&self) -> u8 {
         self.attributes & 0x03
+    }
+
+    pub fn number(&self) -> u8 {
+        self.endpoint_address & 0x0F
     }
 }

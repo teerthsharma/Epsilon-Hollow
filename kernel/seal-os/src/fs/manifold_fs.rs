@@ -1011,6 +1011,28 @@ impl FileSystem for ManifoldFS {
         self.delete(name, dir_id).map_err(map_err)
     }
 
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> {
+        // v1: rmdir uses the same deletion path as unlink.
+        // ManifoldFS delete() removes the inode regardless of kind.
+        // A future version should verify the target is a directory
+        // and reject non-empty directories.
+        let (dir_path, name) = split_path(path)?;
+        let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
+        self.delete(name, dir_id).map_err(map_err)
+    }
+
+    fn rename(&mut self, old_path: &str, new_path: &str) -> Result<(), VfsError> {
+        let (old_dir, old_name) = split_path(old_path)?;
+        let (new_dir, new_name) = split_path(new_path)?;
+        let old_dir_id = self.resolve_path(old_dir).map_err(map_err)?;
+        let new_dir_id = self.resolve_path(new_dir).map_err(map_err)?;
+        if old_dir_id != new_dir_id {
+            // Cross-directory rename not yet supported.
+            return Err(VfsError::NotSupported);
+        }
+        self.rename(old_name, new_name, old_dir_id).map_err(map_err)
+    }
+
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
         let inode = self.inodes.get(handle.inode).ok_or(VfsError::NotADirectory)?;
         if !matches!(inode.kind, InodeKind::Directory) {
@@ -1050,6 +1072,8 @@ impl FileSystem for ManifoldFS {
             atime: inode.metadata.modified_ms,
             mtime: inode.metadata.modified_ms,
             node_type,
+            major: 0,
+            minor: 0,
         })
     }
 

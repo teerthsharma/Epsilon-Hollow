@@ -48,10 +48,13 @@ impl UserContext {
 /// # Safety
 /// Must be called with interrupts disabled.  The `context` must describe a
 /// fully initialised userspace task (valid page table, stack, entry point).
-pub unsafe fn enter_userspace(context: &UserContext) -> ! {
+pub unsafe fn enter_userspace(context: &mut UserContext) -> ! {
     // Load user page tables via KPTI primitive.
     crate::security::kpti::set_user_cr3(context.page_table);
     crate::security::kpti::switch_to_user_pt();
+
+    // Deliver any pending signals before returning to ring 3.
+    crate::process::signal::check_and_handle_signals(context);
 
     // Build the interrupt-return stack frame.
     let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
@@ -77,14 +80,14 @@ pub unsafe fn enter_userspace(context: &UserContext) -> ! {
 /// userspace for the first time.
 #[no_mangle]
 pub extern "C" fn enter_userspace_trampoline(entry: u64, stack: u64, pt: u64) -> ! {
-    let ctx = UserContext {
+    let mut ctx = UserContext {
         page_table: pt,
         rsp: stack,
         rip: entry,
         rflags: 0x202,
         ..UserContext::zero()
     };
-    unsafe { enter_userspace(&ctx) }
+    unsafe { enter_userspace(&mut ctx) }
 }
 
 // ---------------------------------------------------------------------------

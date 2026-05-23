@@ -1,34 +1,58 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Minimal async runtime — single-threaded no-op-waker executor. Not Tokio-compatible.
-//! NOTE: This is a placeholder executor. Real async I/O requires driver interrupt
-//! integration and a proper waker system.
+//! Minimal async runtime — waker-based executor.
+//! Supports polling tasks only when woken.
 
 pub mod task;
 pub mod timer;
 pub mod channel;
 pub mod io;
 
-use alloc::collections::VecDeque;
-use alloc::vec::Vec;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{Context, Poll, Waker};
+use alloc::task::Wake;
+use spin::Mutex;
 
 use self::task::{Task, TaskId};
 
+type ReadyQueue = Arc<Mutex<VecDeque<TaskId>>>;
+
+struct TaskWaker {
+    task_id: TaskId,
+    ready_queue: ReadyQueue,
+}
+
+impl TaskWaker {
+    fn new(task_id: TaskId, ready_queue: ReadyQueue) -> Self {
+        Self { task_id, ready_queue }
+    }
+}
+
+impl Wake for TaskWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ready_queue.lock().push_back(self.task_id);
+    }
+}
+
 pub struct Executor {
-    tasks: Vec<Task>,
-    ready_queue: VecDeque<TaskId>,
+    tasks: BTreeMap<TaskId, Task>,
+    ready_queue: ReadyQueue,
     next_id: u64,
 }
 
 impl Executor {
     pub fn new() -> Self {
         Self {
-            tasks: Vec::new(),
-            ready_queue: VecDeque::new(),
+            tasks: BTreeMap::new(),
+            ready_queue: Arc::new(Mutex::new(VecDeque::new())),
             next_id: 1,
         }
     }
@@ -39,24 +63,23 @@ impl Executor {
     {
         let id = TaskId(self.next_id);
         self.next_id += 1;
-        self.tasks.push(Task::new(id, future));
-        self.ready_queue.push_back(id);
+        self.tasks.insert(id, Task::new(id, future));
+        self.ready_queue.lock().push_back(id);
         id
     }
 
     pub fn run_once(&mut self) {
-        if let Some(task_id) = self.ready_queue.pop_front() {
-            let waker = dummy_waker();
-            let mut cx = Context::from_waker(&waker);
+        let task_id = self.ready_queue.lock().pop_front();
+        if let Some(task_id) = task_id {
+            if let Some(task) = self.tasks.get_mut(&task_id) {
+                let waker = Waker::from(Arc::new(TaskWaker::new(task_id, self.ready_queue.clone())));
+                let mut cx = Context::from_waker(&waker);
 
-            if let Some(task) = self.tasks.iter_mut().find(|t| t.id == task_id) {
                 match Pin::new(&mut task.future).poll(&mut cx) {
                     Poll::Ready(()) => {
-                        self.tasks.retain(|t| t.id != task_id);
+                        self.tasks.remove(&task_id);
                     }
-                    Poll::Pending => {
-                        self.ready_queue.push_back(task_id);
-                    }
+                    Poll::Pending => {}
                 }
             }
         }
@@ -74,21 +97,8 @@ impl Executor {
     }
 
     pub fn pending_count(&self) -> usize {
-        self.ready_queue.len()
+        self.ready_queue.lock().len()
     }
-}
-
-fn dummy_raw_waker() -> RawWaker {
-    fn no_op(_: *const ()) {}
-    fn clone(p: *const ()) -> RawWaker {
-        RawWaker::new(p, &VTABLE)
-    }
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
-    RawWaker::new(core::ptr::null(), &VTABLE)
-}
-
-fn dummy_waker() -> Waker {
-    unsafe { Waker::from_raw(dummy_raw_waker()) }
 }
 
 pub fn init() {

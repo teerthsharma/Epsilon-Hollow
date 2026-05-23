@@ -1,14 +1,14 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Creates a bootable UEFI disk image for Seal OS.
-//! Replaces grub-mkrescue — pure Rust, cross-platform.
+//! Creates bootable UEFI disk images and ISOs for Seal OS.
+//! VirtualBox-compatible: GPT + FAT32 ESP with proper boot sector.
 
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
 
-const DISK_SIZE: u64 = 64 * 1024 * 1024; // 64MB
+const DISK_SIZE: u64 = 128 * 1024 * 1024; // 128MB
 const SECTOR_SIZE: u64 = 512;
 const ESP_START_LBA: u64 = 2048;
 const ESP_SIZE_SECTORS: u64 = (DISK_SIZE / SECTOR_SIZE) - ESP_START_LBA - 34;
@@ -18,16 +18,23 @@ fn main() {
     let efi_data = fs::read(&efi_binary).expect("Failed to read .efi binary");
     println!("[mkimage] Input: {} ({} bytes)", efi_binary.display(), efi_data.len());
 
-    let output = efi_binary
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("seal-os.img");
+    let out_dir = efi_binary.parent().unwrap_or_else(|| std::path::Path::new("."));
 
+    // 1. Raw GPT disk image (for QEMU, dd to USB, or VirtualBox SATA)
+    let img_path = out_dir.join("seal-os.img");
     let disk = create_disk_image(&efi_data);
-    fs::write(&output, &disk).expect("Failed to write disk image");
+    fs::write(&img_path, &disk).expect("Failed to write disk image");
+    println!("[mkimage] IMG: {} ({:.1} MB)", img_path.display(), disk.len() as f64 / 1024.0 / 1024.0);
 
-    println!("[mkimage] Output: {} ({:.1} MB)", output.display(), disk.len() as f64 / 1024.0 / 1024.0);
-    println!("[mkimage] Boot with: qemu-system-x86_64 -bios OVMF.fd -drive file={},format=raw -serial stdio -m 512M", output.display());
+    // 2. FAT12 EFI boot image for El Torito ISO
+    let efi_boot_img = create_fat12_efi_image(&efi_data);
+    let efi_img_path = out_dir.join("seal-os-efi.img");
+    fs::write(&efi_img_path, &efi_boot_img).expect("Failed to write EFI boot image");
+    println!("[mkimage] EFI boot image: {} ({} bytes)", efi_img_path.display(), efi_boot_img.len());
+
+    println!("[mkimage] Boot with:");
+    println!("  QEMU:    qemu-system-x86_64 -bios OVMF.fd -drive file={},format=raw -serial stdio -m 512M", img_path.display());
+    println!("  VBox:    Attach {} as SATA hard disk (type: Other)", img_path.display());
 }
 
 fn find_efi_binary() -> PathBuf {
@@ -62,18 +69,29 @@ fn create_disk_image(efi_data: &[u8]) -> Vec<u8> {
 }
 
 fn write_protective_mbr(disk: &mut [u8]) {
+    // Add a simple MBR boot stub that jumps to the bootloader
+    // Some UEFI firmware (including VirtualBox) checks this
+    let mut boot_stub = vec![0x00u8; 440];
+    boot_stub[0] = 0xEB; // jmp short
+    boot_stub[1] = 0x5C;
+    boot_stub[2] = 0x90;
+    boot_stub[3..11].copy_from_slice(b"SEALOS  ");
+    disk[0..440].copy_from_slice(&boot_stub);
+
     let entry_offset = 446;
-    disk[entry_offset] = 0x00;
-    disk[entry_offset + 1] = 0x00;
-    disk[entry_offset + 2] = 0x02;
-    disk[entry_offset + 3] = 0x00;
-    disk[entry_offset + 4] = 0xEE; // GPT protective
-    disk[entry_offset + 5] = 0xFF;
-    disk[entry_offset + 6] = 0xFF;
-    disk[entry_offset + 7] = 0xFF;
+    disk[entry_offset] = 0x00;      // status
+    disk[entry_offset + 1] = 0x00;  // CHS start head
+    disk[entry_offset + 2] = 0x02;  // CHS start sector (sector 2)
+    disk[entry_offset + 3] = 0x00;  // CHS start cylinder
+    disk[entry_offset + 4] = 0xEE;  // GPT protective
+    disk[entry_offset + 5] = 0xFF;  // CHS end head
+    disk[entry_offset + 6] = 0xFF;  // CHS end sector
+    disk[entry_offset + 7] = 0xFF;  // CHS end cylinder
     disk[entry_offset + 8..entry_offset + 12].copy_from_slice(&1u32.to_le_bytes());
     let total_sectors = (DISK_SIZE / SECTOR_SIZE - 1) as u32;
     disk[entry_offset + 12..entry_offset + 16].copy_from_slice(&total_sectors.to_le_bytes());
+
+    // Boot signature
     disk[510] = 0x55;
     disk[511] = 0xAA;
 }
@@ -163,12 +181,38 @@ fn create_fat32_esp(efi_data: &[u8], size: usize) -> Vec<u8> {
     let cursor = Cursor::new(&mut img[..]);
     let options = fatfs::FormatVolumeOptions::new()
         .fat_type(fatfs::FatType::Fat32)
-        .volume_label(*b"SEAL-OS-EFI");
+        .volume_label([b'S', b'E', b'A', b'L', b'-', b'O', b'S', b'-', b'E', b'F', b'I']);
     fatfs::format_volume(cursor, options).expect("Failed to format FAT32");
 
     {
         let cursor = Cursor::new(&mut img[..]);
         let fs = fatfs::FileSystem::new(cursor, fatfs::FsOptions::new()).expect("Failed to mount FAT32");
+        let root = fs.root_dir();
+
+        root.create_dir("EFI").expect("mkdir EFI");
+        root.create_dir("EFI/BOOT").expect("mkdir EFI/BOOT");
+
+        let mut file = root.create_file("EFI/BOOT/BOOTX64.EFI").expect("create BOOTX64.EFI");
+        file.write_all(efi_data).expect("write EFI binary");
+    }
+    img
+}
+
+/// Create a FAT12 EFI boot image for El Torito UEFI CD/DVD boot.
+/// Size is 4MB to fit the ~1.5MB EFI binary comfortably.
+fn create_fat12_efi_image(efi_data: &[u8]) -> Vec<u8> {
+    let sectors = 8192; // 4MB
+    let size = sectors * 512;
+    let mut img = vec![0u8; size];
+    let cursor = Cursor::new(&mut img[..]);
+    let options = fatfs::FormatVolumeOptions::new()
+        .fat_type(fatfs::FatType::Fat12)
+        .volume_label([b'E', b'F', b'I', b'B', b'O', b'O', b'T', b' ', b' ', b' ', b' ']);
+    fatfs::format_volume(cursor, options).expect("Failed to format FAT12");
+
+    {
+        let cursor = Cursor::new(&mut img[..]);
+        let fs = fatfs::FileSystem::new(cursor, fatfs::FsOptions::new()).expect("Failed to mount FAT12");
         let root = fs.root_dir();
 
         root.create_dir("EFI").expect("mkdir EFI");

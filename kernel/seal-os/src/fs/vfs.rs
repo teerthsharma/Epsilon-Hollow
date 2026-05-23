@@ -29,6 +29,8 @@ pub struct VfsNode {
     pub atime: u64,
     pub mtime: u64,
     pub node_type: VfsNodeType,
+    pub major: u32,
+    pub minor: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,8 @@ pub trait FileSystem: Send + Sync {
     fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError>;
     fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError>;
     fn unlink(&mut self, path: &str) -> Result<(), VfsError>;
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError>;
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError>;
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError>;
     fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError>;
     fn mknod(
@@ -94,7 +98,7 @@ pub struct MountPoint {
 }
 
 pub struct Vfs {
-    mounts: Vec<MountPoint>,
+    pub(crate) mounts: Vec<MountPoint>,
 }
 
 impl Vfs {
@@ -262,6 +266,34 @@ impl Vfs {
         let mut fs_guard = mount.fs.lock();
         fs_guard.unlink(rel)?;
         HANDLE_PATHS.lock().remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
+        Ok(())
+    }
+
+    pub fn rmdir(&self, path: &str) -> Result<(), VfsError> {
+        self.check_mac(path, crate::security::mac::Permissions::W)?;
+        let (fs_idx, rel) = self.find_mount(path).ok_or(VfsError::NotFound)?;
+        let mount = &self.mounts[fs_idx];
+        let mut fs_guard = mount.fs.lock();
+        fs_guard.rmdir(rel)?;
+        HANDLE_PATHS.lock().remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
+        Ok(())
+    }
+
+    pub fn rename(&self, old: &str, new: &str) -> Result<(), VfsError> {
+        self.check_mac(old, crate::security::mac::Permissions::W)?;
+        self.check_mac(new, crate::security::mac::Permissions::W)?;
+        let (old_fs_idx, old_rel) = self.find_mount(old).ok_or(VfsError::NotFound)?;
+        let (new_fs_idx, new_rel) = self.find_mount(new).ok_or(VfsError::NotFound)?;
+        if old_fs_idx != new_fs_idx {
+            return Err(VfsError::NotSupported);
+        }
+        let mount = &self.mounts[old_fs_idx];
+        let mut fs_guard = mount.fs.lock();
+        fs_guard.rename(old_rel, new_rel)?;
+        if let Ok(handle) = fs_guard.lookup(new_rel) {
+            HANDLE_PATHS.lock().insert((old_fs_idx, handle.inode), String::from(new));
+        }
+        HANDLE_PATHS.lock().remove(&(old_fs_idx, fs_guard.lookup(old_rel).map(|h| h.inode).unwrap_or(0)));
         Ok(())
     }
 

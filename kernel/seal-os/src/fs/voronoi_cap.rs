@@ -3,7 +3,6 @@
 
 //! Bounded Voronoi cells — cap at 64 files, split/merge with hysteresis.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use aether_core::tss::SphericalVoronoiIndex;
 

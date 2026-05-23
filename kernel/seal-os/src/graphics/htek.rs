@@ -36,7 +36,7 @@ fn pixel_at(win: &Window, x: u32, y: u32) -> u32 {
     }
 }
 
-fn set_pixel_blended(win: &mut Window, x: u32, y: u32, color: u32, alpha: u8) {
+pub fn set_pixel_blended(win: &mut Window, x: u32, y: u32, color: u32, alpha: u8) {
     let cw = win.client_width();
     let ch = win.client_height();
     if x < cw && y < ch {
@@ -406,5 +406,47 @@ pub fn fill_solid_alpha(win: &mut Window, x: u32, y: u32, w: u32, h: u32, color:
             if px >= cw { break; }
             set_pixel_blended(win, px, py, color, alpha);
         }
+    }
+}
+
+pub fn draw_aa_line(win: &mut Window, x0: i32, y0: i32, x1: i32, y1: i32, color: u32, alpha: u8) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steep = dy.abs() > dx.abs();
+
+    let (mut x0, mut y0, mut x1, mut y1) = if steep {
+        (y0, x0, y1, x1)
+    } else {
+        (x0, y0, x1, y1)
+    };
+
+    if x0 > x1 {
+        core::mem::swap(&mut x0, &mut x1);
+        core::mem::swap(&mut y0, &mut y1);
+    }
+
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let gradient = if dx == 0 { 1.0 } else { dy as f32 / dx as f32 };
+
+    let mut x = x0;
+    let mut y = y0 as f32;
+
+    while x <= x1 {
+        let y_floor = y as i32;
+        let frac = y - y_floor as f32;
+        let a1 = ((1.0 - frac) * alpha as f32) as u8;
+        let a2 = (frac * alpha as f32) as u8;
+
+        if steep {
+            set_pixel_blended(win, y_floor as u32, x as u32, color, a1);
+            set_pixel_blended(win, (y_floor + 1) as u32, x as u32, color, a2);
+        } else {
+            set_pixel_blended(win, x as u32, y_floor as u32, color, a1);
+            set_pixel_blended(win, x as u32, (y_floor + 1) as u32, color, a2);
+        }
+
+        y += gradient;
+        x += 1;
     }
 }

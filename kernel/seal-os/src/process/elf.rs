@@ -3,7 +3,7 @@
 
 //! Minimal ELF64 loader for static executables.
 
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 /// ELF parsing / loading errors.

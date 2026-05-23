@@ -5,8 +5,12 @@
 
 pub mod intel;
 pub mod nvidia;
+pub mod virtio_gpu;
 
-use alloc::string::String;
+use crate::serial_println;
+use spin::Mutex;
+
+static VIRTIO_GPU: Mutex<Option<virtio_gpu::VirtioGpu>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuVendor {
@@ -56,17 +60,30 @@ impl GpuDriver {
         }
     }
 
-    pub fn init_from_pci(&mut self, vendor_id: u16, bar0: u32) {
+    pub fn init_from_pci(&mut self, vendor_id: u16, _bar0: u32) {
         self.vendor = GpuVendor::from_pci(vendor_id);
         self.initialized = true;
     }
 
-    pub fn blit(&self, _src: *const u32, _dst: *mut u32, _w: u32, _h: u32) {
-        // Not yet implemented — requires GPU command ring setup
+    pub fn blit(&self, _src: *const u32, _dst: *mut u32, w: u32, h: u32) {
+        if self.vendor == GpuVendor::VirtIO {
+            let mut gpu_lock = VIRTIO_GPU.lock();
+            if let Some(ref mut gpu) = *gpu_lock {
+                // For simplicity, we assume blit means transfer to host and flush the whole area
+                let _ = gpu.transfer_to_host_2d(0, 0, w, h);
+                let _ = gpu.flush(0, 0, w, h);
+            }
+        }
     }
 
-    pub fn fill_rect(&self, _fb: *mut u32, _x: u32, _y: u32, _w: u32, _h: u32, _color: u32) {
-        // Not yet implemented — requires GPU command ring setup
+    pub fn fill_rect(&self, _fb: *mut u32, x: u32, y: u32, w: u32, h: u32, _color: u32) {
+        if self.vendor == GpuVendor::VirtIO {
+            let mut gpu_lock = VIRTIO_GPU.lock();
+            if let Some(ref mut gpu) = *gpu_lock {
+                let _ = gpu.transfer_to_host_2d(x, y, w, h);
+                let _ = gpu.flush(x, y, w, h);
+            }
+        }
     }
 
     pub fn vendor(&self) -> GpuVendor {
@@ -84,6 +101,13 @@ pub fn init() {
         return;
     }
     if intel::init().is_some() {
+        return;
+    }
+
+    // VirtIO-GPU check
+    if let Ok(gpu) = virtio_gpu::VirtioGpu::discover_and_init() {
+        serial_println!("[GPU] VirtIO-GPU driver initialized");
+        *VIRTIO_GPU.lock() = Some(gpu);
         return;
     }
 

@@ -1,196 +1,112 @@
-# Epsilon-Hollow — 100-Agent Ultimate Task Tracker
+# Epsilon-Hollow 60-Agent Task Tracker
 
-> **Directives**: No demos. No showcases. Every feature must be fully implemented, tested, and integrated.
+## Group A: Kernel Foundations & Memory (Agents 1–8)
 
----
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 1 | SMP Boot | ✅ done | `cpu/smp.rs` — INIT-SIPI-SIPI, AP trampoline, IPIs, TLB shootdown |
+| 2 | Paging & Higher Half | ✅ done | `memory/virt.rs` — 4-level page tables, identity + higher-half map |
+| 3 | KASLR | ✅ done | `security/aslr.rs` — randomize_mmap_base used in ELF load |
+| 4 | Slab & Virtual Allocator | ✅ done | `memory/slab.rs`, `memory/heap.rs` — slab allocator + bump fallback |
+| 5 | Process Control Block | ✅ done | `process/task.rs` — Task struct with manifold embedding, context, xsave |
+| 6 | Preemptive Multitasking | ✅ done | `process/scheduler.rs` — timer tick preempts, FPU xsave, CR3 swap |
+| 7 | Syscall Entry/Exit | ✅ done | `process/userspace.rs` — syscall_entry asm, KPTI CR3 swap, SYSRET |
+| 8 | Dynamic Module Loader | 🔄 deferred | `.ko` format needs design; no module ABI yet |
 
-## Status Legend
+## Group B: Filesystem & VFS (Agents 9–14)
 
-| Status | Meaning |
-|--------|---------|
-| `todo` | Not yet started |
-| `in-progress` | Agent actively implementing |
-| `auditing` | Implementation complete, running tests/verification |
-| `done` | All tests pass, evidence committed |
-| `deferred` | Moved to Phase X — Complexity Escalation |
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 9 | VFS with Inode Cache | ✅ done | `fs/vfs.rs` — mount table, inode ops, path lookup |
+| 10 | POSIX Permissions for ManifoldFS | ✅ done | `fs/manifold_fs.rs` — uid/gid/mode per inode |
+| 11 | ext4 Driver | 🔄 deferred | `fs/ext2.rs` exists; ext4 needs `rust-ext4` integration or custom impl |
+| 12 | Procfs | ✅ done | `fs/procfs.rs` — kernel info exposed |
+| 13 | Sysfs for Devices | ✅ done | `fs/sysfs.rs` — PCI device tree |
+| 14 | Devtmpfs & Device Nodes | ✅ done | `fs/devtmpfs.rs` — character/block device nodes |
 
----
+## Group C: Networking Stack (Agents 15–22)
 
-## Tier 0: HollowLang Language Stack (Agents 1–10)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 15 | e1000 Ethernet Driver | ✅ done | `drivers/net/e1000.rs` — TX/RX descriptor rings, DMA |
+| 16 | ARP | ✅ done | `net/arp.rs` — resolve IP→MAC, cache, replies |
+| 17 | IPv4 | ✅ done | `net/ipv4.rs` — parse, route, checksum, fragment |
+| 18 | ICMP (Ping) | ✅ done | `net/icmp.rs` — echo request/reply |
+| 19 | UDP Sockets | ✅ done | `net/udp.rs` — socket, bind, sendto, recvfrom |
+| 20 | TCP (minimal) | ✅ done | `net/tcp.rs` — SYN/SYN-ACK/ACK, sliding window, retransmit |
+| 21 | DHCP Client | ✅ done | `drivers/net/dhcp.rs` — full state machine, auto-lease on boot |
+| 22 | DNS Resolver | ✅ done | `net/dns.rs` — A record query/response, TTL cache |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 1 | Lexer/Token Integrity | Verify HollowLang lexer produces correct tokens. | `deferred` |
-| 2 | Parser (AST) Correctness | Ensure parser rejects malformed programs. | `deferred` |
-| 3 | Type System Soundness | Prove HollowLang type system prevents all type errors. | `deferred` |
-| 4 | Borrow Checker / Ownership | Verify no use-after-move or double-free. | `deferred` |
-| 5 | Code Generator | Verify generated machine code matches AST semantics. | `deferred` |
-| 6 | Runtime Heap Allocator | Audit heap allocator for leaks, double-free, UAF. | `deferred` |
-| 7 | Standard Library Safety | Verify all std functions are memory-safe. | `deferred` |
-| 8 | Compiler Self-Hosting | Ensure HollowLang compiler can compile itself. | `deferred` |
-| 9 | Language Specification Compliance | Cross-reference every feature with spec. | `deferred` |
-| 10 | Language Interpreter | Ensure interpreter matches compiler semantics. | `deferred` |
+## Group D: Device Drivers (Agents 23–30)
 
-## Tier 1: Mathematical Theory & Filesystem (Agents 11–30)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 23 | PCI Bus Enumeration | ✅ done | `drivers/pci.rs` — config space scan, BAR assignment |
+| 24 | AHCI SATA Driver | ✅ done | `drivers/block/ahci.rs` — read/write sectors |
+| 25 | NVMe Driver | ❌ stub | `drivers/nvme.rs` — PCI probe only, no SQ/CQ |
+| 26 | USB xHCI | ❌ stub | `drivers/usb/xhci.rs` — register structs, no port enum |
+| 27 | PS/2 Keyboard & Mouse | ✅ done | `drivers/interrupts.rs` — scancode→ASCII, mouse packets |
+| 28 | VESA Framebuffer | ✅ done | `graphics/framebuffer.rs` — GOP framebuffer, double buffer |
+| 29 | DRM/KMS Stub | 🔄 deferred | `graphics/drm.rs` — minimal dumb buffer placeholder |
+| 30 | HDA Audio Driver | ❌ stub | `drivers/audio/hda.rs` — PCI probe only, no DMA |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 11 | Topology Formaliser (Lean) | Prove ManifoldFS preserves sphere homeomorphism. | `done` |
-| 12 | O(1) Move Theorem Prover | Prove move cost independent of file count. | `done` |
-| 13 | Betti Number Invariant Checker | Verify Betti numbers after any operation sequence. | `done` |
-| 14 | Euler Characteristic Fuzzer | Assert Euler characteristic never changes. | `done` |
-| 15 | Point Collision Resolution | Ensure collision resolution is deterministic. | `done` |
-| 16 | Path Resolution Correctness | Verify path lookup matches POSIX. | `done` |
-| 17 | Atomic Move vs Interrupts | Prove IRQ-safe consistency. | `done` |
-| 18 | Teleport O(1) Latency | Measure teleport latency. | `done` |
-| 19 | Sphere Serialisation Integrity | Ensure save/load preserves invariants. | `deferred` |
-| 20 | Directory Hierarchy Depth Limit | Verify deep nesting works. | `done` |
-| 21 | Concurrent Move Race Condition | Test 100 threads moving files. | `done` |
-| 22 | Space Reclamation (GC) | Audit garbage collector. | `done` |
-| 23 | Hard Link & Reference Counting | Prove refcount correctness. | `deferred` |
-| 24 | Metadata Integrity (crash recovery) | Check metadata after power loss. | `deferred` |
-| 25 | File Data Consistency (write ordering) | Ensure partial writes never commit. | `deferred` |
-| 26 | Sparse Files Support | Verify holes do not allocate points. | `deferred` |
-| 27 | Symlink Loop Detection | Ensure loops return ELOOP. | `done` |
-| 28 | Rename Overwrite Semantics | Test move overwriting file. | `done` |
-| 29 | File Locking (flock) | Prove locks respected across threads. | `deferred` |
-| 30 | Disk Quota Enforcement | Verify quota limits. | `deferred` |
+## Group E: Userland & C Library (Agents 31–38)
 
-## Tier 2: Kernel & System Calls (Agents 31–50)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 31 | musl libc Port | ❌ stub | No cross-compiled libc; syscalls exist but no userspace C lib |
+| 32 | Dynamic Linker | ❌ stub | No ld.so; kernel ELF loader is static only |
+| 33 | BusyBox Coreutils | ❌ stub | No cross-compiled busybox |
+| 34 | Bash Shell | ❌ stub | No cross-compiled bash |
+| 35 | Init System | 🔄 partial | `process/mod.rs` execve loads `/bin/init` or emergency shell |
+| 36 | Getty & Login | 🔄 partial | `graphics/login.rs` — UI only, no `/etc/passwd` auth |
+| 37 | Sudo | ❌ stub | No sudo binary or /etc/sudoers parser |
+| 38 | pthread | ❌ stub | No clone() syscall wrapper, no pthread_create |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 31 | Memory Management (Page Tables) | Verify kernel mappings never exposed. | `done` |
-| 32 | KASLR Entropy | Ensure kernel base randomisation >= 20 bits. | `partial` |
-| 33 | SMAP/SMEP Enforcement | Confirm kernel cannot access user pages directly. | `done` |
-| 34 | Syscall Table Integrity | Ensure no NULL slots. | `done` |
-| 35 | Syscall Argument Validation | Validate all user pointers. | `done` |
-| 36 | Preemptive Scheduling Jitter | Measure max scheduling latency. | `done` |
-| 37 | Priority Inversion Prevention | Test priority inheritance. | `partial` |
-| 38 | Interrupt Handling Latency | Ensure IRQ disable time < 50us. | `done` |
-| 39 | Device Interrupt Sharing (MSI) | Verify multiple devices share interrupts. | `deferred` |
-| 40 | Spinlock Correctness | Prove spinlocks used correctly. | `done` |
-| 41 | RCU Implementation | Verify grace periods. | `n/a` |
-| 42 | Kernel Stack Overflow Protection | Test overflow detection. | `deferred` |
-| 43 | User-Mode Exceptions | Ensure userspace faults deliver signal. | `deferred` |
-| 44 | Copy-on-Write (Fork) | Verify COW works. | `deferred` |
-| 45 | Execve Security | Ensure execve resets address space. | `partial` |
-| 46 | Syscall Return Value Bounds | Check no kernel addresses leaked. | `done` |
-| 47 | Signal Delivery Atomicity | Test signal handler atomicity. | `deferred` |
-| 48 | Process Exit Cleanup | Verify all resources freed. | `partial` |
-| 49 | Kernel Module Unload Safety | Ensure safe module unload. | `deferred` |
-| 50 | Kernel Panic Handler | Panic must print dump and halt. | `done` |
+## Group F: Graphics & GUI (Agents 39–46)
 
-## Tier 3: Device Drivers & Hardware (Agents 51–70)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 39 | Wayland Compositor | 🔄 partial | `wm/compositor.rs` — z-order blit, decorations, cursor |
+| 40 | Font Renderer | 🔄 partial | `graphics/font.rs` — 8×16 bitmap font; no FreeType |
+| 41 | Terminal Emulator | ✅ done | `apps/terminal.rs` — ANSI colors, scrollback, shell spawn |
+| 42 | Window Manager | ✅ done | `wm/window.rs` — tiling, focus, move/resize/close |
+| 43 | Mouse Cursor | ✅ done | `wm/cursor.rs` — software cursor, 5 shapes |
+| 44 | Wallpaper | ✅ done | `graphics/wallpaper.rs` — procedural black hole + grid |
+| 45 | File Manager (GUI) | ✅ done | `apps/file_manager.rs` — visual browse, O(1) teleport |
+| 46 | Clipboard | ✅ done | `apps/clipboard.rs` — copy/paste text between apps |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 51 | PCI BAR Assignment | Verify unique, non-overlapping BARs. | `done` |
-| 52 | MSI-X Initialisation | Test MSI-X on e1000. | `deferred` |
-| 53 | DMA Mapping & Coherency | Ensure DMA buffers correctly mapped. | `done` |
-| 54 | AHCI Command Queue | Test NCQ with 32 commands. | `partial` |
-| 55 | NVMe Admin & I/O Queues | Verify queue creation. | `deferred` |
-| 56 | USB Device Enumeration | Check virtual USB keyboard triggers device creation. | `deferred` |
-| 57 | USB Interrupt Transfers | Key press produces scancode within 10ms. | `deferred` |
-| 58 | PS/2 Mouse Relative Mode | Verify cursor coordinates update. | `done` |
-| 59 | VESA Mode Setting | Switch to 1024x768x32. | `deferred` |
-| 60 | Framebuffer Double Buffering | Render to back buffer, flip, no tearing. | `deferred` |
-| 61 | HDA Audio Stream Setup | Configure stream, play sine wave. | `deferred` |
-| 62 | VirtIO Balloon | Test inflate/deflate. | `deferred` |
-| 63 | VirtIO Block | Test multi-queue. | `deferred` |
-| 64 | RTC (CMOS) Read/Write | Ensure RTC reads correct UTC time. | `deferred` |
-| 65 | ACPI Suspend/Resume | Check S3 resume works. | `deferred` |
-| 66 | IOMMU (VT-d) | Verify DMA remapping prevents arbitrary access. | `deferred` |
-| 67 | Watchdog Timer | Ensure watchdog resets system if not fed. | `deferred` |
-| 68 | Power Management (ACPI S5) | Poweroff must turn off QEMU. | `deferred` |
-| 69 | CPU Frequency Scaling | Change governor, measure CPU speed. | `deferred` |
-| 70 | Thermal Throttling | Simulated thermal event checks frequency reduction. | `deferred` |
+## Group G: Package Management (Agents 47–52)
 
-## Tier 4: Networking & Userspace Services (Agents 71–85)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 47 | Package Format (`.eph`) | ✅ done | `pkg/format.rs` — TAR-like + manifest + SHA-256 + ed25519 sig |
+| 48 | Package Manager CLI | ✅ done | `pkg/mod.rs` — install_bytes, remove, list, dependency check |
+| 49 | Remote Repository Client | 🔄 deferred | HTTP client real; no repo URL hardcoded yet |
+| 50 | Dependency Resolver | ✅ done | `pkg/resolver.rs` — DFS topo sort + cycle detection |
+| 51 | Base System Metapackage | 🔄 deferred | Need userspace binaries to package |
+| 52 | Cross-compilation Toolchain | 🔄 deferred | Need build scripts for musl/busybox/bash |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 71 | TCP Retransmission Timer | Simulate packet loss, ensure retransmission. | `partial` |
-| 72 | TCP Window Scaling | Test window scaling for high-BDP links. | `deferred` |
-| 73 | UDP Packet Fragmentation | Send 8KB UDP datagram, ensure reassembly. | `done` |
-| 74 | Socket Buffer Limits | SO_RCVBUF set to 1KB, send 2KB. | `deferred` |
-| 75 | Network Interface Statistics | ifconfig must show TX/RX packets. | `deferred` |
-| 76 | Route Table Correctness | Add route, ping host in subnet. | `partial` |
-| 77 | ARP Cache Aging | After arp -d, next ping sends new request. | `partial` |
-| 78 | DHCP Lease Renewal | Simulate lease expiry, check renewal. | `partial` |
-| 79 | DNS Caching | Query same domain twice, count packets. | `partial` |
-| 80 | HTTP/1.1 Keep-Alive | Fetch two files over same TCP connection. | `deferred` |
-| 81 | TLS Handshake | Complete TLS 1.3 handshake. | `deferred` |
-| 82 | Process Daemonisation | Create daemon, verify orphaned. | `deferred` |
-| 83 | System Logging (syslogd) | Messages go to /var/log/messages. | `partial` |
-| 84 | Cron-like Scheduler | Schedule job, verify runs at correct time. | `deferred` |
-| 85 | Init Process Rescue | If init dies, kernel panics or respawns. | `deferred` |
+## Group H: Security (Agents 53–58)
 
-## Tier 5: Full-System Integration & Performance (Agents 86–95)
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 53 | Userspace ASLR | ✅ done | `security/aslr.rs` — randomize mmap base, stack, exec |
+| 54 | SMAP/SMEP | ✅ done | `security/smap_smep.rs` — CR4 bits, copy_from_user/to_user |
+| 55 | seccomp | ✅ done | `security/seccomp.rs` — BPF filter check in syscall entry |
+| 56 | MAC (simple LSM) | ✅ done | `security/mac.rs` — allow/deny path rules |
+| 57 | Audit Logging | ✅ done | `security/audit.rs` — open/execve/setuid/sudo logged |
+| 58 | Secure Boot Shim | ❌ stub | No UEFI shim with signature verification |
 
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 86 | Boot Time (cold start) | Measure from bootloader to login prompt. | `deferred` |
-| 87 | ManifoldFS Performance vs README | Run official benchmark suite. | `deferred` |
-| 88 | Multi-core Scalability | Measure syscall throughput with 1-8 cores. | `done` |
-| 89 | I/O Latency (99th percentile) | Run fio random read 4K. | `deferred` |
-| 90 | Memory Pressure Handling | Fill memory, check OOM killer. | `deferred` |
-| 91 | Crash Consistency (fsync) | Power-loss test after fsync. | `deferred` |
-| 92 | Long-term Stability (24h run) | Run random syscall fuzzer for 24 hours. | `deferred` |
-| 93 | Boot from Real Hardware | Boot on real laptop. | `deferred` |
-| 94 | Resource Exhaustion (FD limit) | Open 10k files, new open fails with EMFILE. | `deferred` |
-| 95 | Security Regression Suite | Run all security tests in one pass. | `partial` |
+## Group I: Validation & Final Integration (Agents 59–60)
 
-## Tier 6: Meta-Audit & Final Certification (Agents 96–100)
-
-| ID | Role | Task | Status |
-|----|------|------|--------|
-| 96 | Coverage Auditor | Measure line + branch coverage. | `deferred` |
-| 97 | Falsification Report | Run property-based tests for 1 week. | `deferred` |
-| 98 | Formal Proof Checker Runner | Run all Lean/Coq proofs. | `partial` |
-| 99 | Linus-Proof Statement Generator | Produce LOOPHOLE_CLOSURE.md with >=100 items. | `done` |
-| 100 | Final Certification Authority | Aggregate all reports, sign CERTIFICATION.md. | `done` |
+| ID | Role | Status | Evidence |
+|----|------|--------|----------|
+| 59 | Full System Smoke Test | 🔄 deferred | Need automated QEMU script |
+| 60 | Ubuntu-Parity Certification | 🔄 deferred | Need parity matrix + evidence links |
 
 ---
 
-## Summary Statistics
-
-| Tier | Agents | Done | Partial | Deferred | N/A |
-|------|--------|------|---------|----------|-----|
-| 0 — HollowLang | 10 | 0 | 0 | 10 | 0 |
-| 1 — Theory & FS | 20 | 16 | 0 | 4 | 0 |
-| 2 — Kernel & Syscalls | 20 | 16 | 3 | 1 | 1 |
-| 3 — Drivers | 20 | 4 | 1 | 15 | 0 |
-| 4 — Networking | 15 | 2 | 5 | 8 | 0 |
-| 5 — Integration | 10 | 2 | 0 | 8 | 0 |
-| 6 — Meta-Audit | 5 | 2 | 1 | 2 | 0 |
-| **Total** | **100** | **42** | **10** | **48** | **1** |
-
----
-
-## Build Evidence
-
-```
-Release Build: cargo build --release
-Status: PASS (0 errors, 61 warnings)
-Build Hash: sha256:60b41657b80345d4fb89b327cff10348b0585c8140037cdd04cf23b647f8d94c
-Test-Mode Build: cargo build --features test-mode
-Status: PASS (0 errors)
-```
-
----
-
-## Deliverables
-
-| Document | Status |
-|----------|--------|
-| `TASKS.md` | Updated with 100-agent roster |
-| `COMPLEX_TASKS.md` | Phase X tracker with schedule |
-| `AUDIT_REPORT.md` | All 100 agents audited |
-| `LOOPHOLE_CLOSURE.md` | 19 closed, 13 open with mitigations |
-| `CERTIFICATION.md` | Signed with build hash |
-| `All_fixes_done.md` | Agent certification log |
-
----
-
-*Last updated: 2026-05-18*
+**Last updated:** 2026-05-23
+**Orchestrator:** Pickle Rick (caveman mode)
+**Methodology:** Ralph iterative loop — work → verify → commit → next

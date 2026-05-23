@@ -107,7 +107,7 @@ pub unsafe fn init_bsp() {
 
     // Allocate aligned idle XSAVE area
     let xsave_size = xsave_area_size();
-    let mut idle_xsave = vec![0u8; xsave_size + 64];
+    let idle_xsave = vec![0u8; xsave_size + 64];
     let aligned = ((idle_xsave.as_ptr() as usize) + 63) & !63;
     per_cpu.idle_xsave = idle_xsave;
     per_cpu.idle_context.xsave_ptr = aligned as *mut u8;
@@ -159,7 +159,7 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
 
         // Allocate aligned idle XSAVE area
         let xsave_size = xsave_area_size();
-        let mut idle_xsave = vec![0u8; xsave_size + 64];
+        let idle_xsave = vec![0u8; xsave_size + 64];
         let aligned = ((idle_xsave.as_ptr() as usize) + 63) & !63;
         per_cpu.idle_xsave = idle_xsave;
         per_cpu.idle_context.xsave_ptr = aligned as *mut u8;

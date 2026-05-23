@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 
 use super::carrier::CarrierType;
 
+#[derive(Debug, Clone)]
 pub struct PackageManifest {
     pub name: String,
     pub version: String,

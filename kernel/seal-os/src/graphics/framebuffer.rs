@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use core::ptr;
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 pub struct Framebuffer {
     buffer: *mut u8,
@@ -9,6 +10,8 @@ pub struct Framebuffer {
     pub height: u32,
     pub pitch: u32,
     pub bpp: u8,
+    back_buffer: AtomicPtr<u32>,
+    back_buffer_len: AtomicUsize,
 }
 
 // SAFETY: The framebuffer pointer comes from UEFI firmware and remains valid for
@@ -24,6 +27,8 @@ impl Framebuffer {
             height: 0,
             pitch: 0,
             bpp: 0,
+            back_buffer: AtomicPtr::new(ptr::null_mut()),
+            back_buffer_len: AtomicUsize::new(0),
         }
     }
 
@@ -34,6 +39,8 @@ impl Framebuffer {
             height,
             pitch,
             bpp,
+            back_buffer: AtomicPtr::new(ptr::null_mut()),
+            back_buffer_len: AtomicUsize::new(0),
         }
     }
 
@@ -54,8 +61,44 @@ impl Framebuffer {
         read_back == test_color
     }
 
+    /// Allocate the back buffer. Safe to call multiple times; subsequent calls
+    /// are ignored. Must only be called after the heap is initialised.
+    pub fn init_back_buffer(&self) {
+        if !self.back_buffer.load(Ordering::Relaxed).is_null() {
+            return;
+        }
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let count = (self.width as usize).saturating_mul(self.height as usize);
+        let mut v = alloc::vec![0u32; count];
+        let ptr = v.as_mut_ptr();
+        self.back_buffer.store(ptr, Ordering::Relaxed);
+        self.back_buffer_len.store(count, Ordering::Relaxed);
+        core::mem::forget(v);
+    }
+
+    pub fn has_back_buffer(&self) -> bool {
+        !self.back_buffer.load(Ordering::Relaxed).is_null()
+    }
+
+    pub fn back_buffer_ptr(&self) -> *mut u32 {
+        self.back_buffer.load(Ordering::Relaxed)
+    }
+
     pub fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.width || y >= self.height || self.buffer.is_null() {
+            return;
+        }
+        let bb = self.back_buffer.load(Ordering::Relaxed);
+        if !bb.is_null() {
+            let idx = (y * self.width + x) as usize;
+            let len = self.back_buffer_len.load(Ordering::Relaxed);
+            if idx < len {
+                unsafe {
+                    ptr::write_volatile(bb.add(idx), color);
+                }
+            }
             return;
         }
         let bytes_per_pixel = (self.bpp as u32) / 8;
@@ -80,8 +123,30 @@ impl Framebuffer {
         self.fill_rect(0, 0, self.width, self.height, color);
     }
 
+    pub fn clear_back(&self, color: u32) {
+        let bb = self.back_buffer.load(Ordering::Relaxed);
+        if bb.is_null() {
+            return;
+        }
+        let len = self.back_buffer_len.load(Ordering::Relaxed);
+        for i in 0..len {
+            unsafe {
+                ptr::write_volatile(bb.add(i), color);
+            }
+        }
+    }
+
     pub fn get_pixel(&self, x: u32, y: u32) -> u32 {
         if x >= self.width || y >= self.height || self.buffer.is_null() {
+            return 0;
+        }
+        let bb = self.back_buffer.load(Ordering::Relaxed);
+        if !bb.is_null() {
+            let idx = (y * self.width + x) as usize;
+            let len = self.back_buffer_len.load(Ordering::Relaxed);
+            if idx < len {
+                return unsafe { ptr::read_volatile(bb.add(idx)) };
+            }
             return 0;
         }
         let bytes_per_pixel = (self.bpp as u32) / 8;
@@ -89,6 +154,38 @@ impl Framebuffer {
         unsafe {
             let pixel = self.buffer.offset(offset) as *mut u32;
             ptr::read_volatile(pixel)
+        }
+    }
+
+    /// Copy the back buffer to VRAM using `copy_nonoverlapping`.
+    /// Accounts for `pitch` vs `width * bpp/8`.
+    pub fn blit(&self) {
+        let bb = self.back_buffer.load(Ordering::Relaxed);
+        if bb.is_null() || self.buffer.is_null() {
+            return;
+        }
+        let bytes_per_pixel = (self.bpp as u32) / 8;
+        let row_pixels = self.width as usize;
+        if bytes_per_pixel == 4 {
+            unsafe {
+                for y in 0..self.height as usize {
+                    let src = bb.add(y * row_pixels);
+                    let dst = self.buffer.add(y * self.pitch as usize) as *mut u32;
+                    core::ptr::copy_nonoverlapping(src, dst, row_pixels);
+                }
+            }
+        } else {
+            for y in 0..self.height {
+                for x in 0..self.width {
+                    let idx = (y * self.width + x) as usize;
+                    let color = unsafe { ptr::read_volatile(bb.add(idx)) };
+                    let offset = (y * self.pitch + x * bytes_per_pixel) as isize;
+                    unsafe {
+                        let pixel = self.buffer.offset(offset) as *mut u32;
+                        ptr::write_volatile(pixel, color);
+                    }
+                }
+            }
         }
     }
 

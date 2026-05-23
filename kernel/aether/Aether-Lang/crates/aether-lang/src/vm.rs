@@ -15,8 +15,6 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;

@@ -8,7 +8,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskId(pub u64);
 
 pub struct Task {

@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use crate::drivers::bluetooth::BluetoothDriver;
 use crate::drivers::wifi::WifiDriver;
-use crate::fs::manifold_fs::{ManifoldFS, InodeKind};
+use crate::fs::manifold_fs::ManifoldFS;
 use crate::lang::AetherRuntime;
 
 use super::calculator::Calculator;

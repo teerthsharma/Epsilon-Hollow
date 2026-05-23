@@ -324,7 +324,7 @@ impl SealIde {
                         TEXT_FG
                     };
                     for wch in word.bytes() {
-                        let wpx = x + (col - word.len() as u32 + word.bytes().position(|b| b == wch).unwrap_or(0) as u32) * font::CHAR_WIDTH;
+                        let _wpx = x + (col - word.len() as u32 + word.bytes().position(|b| b == wch).unwrap_or(0) as u32) * font::CHAR_WIDTH;
                         // Simplified: just render the whole word
                     }
                     // Re-render word with color

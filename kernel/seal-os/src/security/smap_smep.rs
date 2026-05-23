@@ -8,7 +8,7 @@
 //! SMAP prevents the kernel from reading/writing user pages unless explicitly
 //! allowed via `stac`/`clac`.
 
-use x86_64::registers::control::{Cr4, Cr4Flags};
+use x86_64::registers::control::Cr4;
 
 /// Upper limit of user address space (non-canonical gap starts here).
 const USER_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000;

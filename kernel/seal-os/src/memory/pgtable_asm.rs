@@ -144,7 +144,7 @@ extern "C" {
 // Safe / unsafe Rust wrappers
 // ---------------------------------------------------------------------------
 
-/// Install a recursive self-map at PML4[511].
+/// Install a recursive self-map at PML4\[511\].
 ///
 /// # Safety
 /// `pml4_phys` must be the physical address of a valid, active PML4.

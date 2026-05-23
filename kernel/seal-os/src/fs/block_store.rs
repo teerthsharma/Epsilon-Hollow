@@ -13,7 +13,6 @@ use core::mem::size_of;
 use super::encoder::{ManifoldPayload, SpherePoint};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
-use crate::serial_println;
 
 const SECTOR_SIZE: usize = 512;
 const INODE_RECORD_SIZE: usize = 256;

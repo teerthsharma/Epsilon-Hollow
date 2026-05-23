@@ -9,7 +9,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
+use x86_64::{VirtAddr, structures::paging::PageTableFlags};
 
 use super::{slab, virt};
 

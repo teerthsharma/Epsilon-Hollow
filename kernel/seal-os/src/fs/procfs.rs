@@ -89,6 +89,14 @@ impl FileSystem for ProcFs {
         Err(VfsError::NotSupported)
     }
 
+    fn rmdir(&mut self, _path: &str) -> Result<(), VfsError> {
+        Err(VfsError::NotSupported)
+    }
+
+    fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
+        Err(VfsError::NotSupported)
+    }
+
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
         if handle.inode != 1 && handle.inode != 7 {
             return Err(VfsError::NotADirectory);
@@ -128,6 +136,8 @@ impl FileSystem for ProcFs {
                 atime: 0,
                 mtime: 0,
                 node_type: VfsNodeType::Directory,
+                major: 0,
+                minor: 0,
             }),
             2 | 3 | 4 | 5 => Ok(VfsNode {
                 size: 0,
@@ -138,6 +148,8 @@ impl FileSystem for ProcFs {
                 atime: 0,
                 mtime: 0,
                 node_type: VfsNodeType::File,
+                major: 0,
+                minor: 0,
             }),
             6 => Ok(VfsNode {
                 size: 2,
@@ -148,6 +160,8 @@ impl FileSystem for ProcFs {
                 atime: 0,
                 mtime: 0,
                 node_type: VfsNodeType::Symlink,
+                major: 0,
+                minor: 0,
             }),
             7 => Ok(VfsNode {
                 size: 0,
@@ -158,6 +172,8 @@ impl FileSystem for ProcFs {
                 atime: 0,
                 mtime: 0,
                 node_type: VfsNodeType::Directory,
+                major: 0,
+                minor: 0,
             }),
             _ => Err(VfsError::NotFound),
         }

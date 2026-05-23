@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use crate::wm::window::Window;
 
-use super::game_engine::{self, Rect, GAME_BG, SCORE_COLOR};
+use super::game_engine::{self, SCORE_COLOR};
 
 const CELL_SIZE: i32 = 12;
 const SNAKE_COLOR: u32 = 0x0044CC88;
