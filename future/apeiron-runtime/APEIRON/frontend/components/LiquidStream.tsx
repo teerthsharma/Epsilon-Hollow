@@ -128,7 +128,7 @@ export const LiquidStream = () => {
                         disabled={!input.trim()}
                         aria-label="Send thought"
                         title="Send thought"
-                        className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                        className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
                     >
                         <Send size={16} />
                     </button>
