@@ -1,0 +1,34 @@
+# Rust build artifacts — exclude EVERYWHERE
+**/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker itself
+.dockerignore
+Dockerfile*
+docker-compose*
+
+# CI / test outputs
+results/
+.benchmarks/
+.pytest_cache/
