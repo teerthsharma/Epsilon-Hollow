@@ -82,8 +82,11 @@ pub unsafe fn init(
                 continue;
             }
             let (word, bit) = frame_bit(frame);
+            let was_used = (bitmap[word] >> bit) & 1 != 0;
             bitmap[word] &= !(1 << bit);
-            *count += 1;
+            if was_used {
+                *count += 1;
+            }
             if frame > max_frame {
                 max_frame = frame;
             }
