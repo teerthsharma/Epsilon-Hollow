@@ -107,6 +107,28 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     cpu::smp::smp_init();
     serial_println!("[BOOT] SMP initialised, free frames = {}", memory::phys::free_count());
 
+    // Switch to the BSP idle kernel stack before enabling SMAP.
+    // The UEFI firmware stack lives in user-addressable low memory;
+    // once SMAP is enabled the kernel can no longer touch it.
+    unsafe {
+        let cpu = cpu::this_cpu();
+        let stack_top = cpu.kernel_stack.as_ptr() as u64 + cpu.kernel_stack.len() as u64;
+        let stack_top = stack_top & !0xF;
+        core::arch::asm!(
+            "mov rsp, {stack}",
+            "jmp {f}",
+            stack = in(reg) stack_top,
+            f = in(reg) kernel_main_continue as *const (),
+            in("rdi") info,
+            options(noreturn)
+        );
+    }
+}
+
+/// Continuation of `kernel_main` after switching to the idle kernel stack.
+/// Must not be inlined so the `jmp` target has a stable address.
+#[inline(never)]
+extern "C" fn kernel_main_continue(info: &BootInfo) -> ! {
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
     serial_println!("[BOOT] ACPI init done, free frames = {}", memory::phys::free_count());
@@ -147,19 +169,19 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     #[cfg(not(feature = "test-mode"))]
     {
         if info.fb_addr != 0 {
-            FRAMEBUFFER.call_once(|| unsafe {
-                Framebuffer::new(
+            crate::FRAMEBUFFER.call_once(|| unsafe {
+                crate::graphics::framebuffer::Framebuffer::new(
                     info.fb_addr, info.fb_width, info.fb_height, info.fb_pitch, info.fb_bpp,
                 )
             });
         }
-        if let Some(fb) = FRAMEBUFFER.get() {
+        if let Some(fb) = crate::FRAMEBUFFER.get() {
             fb.init_back_buffer();
         }
 
         graphics::topo_render::init();
 
-        if let Some(fb) = FRAMEBUFFER.get() {
+        if let Some(fb) = crate::FRAMEBUFFER.get() {
             serial_println!("[BOOT] Framebuffer available — graphical mode");
             boot_graphical(fb);
         } else {

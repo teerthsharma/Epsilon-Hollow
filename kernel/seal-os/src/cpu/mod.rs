@@ -105,6 +105,10 @@ pub unsafe fn init_bsp() {
     let per_cpu = &mut *ptr;
     crate::memory::gdt::init_tss_for_cpu(per_cpu);
 
+    // Set idle stack so context switches have a valid kernel stack
+    let stack_top = per_cpu.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
+    per_cpu.idle_context.rsp = stack_top & !0xF;
+
     // Allocate aligned idle XSAVE area
     let xsave_size = xsave_area_size();
     let idle_xsave = vec![0u8; xsave_size + 64];
@@ -156,6 +160,10 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
 
         let per_cpu = &mut *ptr;
         crate::memory::gdt::init_tss_for_cpu(per_cpu);
+
+        // Set idle stack so context switches have a valid kernel stack
+        let stack_top = per_cpu.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
+        per_cpu.idle_context.rsp = stack_top & !0xF;
 
         // Allocate aligned idle XSAVE area
         let xsave_size = xsave_area_size();
