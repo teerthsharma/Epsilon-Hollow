@@ -59,7 +59,7 @@ fi
 echo "[test_kernel] Running kernel tests in QEMU..."
 LOGFILE=$(mktemp)
 QEMU_EXIT=0
-timeout 120 "$QEMU" \
+timeout 10 "$QEMU" \
     -machine q35 \
     -drive if=pflash,format=raw,readonly=on,file="$OVMF_PATH" \
     -drive file="$IMG",format=raw \
