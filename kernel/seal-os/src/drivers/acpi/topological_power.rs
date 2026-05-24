@@ -300,14 +300,15 @@ pub fn thermal_governor_step() {
     }
 
     // Pre-emptive emergency throttle if trip predicted within 2 seconds.
-    if zones[predicted_trip].predict[1] > 0.0 {
+    let emergency_throttle = zones[predicted_trip].predict[1] > 0.0 && {
         let ttt = (T_TARGET - zones[predicted_trip].predict[0]) / zones[predicted_trip].predict[1];
-        if ttt < 2.0 {
-            apply_frequency_policy(1.0, PSTATE_COUNT - 1);
-            update_hyperbolic_pstate(PSTATE_COUNT - 1);
-        }
-    }
+        ttt < 2.0
+    };
     drop(zones);
+    if emergency_throttle {
+        apply_frequency_policy(1.0, PSTATE_COUNT - 1);
+        update_hyperbolic_pstate(PSTATE_COUNT - 1);
+    }
 
     // Print thermal map every ~1 second (10 × 100 ms steps)
     let accum = PRINT_ACCUM_TICKS.fetch_add(1, Ordering::Relaxed);
