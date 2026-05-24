@@ -249,6 +249,7 @@ pub fn sys_sigreturn() -> ! {
     let task_ptr = unsafe { crate::cpu::this_cpu().current_task };
     if task_ptr.is_null() {
         unsafe { crate::process::scheduler::yield_current() };
+        #[allow(unreachable_code)]
         loop {
             x86_64::instructions::hlt();
         }
@@ -261,6 +262,7 @@ pub fn sys_sigreturn() -> ! {
         crate::serial_println!("[signal] sys_sigreturn: no saved context");
         task.state = TaskState::Dead;
         unsafe { crate::process::scheduler::yield_current() };
+        #[allow(unreachable_code)]
         loop {
             x86_64::instructions::hlt();
         }

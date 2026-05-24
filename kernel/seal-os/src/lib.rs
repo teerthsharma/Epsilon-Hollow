@@ -177,6 +177,9 @@ extern "C" fn kernel_main_continue() -> ! {
     {
         serial_println!("[TEST-MODE] Running integration tests...");
         testing::runner::test_main();
+        // test_main diverges, but in case it doesn't:
+        #[allow(unreachable_code)]
+        loop { x86_64::instructions::hlt(); }
     }
 
     // Layer 3: Framebuffer (from UEFI GOP)
