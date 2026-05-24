@@ -12,6 +12,7 @@ pub struct MemoryDescriptor {
     pub ty: u32,
 }
 
+#[derive(Clone, Copy)]
 pub struct BootInfo {
     pub fb_addr: u64,
     pub fb_width: u32,
