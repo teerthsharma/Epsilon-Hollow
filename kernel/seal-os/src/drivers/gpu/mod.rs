@@ -1,15 +1,20 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! GPU driver — PCI vendor detection. 2D acceleration and compute dispatch are not yet implemented.
+//! GPU driver — PCI vendor detection with framebuffer init.
+//! 2D blit/fill supported on VirtIO-GPU and direct framebuffer access.
+//! 3D/compute dispatch requires vendor-signed firmware (GSP, SMU).
 
+pub mod amd;
 pub mod intel;
 pub mod nvidia;
 pub mod virtio_gpu;
 
+use crate::drivers::pci::PciDevice;
 use crate::serial_println;
 use spin::Mutex;
 
+static NVIDIA_GPU: Mutex<Option<nvidia::NvidiaGpu>> = Mutex::new(None);
 static VIRTIO_GPU: Mutex<Option<virtio_gpu::VirtioGpu>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -60,9 +65,17 @@ impl GpuDriver {
         }
     }
 
-    pub fn init_from_pci(&mut self, vendor_id: u16, _bar0: u32) {
-        self.vendor = GpuVendor::from_pci(vendor_id);
+    pub fn init_from_pci(&mut self, dev: &PciDevice) {
+        self.vendor = GpuVendor::from_pci(dev.vendor_id);
         self.initialized = true;
+
+        if self.vendor == GpuVendor::Nvidia {
+            if let Some(gpu) = unsafe { nvidia::NvidiaGpu::probe(dev) } {
+                self.vram_mb = gpu.fb_size_mb;
+                unsafe { gpu.init_sequence(dev); }
+                *NVIDIA_GPU.lock() = Some(gpu);
+            }
+        }
     }
 
     pub fn blit(&self, _src: *const u32, _dst: *mut u32, w: u32, h: u32) {
@@ -97,7 +110,11 @@ impl GpuDriver {
 
 pub fn init() {
     // Try vendor-specific drivers first.
-    if nvidia::init().is_some() {
+    if amd::init().is_some() {
+        return;
+    }
+    if let Some(gpu) = nvidia::init() {
+        *NVIDIA_GPU.lock() = Some(gpu);
         return;
     }
     if intel::init().is_some() {
@@ -116,7 +133,7 @@ pub fn init() {
     let devices = crate::drivers::pci::enumerate();
     for dev in &devices {
         if dev.class == 0x03 {
-            driver.init_from_pci(dev.vendor_id, dev.bar_address(0) as u32);
+            driver.init_from_pci(dev);
             crate::serial_println!(
                 "[GPU] {} display controller detected ({:04X}:{:04X}) -- no vendor driver",
                 driver.vendor().name(),

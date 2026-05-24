@@ -116,7 +116,7 @@ impl DhcpClient {
         let pkt = build_dhcp_packet(1, [0; 4], [0; 4], self.xid);
         let sock = crate::net::udp::socket();
         crate::net::udp::bind(sock, DHCP_CLIENT_PORT);
-        crate::net::udp::sendto(sock, &pkt, [255, 255, 255, 255], DHCP_SERVER_PORT);
+        crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4([255, 255, 255, 255]), DHCP_SERVER_PORT);
         Ok(())
     }
 
@@ -132,7 +132,7 @@ impl DhcpClient {
         let pkt = build_dhcp_packet(3, offered, server, self.xid);
         let sock = crate::net::udp::socket();
         crate::net::udp::bind(sock, DHCP_CLIENT_PORT);
-        crate::net::udp::sendto(sock, &pkt, [255, 255, 255, 255], DHCP_SERVER_PORT);
+        crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4([255, 255, 255, 255]), DHCP_SERVER_PORT);
         Ok(())
     }
 
@@ -218,7 +218,7 @@ pub fn dhcp_discover() {
     let pkt = build_dhcp_packet(1, [0; 4], [0; 4], *XID.lock());
     let sock = crate::net::udp::socket();
     crate::net::udp::bind(sock, DHCP_CLIENT_PORT);
-    crate::net::udp::sendto(sock, &pkt, [255, 255, 255, 255], DHCP_SERVER_PORT);
+    crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4([255, 255, 255, 255]), DHCP_SERVER_PORT);
 }
 
 pub fn handle_dhcp_packet(pkt: &[u8]) {
@@ -279,7 +279,7 @@ pub fn handle_dhcp_packet(pkt: &[u8]) {
                 let req = build_dhcp_packet(3, yiaddr, server_id, *XID.lock());
                 let sock = crate::net::udp::socket();
                 crate::net::udp::bind(sock, DHCP_CLIENT_PORT);
-                crate::net::udp::sendto(sock, &req, [255, 255, 255, 255], DHCP_SERVER_PORT);
+                crate::net::udp::sendto(sock, &req, crate::net::IpAddr::V4([255, 255, 255, 255]), DHCP_SERVER_PORT);
                 *DHCP_STATE.lock() = DhcpState::Request;
             }
         }

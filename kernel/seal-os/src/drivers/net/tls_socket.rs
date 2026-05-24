@@ -30,7 +30,7 @@ impl TlsSocket {
         self.tls.set_psk(psk);
     }
 
-    pub fn connect(&mut self, ip: [u8; 4], port: u16) -> Result<(), &'static str> {
+    pub fn connect(&mut self, ip: crate::net::IpAddr, port: u16) -> Result<(), &'static str> {
         self.tcp.connect(ip, port);
 
         let start = crate::drivers::interrupts::ticks();

@@ -17,6 +17,7 @@ pub struct TopoMesh {
     pub normals: Vec<[f32; 3]>,
     pub spherical_embedding: Vec<[u16; 32]>,
     pub bbox: BoundingBox,
+    pub vertex_colors: Vec<u32>,
 }
 
 pub struct BoundingBox {
@@ -541,7 +542,17 @@ fn rasterize_triangle(
     let flat_gray = (255.0 * face_brightness) as u8;
     let flat_color = ((flat_gray as u32) << 16) | ((flat_gray as u32) << 8) | (flat_gray as u32);
 
-    // Pre-compute per-vertex colours for Gouraud
+    // Vertex colour support
+    let use_vertex_colors = !mesh.vertex_colors.is_empty();
+    let mut vert_colors_rgb = [[0u8; 3]; 3];
+    if use_vertex_colors {
+        for i in 0..3 {
+            let c = mesh.vertex_colors[tri[i] as usize];
+            vert_colors_rgb[i] = [(c >> 16) as u8, (c >> 8) as u8, c as u8];
+        }
+    }
+
+    // Pre-compute per-vertex colours for Gouraud (grayscale fallback)
     let mut vert_colors = [[0u8; 3]; 3];
     if quality >= 3 {
         for i in 0..3 {
@@ -592,12 +603,43 @@ fn rasterize_triangle(
                     depth_buffer[idx] = z;
 
                     let color = match quality {
-                        1 | 2 => flat_color,
+                        1 | 2 => {
+                            if use_vertex_colors {
+                                let r = ((vert_colors_rgb[0][0] as u32
+                                    + vert_colors_rgb[1][0] as u32
+                                    + vert_colors_rgb[2][0] as u32)
+                                    / 3) as u8;
+                                let g = ((vert_colors_rgb[0][1] as u32
+                                    + vert_colors_rgb[1][1] as u32
+                                    + vert_colors_rgb[2][1] as u32)
+                                    / 3) as u8;
+                                let b = ((vert_colors_rgb[0][2] as u32
+                                    + vert_colors_rgb[1][2] as u32
+                                    + vert_colors_rgb[2][2] as u32)
+                                    / 3) as u8;
+                                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                            } else {
+                                flat_color
+                            }
+                        }
                         3 => {
-                            let r = (vert_colors[0][0] as f32 * b0
-                                + vert_colors[1][0] as f32 * b1
-                                + vert_colors[2][0] as f32 * b2) as u8;
-                            ((r as u32) << 16) | ((r as u32) << 8) | (r as u32)
+                            if use_vertex_colors {
+                                let r = (vert_colors_rgb[0][0] as f32 * b0
+                                    + vert_colors_rgb[1][0] as f32 * b1
+                                    + vert_colors_rgb[2][0] as f32 * b2) as u8;
+                                let g = (vert_colors_rgb[0][1] as f32 * b0
+                                    + vert_colors_rgb[1][1] as f32 * b1
+                                    + vert_colors_rgb[2][1] as f32 * b2) as u8;
+                                let b = (vert_colors_rgb[0][2] as f32 * b0
+                                    + vert_colors_rgb[1][2] as f32 * b1
+                                    + vert_colors_rgb[2][2] as f32 * b2) as u8;
+                                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                            } else {
+                                let r = (vert_colors[0][0] as f32 * b0
+                                    + vert_colors[1][0] as f32 * b1
+                                    + vert_colors[2][0] as f32 * b2) as u8;
+                                ((r as u32) << 16) | ((r as u32) << 8) | (r as u32)
+                            }
                         }
                         _ => {
                             // Phong-like per-pixel normal interpolation
@@ -628,8 +670,24 @@ fn rasterize_triangle(
                             let b = (nx * light[0] + ny * light[1] + nz * light[2])
                                 .max(0.0)
                                 .min(1.0);
-                            let g = (255.0 * b) as u8;
-                            ((g as u32) << 16) | ((g as u32) << 8) | (g as u32)
+                            if use_vertex_colors {
+                                let r = (vert_colors_rgb[0][0] as f32 * b0
+                                    + vert_colors_rgb[1][0] as f32 * b1
+                                    + vert_colors_rgb[2][0] as f32 * b2) as u8;
+                                let g = (vert_colors_rgb[0][1] as f32 * b0
+                                    + vert_colors_rgb[1][1] as f32 * b1
+                                    + vert_colors_rgb[2][1] as f32 * b2) as u8;
+                                let b_col = (vert_colors_rgb[0][2] as f32 * b0
+                                    + vert_colors_rgb[1][2] as f32 * b1
+                                    + vert_colors_rgb[2][2] as f32 * b2) as u8;
+                                let lit_r = ((r as f32 * b) as u8).min(255);
+                                let lit_g = ((g as f32 * b) as u8).min(255);
+                                let lit_b = ((b_col as f32 * b) as u8).min(255);
+                                ((lit_r as u32) << 16) | ((lit_g as u32) << 8) | (lit_b as u32)
+                            } else {
+                                let g = (255.0 * b) as u8;
+                                ((g as u32) << 16) | ((g as u32) << 8) | (g as u32)
+                            }
                         }
                     };
 

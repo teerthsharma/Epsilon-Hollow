@@ -42,7 +42,7 @@ use boot::boot_info::BootInfo;
 #[cfg(not(test))]
 use graphics::framebuffer::Framebuffer;
 
-pub const VERSION: &str = "0.4.0";
+pub const VERSION: &str = "0.4.5";
 
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();
@@ -52,6 +52,7 @@ pub fn framebuffer() -> Option<&'static Framebuffer> {
     FRAMEBUFFER.get()
 }
 
+use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Live governor epsilon value (stored as u64 bits).
@@ -76,6 +77,20 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
+    let kernel_start = x86_64::PhysAddr::new(info.kernel_base);
+    let kernel_end = x86_64::PhysAddr::new(info.kernel_base + info.kernel_size);
+    let fb_start = x86_64::PhysAddr::new(info.fb_addr);
+    let fb_size = info.fb_pitch as u64 * info.fb_height as u64;
+    let fb_end = x86_64::PhysAddr::new(info.fb_addr + fb_size);
+    unsafe {
+        memory::phys::init_high(
+            &info.memory_map[..info.memory_map_len],
+            kernel_start,
+            kernel_end,
+            fb_start,
+            fb_end,
+        );
+    }
     memory::topo_ram::init();
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();
@@ -167,17 +182,33 @@ fn boot_graphical(fb: &'static Framebuffer) {
         fb.width, fb.height, fb.bpp
     );
 
+    // Initialize drivers and VFS before login so /etc/passwd is available.
+    init_drivers();
+    if let Err(e) = fs::init_vfs() {
+        serial_println!("[WARN] VFS init failed: {:?}", e);
+    } else {
+        serial_println!("[ManifoldFS] Initialized");
+    }
+    memory::swap::init();
+    security::passwd::init_passwd();
+    security::shadow::shadow_init();
+    security::group::init_group();
+
     // First-boot login screen with mascot splash
     serial_println!("[LOGIN] Showing login screen");
     let mut login = graphics::login::LoginScreen::new();
     login.render(fb);
     fb.blit();
 
-    let login_start = drivers::interrupts::ticks();
+    let mut run_installer = false;
     loop {
         if let Some(event) = drivers::interrupts::poll_event() {
             if let wm::event::InputEvent::KeyPress(scancode) = event {
                 let ch = drivers::interrupts::scancode_to_char(scancode);
+                if ch == b'i' || ch == b'I' {
+                    run_installer = true;
+                    break;
+                }
                 if ch != 0 {
                     if login.key_press(ch) {
                         break;
@@ -187,14 +218,37 @@ fn boot_graphical(fb: &'static Framebuffer) {
                 }
             }
         }
-        // Auto-login after ~3 seconds of inactivity (timer ticks ≈ ms on APIC)
-        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
-            serial_println!("[LOGIN] Auto-login (timeout)");
-            break;
-        }
         x86_64::instructions::hlt();
     }
-    serial_println!("[LOGIN] Authenticated");
+
+    if let Some(user) = login.authenticated_user() {
+        crate::security::passwd::set_current_user(user.clone());
+        serial_println!("[LOGIN] Authenticated as {} (uid={})", user.username, user.uid);
+    } else {
+        serial_println!("[LOGIN] Authenticated");
+    }
+
+    // Default password reminder (shown every boot for v1)
+    serial_println!("[Lypnos Guard] Default login: seal / seal");
+    serial_println!("[Lypnos Guard] Press Ctrl+L to lock files into topological sleep.");
+
+    if run_installer {
+        serial_println!("[INSTALLER] Launching disk installer");
+        let mut installer = apps::installer::Installer::new();
+        installer.render(fb);
+        fb.blit();
+        loop {
+            if let Some(event) = drivers::interrupts::poll_event() {
+                if installer.handle_event(event) {
+                    break;
+                }
+                installer.render(fb);
+                fb.blit();
+            }
+            x86_64::instructions::hlt();
+        }
+        serial_println!("[INSTALLER] Completed — continuing to desktop");
+    }
 
     if wm::welcome::is_first_boot() {
         serial_println!("[WELCOME] Showing first-run welcome wizard");
@@ -223,7 +277,6 @@ fn boot_graphical(fb: &'static Framebuffer) {
     init_theorems();
     graphics::splash::draw_progress_bar(fb, 20, "Topology theorems");
 
-    serial_println!("[ManifoldFS] Initialized");
     graphics::splash::draw_progress_bar(fb, 30, "");
 
     init_scheduler();
@@ -242,10 +295,6 @@ fn boot_graphical(fb: &'static Framebuffer) {
     init_aether_lang();
     graphics::splash::draw_progress_bar(fb, 55, "");
 
-    init_drivers();
-    if let Err(e) = fs::init_vfs() {
-        serial_println!("[WARN] VFS init failed: {:?}", e);
-    }
     graphics::splash::draw_progress_bar(fb, 65, "Window manager");
 
     // Boot-time DHCP poll with 3-second timeout
@@ -324,9 +373,66 @@ fn boot_graphical(fb: &'static Framebuffer) {
     let mut last_tick: u64 = drivers::interrupts::ticks();
     let mut frame_dirty = false;
 
+    use core::sync::atomic::AtomicBool;
+    static CTRL_HELD: AtomicBool = AtomicBool::new(false);
+
     loop {
         while let Some(event) = drivers::interrupts::poll_event() {
-            app_state.handle_event(event, &mut compositor);
+            // Global keyboard shortcuts (TopCrypt / Lypnos Guard / Tensor View)
+            match event {
+                wm::event::InputEvent::KeyPress(0x1D) => {
+                    CTRL_HELD.store(true, Ordering::Relaxed);
+                }
+                wm::event::InputEvent::KeyRelease(0x1D) => {
+                    CTRL_HELD.store(false, Ordering::Relaxed);
+                }
+                wm::event::InputEvent::KeyPress(scancode)
+                    if CTRL_HELD.load(Ordering::Relaxed) =>
+                {
+                    match scancode {
+                        0x26 => {
+                            // Ctrl+L — Lypnos Lock
+                            let msg = lypnos_lock_selected(&mut app_state);
+                            serial_println!("{}", msg);
+                            frame_dirty = true;
+                            continue;
+                        }
+                        0x12 => {
+                            // Ctrl+E — Export
+                            let msg = topcrypt_export_selected(&mut app_state);
+                            serial_println!("{}", msg);
+                            frame_dirty = true;
+                            continue;
+                        }
+                        0x17 => {
+                            // Ctrl+I — Import
+                            let msg = topcrypt_import_selected(&mut app_state);
+                            serial_println!("{}", msg);
+                            frame_dirty = true;
+                            continue;
+                        }
+                        0x14 => {
+                            // Ctrl+T — Tensor View
+                            serial_println!("[Tensor Viewer] Launching...");
+                            crate::wm::app_launcher::launch_app(9);
+                            app_state.focus_app(9, &mut compositor);
+                            frame_dirty = true;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+
+            if !wm::desktop::handle_input(event, fb, &mut compositor, &mut app_state) {
+                app_state.handle_event(event, &mut compositor);
+            }
+            frame_dirty = true;
+        }
+
+        while let Some(app_id) = wm::app_launcher::poll_launch_queue() {
+            app_state.focus_app(app_id, &mut compositor);
             frame_dirty = true;
         }
 
@@ -342,6 +448,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
             app_state.render_dirty(&mut compositor);
             wm::desktop::render_desktop(fb);
             compositor.compose(fb);
+            wm::desktop::render_overlays(fb);
+            wm::desktop::render_notifications(fb);
             fb.blit();
             frame_dirty = false;
         }
@@ -350,6 +458,75 @@ fn boot_graphical(fb: &'static Framebuffer) {
         // compositor) get CPU time.  We resume here on the next tick.
         process::scheduler::yield_current();
         x86_64::instructions::hlt();
+    }
+}
+
+/// Lock the currently selected file in the file manager.
+fn lypnos_lock_selected(app_state: &mut wm::app_state::AppState) -> String {
+    let name = match app_state.file_manager.selected_name(&app_state.fs) {
+        Some(n) => n,
+        None => return String::from("[Lypnos Guard] No file selected."),
+    };
+    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+        Ok(id) => match app_state.fs.inode(id) {
+            Some(inode) => inode.data.clone(),
+            None => return format!("[Lypnos Guard] '{}' inode missing", name),
+        },
+        Err(_) => return format!("[Lypnos Guard] '{}' not found", name),
+    };
+    let mut topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
+    fs::topcrypt::lock_file(&mut topo, 0xBEEF);
+    let path = alloc::format!("{}/{}", app_state.file_manager.cwd(), name);
+    fs::topcrypt::mark_locked(&path);
+    alloc::format!("[Lypnos Guard] '{}' locked. Sweet dreams.", name)
+}
+
+/// Export the currently selected topological file to flat bytes.
+fn topcrypt_export_selected(app_state: &mut wm::app_state::AppState) -> String {
+    let name = match app_state.file_manager.selected_name(&app_state.fs) {
+        Some(n) if n.ends_with(".topo") => n,
+        Some(_) => return String::from("[TopCrypt] Selected file is not .topo"),
+        None => return String::from("[TopCrypt] No file selected."),
+    };
+    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+        Ok(id) => match app_state.fs.inode(id) {
+            Some(inode) => inode.data.clone(),
+            None => return format!("[TopCrypt] '{}' inode missing", name),
+        },
+        Err(_) => return format!("[TopCrypt] '{}' not found", name),
+    };
+    let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
+    let flat = fs::topcrypt::decode_bytes(&topo);
+    let out_name = alloc::format!("{}.flat", name);
+    match app_state.fs.store(&out_name, &flat, 0) {
+        Ok(_) => alloc::format!("[TopCrypt] File flattened for export: {} ({} bytes)", out_name, flat.len()),
+        Err(e) => alloc::format!("[TopCrypt] Export failed: {:?}", e),
+    }
+}
+
+/// Import the currently selected flat file into topological format.
+fn topcrypt_import_selected(app_state: &mut wm::app_state::AppState) -> String {
+    let name = match app_state.file_manager.selected_name(&app_state.fs) {
+        Some(n) => n,
+        None => return String::from("[TopCrypt] No file selected."),
+    };
+    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+        Ok(id) => match app_state.fs.inode(id) {
+            Some(inode) => inode.data.clone(),
+            None => return format!("[TopCrypt] '{}' inode missing", name),
+        },
+        Err(_) => return format!("[TopCrypt] '{}' not found", name),
+    };
+    let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
+    let blocks = topo.block_count as usize;
+    let topo_name = alloc::format!("{}.topo", name);
+    let serialized = fs::topcrypt::decode_bytes(&topo);
+    match app_state.fs.store(&topo_name, &serialized, app_state.file_manager.cwd()) {
+        Ok(id) => alloc::format!(
+            "[TopCrypt] File absorbed into manifold: {} → {} blocks on S² (inode {})",
+            topo_name, blocks, id
+        ),
+        Err(e) => alloc::format!("[TopCrypt] Import failed: {:?}", e),
     }
 }
 
@@ -364,6 +541,7 @@ fn boot_serial() {
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     }
+    memory::swap::init();
     init_usb();
     init_prefetch();
     init_async_runtime();
@@ -414,7 +592,8 @@ fn init_scheduler() {
 
 fn kernel_task_main() {
     loop {
-        // Kernel housekeeping — could monitor system health, etc.
+        // Kernel housekeeping — swap daemon and health monitoring.
+        crate::memory::swap::swap_out_daemon();
         crate::process::scheduler::yield_current();
     }
 }
@@ -447,6 +626,8 @@ fn init_aether_lang() {
 
 #[cfg(not(test))]
 fn init_drivers() {
+    drivers::cpu::intel::init();
+    unsafe { drivers::cpu::amd::init(); }
     drivers::pci::init();
     if drivers::block::ahci::init().is_none() {
         serial_println!("[AHCI] Initialization failed, continuing without AHCI");

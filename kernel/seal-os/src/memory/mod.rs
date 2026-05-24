@@ -14,6 +14,7 @@ pub mod mmap;
 pub mod pgtable_asm;
 pub mod phys;
 pub mod slab;
+pub mod swap;
 pub mod topo_ram;
 pub mod virt;
 

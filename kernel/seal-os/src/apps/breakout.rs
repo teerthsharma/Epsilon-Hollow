@@ -213,3 +213,9 @@ impl BreakoutGame {
     pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }
+
+pub fn main() {
+    loop {
+        crate::process::scheduler::yield_current();
+    }
+}

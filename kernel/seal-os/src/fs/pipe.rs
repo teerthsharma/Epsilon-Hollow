@@ -107,7 +107,7 @@ impl PipeFs {
 
 impl FileSystem for PipeFs {
     fn lookup(&self, _path: &str) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], _offset: u64) -> Result<usize, VfsError> {
@@ -123,31 +123,44 @@ impl FileSystem for PipeFs {
     }
 
     fn create(&mut self, _path: &str) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn mkdir(&mut self, _path: &str) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn unlink(&mut self, _path: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn rmdir(&mut self, _path: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn readdir(&self, _handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
-    fn stat(&self, _handle: VfsHandle) -> Result<VfsNode, VfsError> {
-        Err(VfsError::NotSupported)
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> {
+        let pipe = get_pipe(handle.inode).ok_or(VfsError::NotFound)?;
+        let guard = pipe.lock();
+        Ok(VfsNode {
+            size: guard.len as u64,
+            permissions: 0o600,
+            uid: 0,
+            gid: 0,
+            mode: 0o10600, // S_IFIFO | 0600
+            atime: 0,
+            mtime: 0,
+            node_type: VfsNodeType::Pipe,
+            major: 0,
+            minor: 0,
+        })
     }
 
     fn mknod(
@@ -157,6 +170,6 @@ impl FileSystem for PipeFs {
         _major: u32,
         _minor: u32,
     ) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 }

@@ -3,11 +3,14 @@
 
 //! Window manager: compositor, windows, event dispatch, cursor.
 
+pub mod app_launcher;
 pub mod app_state;
 pub mod compositor;
 pub mod cursor;
 pub mod desktop;
 pub mod event;
+pub mod power_menu;
+pub mod start_menu;
 pub mod taskbar;
 pub mod themes;
 pub mod welcome;

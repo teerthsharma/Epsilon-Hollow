@@ -6,6 +6,7 @@ pub mod apic;
 pub mod audio;
 pub mod bluetooth;
 pub mod block;
+pub mod cpu;
 pub mod disk;
 pub mod entropy;
 pub mod gpu;

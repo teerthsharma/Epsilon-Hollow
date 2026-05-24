@@ -423,3 +423,9 @@ fn parse_number(s: &str) -> Option<f64> {
     if negative { result = -result; }
     Some(result)
 }
+
+pub fn main() {
+    loop {
+        crate::process::scheduler::yield_current();
+    }
+}

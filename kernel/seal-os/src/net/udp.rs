@@ -18,9 +18,9 @@ struct UdpHeader {
 
 pub struct UdpSocket {
     local_port: u16,
-    remote_addr: Option<[u8; 4]>,
+    remote_addr: Option<crate::net::IpAddr>,
     remote_port: Option<u16>,
-    rx_buffer: Vec<([u8; 4], u16, Vec<u8>)>,
+    rx_buffer: Vec<(crate::net::IpAddr, u16, Vec<u8>)>,
 }
 
 impl UdpSocket {
@@ -37,13 +37,12 @@ impl UdpSocket {
         self.local_port = port;
     }
 
-    pub fn connect(&mut self, addr: [u8; 4], port: u16) {
+    pub fn connect(&mut self, addr: crate::net::IpAddr, port: u16) {
         self.remote_addr = Some(addr);
         self.remote_port = Some(port);
     }
 
-    pub fn sendto(&self, buf: &[u8], dst_addr: [u8; 4], dst_port: u16) {
-        let src_ip = crate::net::local_ip();
+    pub fn sendto(&self, buf: &[u8], dst_addr: crate::net::IpAddr, dst_port: u16) {
         let src_port = self.local_port;
         let length = (UDP_HEADER_LEN + buf.len()) as u16;
         let mut hdr = UdpHeader {
@@ -52,31 +51,64 @@ impl UdpSocket {
             length: length.to_be(),
             checksum: 0,
         };
-        let mut pseudo = Vec::with_capacity(12 + UDP_HEADER_LEN + buf.len());
-        pseudo.extend_from_slice(&src_ip);
-        pseudo.extend_from_slice(&dst_addr);
-        pseudo.push(0);
-        pseudo.push(17);
-        pseudo.extend_from_slice(&length.to_be_bytes());
-        let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &hdr as *const _ as *const u8,
-                core::mem::size_of::<UdpHeader>(),
-            )
-        };
-        pseudo.extend_from_slice(hdr_bytes);
-        pseudo.extend_from_slice(buf);
-        hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
-        let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
-        let hdr_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &hdr as *const _ as *const u8,
-                core::mem::size_of::<UdpHeader>(),
-            )
-        };
-        pkt.extend_from_slice(hdr_bytes);
-        pkt.extend_from_slice(buf);
-        crate::net::ipv4::send_ipv4_packet(dst_addr, 17, &pkt);
+        match dst_addr {
+            crate::net::IpAddr::V4(dst_addr) => {
+                let src_ip = crate::net::local_ip();
+                let mut pseudo = Vec::with_capacity(12 + UDP_HEADER_LEN + buf.len());
+                pseudo.extend_from_slice(&src_ip);
+                pseudo.extend_from_slice(&dst_addr);
+                pseudo.push(0);
+                pseudo.push(17);
+                pseudo.extend_from_slice(&length.to_be_bytes());
+                let hdr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &hdr as *const _ as *const u8,
+                        core::mem::size_of::<UdpHeader>(),
+                    )
+                };
+                pseudo.extend_from_slice(hdr_bytes);
+                pseudo.extend_from_slice(buf);
+                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+                let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
+                let hdr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &hdr as *const _ as *const u8,
+                        core::mem::size_of::<UdpHeader>(),
+                    )
+                };
+                pkt.extend_from_slice(hdr_bytes);
+                pkt.extend_from_slice(buf);
+                crate::net::ipv4::send_ipv4_packet(dst_addr, 17, &pkt);
+            }
+            crate::net::IpAddr::V6(dst_addr) => {
+                let src_ip = crate::net::local_ip_v6();
+                let mut pseudo = Vec::with_capacity(40 + UDP_HEADER_LEN + buf.len());
+                pseudo.extend_from_slice(&src_ip);
+                pseudo.extend_from_slice(&dst_addr);
+                pseudo.extend_from_slice(&(length as u32).to_be_bytes());
+                pseudo.push(0); pseudo.push(0); pseudo.push(0);
+                pseudo.push(17);
+                let hdr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &hdr as *const _ as *const u8,
+                        core::mem::size_of::<UdpHeader>(),
+                    )
+                };
+                pseudo.extend_from_slice(hdr_bytes);
+                pseudo.extend_from_slice(buf);
+                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+                let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
+                let hdr_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &hdr as *const _ as *const u8,
+                        core::mem::size_of::<UdpHeader>(),
+                    )
+                };
+                pkt.extend_from_slice(hdr_bytes);
+                pkt.extend_from_slice(buf);
+                crate::net::ipv6::send_ipv6_packet(dst_addr, 17, &pkt);
+            }
+        }
     }
 
     pub fn send(&self, buf: &[u8]) {
@@ -85,7 +117,7 @@ impl UdpSocket {
         }
     }
 
-    pub fn recvfrom(&mut self, buf: &mut [u8]) -> Option<(usize, [u8; 4], u16)> {
+    pub fn recvfrom(&mut self, buf: &mut [u8]) -> Option<(usize, crate::net::IpAddr, u16)> {
         if let Some((addr, port, data)) = self.rx_buffer.pop() {
             let len = data.len().min(buf.len());
             buf[..len].copy_from_slice(&data[..len]);
@@ -103,7 +135,7 @@ impl UdpSocket {
         self.local_port
     }
 
-    pub fn push_packet(&mut self, src: [u8; 4], src_port: u16, data: Vec<u8>) {
+    pub fn push_packet(&mut self, src: crate::net::IpAddr, src_port: u16, data: Vec<u8>) {
         if self.rx_buffer.len() > 64 {
             self.rx_buffer.remove(0);
         }
@@ -136,14 +168,14 @@ pub fn bind(idx: usize, port: u16) {
     }
 }
 
-pub fn connect(idx: usize, addr: [u8; 4], port: u16) {
+pub fn connect(idx: usize, addr: crate::net::IpAddr, port: u16) {
     let mut sockets = UDP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
         sock.connect(addr, port);
     }
 }
 
-pub fn sendto(idx: usize, buf: &[u8], dst_addr: [u8; 4], dst_port: u16) {
+pub fn sendto(idx: usize, buf: &[u8], dst_addr: crate::net::IpAddr, dst_port: u16) {
     let sockets = UDP_SOCKETS.lock();
     if let Some(sock) = sockets.get(idx) {
         sock.sendto(buf, dst_addr, dst_port);
@@ -157,7 +189,7 @@ pub fn send(idx: usize, buf: &[u8]) {
     }
 }
 
-pub fn recvfrom(idx: usize, buf: &mut [u8]) -> Option<(usize, [u8; 4], u16)> {
+pub fn recvfrom(idx: usize, buf: &mut [u8]) -> Option<(usize, crate::net::IpAddr, u16)> {
     let mut sockets = UDP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
         sock.recvfrom(buf)
@@ -170,7 +202,7 @@ pub fn recv(idx: usize, buf: &mut [u8]) -> Option<usize> {
     recvfrom(idx, buf).map(|(len, _, _)| len)
 }
 
-pub fn handle_udp_packet(src: [u8; 4], pkt: &[u8]) {
+pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
     if pkt.len() < UDP_HEADER_LEN {
         return;
     }

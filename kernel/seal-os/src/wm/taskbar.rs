@@ -1,10 +1,12 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Bottom taskbar: theorem status indicators, clock, seal logo.
+//! Bottom taskbar: theorem status indicators, clock, start/power buttons.
 
+use alloc::string::String;
 use core::sync::atomic::Ordering;
 
+use crate::graphics::font;
 use crate::graphics::framebuffer::Framebuffer;
 use crate::{GOVERNOR_EPSILON, THEOREM_STATES};
 
@@ -20,13 +22,20 @@ pub fn draw_taskbar(fb: &Framebuffer) {
     // Top border line
     fb.fill_rect(0, y, fb.width, 1, theme.border);
 
+    // Start button (left)
+    fb.fill_rect(4, y + 4, 72, 20, theme.accent);
+    let start_label = "Seal";
+    let start_w = start_label.len() as u32 * font::CHAR_WIDTH;
+    let start_x = 4 + (72 - start_w) / 2;
+    for (i, ch) in start_label.bytes().enumerate() {
+        font::draw_char(fb, start_x + i as u32 * font::CHAR_WIDTH, y + 6, ch, 0xFFFFFF);
+    }
+
     // Theorem indicators (small colored squares)
-    let names = ["T1", "T2", "T3", "T4", "T5"];
-    for (i, _name) in names.iter().enumerate() {
+    for (i, _name) in ["T1", "T2", "T3", "T4", "T5"].iter().enumerate() {
         let active = THEOREM_STATES[i].load(Ordering::Relaxed);
-        let x = 10 + i as u32 * 50;
+        let x = 90 + i as u32 * 50;
         let color = if active { theme.accent } else { 0x00404040 };
-        // Indicator dot
         fb.fill_rect(x, y + 8, 10, 10, color);
     }
 
@@ -34,11 +43,25 @@ pub fn draw_taskbar(fb: &Framebuffer) {
     let _epsilon = f64::from_bits(GOVERNOR_EPSILON.load(Ordering::Relaxed));
     fb.fill_rect(270, y + 6, 80, 14, theme.bg);
 
-    // Seal OS branding on the right
-    let brand_x = fb.width - 120;
-    fb.fill_rect(brand_x, y + 6, 110, 14, theme.bg);
+    // Clock (center)
+    let time_str = format_time();
+    let clock_w = time_str.len() as u32 * font::CHAR_WIDTH;
+    let clock_x = fb.width / 2 - clock_w / 2;
+    for (i, ch) in time_str.bytes().enumerate() {
+        font::draw_char(fb, clock_x + i as u32 * font::CHAR_WIDTH, y + 6, ch, theme.fg);
+    }
+
+    // Power button (right)
+    let power_x = fb.width - 36;
+    fb.fill_rect(power_x, y + 6, 24, 16, 0xFF4444);
+    font::draw_char(fb, power_x + 8, y + 6, b'P', 0xFFFFFF);
 }
 
 pub fn taskbar_height() -> u32 {
     TASKBAR_HEIGHT
+}
+
+fn format_time() -> String {
+    let t = crate::drivers::rtc::read_time();
+    alloc::format!("{:02}:{:02}:{:02}", t.hour, t.min, t.sec)
 }

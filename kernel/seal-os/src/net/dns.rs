@@ -137,7 +137,7 @@ pub fn resolve(name: &str) -> Result<Option<[u8; 4]>, &'static str> {
 
     let server = *DNS_SERVER.lock();
     let sock = crate::net::udp::socket();
-    crate::net::udp::sendto(sock, &pkt, server, 53);
+    crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4(server), 53);
     Ok(None)
 }
 
@@ -179,7 +179,7 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
 
     let server = *DNS_SERVER.lock();
     let sock = crate::net::udp::socket();
-    crate::net::udp::sendto(sock, &pkt, server, 53);
+    crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4(server), 53);
     None
 }
 

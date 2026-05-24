@@ -13,9 +13,12 @@ use alloc::vec::Vec;
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
 
+use spin::Mutex;
+
 use super::block_store::{BlockStore, MountError};
 use super::dir_hash::DirHash;
 use super::encoder::{self, ManifoldPayload};
+use super::ext2::Ext2Fs;
 use super::inode_slab::InodeSlab;
 use super::path_cache::PathCache;
 use super::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
@@ -85,6 +88,8 @@ pub struct ManifoldFS {
     total_teleports: u64,
     total_lookups: u64,
     activity_log: Vec<TheoremEvent>,
+    /// Optional ext2 backend for faithful raw-byte persistence.
+    ext2_backend: Option<Mutex<Ext2Fs>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +134,33 @@ impl ManifoldFS {
     pub fn new_with_mock_store(num_sectors: usize) -> Self {
         let store = BlockStore::with_mock(num_sectors);
         Self::init_with_store(store)
+    }
+
+    /// Attach an ext2 filesystem as the raw-byte persistence backend.
+    pub fn set_ext2_backend(&mut self, mut ext2: Ext2Fs) {
+        // Best-effort creation of the manifold shadow directory.
+        let _ = ext2.mkdir("/manifold");
+        let _ = ext2.mkdir("/manifold/raw");
+        self.ext2_backend = Some(Mutex::new(ext2));
+    }
+
+    /// Write raw bytes to the ext2 backend for faithful persistence.
+    fn persist_raw_to_ext2(&self, inode_id: u64, data: &[u8]) {
+        if let Some(ref ext2) = self.ext2_backend {
+            let mut ext2_guard = ext2.lock();
+            let path = format!("/manifold/raw/{}", inode_id);
+            let handle = match ext2_guard.lookup(&path) {
+                Ok(h) => h,
+                Err(_) => {
+                    if let Ok(h) = ext2_guard.create(&path) {
+                        h
+                    } else {
+                        return;
+                    }
+                }
+            };
+            let _ = ext2_guard.write(handle, data, 0);
+        }
     }
 
     fn init_with_store(store: BlockStore) -> Self {
@@ -229,6 +261,7 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            ext2_backend: None,
         };
         fs.update_entropy();
         fs
@@ -288,6 +321,7 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            ext2_backend: None,
         }
     }
 
@@ -343,6 +377,8 @@ impl ManifoldFS {
         if let Some(ino) = self.inodes.get(id) {
             let _ = self.store.write_inode(ino, data);
         }
+        // Persist raw bytes to ext2 backend for faithful read/write.
+        self.persist_raw_to_ext2(id, data);
         self.log_event("T1/TSS", format!("stored '{}' -> cell {}", name, cell));
 
         Ok(id)
@@ -406,6 +442,7 @@ impl ManifoldFS {
         if let Some(inode) = self.inodes.get(inode_id) {
             let data = inode.data.clone();
             let _ = self.store.write_inode(inode, &data);
+            self.persist_raw_to_ext2(inode_id, &data);
         }
 
         self.check_entropy_and_merge();
@@ -794,6 +831,9 @@ impl ManifoldFS {
     }
 
     pub fn rename(&mut self, old: &str, new: &str, dir_id: u64) -> Result<(), FsError> {
+        if old == new {
+            return Ok(());
+        }
         let inode_id = self.dirs.lookup(dir_id, old).ok_or(FsError::NotFound)?;
 
         if self.exists(new, dir_id) {
@@ -980,7 +1020,7 @@ impl FileSystem for ManifoldFS {
     fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
         let inode = self.inodes.get_mut(handle.inode).ok_or(VfsError::NotFound)?;
         if !matches!(inode.kind, InodeKind::File) {
-            return Err(VfsError::NotSupported);
+            return Err(VfsError::InvalidOperation);
         }
         inode.payload = encoder::encode_data(buf);
         inode.data = Vec::from(buf);
@@ -988,6 +1028,7 @@ impl FileSystem for ManifoldFS {
         inode.metadata.modified_ms = now_ms();
         let data = inode.data.clone();
         let _ = self.store.write_inode(inode, &data);
+        self.persist_raw_to_ext2(handle.inode, buf);
         Ok(buf.len())
     }
 
@@ -1026,11 +1067,25 @@ impl FileSystem for ManifoldFS {
         let (new_dir, new_name) = split_path(new_path)?;
         let old_dir_id = self.resolve_path(old_dir).map_err(map_err)?;
         let new_dir_id = self.resolve_path(new_dir).map_err(map_err)?;
-        if old_dir_id != new_dir_id {
-            // Cross-directory rename not yet supported.
-            return Err(VfsError::NotSupported);
+        if old_dir_id == new_dir_id {
+            self.rename(old_name, new_name, old_dir_id).map_err(map_err)
+        } else {
+            let inode_id = self.dirs.lookup(old_dir_id, old_name).ok_or(VfsError::NotFound)?;
+            if self.dirs.lookup(new_dir_id, new_name).is_some() {
+                return Err(VfsError::AlreadyExists);
+            }
+            self.unlink_child(old_dir_id, inode_id);
+            self.dirs.remove(old_dir_id, old_name);
+            self.dirs.insert(new_dir_id, new_name, inode_id);
+            if let Some(inode) = self.inodes.get_mut(inode_id) {
+                inode.name = String::from(new_name);
+                inode.parent = new_dir_id;
+                inode.metadata.modified_ms = now_ms();
+            }
+            self.link_child(new_dir_id, inode_id);
+            self.path_cache.bump_generation();
+            Ok(())
         }
-        self.rename(old_name, new_name, old_dir_id).map_err(map_err)
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
@@ -1079,12 +1134,75 @@ impl FileSystem for ManifoldFS {
 
     fn mknod(
         &mut self,
-        _path: &str,
-        _node_type: VfsNodeType,
-        _major: u32,
-        _minor: u32,
+        path: &str,
+        node_type: VfsNodeType,
+        major: u32,
+        minor: u32,
     ) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        if matches!(node_type, VfsNodeType::Directory | VfsNodeType::Symlink) {
+            return Err(VfsError::InvalidOperation);
+        }
+        let (dir_path, name) = split_path(path)?;
+        let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
+        if self.dirs.lookup(dir_id, name).is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+        let payload = encoder::encode_data(b"");
+        let (cell, subcell) = self.voronoi.insert(0, &payload);
+        let kind = InodeKind::File;
+        let perms = 0o666;
+        let inode = Inode {
+            id: 0,
+            name: String::from(name),
+            kind,
+            payload,
+            data: Vec::new(),
+            metadata: InodeMetadata {
+                created_ms: now_ms(),
+                modified_ms: now_ms(),
+                original_size: 0,
+                permissions: perms,
+            },
+            voronoi_cell: cell,
+            cluster_id: cell as i32,
+            parent: dir_id,
+            sibling_next: None,
+            sibling_prev: None,
+            dir_first_child: None,
+        };
+        let id = self.inodes.alloc(inode);
+        self.voronoi.remove(0, cell, subcell);
+        let payload_ref = match self.inodes.get(id) {
+            Some(i) => &i.payload,
+            None => return Err(VfsError::NotFound),
+        };
+        let (cell, _subcell) = self.voronoi.insert(id, payload_ref);
+        if let Some(ino) = self.inodes.get_mut(id) {
+            ino.voronoi_cell = cell;
+            ino.cluster_id = cell as i32;
+        }
+        self.dirs.insert(dir_id, name, id);
+        self.link_child(dir_id, id);
+        self.cluster_sizes[cell] += 1;
+        self.update_entropy();
+        self.log_event("T1/TSS", format!("mknod '{}' major={} minor={}", name, major, minor));
+        Ok(VfsHandle { fs_idx: 0, inode: id })
+    }
+
+    fn sync(&mut self) -> Result<(), VfsError> {
+        // Flush BlockStore persistence layer (journal + bitmap + inode table).
+        let _ = self.store.sync();
+        if let Some(ref ext2) = self.ext2_backend {
+            let _ = ext2.lock().sync();
+        }
+        Ok(())
+    }
+
+    fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
+        // ManifoldFS writes through on every operation;
+        // fsync delegates to the global store flush.
+        let _ = self.store.sync();
+        Ok(())
     }
 }
 

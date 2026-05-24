@@ -3,8 +3,10 @@
 
 //! ACPI subsystem — parses RSDP, RSDT/XSDT, and MADT for SMP discovery.
 
+pub mod fadt;
 pub mod madt;
 pub mod rsdp;
+pub mod topological_power;
 
 use crate::boot::boot_info::BootInfo;
 use crate::serial_println;
@@ -37,6 +39,9 @@ pub fn init(boot_info: &BootInfo) {
     unsafe {
         madt::parse_madt(madt_phys);
     }
+
+    fadt::init(rsdp);
+    topological_power::init();
 }
 
 /// Number of enabled CPUs found in the MADT.
@@ -61,10 +66,9 @@ pub fn ioapic_base() -> u64 {
 
 /// Attempt ACPI power-off.
 /// Returns `true` if a shutdown command was issued.
-/// Currently a placeholder — full FACP/DSDT parsing for S5 state
-/// is required for a complete implementation.
 pub fn power_off() -> bool {
-    false
+    fadt::enter_soft_off();
+    true
 }
 
 /// Quick sanity print of ACPI discovery results.

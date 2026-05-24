@@ -95,7 +95,7 @@ pub struct TcpSocket {
     state: TcpState,
     local_port: u16,
     remote_port: u16,
-    remote_ip: [u8; 4],
+    remote_ip: crate::net::IpAddr,
     seq_num: u32,
     ack_num: u32,
     rx_buffer: Vec<u8>,
@@ -111,7 +111,7 @@ impl TcpSocket {
             state: TcpState::Closed,
             local_port,
             remote_port: 0,
-            remote_ip: [0; 4],
+            remote_ip: crate::net::IpAddr::V4([0; 4]),
             seq_num: 1000,
             ack_num: 0,
             rx_buffer: Vec::new(),
@@ -122,7 +122,7 @@ impl TcpSocket {
         }
     }
 
-    pub fn connect(&mut self, ip: [u8; 4], port: u16) {
+    pub fn connect(&mut self, ip: crate::net::IpAddr, port: u16) {
         self.remote_ip = ip;
         self.remote_port = port;
         self.state = TcpState::SynSent;
@@ -167,7 +167,6 @@ impl TcpSocket {
     }
 
     fn send_tcp_packet(&mut self, flags: u16, payload: &[u8]) {
-        let src_ip = crate::net::local_ip();
         let mut hdr = TcpHeader {
             src_port: self.local_port.to_be(),
             dst_port: self.remote_port.to_be(),
@@ -178,22 +177,44 @@ impl TcpSocket {
             checksum: 0,
             urgent: 0,
         };
-        let mut pseudo = Vec::with_capacity(12 + 20 + payload.len());
-        pseudo.extend_from_slice(&src_ip);
-        pseudo.extend_from_slice(&self.remote_ip);
-        pseudo.push(0);
-        pseudo.push(6);
-        pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-        let hdr_bytes = hdr.to_bytes();
-        pseudo.extend_from_slice(&hdr_bytes);
-        pseudo.extend_from_slice(payload);
-        let cksum = crate::net::ipv4::internet_checksum(&pseudo);
-        // SAFETY: Use addr_of_mut! to avoid unaligned reference to packed field.
-        unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
-        let mut pkt = Vec::with_capacity(20 + payload.len());
-        pkt.extend_from_slice(&hdr.to_bytes());
-        pkt.extend_from_slice(payload);
-        crate::net::ipv4::send_ipv4_packet(self.remote_ip, 6, &pkt);
+        match self.remote_ip {
+            crate::net::IpAddr::V4(remote_ip) => {
+                let src_ip = crate::net::local_ip();
+                let mut pseudo = Vec::with_capacity(12 + 20 + payload.len());
+                pseudo.extend_from_slice(&src_ip);
+                pseudo.extend_from_slice(&remote_ip);
+                pseudo.push(0);
+                pseudo.push(6);
+                pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+                let hdr_bytes = hdr.to_bytes();
+                pseudo.extend_from_slice(&hdr_bytes);
+                pseudo.extend_from_slice(payload);
+                let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+                unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+                let mut pkt = Vec::with_capacity(20 + payload.len());
+                pkt.extend_from_slice(&hdr.to_bytes());
+                pkt.extend_from_slice(payload);
+                crate::net::ipv4::send_ipv4_packet(remote_ip, 6, &pkt);
+            }
+            crate::net::IpAddr::V6(remote_ip) => {
+                let src_ip = crate::net::local_ip_v6();
+                let mut pseudo = Vec::with_capacity(40 + 20 + payload.len());
+                pseudo.extend_from_slice(&src_ip);
+                pseudo.extend_from_slice(&remote_ip);
+                pseudo.extend_from_slice(&((20 + payload.len()) as u32).to_be_bytes());
+                pseudo.push(0); pseudo.push(0); pseudo.push(0);
+                pseudo.push(6);
+                let hdr_bytes = hdr.to_bytes();
+                pseudo.extend_from_slice(&hdr_bytes);
+                pseudo.extend_from_slice(payload);
+                let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+                unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+                let mut pkt = Vec::with_capacity(20 + payload.len());
+                pkt.extend_from_slice(&hdr.to_bytes());
+                pkt.extend_from_slice(payload);
+                crate::net::ipv6::send_ipv6_packet(remote_ip, 6, &pkt);
+            }
+        }
 
         if !payload.is_empty() || flags & FLAG_SYN != 0 || flags & FLAG_FIN != 0 {
             self.retransmit_queue.push(RetransmitEntry {
@@ -226,7 +247,7 @@ impl TcpSocket {
 
 static TCP_SOCKETS: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
 static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(40000);
-static PENDING_SYN_QUEUE: Mutex<Vec<(u16, [u8; 4], u16, u32)>> = Mutex::new(Vec::new());
+static PENDING_SYN_QUEUE: Mutex<Vec<(u16, crate::net::IpAddr, u16, u32)>> = Mutex::new(Vec::new());
 
 pub fn init() {}
 
@@ -267,7 +288,7 @@ pub fn accept(idx: usize) -> Option<usize> {
     None
 }
 
-pub fn connect(idx: usize, ip: [u8; 4], port: u16) {
+pub fn connect(idx: usize, ip: crate::net::IpAddr, port: u16) {
     let mut sockets = TCP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
         sock.connect(ip, port);
@@ -343,7 +364,7 @@ pub fn poll() {
     }
 }
 
-pub fn handle_tcp_packet(src: [u8; 4], pkt: &[u8]) {
+pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
     if pkt.len() < 20 {
         return;
     }
@@ -457,7 +478,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::Established);
         assert_eq!(sockets[idx].ack_num, 501);
@@ -474,7 +495,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::CloseWait);
         assert_eq!(sockets[idx].ack_num, 501);
@@ -490,7 +511,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet([192, 168, 1, 1], &pkt);
+        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::TimeWait);
     }
@@ -499,7 +520,7 @@ mod tests {
     fn test_close_to_syn_sent() {
         let mut sock = TcpSocket::new(1234);
         assert_eq!(sock.state, TcpState::Closed);
-        sock.connect([192, 168, 1, 1], 80);
+        sock.connect(crate::net::IpAddr::V4([192, 168, 1, 1]), 80);
         assert_eq!(sock.state, TcpState::SynSent);
     }
 
@@ -507,7 +528,7 @@ mod tests {
     fn test_retransmit_queue() {
         let mut sock = TcpSocket::new(1234);
         sock.remote_port = 80;
-        sock.remote_ip = [127, 0, 0, 1];
+        sock.remote_ip = crate::net::IpAddr::V4([127, 0, 0, 1]);
         sock.seq_num = 1000;
         sock.state = TcpState::Established;
         sock.send(b"hello");
@@ -544,7 +565,7 @@ mod tests {
     #[test]
     fn test_tcp_syn() {
         let idx = socket();
-        connect(idx, [127, 0, 0, 1], 80);
+        connect(idx, crate::net::IpAddr::V4([127, 0, 0, 1]), 80);
         let sockets = TCP_SOCKETS.lock();
         let sock = &sockets[idx];
         assert_eq!(sock.state, TcpState::SynSent);
@@ -561,7 +582,7 @@ mod tests {
 
         // Simulate an incoming SYN to port 8080
         let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
-        handle_tcp_packet([192, 168, 1, 1], &syn_pkt);
+        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &syn_pkt);
 
         // Process pending SYNs
         poll();

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 
 use super::encoder::{ManifoldPayload, SpherePoint};
+use super::journal::{TopologicalJournal, compute_manifold_embedding};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
 
@@ -352,6 +353,7 @@ pub struct BlockStore {
     bitmap: Vec<u8>,
     journal_seq: u64,
     journal_pos: u64,
+    topo_journal: Option<TopologicalJournal>,
 }
 
 impl BlockStore {
@@ -367,6 +369,7 @@ impl BlockStore {
             bitmap: Vec::new(),
             journal_seq: 0,
             journal_pos: 0,
+            topo_journal: Some(TopologicalJournal::new()),
         }
     }
 
@@ -374,6 +377,7 @@ impl BlockStore {
         let mut s = Self::new();
         s.backend = Some(Box::new(MockBackend::new(num_sectors)));
         let _ = s.format(num_sectors as u64);
+        s.topo_journal = Some(TopologicalJournal::new());
         s
     }
 
@@ -385,6 +389,7 @@ impl BlockStore {
             let mut s = Self::new();
             s.backend = Some(Box::new(backend));
             s.format(1024 * 1024)?;
+            s.topo_journal = Some(TopologicalJournal::new());
             return Ok(s);
         }
         let mut s = Self::new();
@@ -393,6 +398,12 @@ impl BlockStore {
         s.read_bitmap()?;
         s.read_inode_table()?;
         s.replay_journal()?;
+        if let Some(ref mut journal) = s.topo_journal {
+            if let Some(ref backend) = s.backend {
+                let sb = s.superblock.as_ref().ok_or(BlockError::NoDevice)?;
+                let _ = journal.replay(backend.as_ref(), sb.journal_start, sb.journal_blocks);
+            }
+        }
         Ok(s)
     }
 
@@ -412,6 +423,14 @@ impl BlockStore {
         s.read_bitmap().map_err(|_| MountError::NoSuperblock)?;
         s.read_inode_table().map_err(|_| MountError::NoSuperblock)?;
         s.replay_journal().map_err(|_| MountError::NoSuperblock)?;
+        s.topo_journal = Some(TopologicalJournal::new());
+        if let Some(ref mut journal) = s.topo_journal {
+            if let Some(ref backend) = s.backend {
+                if let Some(ref sb) = s.superblock {
+                    let _ = journal.replay(backend.as_ref(), sb.journal_start, sb.journal_blocks);
+                }
+            }
+        }
         Ok(s)
     }
 
@@ -435,6 +454,7 @@ impl BlockStore {
 
         self.journal_seq = 0;
         self.journal_pos = sb.journal_start;
+        self.topo_journal = Some(TopologicalJournal::new());
 
         if let Some(ref backend) = self.backend {
             backend.write_sector(0, sb.as_bytes())?;
@@ -734,6 +754,21 @@ impl BlockStore {
     }
 
     fn write_data_extent(&mut self, lba: u64, blocks: usize, data: &[u8]) -> Result<(), BlockError> {
+        // Record topological journal entry for atomicity.
+        // Avoid double-borrow of self by reading extent before touching journal.
+        let before = if self.topo_journal.is_some() {
+            Some(match self.read_data_extent(lba, blocks) {
+                Ok(extent) => extent,
+                Err(_) => vec![0u8; blocks * SECTOR_SIZE],
+            })
+        } else {
+            None
+        };
+        if let (Some(journal), Some(before)) = (self.topo_journal.as_mut(), before) {
+            let embedding = compute_manifold_embedding(data);
+            journal.record_change(lba as u32, &before, data, embedding);
+        }
+
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         for i in 0..blocks {
             let start = i * SECTOR_SIZE;
@@ -877,6 +912,17 @@ impl BlockStore {
     }
 
     pub fn flush_all(&mut self) -> Result<(), BlockError> {
+        // T4: commit topological journal before making metadata durable.
+        if let Some(ref mut journal) = self.topo_journal {
+            if journal.is_dirty() {
+                if let Some(ref sb) = self.superblock {
+                    if let Some(ref backend) = self.backend {
+                        journal.commit(backend.as_ref(), sb.journal_start, sb.journal_blocks)?;
+                    }
+                }
+            }
+        }
+
         let dirty: Vec<u64> = self.dirty_inodes.drain(..).collect();
         for id in &dirty {
             self.flush_inode(*id)?;

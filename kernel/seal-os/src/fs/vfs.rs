@@ -17,6 +17,7 @@ pub enum VfsNodeType {
     Symlink,
     CharDevice,
     BlockDevice,
+    Pipe,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,7 @@ pub enum VfsError {
     NotSupported,
     IoError,
     PermissionDenied,
+    InvalidOperation,
 }
 
 impl core::fmt::Display for VfsError {
@@ -68,6 +70,7 @@ impl core::fmt::Display for VfsError {
             Self::NotSupported => write!(f, "not supported"),
             Self::IoError => write!(f, "I/O error"),
             Self::PermissionDenied => write!(f, "permission denied"),
+            Self::InvalidOperation => write!(f, "invalid operation"),
         }
     }
 }
@@ -90,6 +93,14 @@ pub trait FileSystem: Send + Sync {
         major: u32,
         minor: u32,
     ) -> Result<VfsHandle, VfsError>;
+    /// Synchronize all dirty buffers and metadata to persistent storage.
+    fn sync(&mut self) -> Result<(), VfsError> {
+        Ok(())
+    }
+    /// Synchronize a single file's dirty data to persistent storage.
+    fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
+        Ok(())
+    }
 }
 
 pub struct MountPoint {
@@ -152,11 +163,26 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let fs_guard = mount.fs.lock();
         let handle = fs_guard.lookup(rel)?;
-        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
-        Ok(VfsHandle {
+        let vfs_handle = VfsHandle {
             fs_idx,
             inode: handle.inode,
-        })
+        };
+        drop(fs_guard);
+        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
+        // T1–T5: Enforce node-level permissions on lookup (open / exec).
+        let node = self.stat(vfs_handle)?;
+        let uid = crate::process::scheduler::current_uid();
+        let gid = crate::process::scheduler::current_gid();
+        let groups = crate::process::scheduler::current_groups();
+        if crate::security::manifold_acl::check_access(
+            uid, gid, &groups, &node,
+            crate::security::manifold_acl::PERM_READ,
+            path,
+        ) == crate::security::manifold_acl::AccessDecision::Deny
+        {
+            return Err(VfsError::PermissionDenied);
+        }
+        Ok(vfs_handle)
     }
 
     pub fn lookup_follow(&self, path: &str) -> Result<VfsHandle, VfsError> {
@@ -187,6 +213,21 @@ impl Vfs {
         if let Some(path) = HANDLE_PATHS.lock().get(&(handle.fs_idx, handle.inode)) {
             self.check_mac(path, crate::security::mac::Permissions::R)?;
         }
+        // T1–T5: Node-level ACL before acquiring filesystem lock.
+        if let Some(path) = HANDLE_PATHS.lock().get(&(handle.fs_idx, handle.inode)) {
+            let node = self.stat(handle)?;
+            let uid = crate::process::scheduler::current_uid();
+            let gid = crate::process::scheduler::current_gid();
+            let groups = crate::process::scheduler::current_groups();
+            if crate::security::manifold_acl::check_access(
+                uid, gid, &groups, &node,
+                crate::security::manifold_acl::PERM_READ,
+                path,
+            ) == crate::security::manifold_acl::AccessDecision::Deny
+            {
+                return Err(VfsError::PermissionDenied);
+            }
+        }
         let mount = self.mounts.get(handle.fs_idx).ok_or(VfsError::NotFound)?;
         let fs_guard = mount.fs.lock();
         fs_guard.read(
@@ -202,6 +243,21 @@ impl Vfs {
     pub fn write(&self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
         if let Some(path) = HANDLE_PATHS.lock().get(&(handle.fs_idx, handle.inode)) {
             self.check_mac(path, crate::security::mac::Permissions::W)?;
+        }
+        // T1–T5: Node-level ACL before acquiring filesystem lock.
+        if let Some(path) = HANDLE_PATHS.lock().get(&(handle.fs_idx, handle.inode)) {
+            let node = self.stat(handle)?;
+            let uid = crate::process::scheduler::current_uid();
+            let gid = crate::process::scheduler::current_gid();
+            let groups = crate::process::scheduler::current_groups();
+            if crate::security::manifold_acl::check_access(
+                uid, gid, &groups, &node,
+                crate::security::manifold_acl::PERM_WRITE,
+                path,
+            ) == crate::security::manifold_acl::AccessDecision::Deny
+            {
+                return Err(VfsError::PermissionDenied);
+            }
         }
         let mount = self.mounts.get(handle.fs_idx).ok_or(VfsError::NotFound)?;
         let mut fs_guard = mount.fs.lock();
@@ -284,17 +340,59 @@ impl Vfs {
         self.check_mac(new, crate::security::mac::Permissions::W)?;
         let (old_fs_idx, old_rel) = self.find_mount(old).ok_or(VfsError::NotFound)?;
         let (new_fs_idx, new_rel) = self.find_mount(new).ok_or(VfsError::NotFound)?;
-        if old_fs_idx != new_fs_idx {
-            return Err(VfsError::NotSupported);
+        if old_fs_idx == new_fs_idx {
+            let mount = &self.mounts[old_fs_idx];
+            let mut fs_guard = mount.fs.lock();
+            fs_guard.rename(old_rel, new_rel)?;
+            if let Ok(handle) = fs_guard.lookup(new_rel) {
+                HANDLE_PATHS.lock().insert((old_fs_idx, handle.inode), String::from(new));
+            }
+            if let Ok(old_handle) = fs_guard.lookup(old_rel) {
+                HANDLE_PATHS.lock().remove(&(old_fs_idx, old_handle.inode));
+            }
+            Ok(())
+        } else {
+            // Cross-mount rename: copy file content then delete original.
+            // Directories cannot be moved across filesystems.
+            let old_mount = &self.mounts[old_fs_idx];
+            let old_fs = old_mount.fs.lock();
+            let old_handle = old_fs.lookup(old_rel)?;
+            let node = old_fs.stat(old_handle)?;
+            if node.node_type == VfsNodeType::Directory {
+                return Err(VfsError::InvalidOperation);
+            }
+            let mut data = alloc::vec![0u8; node.size as usize];
+            let mut total_read = 0usize;
+            while total_read < data.len() {
+                let n = old_fs.read(
+                    VfsHandle { fs_idx: 0, inode: old_handle.inode },
+                    &mut data[total_read..],
+                    total_read as u64,
+                )?;
+                if n == 0 {
+                    break;
+                }
+                total_read += n;
+            }
+            drop(old_fs);
+
+            let new_mount = &self.mounts[new_fs_idx];
+            let mut new_fs = new_mount.fs.lock();
+            // If destination exists, remove it.
+            if new_fs.lookup(new_rel).is_ok() {
+                new_fs.unlink(new_rel)?;
+            }
+            let new_handle = new_fs.create(new_rel)?;
+            new_fs.write(new_handle, &data, 0)?;
+            drop(new_fs);
+
+            let old_mount2 = &self.mounts[old_fs_idx];
+            let mut old_fs2 = old_mount2.fs.lock();
+            old_fs2.unlink(old_rel)?;
+            HANDLE_PATHS.lock().remove(&(old_fs_idx, old_handle.inode));
+            HANDLE_PATHS.lock().insert((new_fs_idx, new_handle.inode), String::from(new));
+            Ok(())
         }
-        let mount = &self.mounts[old_fs_idx];
-        let mut fs_guard = mount.fs.lock();
-        fs_guard.rename(old_rel, new_rel)?;
-        if let Ok(handle) = fs_guard.lookup(new_rel) {
-            HANDLE_PATHS.lock().insert((old_fs_idx, handle.inode), String::from(new));
-        }
-        HANDLE_PATHS.lock().remove(&(old_fs_idx, fs_guard.lookup(old_rel).map(|h| h.inode).unwrap_or(0)));
-        Ok(())
     }
 
     pub fn mknod(
@@ -312,6 +410,15 @@ impl Vfs {
         HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
         Ok(VfsHandle {
             fs_idx,
+            inode: handle.inode,
+        })
+    }
+
+    pub fn fsync(&self, handle: VfsHandle) -> Result<(), VfsError> {
+        let mount = self.mounts.get(handle.fs_idx).ok_or(VfsError::NotFound)?;
+        let mut fs_guard = mount.fs.lock();
+        fs_guard.fsync(VfsHandle {
+            fs_idx: 0,
             inode: handle.inode,
         })
     }

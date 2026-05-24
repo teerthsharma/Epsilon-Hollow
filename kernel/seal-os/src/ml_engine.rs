@@ -12,6 +12,7 @@ use aether_core::ml::{
 };
 use aether_core::ml::linalg::LossConfig;
 
+pub mod tensor_viz;
 pub mod topo_asm;
 
 /// Status of the ML runtime.

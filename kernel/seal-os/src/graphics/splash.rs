@@ -39,7 +39,7 @@ pub fn render_splash(console: &mut Console) {
         theme.fg,
     );
     console.write_str("\n");
-    console.write_colored("                    v0.3.1", theme.fg);
+    console.write_colored("                    v0.4.5", theme.fg);
     console.write_str("\n\n");
 }
 

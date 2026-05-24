@@ -16,6 +16,7 @@ use x86_64::{
 };
 
 /// A lazily-backed mmap region.
+#[derive(Clone)]
 pub struct MmapRegion {
     pub start: VirtAddr,
     pub pages: usize,
@@ -24,7 +25,8 @@ pub struct MmapRegion {
     pub page_table: u64,
 }
 
-static REGIONS: Mutex<Vec<MmapRegion>> = Mutex::new(Vec::new());
+/// Global list of mmap regions.  `pub(super)` so `swap.rs` can iterate over them.
+pub(super) static REGIONS: Mutex<Vec<MmapRegion>> = Mutex::new(Vec::new());
 
 /// User-space virtual bump allocator for mmap.
 /// Starts at 1 MiB to avoid the null-page and low-memory BIOS/UEFI areas.
@@ -55,6 +57,39 @@ pub fn mmap_user(
         page_table,
     });
     Some(virt)
+}
+
+/// Unmap `pages` pages starting at `start` and free backing frames.
+///
+/// # Safety
+/// Caller must ensure the range matches a previously-mapped region.
+pub unsafe fn munmap_user(start: VirtAddr, pages: usize) -> bool {
+    let mut regions = REGIONS.lock();
+    let idx = regions.iter().position(|r| r.start == start && r.pages == pages);
+    let idx = match idx {
+        Some(i) => i,
+        None => return false,
+    };
+    let region = regions.swap_remove(idx);
+    drop(regions);
+
+    let current_pt = x86_64::registers::control::Cr3::read()
+        .0
+        .start_address()
+        .as_u64();
+
+    for i in 0..pages {
+        let v = VirtAddr::new(start.as_u64() + i as u64 * 4096);
+        let maybe_phys = if region.page_table == current_pt {
+            crate::memory::virt::unmap_page(v)
+        } else {
+            crate::memory::virt::unmap_page_in_pml4(v, x86_64::PhysAddr::new(region.page_table))
+        };
+        if let Some(frame) = maybe_phys {
+            crate::memory::phys::free_frame(frame);
+        }
+    }
+    true
 }
 
 /// Attempt to satisfy a page fault by lazily backing the faulting page.

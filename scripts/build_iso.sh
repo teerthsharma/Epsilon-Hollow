@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Epsilon-Hollow — Bootable ISO generator for Seal OS v0.4.0
+# Epsilon-Hollow — Bootable ISO generator for Seal OS v0.4.5
 # Creates a UEFI-bootable ISO that works in VirtualBox, QEMU, and real hardware.
 #
 # Uses El Torito UEFI boot with embedded FAT12 EFI image.

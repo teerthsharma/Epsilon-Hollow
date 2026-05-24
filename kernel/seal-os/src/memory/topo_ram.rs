@@ -3,19 +3,24 @@
 
 //! Topological RAM driver — T1–T5 theorem integration over physical frames.
 //!
-//! Wraps the physical bitmap allocator with Voronoi cells, spectral
-//! contraction, entropy tracking, pressure governance, and hyperbolic
-//! lifetime classification.
+//! Memory is divided into three Voronoi zones:
+//!   LOW      : 0 – 4 GiB DRAM
+//!   HIGH     : 4+ GiB DRAM
+//!   PCIE_BAR : device memory (metadata only, longest-lived per T5)
+//!
+//! Each zone carries its own TopoRam instance with 8 seeds so that
+//! spectral prefetch, entropy tracking, and hyperbolic lifetime work
+//! per-zone.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
 
-use crate::memory::phys::{self, USABLE_FRAMES};
+use crate::memory::phys::{self, LOW_FRAME_LIMIT};
 use crate::THEOREM_STATES;
 
-const VORONOI_SEEDS: usize = 16;
+const VORONOI_SEEDS: usize = 8;
 const RECENT_ALLOC_LEN: usize = 256;
 const PREFETCH_COUNT: usize = 8;
 
@@ -34,9 +39,18 @@ pub struct TopoFrame {
     pub entropy_score: f32,
 }
 
-/// Global topological RAM state.
+/// Zone hint for topology-aware allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ZoneHint {
+    Low,
+    High,
+    PcieBar,
+}
+
+/// Topological RAM state for a single zone.
 pub struct TopoRam {
-    frame_meta: &'static mut [TopoFrame],
+    frame_meta: Vec<TopoFrame>,
+    base_frame: usize,
     voronoi_seeds: [[u16; 32]; VORONOI_SEEDS],
     pressure: f32,
     tick: u64,
@@ -47,27 +61,80 @@ pub struct TopoRam {
     eigenvectors: [[f32; 32]; 3],
 }
 
-static mut FRAME_META: [TopoFrame; USABLE_FRAMES] = [TopoFrame {
-    embedding: [0; 32],
-    access_history: 0,
-    cell_id: 0,
-    lifetime_class: 1,
-    entropy_score: 0.0,
-}; USABLE_FRAMES];
+/// Global zone container.
+pub struct Zones {
+    pub low: TopoRam,
+    pub high: TopoRam,
+    pub pcie_bar: TopoRam,
+}
 
-static TOPO_RAM: Mutex<Option<TopoRam>> = Mutex::new(None);
+static ZONES: Mutex<Option<Zones>> = Mutex::new(None);
 
-/// Run a closure against the global `TopoRam`, if initialized.
-pub fn with_topo_ram<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&mut TopoRam) -> R,
-{
-    let mut guard = TOPO_RAM.lock();
-    guard.as_mut().map(f)
+impl TopoRam {
+    fn new(base_frame: usize, count: usize) -> Self {
+        let mut seeds = [[0u16; 32]; VORONOI_SEEDS];
+        for s in 0..VORONOI_SEEDS {
+            for a in 0..32usize {
+                let tmp: usize = s.wrapping_mul(7919)
+                    .wrapping_add(a.wrapping_mul(104729));
+                seeds[s][a] = (tmp % 65536) as u16;
+            }
+        }
+
+        let mut meta = Vec::with_capacity(count);
+        for i in 0..count {
+            let mut embedding = [0u16; 32];
+            for a in 0..32usize {
+                let tmp: usize = (base_frame + i).wrapping_mul(1103515245)
+                    .wrapping_add(12345)
+                    .wrapping_add(a.wrapping_mul(65537));
+                embedding[a] = (tmp % 65536) as u16;
+            }
+            let cell = voronoi_cell_of(&embedding, &seeds);
+            meta.push(TopoFrame {
+                embedding,
+                access_history: 0,
+                cell_id: cell,
+                lifetime_class: 1,
+                entropy_score: 0.0,
+            });
+        }
+
+        Self {
+            frame_meta: meta,
+            base_frame,
+            voronoi_seeds: seeds,
+            pressure: 0.0,
+            tick: 0,
+            alloc_count: 0,
+            free_count: 0,
+            recent_allocs: [0; RECENT_ALLOC_LEN],
+            recent_alloc_head: 0,
+            eigenvectors: [[0.0f32; 32]; 3],
+        }
+    }
+
+    fn push_recent_alloc(&mut self, frame_idx: usize) {
+        self.recent_allocs[self.recent_alloc_head] = frame_idx;
+        self.recent_alloc_head = (self.recent_alloc_head + 1) % RECENT_ALLOC_LEN;
+        if self.recent_alloc_head == 0 {
+            update_spectral(self);
+        }
+    }
+
+}
+fn zone_for_global_frame(global: usize) -> ZoneHint {
+    if global < LOW_FRAME_LIMIT {
+        ZoneHint::Low
+    } else if global < phys::total_usable_frames() {
+        ZoneHint::High
+    } else {
+        ZoneHint::PcieBar
+    }
 }
 
 // ---------------------------------------------------------------------------
-// T1 — Voronoi Partitioning
+// T1 — Voronoi Partitioning (per-zone)
 // ---------------------------------------------------------------------------
 
 fn embedding_distance_sq(a: &[u16; 32], b: &[u16; 32]) -> u32 {
@@ -102,7 +169,7 @@ fn reseed_voronoi(topo: &mut TopoRam) {
 
     for i in 0..RECENT_ALLOC_LEN {
         let frame_idx = topo.recent_allocs[i];
-        if frame_idx < USABLE_FRAMES && picked < VORONOI_SEEDS {
+        if frame_idx < topo.frame_meta.len() && picked < VORONOI_SEEDS {
             new_seeds[picked] = topo.frame_meta[frame_idx].embedding;
             picked += 1;
         }
@@ -111,24 +178,24 @@ fn reseed_voronoi(topo: &mut TopoRam) {
         }
     }
 
-    // Fill remaining seeds with deterministic frames.
     if picked < VORONOI_SEEDS {
         for i in picked..VORONOI_SEEDS {
-            let idx = (i.wrapping_mul(65537).wrapping_add(7)) % USABLE_FRAMES;
+            let idx = (i.wrapping_mul(65537).wrapping_add(7))
+                % topo.frame_meta.len().max(1);
             new_seeds[i] = topo.frame_meta[idx].embedding;
         }
     }
 
     topo.voronoi_seeds = new_seeds;
 
-    for i in 0..USABLE_FRAMES {
+    for i in 0..topo.frame_meta.len() {
         let cell = voronoi_cell_of(&topo.frame_meta[i].embedding, &topo.voronoi_seeds);
         topo.frame_meta[i].cell_id = cell;
     }
 }
 
 // ---------------------------------------------------------------------------
-// T2 — Spectral Contraction
+// T2 — Spectral Contraction (per-zone)
 // ---------------------------------------------------------------------------
 
 fn update_spectral(topo: &mut TopoRam) {
@@ -142,7 +209,7 @@ fn update_spectral(topo: &mut TopoRam) {
     let n = RECENT_ALLOC_LEN;
     for i in 0..n {
         let frame_idx = topo.recent_allocs[i];
-        if frame_idx < USABLE_FRAMES {
+        if frame_idx < topo.frame_meta.len() {
             let emb = &topo.frame_meta[frame_idx].embedding;
             for j in 0..32 {
                 mean[j] += emb[j] as f32;
@@ -155,7 +222,7 @@ fn update_spectral(topo: &mut TopoRam) {
 
     for i in 0..n {
         let frame_idx = topo.recent_allocs[i];
-        if frame_idx < USABLE_FRAMES {
+        if frame_idx < topo.frame_meta.len() {
             let emb = &topo.frame_meta[frame_idx].embedding;
             for a in 0..32 {
                 let da = emb[a] as f32 - mean[a];
@@ -219,26 +286,27 @@ fn prefetch_hint_inner(topo: &mut TopoRam, addr: PhysAddr) -> Vec<PhysAddr> {
         return Vec::new();
     }
 
-    let frame_idx = (addr.as_u64() / 4096) as usize;
-    if frame_idx >= USABLE_FRAMES {
+    let global_idx = (addr.as_u64() / 4096) as usize;
+    if global_idx < topo.base_frame || global_idx >= topo.base_frame + topo.frame_meta.len() {
         return Vec::new();
     }
-
-    let addr_emb = &topo.frame_meta[frame_idx].embedding;
+    let ref_idx = global_idx - topo.base_frame;
+    let addr_emb = &topo.frame_meta[ref_idx].embedding;
     let principal = topo.eigenvectors[0];
 
     let mut candidates: [(usize, f32); PREFETCH_COUNT] = [(0, f32::MIN); PREFETCH_COUNT];
 
     phys::with_bitmap_mut(|bitmap| {
-        for i in 0..USABLE_FRAMES {
-            let word = i / 64;
-            let bit = i % 64;
+        for local_idx in 0..topo.frame_meta.len() {
+            let gidx = topo.base_frame + local_idx;
+            let word = gidx / 64;
+            let bit = gidx % 64;
             let free = (bitmap[word] >> bit) & 1 == 0;
             if !free {
                 continue;
             }
 
-            let emb = &topo.frame_meta[i].embedding;
+            let emb = &topo.frame_meta[local_idx].embedding;
             let mut score = 0.0f32;
             for j in 0..32 {
                 score += (emb[j] as f32 - addr_emb[j] as f32) * principal[j];
@@ -253,15 +321,15 @@ fn prefetch_hint_inner(topo: &mut TopoRam, addr: PhysAddr) -> Vec<PhysAddr> {
                 }
             }
             if score > min_score {
-                candidates[min_idx] = (i, score);
+                candidates[min_idx] = (local_idx, score);
             }
         }
     });
 
     let mut result = Vec::with_capacity(PREFETCH_COUNT);
-    for (idx, _) in candidates.iter() {
-        if *idx < USABLE_FRAMES {
-            result.push(PhysAddr::new(*idx as u64 * 4096));
+    for (local_idx, _) in candidates.iter() {
+        if *local_idx < topo.frame_meta.len() {
+            result.push(PhysAddr::new((topo.base_frame + *local_idx) as u64 * 4096));
         }
     }
     result
@@ -271,12 +339,10 @@ fn prefetch_hint_inner(topo: &mut TopoRam, addr: PhysAddr) -> Vec<PhysAddr> {
 // T3 — Entropy / Fragmentation
 // ---------------------------------------------------------------------------
 
-/// Scan the physical bitmap and compute Betti-0 entropy of the free region.
-pub fn fragmentation_entropy() -> f32 {
+fn fragmentation_entropy_inner(_topo: &TopoRam, zone_start: usize, zone_end: usize) -> f32 {
     if !THEOREM_STATES[2].load(Ordering::Relaxed) {
         return 0.0;
     }
-
     let total_free = phys::free_count();
     if total_free == 0 {
         return 0.0;
@@ -286,7 +352,7 @@ pub fn fragmentation_entropy() -> f32 {
     let mut in_run = false;
 
     phys::with_bitmap_mut(|bitmap| {
-        for i in 0..USABLE_FRAMES {
+        for i in zone_start..zone_end {
             let word = i / 64;
             let bit = i % 64;
             let free = (bitmap[word] >> bit) & 1 == 0;
@@ -299,6 +365,40 @@ pub fn fragmentation_entropy() -> f32 {
         }
     });
 
+    let num = libm::log2f((components + 1) as f32);
+    let den = libm::log2f((total_free + 1) as f32);
+    if den == 0.0 {
+        0.0
+    } else {
+        num / den
+    }
+}
+
+/// Global fragmentation entropy (all zones).
+pub fn fragmentation_entropy() -> f32 {
+    if !THEOREM_STATES[2].load(Ordering::Relaxed) {
+        return 0.0;
+    }
+    let total_free = phys::free_count();
+    if total_free == 0 {
+        return 0.0;
+    }
+    let limit = phys::total_usable_frames();
+    let mut components = 0usize;
+    let mut in_run = false;
+    phys::with_bitmap_mut(|bitmap| {
+        for i in 0..limit {
+            let word = i / 64;
+            let bit = i % 64;
+            let free = (bitmap[word] >> bit) & 1 == 0;
+            if free && !in_run {
+                components += 1;
+                in_run = true;
+            } else if !free {
+                in_run = false;
+            }
+        }
+    });
     let num = libm::log2f((components + 1) as f32);
     let den = libm::log2f((total_free + 1) as f32);
     if den == 0.0 {
@@ -330,17 +430,14 @@ fn update_pressure(topo: &mut TopoRam) {
     topo.free_count = 0;
 }
 
-/// External API to override pressure directly.
+/// External API to override pressure directly (applies to all zones).
 pub fn set_pressure(p: f32) {
-    let mut guard = TOPO_RAM.lock();
-    if let Some(topo) = guard.as_mut() {
-        let mut clamped = p;
-        if clamped < 0.0 {
-            clamped = 0.0;
-        } else if clamped > 1.0 {
-            clamped = 1.0;
-        }
-        topo.pressure = clamped;
+    let mut guard = ZONES.lock();
+    if let Some(zones) = guard.as_mut() {
+        let clamped = p.clamp(0.0, 1.0);
+        zones.low.pressure = clamped;
+        zones.high.pressure = clamped;
+        zones.pcie_bar.pressure = clamped;
     }
 }
 
@@ -364,86 +461,24 @@ fn propagate_class(topo: &mut TopoRam, center: usize, class: u8) {
     let offsets: [isize; 8] = [-1, 1, -8, 8, -64, 64, -512, 512];
     for &off in &offsets {
         let ni = center as isize + off;
-        if ni >= 0 && (ni as usize) < USABLE_FRAMES {
+        if ni >= 0 && (ni as usize) < topo.frame_meta.len() {
             topo.frame_meta[ni as usize].lifetime_class = class;
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// TopoRam helpers
+// Zone helpers
 // ---------------------------------------------------------------------------
 
-impl TopoRam {
-    fn push_recent_alloc(&mut self, frame_idx: usize) {
-        self.recent_allocs[self.recent_alloc_head] = frame_idx;
-        self.recent_alloc_head = (self.recent_alloc_head + 1) % RECENT_ALLOC_LEN;
-        if self.recent_alloc_head == 0 {
-            update_spectral(self);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// One-time initialisation of the topological RAM metadata.
-pub fn init() {
-    unsafe {
-        let meta = &mut FRAME_META[..];
-
-        let mut seeds = [[0u16; 32]; VORONOI_SEEDS];
-        for s in 0..VORONOI_SEEDS {
-            for a in 0..32 {
-                seeds[s][a] = ((s.wrapping_mul(7919)
-                    .wrapping_add(a.wrapping_mul(104729)))
-                    % 65536) as u16;
-            }
-        }
-
-        for i in 0..USABLE_FRAMES {
-            let mut embedding = [0u16; 32];
-            for a in 0..32 {
-                embedding[a] = ((i.wrapping_mul(1103515245)
-                    .wrapping_add(12345)
-                    .wrapping_add(a.wrapping_mul(65537)))
-                    % 65536) as u16;
-            }
-            let cell = voronoi_cell_of(&embedding, &seeds);
-            meta[i] = TopoFrame {
-                embedding,
-                access_history: 0,
-                cell_id: cell,
-                lifetime_class: 1,
-                entropy_score: 0.0,
-            };
-        }
-
-        let topo = TopoRam {
-            frame_meta: meta,
-            voronoi_seeds: seeds,
-            pressure: 0.0,
-            tick: 0,
-            alloc_count: 0,
-            free_count: 0,
-            recent_allocs: [0; RECENT_ALLOC_LEN],
-            recent_alloc_head: 0,
-            eigenvectors: [[0.0f32; 32]; 3],
-        };
-
-        *TOPO_RAM.lock() = Some(topo);
-    }
-}
-
-/// Allocate `count` frames, optionally biased toward `hint` embedding.
-pub fn alloc_frames(count: usize, hint: Option<&[u16; 32]>) -> Option<PhysAddr> {
-    if count == 0 {
-        return None;
-    }
-
-    let mut guard = TOPO_RAM.lock();
-    let topo = guard.as_mut()?;
+fn alloc_frames_in_zone(
+    topo: &mut TopoRam,
+    count: usize,
+    hint: Option<&[u16; 32]>,
+) -> Option<PhysAddr> {
+    let limit = phys::total_usable_frames();
+    let zone_start = topo.base_frame;
+    let zone_end = zone_start + topo.frame_meta.len();
 
     topo.tick = topo.tick.wrapping_add(1);
     if topo.tick % 1024 == 0 {
@@ -470,19 +505,23 @@ pub fn alloc_frames(count: usize, hint: Option<&[u16; 32]>) -> Option<PhysAddr> 
                 }
             }
             if ok && frames.len() == count {
-                let contiguous = frames.windows(2).all(|w| w[1].as_u64() == w[0].as_u64() + 4096);
+                let contiguous = frames
+                    .windows(2)
+                    .all(|w| w[1].as_u64() == w[0].as_u64() + 4096);
                 if contiguous {
                     let first = frames[0];
                     for f in &frames {
-                        let idx = (f.as_u64() / 4096) as usize;
-                        topo.frame_meta[idx].access_history = 0;
-                        topo.push_recent_alloc(idx);
+                        let gidx = (f.as_u64() / 4096) as usize;
+                        let lidx = gidx.saturating_sub(topo.base_frame);
+                        if let Some(meta) = topo.frame_meta.get_mut(lidx) {
+                            meta.access_history = 0;
+                        }
+                        topo.push_recent_alloc(lidx);
                         topo.alloc_count += 1;
                     }
                     return Some(first);
                 }
             }
-            // Free partial or non-contiguous batch.
             for f in &frames {
                 unsafe { phys::free_frame(*f); }
             }
@@ -493,46 +532,50 @@ pub fn alloc_frames(count: usize, hint: Option<&[u16; 32]>) -> Option<PhysAddr> 
     }
 
     // -----------------------------------------------------------------
-    // Normal / fallback path: cell-aware search.
+    // Normal / fallback path: cell-aware search within zone range.
     // -----------------------------------------------------------------
     let mut frames = Vec::with_capacity(count);
 
     phys::with_bitmap_mut(|bitmap| {
-        // First pass: target cell.
         if let Some(cell) = target_cell {
-            for i in 0..USABLE_FRAMES {
+            for gidx in zone_start..zone_end {
                 if frames.len() >= count {
                     break;
                 }
-                let word = i / 64;
-                let bit = i % 64;
+                if gidx >= limit {
+                    break;
+                }
+                let word = gidx / 64;
+                let bit = gidx % 64;
                 let free = (bitmap[word] >> bit) & 1 == 0;
-                if free && topo.frame_meta[i].cell_id == cell {
+                let lidx = gidx - zone_start;
+                if free && topo.frame_meta[lidx].cell_id == cell {
                     bitmap[word] |= 1 << bit;
-                    frames.push(i);
+                    frames.push(gidx);
                 }
             }
         }
 
-        // Second pass: any free frame.
         if frames.len() < count {
-            for i in 0..USABLE_FRAMES {
+            for gidx in zone_start..zone_end {
                 if frames.len() >= count {
                     break;
                 }
-                let word = i / 64;
-                let bit = i % 64;
+                if gidx >= limit {
+                    break;
+                }
+                let word = gidx / 64;
+                let bit = gidx % 64;
                 let free = (bitmap[word] >> bit) & 1 == 0;
                 if free {
                     bitmap[word] |= 1 << bit;
-                    frames.push(i);
+                    frames.push(gidx);
                 }
             }
         }
     });
 
     if frames.len() < count {
-        // Roll back partial allocation.
         phys::with_bitmap_mut(|bitmap| {
             for &idx in &frames {
                 let word = idx / 64;
@@ -545,21 +588,90 @@ pub fn alloc_frames(count: usize, hint: Option<&[u16; 32]>) -> Option<PhysAddr> 
 
     phys::decr_free_count(frames.len());
 
-    // Mark used and update metadata.
     let first = PhysAddr::new(frames[0] as u64 * 4096);
-    for &idx in &frames {
-        topo.frame_meta[idx].access_history = 0;
-        topo.push_recent_alloc(idx);
+    for &gidx in &frames {
+        let lidx = gidx - zone_start;
+        if let Some(meta) = topo.frame_meta.get_mut(lidx) {
+            meta.access_history = 0;
+        }
+        topo.push_recent_alloc(lidx);
         topo.alloc_count += 1;
     }
 
-    // Trigger reseed if fragmentation is high.
-    let entropy = fragmentation_entropy();
+    let entropy = fragmentation_entropy_inner(topo, zone_start, zone_end);
     if entropy > 0.7 {
         reseed_voronoi(topo);
     }
 
     Some(first)
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/// One-time initialisation of the topological RAM metadata (per-zone).
+pub fn init() {
+    let total = phys::total_usable_frames();
+    let low_count = total.min(LOW_FRAME_LIMIT);
+    let high_count = total.saturating_sub(LOW_FRAME_LIMIT);
+
+    let low = TopoRam::new(0, low_count);
+    let high = TopoRam::new(LOW_FRAME_LIMIT, high_count);
+    let pcie_bar = TopoRam::new(0, 0); // empty until BARs are registered
+
+    *ZONES.lock() = Some(Zones { low, high, pcie_bar });
+}
+
+/// Register a PCI BAR range as the PCIE_BAR zone.
+pub fn register_pcie_bar(start: PhysAddr, pages: usize) {
+    let mut guard = ZONES.lock();
+    if let Some(zones) = guard.as_mut() {
+        let base_frame = (start.as_u64() / 4096) as usize;
+        let mut new_zone = TopoRam::new(base_frame, pages);
+        // T5: PCIE_BAR frames are longest-lived (permanent).
+        for meta in &mut new_zone.frame_meta {
+            meta.lifetime_class = 2;
+        }
+        zones.pcie_bar = new_zone;
+    }
+}
+
+/// Allocate `count` frames, optionally biased toward `hint` embedding.
+pub fn alloc_frames(
+    count: usize,
+    zone: ZoneHint,
+    hint: Option<&[u16; 32]>,
+) -> Option<PhysAddr> {
+    if count == 0 {
+        return None;
+    }
+
+    let mut guard = ZONES.lock();
+    let zones = guard.as_mut()?;
+
+    match zone {
+        ZoneHint::Low => {
+            if let Some(addr) = alloc_frames_in_zone(&mut zones.low, count, hint) {
+                return Some(addr);
+            }
+            alloc_frames_in_zone(&mut zones.high, count, hint)
+        }
+        ZoneHint::High => {
+            if let Some(addr) = alloc_frames_in_zone(&mut zones.high, count, hint) {
+                return Some(addr);
+            }
+            alloc_frames_in_zone(&mut zones.low, count, hint)
+        }
+        ZoneHint::PcieBar => {
+            // PCIE_BAR is not allocatable from the physical allocator;
+            // fallback to High then Low.
+            if let Some(addr) = alloc_frames_in_zone(&mut zones.high, count, hint) {
+                return Some(addr);
+            }
+            alloc_frames_in_zone(&mut zones.low, count, hint)
+        }
+    }
 }
 
 /// Free `count` frames starting at `addr`.
@@ -568,58 +680,135 @@ pub fn free_frames(addr: PhysAddr, count: usize) {
         return;
     }
 
-    let mut guard = TOPO_RAM.lock();
-    let topo = match guard.as_mut() {
-        Some(t) => t,
+    let mut guard = ZONES.lock();
+    let zones = match guard.as_mut() {
+        Some(z) => z,
         None => return,
     };
 
-    topo.tick = topo.tick.wrapping_add(1);
-    if topo.tick % 1024 == 0 {
-        update_pressure(topo);
-    }
-
     for i in 0..count {
         let frame_addr = PhysAddr::new(addr.as_u64() + (i as u64 * 4096));
-        let idx = (frame_addr.as_u64() / 4096) as usize;
-        if idx < USABLE_FRAMES {
-            let class = hyperbolic_class(topo.frame_meta[idx].access_history);
-            topo.frame_meta[idx].lifetime_class = class;
-            propagate_class(topo, idx, class);
+        let gidx = (frame_addr.as_u64() / 4096) as usize;
+        let zone = zone_for_global_frame(gidx);
+        let topo = match zone {
+            ZoneHint::Low => &mut zones.low,
+            ZoneHint::High => &mut zones.high,
+            ZoneHint::PcieBar => &mut zones.pcie_bar,
+        };
+        let lidx = gidx.saturating_sub(topo.base_frame);
+        if let Some(meta) = topo.frame_meta.get_mut(lidx) {
+            let class = hyperbolic_class(meta.access_history);
+            meta.lifetime_class = class;
+            propagate_class(topo, lidx, class);
         }
         unsafe { phys::free_frame(frame_addr); }
         topo.free_count += 1;
+        topo.tick = topo.tick.wrapping_add(1);
+        if topo.tick % 1024 == 0 {
+            update_pressure(topo);
+        }
     }
 }
 
 /// Record an access tick for `addr`.
 pub fn access_frame(addr: PhysAddr) {
-    let mut guard = TOPO_RAM.lock();
-    let topo = match guard.as_mut() {
-        Some(t) => t,
+    let mut guard = ZONES.lock();
+    let zones = match guard.as_mut() {
+        Some(z) => z,
         None => return,
     };
 
-    let idx = (addr.as_u64() / 4096) as usize;
-    if idx >= USABLE_FRAMES {
-        return;
-    }
-
-    topo.frame_meta[idx].access_history =
-        (topo.frame_meta[idx].access_history << 1) | 1;
-    topo.tick = topo.tick.wrapping_add(1);
-
-    if topo.tick % 1024 == 0 {
-        update_pressure(topo);
+    let gidx = (addr.as_u64() / 4096) as usize;
+    let zone = zone_for_global_frame(gidx);
+    let topo = match zone {
+        ZoneHint::Low => &mut zones.low,
+        ZoneHint::High => &mut zones.high,
+        ZoneHint::PcieBar => &mut zones.pcie_bar,
+    };
+    let lidx = gidx.saturating_sub(topo.base_frame);
+    if let Some(meta) = topo.frame_meta.get_mut(lidx) {
+        meta.access_history = (meta.access_history << 1) | 1;
+        topo.tick = topo.tick.wrapping_add(1);
+        if topo.tick % 1024 == 0 {
+            update_pressure(topo);
+        }
     }
 }
 
 /// Return up to 8 prefetch candidates spatially correlated with `addr`.
 pub fn prefetch_hint(addr: PhysAddr) -> Vec<PhysAddr> {
-    let mut guard = TOPO_RAM.lock();
-    let topo = match guard.as_mut() {
-        Some(t) => t,
+    let mut guard = ZONES.lock();
+    let zones = match guard.as_mut() {
+        Some(z) => z,
         None => return Vec::new(),
     };
+    let gidx = (addr.as_u64() / 4096) as usize;
+    let zone = zone_for_global_frame(gidx);
+    let topo = match zone {
+        ZoneHint::Low => &mut zones.low,
+        ZoneHint::High => &mut zones.high,
+        ZoneHint::PcieBar => &mut zones.pcie_bar,
+    };
     prefetch_hint_inner(topo, addr)
+}
+
+/// Return the access-history bit density for a physical frame (used by swap daemon).
+pub fn frame_access_density(addr: PhysAddr) -> Option<u32> {
+    let mut guard = ZONES.lock();
+    let zones = guard.as_mut()?;
+    let gidx = (addr.as_u64() / 4096) as usize;
+    let zone = zone_for_global_frame(gidx);
+    let topo = match zone {
+        ZoneHint::Low => &mut zones.low,
+        ZoneHint::High => &mut zones.high,
+        ZoneHint::PcieBar => &mut zones.pcie_bar,
+    };
+    let lidx = gidx.saturating_sub(topo.base_frame);
+    topo.frame_meta.get(lidx).map(|m| m.access_history.count_ones())
+}
+
+/// Find candidate frames for swap-out (T5: high bit-density = short-lived).
+pub fn find_swap_candidates(count: usize) -> Vec<PhysAddr> {
+    let mut guard = ZONES.lock();
+    let zones = match guard.as_mut() {
+        Some(z) => z,
+        None => return Vec::new(),
+    };
+    let limit = phys::total_usable_frames();
+    let mut candidates: Vec<(PhysAddr, u32)> = Vec::with_capacity(count * 2);
+
+    let scan_low = zones.low.frame_meta.len().min(4096);
+    let scan_high = zones.high.frame_meta.len().min(4096);
+
+    phys::with_bitmap_mut(|bitmap| {
+        for local_idx in 0..scan_low {
+            let gidx = zones.low.base_frame + local_idx;
+            if gidx >= limit {
+                break;
+            }
+            let word = gidx / 64;
+            let bit = gidx % 64;
+            if (bitmap[word] >> bit) & 1 != 0 {
+                let density = zones.low.frame_meta[local_idx].access_history.count_ones();
+                candidates.push((PhysAddr::new(gidx as u64 * 4096), density));
+            }
+        }
+        for local_idx in 0..scan_high {
+            let gidx = zones.high.base_frame + local_idx;
+            if gidx >= limit {
+                break;
+            }
+            let word = gidx / 64;
+            let bit = gidx % 64;
+            if (bitmap[word] >> bit) & 1 != 0 {
+                let density = zones.high.frame_meta[local_idx].access_history.count_ones();
+                candidates.push((PhysAddr::new(gidx as u64 * 4096), density));
+            }
+        }
+    });
+
+    // T5: high density = short-lived = swap first.
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.truncate(count);
+    candidates.into_iter().map(|(addr, _)| addr).collect()
 }

@@ -78,27 +78,27 @@ impl FileSystem for SysFs {
     }
 
     fn write(&mut self, _handle: VfsHandle, _buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn create(&mut self, _path: &str) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn mkdir(&mut self, _path: &str) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn unlink(&mut self, _path: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn rmdir(&mut self, _path: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
@@ -172,6 +172,6 @@ impl FileSystem for SysFs {
         _major: u32,
         _minor: u32,
     ) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        Err(VfsError::InvalidOperation)
     }
 }

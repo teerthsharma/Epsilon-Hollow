@@ -25,12 +25,14 @@ pub const SYS_MMAP: u64 = 8;
 pub const SYS_GETPID: u64 = 9;
 pub const SYS_STAT: u64 = 10;
 pub const SYS_MKDIR: u64 = 11;
-pub const SYS_SETUID: u64 = 12;
-pub const SYS_SETGID: u64 = 13;
+pub const SYS_SETUID: u64 = 16;
+pub const SYS_SETGID: u64 = 17;
 pub const SYS_CHDIR: u64 = 14;
 pub const SYS_GETCWD: u64 = 15;
-pub const SYS_GETPPID: u64 = 16;
-pub const SYS_NANOSLEEP: u64 = 17;
+pub const SYS_GETPPID: u64 = 38;
+pub const SYS_NANOSLEEP: u64 = 39;
+pub const SYS_SETEUID: u64 = 40;
+pub const SYS_SETEGID: u64 = 41;
 pub const SYS_REBOOT: u64 = 18;
 pub const SYS_LSEEK: u64 = 19;
 pub const SYS_UNLINK: u64 = 20;
@@ -49,6 +51,11 @@ pub const SYS_GETTIMEOFDAY: u64 = 32;
 pub const SYS_SETTIMEOFDAY: u64 = 33;
 pub const SYS_WATCHDOG: u64 = 34;
 pub const SYS_IOCTL: u64 = 35;
+pub const SYS_SLEEP: u64 = 36;
+pub const SYS_SYNC: u64 = 37;
+pub const SYS_CLONE: u64 = 42;
+pub const SYS_SETRLIMIT: u64 = 43;
+pub const SYS_GETRLIMIT: u64 = 44;
 
 // Epsilon extensions
 pub const SYS_MANIFOLD_QUERY: u64 = 100;
@@ -138,6 +145,43 @@ pub(crate) struct FdEntry {
 
 pub(crate) static FILE_TABLE: Mutex<BTreeMap<u64, FdEntry>> = Mutex::new(BTreeMap::new());
 pub(crate) static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0=stdin, 1=stdout, 2=stderr
+
+/// Stdin ring buffer for keyboard input.
+const STDIN_BUF_SIZE: usize = 256;
+static STDIN_BUF: Mutex<[u8; STDIN_BUF_SIZE]> = Mutex::new([0u8; STDIN_BUF_SIZE]);
+static STDIN_RD_IDX: AtomicU64 = AtomicU64::new(0);
+static STDIN_WR_IDX: AtomicU64 = AtomicU64::new(0);
+
+/// Push a byte into the stdin ring buffer (called from keyboard interrupt handler).
+pub fn stdin_push(ch: u8) {
+    let wr = STDIN_WR_IDX.load(Ordering::Relaxed) as usize;
+    let rd = STDIN_RD_IDX.load(Ordering::Acquire) as usize;
+    let next = (wr + 1) & (STDIN_BUF_SIZE - 1);
+    if next == rd {
+        // buffer full — drop oldest by advancing read index
+        STDIN_RD_IDX.store(((rd + 1) & (STDIN_BUF_SIZE - 1)) as u64, Ordering::Release);
+    }
+    if let Some(mut buf) = STDIN_BUF.try_lock() {
+        buf[wr] = ch;
+    }
+    STDIN_WR_IDX.store(next as u64, Ordering::Release);
+}
+
+/// Read bytes from stdin into `dst`. Returns number of bytes read.
+fn stdin_read(dst: &mut [u8]) -> usize {
+    let mut n = 0usize;
+    while n < dst.len() {
+        let rd = STDIN_RD_IDX.load(Ordering::Acquire) as usize;
+        let wr = STDIN_WR_IDX.load(Ordering::Acquire) as usize;
+        if rd == wr { break; }
+        if let Some(buf) = STDIN_BUF.try_lock() {
+            dst[n] = buf[rd];
+        }
+        STDIN_RD_IDX.store(((rd + 1) & (STDIN_BUF_SIZE - 1)) as u64, Ordering::Release);
+        n += 1;
+    }
+    n
+}
 
 /// Initialize the syscall filesystem with a fresh ManifoldFS.
 /// Called once during kernel boot.
@@ -256,7 +300,14 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let buf_ptr = arg1 as *mut u8;
             let len = arg2 as usize;
             if fd == 0 {
-                return SyscallResult::err(5); // EIO — stdin not implemented
+                let mut buf = alloc::vec![0u8; len.min(4096)];
+                let read_len = stdin_read(&mut buf);
+                unsafe {
+                    if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read_len]).is_err() {
+                        return SyscallResult::err(14); // EFAULT
+                    }
+                }
+                return SyscallResult::ok(read_len as i64);
             }
             let table = FILE_TABLE.lock();
             if let Some(entry) = table.get(&fd) {
@@ -368,6 +419,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 Err(e) => return SyscallResult::err(vfs_error_to_errno(e)),
             };
 
+            let file_stat = match with_vfs(|vfs| vfs.stat(handle)) {
+                Ok(s) => s,
+                Err(e) => return SyscallResult::err(vfs_error_to_errno(e)),
+            };
+
+            // T1–T5: Exec permission check before reading file contents.
+            let uid = crate::process::scheduler::current_uid();
+            let gid = crate::process::scheduler::current_gid();
+            let groups = crate::process::scheduler::current_groups();
+            if crate::security::manifold_acl::check_access(
+                uid, gid, &groups, &file_stat,
+                crate::security::manifold_acl::PERM_EXEC,
+                &path,
+            ) == crate::security::manifold_acl::AccessDecision::Deny
+            {
+                return SyscallResult::err(13); // EACCES
+            }
+
             let mut buf = Vec::new();
             let mut chunk = [0u8; 4096];
             let mut offset = 0u64;
@@ -386,12 +455,19 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 return SyscallResult::err(8); // ENOEXEC
             }
 
+            let real_uid = crate::process::scheduler::current_uid();
+            let real_gid = crate::process::scheduler::current_gid();
+
             if buf.starts_with(b"\x7FELF") {
                 let aslr_base = crate::security::aslr::randomize_mmap_base();
-                match crate::process::elf::load(&buf, aslr_base) {
+                match crate::process::elf::load(&buf, aslr_base, file_stat.mode, file_stat.uid, file_stat.gid) {
                     Ok(_loaded) => {
                         let name: &'static str = if path == "/bin/init" { "init" } else { "userspace" };
-                        let _ = crate::process::scheduler::spawn_user(name, 5, &buf);
+                        let _ = crate::process::scheduler::spawn_user(
+                            name, 5, &buf,
+                            file_stat.mode, file_stat.uid, file_stat.gid,
+                            real_uid, real_gid,
+                        );
                     }
                     Err(_) => return SyscallResult::err(8), // ENOEXEC
                 }
@@ -404,6 +480,10 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 let interp_handle = match with_vfs(|vfs| vfs.lookup_follow(shebang)) {
                     Ok(h) => h,
                     Err(_) => return SyscallResult::err(2), // ENOENT
+                };
+                let interp_stat = match with_vfs(|vfs| vfs.stat(interp_handle)) {
+                    Ok(s) => s,
+                    Err(e) => return SyscallResult::err(vfs_error_to_errno(e)),
                 };
                 let mut interp_buf = Vec::new();
                 let mut interp_offset = 0u64;
@@ -421,9 +501,13 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     return SyscallResult::err(8); // ENOEXEC
                 }
                 let aslr_base = crate::security::aslr::randomize_mmap_base();
-                match crate::process::elf::load(&interp_buf, aslr_base) {
+                match crate::process::elf::load(&interp_buf, aslr_base, interp_stat.mode, interp_stat.uid, interp_stat.gid) {
                     Ok(_loaded) => {
-                        let _ = crate::process::scheduler::spawn_user("interpreter", 5, &interp_buf);
+                        let _ = crate::process::scheduler::spawn_user(
+                            "interpreter", 5, &interp_buf,
+                            interp_stat.mode, interp_stat.uid, interp_stat.gid,
+                            real_uid, real_gid,
+                        );
                     }
                     Err(_) => return SyscallResult::err(8), // ENOEXEC
                 }
@@ -444,6 +528,13 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
 
         SYS_FORK => {
             match crate::process::scheduler::fork_current() {
+                Some(child_id) => SyscallResult::ok(child_id as i64),
+                None => SyscallResult::err(11), // EAGAIN
+            }
+        }
+
+        SYS_CLONE => {
+            match crate::process::scheduler::clone_current(arg0) {
                 Some(child_id) => SyscallResult::ok(child_id as i64),
                 None => SyscallResult::err(11), // EAGAIN
             }
@@ -620,12 +711,26 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         }
 
         SYS_SETUID => {
-            crate::process::scheduler::set_current_uid(arg0 as u32);
+            let new_uid = arg0 as u32;
+            crate::process::scheduler::set_current_uid(new_uid);
+            crate::process::scheduler::set_current_euid(new_uid);
             SyscallResult::ok(0)
         }
 
         SYS_SETGID => {
-            crate::process::scheduler::set_current_gid(arg0 as u32);
+            let new_gid = arg0 as u32;
+            crate::process::scheduler::set_current_gid(new_gid);
+            crate::process::scheduler::set_current_egid(new_gid);
+            SyscallResult::ok(0)
+        }
+
+        SYS_SETEUID => {
+            crate::process::scheduler::set_current_euid(arg0 as u32);
+            SyscallResult::ok(0)
+        }
+
+        SYS_SETEGID => {
+            crate::process::scheduler::set_current_egid(arg0 as u32);
             SyscallResult::ok(0)
         }
 
@@ -667,9 +772,11 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         }
 
         SYS_GETPPID => {
-            // Parent tracking is not yet implemented.
-            // Return 1 (init) as a convention.
-            SyscallResult::ok(1)
+            // T5: Walk the hyperbolic process tree upward.
+            match crate::process::scheduler::current_parent_id() {
+                Some(pid) => SyscallResult::ok(pid as i64),
+                None => SyscallResult::ok(1), // init fallback
+            }
         }
 
         SYS_NANOSLEEP => {
@@ -841,7 +948,22 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             SyscallResult::ok(read as i64)
         }
 
-        SYS_KILL => SyscallResult::ok(crate::process::signal::sys_kill(arg0, arg1 as u8)),
+        SYS_KILL => {
+            let target = arg0 as i64;
+            let sig = arg1 as u8;
+            if target < 0 {
+                // T5: kill(-pid, sig) sends signal to all children in hyperbolic subtree.
+                let root_id = (-target) as u64;
+                let mut subtree = Vec::new();
+                crate::process::scheduler::collect_subtree(root_id, &mut subtree);
+                for child_id in subtree {
+                    crate::process::signal::send_signal(child_id, sig);
+                }
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::ok(crate::process::signal::sys_kill(target as u64, sig))
+            }
+        }
         SYS_SIGACTION => SyscallResult::ok(crate::process::signal::sys_sigaction(arg0 as u8, arg1, arg2)),
         SYS_SIGRETURN => crate::process::signal::sys_sigreturn_call(),
         SYS_PIPE => crate::syscall::pipe::dispatch_pipe(arg0),
@@ -852,6 +974,33 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_SETTIMEOFDAY => crate::syscall::time::dispatch_settimeofday(arg0, arg1),
         SYS_WATCHDOG => crate::syscall::time::dispatch_watchdog(arg0),
         SYS_IOCTL => crate::syscall::ioctl::dispatch_ioctl(arg0, arg1, arg2),
+        SYS_SYNC => {
+            match crate::fs::sync() {
+                Ok(()) => SyscallResult::ok(0),
+                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+            }
+        }
+
+        SYS_SETRLIMIT => {
+            crate::process::scheduler::setrlimit(arg0 as u32, arg1);
+            SyscallResult::ok(0)
+        }
+
+        SYS_GETRLIMIT => {
+            let limit = crate::process::scheduler::getrlimit(arg0 as u32);
+            SyscallResult::ok(limit as i64)
+        }
+
+        SYS_SLEEP => {
+            // arg0 = sleep state (3 = S3, 5 = S5)
+            let state = arg0 as u8;
+            if state == 3 || state == 5 {
+                crate::drivers::acpi::topological_power::acpi_enter_sleep(state);
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(22) // EINVAL
+            }
+        }
 
         _ => SyscallResult::err(38), // ENOSYS
     };

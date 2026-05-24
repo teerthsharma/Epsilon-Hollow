@@ -39,6 +39,9 @@ pub struct Task {
     // Security identity
     pub uid: u32,
     pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
+    pub groups: Vec<u32>,
 
     // Working directory
     pub cwd: String,
@@ -48,6 +51,24 @@ pub struct Task {
     pub signal_mask: u64,
     pub signal_handlers: [u64; 32],
     pub signal_saved_context: Option<UserContext>,
+
+    // T5: Topological process tree
+    pub parent_id: Option<u64>,
+    pub children: Vec<u64>,
+
+    // Threading
+    pub is_thread: bool,
+    pub thread_group_leader: u64, // 0 if not a thread
+
+    // TLS — FS base + 64 slots per thread
+    pub tls_base: u64,
+    pub tls_slots: [u64; 64],
+
+    // T1: Affinity hint for Voronoi cell assignment
+    pub affinity_hint: usize,
+
+    // T4: Job object membership
+    pub job_id: Option<u64>,
 }
 
 impl Task {
@@ -79,11 +100,22 @@ impl Task {
             kernel_stack,
             uid: 0,
             gid: 0,
+            euid: 0,
+            egid: 0,
+            groups: Vec::new(),
             cwd: String::from("/"),
             pending_signals: 0,
             signal_mask: 0,
             signal_handlers: [0; 32],
             signal_saved_context: None,
+            parent_id: None,
+            children: Vec::new(),
+            is_thread: false,
+            thread_group_leader: 0,
+            tls_base: 0,
+            tls_slots: [0; 64],
+            affinity_hint: 0,
+            job_id: None,
         }
     }
 
@@ -134,11 +166,22 @@ impl Task {
             kernel_stack,
             uid: 1000,
             gid: 1000,
+            euid: 1000,
+            egid: 1000,
+            groups: Vec::new(),
             cwd: String::from("/"),
             pending_signals: 0,
             signal_mask: 0,
             signal_handlers: [0; 32],
             signal_saved_context: None,
+            parent_id: None,
+            children: Vec::new(),
+            is_thread: false,
+            thread_group_leader: 0,
+            tls_base: 0,
+            tls_slots: [0; 64],
+            affinity_hint: 0,
+            job_id: None,
         }
     }
 

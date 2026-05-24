@@ -176,13 +176,36 @@ impl FileSystem for DevTmpFs {
         self.unlink(path)
     }
 
-    fn rename(&mut self, _old: &str, _new: &str) -> Result<(), VfsError> {
-        Err(VfsError::NotSupported)
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> {
+        let old = old.trim_start_matches('/').trim_end_matches('/');
+        let new = new.trim_start_matches('/').trim_end_matches('/');
+        if old.is_empty() || new.is_empty() {
+            return Err(VfsError::InvalidPath);
+        }
+        if old == new {
+            return Ok(());
+        }
+        let id = self
+            .dir_entries
+            .get(&self.root_id)
+            .and_then(|e| e.get(old).copied())
+            .ok_or(VfsError::NotFound)?;
+        let root_entries = self.dir_entries.get_mut(&self.root_id).unwrap();
+        if root_entries.get(new).is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+        // Update node name.
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.name = String::from(new);
+        }
+        root_entries.remove(old);
+        root_entries.insert(String::from(new), id);
+        Ok(())
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
         if handle.inode != self.root_id {
-            return Err(VfsError::NotSupported);
+            return Err(VfsError::NotADirectory);
         }
         let entries = self
             .dir_entries
@@ -251,5 +274,15 @@ impl FileSystem for DevTmpFs {
             .unwrap()
             .insert(String::from(path), id);
         Ok(VfsHandle { fs_idx: 0, inode: id })
+    }
+
+    fn sync(&mut self) -> Result<(), VfsError> {
+        // DevTmpFs is fully in-memory; nothing to persist.
+        Ok(())
+    }
+
+    fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
+        // DevTmpFs is fully in-memory; nothing to persist.
+        Ok(())
     }
 }

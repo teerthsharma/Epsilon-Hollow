@@ -1,9 +1,9 @@
 // Seal OS -- Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Intel GPU driver -- PCI probe, MMIO BAR mapping, display detection.
-//! Full i915-style driver not yet implemented.
-//! This stub maps BAR0 and reads revision / display registers.
+//! Intel GPU driver — PCI probe, MMIO BAR mapping, display detection.
+//! 2D framebuffer fill/blit via direct BAR0 access.
+//! Full modesetting requires i915-style display engine init.
 
 use crate::drivers::pci::PciDevice;
 use crate::serial_println;

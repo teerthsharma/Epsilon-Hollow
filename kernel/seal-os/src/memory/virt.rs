@@ -5,7 +5,7 @@
 //!
 //! On init we:
 //! 1. Allocate a fresh PML4.
-//! 2. Identity-map the first 4 GiB using 2 MiB huge pages (boot compatibility).
+//! 2. Identity-map the first 16 GiB using 2 MiB huge pages (boot compatibility).
 //! 3. Map the kernel image to `0xffffffff80000000` using 4 KiB pages.
 //! 4. Switch CR3.
 //!
@@ -22,7 +22,9 @@ use x86_64::{
 };
 
 const KERNEL_HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
-const IDENTITY_MAP_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
+/// Size of the identity-mapped region (16 GiB).  Frames below this line can be
+/// accessed directly via `phys.as_u64() as *mut T`.
+pub const IDENTITY_MAP_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
 
 const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
@@ -150,6 +152,47 @@ pub unsafe fn map_page(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) ->
     map_page_inner(virt, phys, flags, pml4)
 }
 
+/// Unmap a 4 KiB page from an arbitrary PML4 and return the previous physical address.
+///
+/// # Safety
+/// `pml4_phys` must point to a valid page table.
+pub unsafe fn unmap_page_in_pml4(virt: VirtAddr, pml4_phys: PhysAddr) -> Option<PhysAddr> {
+    let pml4 = &mut *(pml4_phys.as_u64() as *mut PageTable);
+
+    let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
+    let pdpt_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
+    let pd_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
+    let pt_idx = ((virt.as_u64() >> 12) & 0x1FF) as usize;
+
+    let pdpt_entry = &pml4[pml4_idx];
+    if pdpt_entry.is_unused() {
+        return None;
+    }
+    let pdpt = &mut *(pdpt_entry.addr().as_u64() as *mut PageTable);
+
+    let pd_entry = &pdpt[pdpt_idx];
+    if pd_entry.is_unused() {
+        return None;
+    }
+    let pd = &mut *(pd_entry.addr().as_u64() as *mut PageTable);
+
+    let pt_entry = &pd[pd_idx];
+    if pt_entry.is_unused() {
+        return None;
+    }
+    let pt = &mut *(pt_entry.addr().as_u64() as *mut PageTable);
+
+    let entry = &mut pt[pt_idx];
+    if entry.is_unused() {
+        return None;
+    }
+    let phys = entry.addr();
+    entry.set_unused();
+
+    crate::sync::tlb::shootdown(virt);
+    Some(phys)
+}
+
 /// Unmap a 4 KiB page and return the previously mapped physical address.
 pub unsafe fn unmap_page(virt: VirtAddr) -> Option<PhysAddr> {
     let ptr_opt = PML4_VIRT.lock();
@@ -189,6 +232,48 @@ pub unsafe fn unmap_page(virt: VirtAddr) -> Option<PhysAddr> {
     crate::sync::tlb::shootdown(virt);
 
     Some(phys)
+}
+
+/// Walk the page tables rooted at `pml4_phys` to translate `virt`.
+pub fn translate_in_pml4(virt: VirtAddr, pml4_phys: PhysAddr) -> Option<PhysAddr> {
+    let pml4 = unsafe { &*(pml4_phys.as_u64() as *const PageTable) };
+
+    let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
+    let pdpt_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
+    let pd_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
+    let pt_idx = ((virt.as_u64() >> 12) & 0x1FF) as usize;
+
+    let pdpt_entry = &pml4[pml4_idx];
+    if pdpt_entry.is_unused() {
+        return None;
+    }
+    let pdpt = unsafe { &*(pdpt_entry.addr().as_u64() as *const PageTable) };
+
+    let pd_entry = &pdpt[pdpt_idx];
+    if pd_entry.is_unused() {
+        return None;
+    }
+    // Check for 1 GiB huge page at PDPT level.
+    if pd_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Some(pd_entry.addr() + (virt.as_u64() & 0x3FFF_FFFF));
+    }
+    let pd = unsafe { &*(pd_entry.addr().as_u64() as *const PageTable) };
+
+    let pt_entry = &pd[pd_idx];
+    if pt_entry.is_unused() {
+        return None;
+    }
+    // Check for 2 MiB huge page at PD level.
+    if pt_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Some(pt_entry.addr() + (virt.as_u64() & 0x1F_FFFF));
+    }
+    let pt = unsafe { &*(pt_entry.addr().as_u64() as *const PageTable) };
+
+    let page_entry = &pt[pt_idx];
+    if page_entry.is_unused() {
+        return None;
+    }
+    Some(page_entry.addr() + (virt.as_u64() & 0xFFF))
 }
 
 /// Walk the page tables to find the physical address mapped at `virt`.
@@ -250,6 +335,189 @@ fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTa
         let addr = entry.addr();
         Ok(unsafe { &mut *(addr.as_u64() as *mut PageTable) })
     }
+}
+
+// ---------------------------------------------------------------------------
+// COW fork support — T5 hyperbolic lifetime classification
+// ---------------------------------------------------------------------------
+
+/// Clone a page table for COW fork.
+///
+/// Kernel higher-half entries (256..512) are shared verbatim.
+/// User entries (0..256) are walked: each leaf 4 KiB page keeps its physical
+/// frame but the WRITABLE bit is cleared.  Read-only user pages (code,
+/// shared libs) are considered "long-lived" under T5 and are left truly
+/// shared.  Writable user pages (stack, heap, data) are marked COW.
+///
+/// # Safety
+/// `old_pml4_phys` must be a valid page table.
+pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> {
+    let old_pml4 = &*(old_pml4_phys.as_u64() as *const PageTable);
+    let new_pml4_frame = crate::memory::phys::alloc_frame()?;
+    let new_pml4 = &mut *(new_pml4_frame.as_u64() as *mut PageTable);
+    new_pml4.zero();
+
+    // Copy kernel higher-half mappings verbatim — no COW needed.
+    for i in 256..512 {
+        new_pml4[i] = old_pml4[i].clone();
+    }
+
+    // Walk user space and COW-mark writable pages.
+    for pml4_idx in 0..256 {
+        let pdpt_entry = &old_pml4[pml4_idx];
+        if pdpt_entry.is_unused() {
+            continue;
+        }
+        let old_pdpt = &*(pdpt_entry.addr().as_u64() as *const PageTable);
+        let new_pdpt_frame = crate::memory::phys::alloc_frame()?;
+        let new_pdpt = &mut *(new_pdpt_frame.as_u64() as *mut PageTable);
+        new_pdpt.zero();
+        new_pml4[pml4_idx].set_addr(
+            new_pdpt_frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        );
+
+        for pdpt_idx in 0..512 {
+            let pd_entry = &old_pdpt[pdpt_idx];
+            if pd_entry.is_unused() {
+                continue;
+            }
+            // Propagate huge pages (1 GiB) without COW for simplicity.
+            if pd_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                new_pdpt[pdpt_idx] = pd_entry.clone();
+                continue;
+            }
+            let old_pd = &*(pd_entry.addr().as_u64() as *const PageTable);
+            let new_pd_frame = crate::memory::phys::alloc_frame()?;
+            let new_pd = &mut *(new_pd_frame.as_u64() as *mut PageTable);
+            new_pd.zero();
+            new_pdpt[pdpt_idx].set_addr(
+                new_pd_frame,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+
+            for pd_idx in 0..512 {
+                let pt_entry = &old_pd[pd_idx];
+                if pt_entry.is_unused() {
+                    continue;
+                }
+                if pt_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    new_pd[pd_idx] = pt_entry.clone();
+                    continue;
+                }
+                let old_pt = &*(pt_entry.addr().as_u64() as *const PageTable);
+                let new_pt_frame = crate::memory::phys::alloc_frame()?;
+                let new_pt = &mut *(new_pt_frame.as_u64() as *mut PageTable);
+                new_pt.zero();
+                new_pd[pd_idx].set_addr(
+                    new_pt_frame,
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+
+                for pt_idx in 0..512 {
+                    let page_entry = &old_pt[pt_idx];
+                    if page_entry.is_unused() {
+                        continue;
+                    }
+                    let mut new_flags = page_entry.flags();
+                    // T5: Writable user pages are short-lived → COW.
+                    // Read-only pages are long-lived → truly shared.
+                    if new_flags.contains(PageTableFlags::WRITABLE)
+                        && new_flags.contains(PageTableFlags::USER_ACCESSIBLE)
+                    {
+                        new_flags.remove(PageTableFlags::WRITABLE);
+                    }
+                    new_pt[pt_idx].set_addr(page_entry.addr(), new_flags);
+                }
+            }
+        }
+    }
+
+    Some(new_pml4_frame)
+}
+
+/// Handle a COW page fault at `fault_addr` for the page table rooted at
+/// `pml4_phys`.  Returns `true` if the fault was resolved.
+///
+/// # Safety
+/// `pml4_phys` must be a valid page table.
+pub unsafe fn handle_cow_fault(fault_addr: VirtAddr, pml4_phys: u64) -> bool {
+    let pml4 = &*(pml4_phys as *const PageTable);
+    let pml4_idx = ((fault_addr.as_u64() >> 39) & 0x1FF) as usize;
+    let pdpt_idx = ((fault_addr.as_u64() >> 30) & 0x1FF) as usize;
+    let pd_idx = ((fault_addr.as_u64() >> 21) & 0x1FF) as usize;
+    let pt_idx = ((fault_addr.as_u64() >> 12) & 0x1FF) as usize;
+
+    let pdpt_entry = &pml4[pml4_idx];
+    if pdpt_entry.is_unused() {
+        return false;
+    }
+    let pdpt = &*(pdpt_entry.addr().as_u64() as *const PageTable);
+
+    let pd_entry = &pdpt[pdpt_idx];
+    if pd_entry.is_unused() || pd_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return false;
+    }
+    let pd = &*(pd_entry.addr().as_u64() as *const PageTable);
+
+    let pt_entry = &pd[pd_idx];
+    if pt_entry.is_unused() || pt_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return false;
+    }
+    let pt = &mut *(pt_entry.addr().as_u64() as *mut PageTable);
+
+    let entry = &mut pt[pt_idx];
+    if entry.is_unused() {
+        return false;
+    }
+    let flags = entry.flags();
+    // COW candidate: user-accessible, present, but not writable.
+    if !flags.contains(PageTableFlags::USER_ACCESSIBLE)
+        || !flags.contains(PageTableFlags::PRESENT)
+        || flags.contains(PageTableFlags::WRITABLE)
+    {
+        return false;
+    }
+
+    let old_phys = entry.addr();
+    let new_frame = match crate::memory::phys::alloc_frame() {
+        Some(f) => f,
+        None => return false,
+    };
+
+    // Copy the 4 KiB page contents.
+    core::ptr::copy_nonoverlapping(
+        old_phys.as_u64() as *const u8,
+        new_frame.as_u64() as *mut u8,
+        4096,
+    );
+
+    let mut new_flags = flags;
+    new_flags.insert(PageTableFlags::WRITABLE);
+    entry.set_addr(new_frame, new_flags);
+
+    crate::sync::tlb::shootdown(fault_addr);
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Thread-local storage — FS segment base (x86_64 MSR 0xC0000100)
+// ---------------------------------------------------------------------------
+
+/// Set the FS base MSR (0xC0000100) for the current CPU.
+///
+/// Each thread receives a unique TLS area at creation; this function
+/// wires the `FS` segment base so that `mov %fs:offset, %reg` accesses
+/// the thread-local slot vector.
+pub fn set_fs_base(addr: u64) {
+    unsafe {
+        x86_64::registers::model_specific::Msr::new(0xC000_0100).write(addr);
+    }
+}
+
+/// Read the FS base MSR.
+pub fn get_fs_base() -> u64 {
+    unsafe { x86_64::registers::model_specific::Msr::new(0xC000_0100).read() }
 }
 
 #[cfg(test)]
