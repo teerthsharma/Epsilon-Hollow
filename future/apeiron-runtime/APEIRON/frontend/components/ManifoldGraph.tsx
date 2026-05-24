@@ -3,17 +3,17 @@
 
 'use client';
 
-import React, { useRef, useMemo } from 'react';
+import React, { useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 
 const PointCloud = () => {
     const pointsRef = useRef<THREE.Points>(null!);
-
-    // Generate random manifold points
     const count = 2000;
-    const [positions, colors] = useMemo(() => {
+
+    const [pointData] = useState<{positions: Float32Array, colors: Float32Array}>(() => {
+        // Generate random manifold points
         const positions = new Float32Array(count * 3);
         const colors = new Float32Array(count * 3);
         const color = new THREE.Color();
@@ -38,15 +38,19 @@ const PointCloud = () => {
             colors[i * 3 + 1] = color.g;
             colors[i * 3 + 2] = color.b;
         }
-        return [positions, colors];
-    }, [count]);
+
+        return { positions, colors };
+    });
 
     useFrame((state) => {
+        if (!pointsRef.current) return;
         const time = state.clock.getElapsedTime();
         // Slow rotation ("Thinking")
         pointsRef.current.rotation.y = time * 0.05;
         pointsRef.current.rotation.z = time * 0.02;
     });
+
+    if (!pointData) return null;
 
     return (
         <points ref={pointsRef}>
@@ -54,16 +58,16 @@ const PointCloud = () => {
                 <bufferAttribute
                     attach="attributes-position"
                     count={count}
-                    array={positions}
+                    array={pointData.positions}
                     itemSize={3}
-                    args={[positions, 3]}
+                    args={[pointData.positions, 3]}
                 />
                 <bufferAttribute
                     attach="attributes-color"
                     count={count}
-                    array={colors}
+                    array={pointData.colors}
                     itemSize={3}
-                    args={[colors, 3]}
+                    args={[pointData.colors, 3]}
                 />
             </bufferGeometry>
             <pointsMaterial

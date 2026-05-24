@@ -80,24 +80,32 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
+                    {messages.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-4">
+                            <Cpu size={48} className="opacity-20 mb-4" />
+                            <p className="text-sm tracking-widest uppercase">System Idle</p>
+                            <p className="text-xs opacity-50">Inject knowledge to begin cognitive runtime</p>
                         </div>
-                    ))}
+                    ) : (
+                        messages.map((msg) => (
+                            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+                                    ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                                    : msg.sender === 'user'
+                                        ? 'border-gray-700 bg-gray-800'
+                                        : 'border-blue-900/30 bg-blue-900/10'
+                                    }`}>
+                                    {msg.isPlasticityEvent && (
+                                        <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                                            <Zap size={12} fill="currentColor" />
+                                            <span>Weights Updated</span>
+                                        </div>
+                                    )}
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                </div>
+                            </div>
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
@@ -119,14 +127,14 @@ export default function ChatInterface() {
                             onChange={(e) => setInput(e.target.value)}
                             placeholder="Inject knowledge into the kernel..."
                             aria-label="Message input"
-                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white"
+                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 transition-colors text-white"
                         />
                         <button
                             type="submit"
                             disabled={!input.trim()}
                             aria-label="Send message"
                             title="Send message"
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
+                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
                         >
                             <Send size={20} />
                         </button>
