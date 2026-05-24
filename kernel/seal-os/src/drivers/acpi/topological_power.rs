@@ -399,78 +399,49 @@ pub fn acpi_enter_sleep(state: u8) {
         sleep.rflags = x86_64::registers::rflags::read_raw();
 
         // Save GPRs and RIP/RSP via inline assembly.
-        // We use local variables to avoid multiple mutable borrows of `sleep`.
-        let mut rax_v = 0u64;
-        let mut rbx_v = 0u64;
-        let mut rcx_v = 0u64;
-        let mut rdx_v = 0u64;
-        let mut rsi_v = 0u64;
-        let mut rdi_v = 0u64;
-        let mut rbp_v = 0u64;
-        let mut r8_v  = 0u64;
-        let mut r9_v  = 0u64;
-        let mut r10_v = 0u64;
-        let mut r11_v = 0u64;
-        let mut r12_v = 0u64;
-        let mut r13_v = 0u64;
-        let mut r14_v = 0u64;
-        let mut r15_v = 0u64;
-        let mut rsp_v = 0u64;
-        let mut rip_v = 0u64;
+        // Write directly to a stack buffer to avoid exhausting registers.
+        let mut buf = [0u64; 17];
         core::arch::asm!(
-            "mov {rax_out}, rax",
-            "mov {rbx_out}, rbx",
-            "mov {rcx_out}, rcx",
-            "mov {rdx_out}, rdx",
-            "mov {rsi_out}, rsi",
-            "mov {rdi_out}, rdi",
-            "mov {rbp_out}, rbp",
-            "mov {r8_out}, r8",
-            "mov {r9_out}, r9",
-            "mov {r10_out}, r10",
-            "mov {r11_out}, r11",
-            "mov {r12_out}, r12",
-            "mov {r13_out}, r13",
-            "mov {r14_out}, r14",
-            "mov {r15_out}, r15",
-            "mov {rsp_out}, rsp",
-            "lea {rip_out}, [rip + 2f]",
+            "mov [{buf}], rax",
+            "mov [{buf} + 8], rbx",
+            "mov [{buf} + 16], rcx",
+            "mov [{buf} + 24], rdx",
+            "mov [{buf} + 32], rsi",
+            "mov [{buf} + 40], rdi",
+            "mov [{buf} + 48], rbp",
+            "mov [{buf} + 56], r8",
+            "mov [{buf} + 64], r9",
+            "mov [{buf} + 72], r10",
+            "mov [{buf} + 80], r11",
+            "mov [{buf} + 88], r12",
+            "mov [{buf} + 96], r13",
+            "mov [{buf} + 104], r14",
+            "mov [{buf} + 112], r15",
+            "mov [{buf} + 120], rsp",
+            "lea rax, [rip + 2f]",
+            "mov [{buf} + 128], rax",
             "2:",
-            rax_out = lateout(reg) rax_v,
-            rbx_out = lateout(reg) rbx_v,
-            rcx_out = lateout(reg) rcx_v,
-            rdx_out = lateout(reg) rdx_v,
-            rsi_out = lateout(reg) rsi_v,
-            rdi_out = lateout(reg) rdi_v,
-            rbp_out = lateout(reg) rbp_v,
-            r8_out  = lateout(reg) r8_v,
-            r9_out  = lateout(reg) r9_v,
-            r10_out = lateout(reg) r10_v,
-            r11_out = lateout(reg) r11_v,
-            r12_out = lateout(reg) r12_v,
-            r13_out = lateout(reg) r13_v,
-            r14_out = lateout(reg) r14_v,
-            r15_out = lateout(reg) r15_v,
-            rsp_out = lateout(reg) rsp_v,
-            rip_out = lateout(reg) rip_v,
+            buf = in(reg) buf.as_mut_ptr(),
+            out("rax") _,
+            options(nostack),
         );
-        sleep.rax = rax_v;
-        sleep.rbx = rbx_v;
-        sleep.rcx = rcx_v;
-        sleep.rdx = rdx_v;
-        sleep.rsi = rsi_v;
-        sleep.rdi = rdi_v;
-        sleep.rbp = rbp_v;
-        sleep.r8  = r8_v;
-        sleep.r9  = r9_v;
-        sleep.r10 = r10_v;
-        sleep.r11 = r11_v;
-        sleep.r12 = r12_v;
-        sleep.r13 = r13_v;
-        sleep.r14 = r14_v;
-        sleep.r15 = r15_v;
-        sleep.rsp = rsp_v;
-        sleep.rip = rip_v;
+        sleep.rax = buf[0];
+        sleep.rbx = buf[1];
+        sleep.rcx = buf[2];
+        sleep.rdx = buf[3];
+        sleep.rsi = buf[4];
+        sleep.rdi = buf[5];
+        sleep.rbp = buf[6];
+        sleep.r8  = buf[7];
+        sleep.r9  = buf[8];
+        sleep.r10 = buf[9];
+        sleep.r11 = buf[10];
+        sleep.r12 = buf[11];
+        sleep.r13 = buf[12];
+        sleep.r14 = buf[13];
+        sleep.r15 = buf[14];
+        sleep.rsp = buf[15];
+        sleep.rip = buf[16];
 
         // T2: Save scheduler prediction state.
         let cpu = crate::cpu::this_cpu();

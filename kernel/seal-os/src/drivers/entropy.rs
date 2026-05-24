@@ -33,7 +33,7 @@ pub fn rdrand_u64() -> Option<u64> {
         unsafe {
             core::arch::asm!(
                 "rdrand {val}",
-                "setc {ok}",
+                "setc {ok:l}",
                 val = out(reg) val,
                 ok = inout(reg) ok,
                 options(nomem, nostack),
@@ -59,7 +59,7 @@ pub fn rdseed_u64() -> Option<u64> {
         unsafe {
             core::arch::asm!(
                 "rdseed {val}",
-                "setc {ok}",
+                "setc {ok:l}",
                 val = out(reg) val,
                 ok = inout(reg) ok,
                 options(nomem, nostack),

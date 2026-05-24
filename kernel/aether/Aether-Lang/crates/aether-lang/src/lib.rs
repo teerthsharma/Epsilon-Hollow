@@ -53,7 +53,8 @@ pub mod python;
 // Re-exports for convenience
 pub use ast::*;
 pub use interpreter::{
-    register_kernel_callbacks, FsCallbacks, HwCallbacks, Interpreter, NetCallbacks, ProcessCallbacks,
+    register_kernel_callbacks, FsCallbacks, HwCallbacks, Interpreter, NetCallbacks,
+    ProcessCallbacks,
 };
 pub use lexer::{Lexer, Token, TokenKind};
 pub use parser::Parser;

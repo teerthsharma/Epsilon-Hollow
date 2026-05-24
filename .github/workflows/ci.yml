@@ -261,11 +261,24 @@ jobs:
             echo "FAIL: GPT signature not found"
             exit 1
           fi
+      - name: Build UEFI ISO
+        run: |
+          sudo apt-get update && sudo apt-get install -y xorriso
+          chmod +x scripts/build_iso.sh
+          scripts/build_iso.sh
+          if [ -f seal-os.iso ]; then
+            echo "OK: ISO created ($(du -h seal-os.iso | cut -f1))"
+          else
+            echo "FAIL: ISO not created"
+            exit 1
+          fi
       - name: Upload disk image artifact
         uses: actions/upload-artifact@v4
         with:
           name: seal-os-img-ci
-          path: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+          path: |
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            seal-os.iso
 
   kernel-qemu-smoke:
     name: QEMU UEFI boot smoke test

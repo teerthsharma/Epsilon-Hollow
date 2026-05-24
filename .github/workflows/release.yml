@@ -84,15 +84,20 @@ jobs:
             - **ManifoldFS**: files as 64-point clouds on S², O(1) teleport
             - **ManifoldPkg**: native package manager with Voronoi dependency resolution
             - **Aether-Lang**: Titan bytecode VM scripting language
-            - **Drivers**: PCI, WiFi (802.11), Bluetooth (BLE), GPU, USB (xHCI/HID/mass storage)
-            - **Network stack**: TCP/UDP/DHCP/DNS/HTTP/TLS
+            - **Drivers**: PCI enumeration, USB xHCI (HID + Mass Storage), NVMe, AHCI SATA, Intel e1000, Intel HDA audio
+            - **Network stack**: TCP/UDP/DHCP/DNS/HTTP/TLS 1.3 + HTTPS client
             - **Aether-Link**: predictive I/O prefetch (~18ns/decision)
             - **Async runtime**: single-threaded waker-based executor
             - **Calculator**: scientific calculator with expression parsing
-            - **SealPlayer**: media player (MP4, MKV, AVI, MOV, WebM, MP3, FLAC, WAV, AAC)
+            - **SealPlayer**: media player (WAV/PCM playback)
             - **Games**: Snake, Breakout, Warp Racer
             - **Desktop**: compositing WM with themes (dark/light/seal/matrix)
             - All T1-T5 topology theorems active in kernel
+
+            ### Honest limits
+            - **WiFi / Bluetooth**: Simulated state machines with deterministic scan/connect/pair. Real firmware blobs are vendor IP, out of scope.
+            - **GPU**: Software rendering only. 3D acceleration requires vendor firmware.
+            - **FAT + ext2**: Full read-write drivers included.
 
             ### Run it
             ```bash
@@ -117,7 +122,12 @@ jobs:
 
             Built from `main` branch at ${{ github.sha }}.
 
+            ### Run it
             ```bash
-            qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 512M -vga std
+            # QEMU with UEFI firmware
+            qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
+
+            # VirtualBox (attach .img as SATA hard disk, type: Other)
+            # Or boot from seal-os.iso (UEFI required)
             ```
           prerelease: true
