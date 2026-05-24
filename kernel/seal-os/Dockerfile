@@ -1,52 +1,66 @@
-# Seal OS Build + Run Environment
-# Builds the kernel, creates ISO, runs in QEMU with X11 forwarding
+# Seal OS — Build & Smoke-Test Environment
+# Replicates the CI kernel-build + kernel-image + kernel-qemu-smoke pipeline.
+#
+# Build:
+#   docker build -f kernel/seal-os/Dockerfile -t seal-os-smoke ..
+# Run smoke test:
+#   docker run --rm seal-os-smoke
+# Run interactively:
+#   docker run --rm -it seal-os-smoke bash
 
-FROM rust:latest AS builder
+FROM rust:1.85-bookworm AS builder
 
-# Install nightly + bare-metal target
-RUN rustup toolchain install nightly --component rust-src llvm-tools-preview
-
-# Install GRUB and xorriso for ISO creation
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    grub-pc-bin \
-    grub-common \
-    xorriso \
-    mtools \
-    && rm -rf /var/lib/apt/lists/*
+# Install nightly toolchain + components required for UEFI bare-metal build
+RUN rustup toolchain install nightly --component rust-src,llvm-tools-preview
+RUN rustup target add x86_64-unknown-uefi --toolchain nightly
 
 WORKDIR /build
 
-# Copy aether-core dependency
+# Copy workspace root manifest so path dependencies can resolve workspace keys
+COPY Cargo.toml Cargo.lock ./
+
+# Copy dependencies (must match paths in kernel/seal-os/Cargo.toml)
 COPY kernel/epsilon/epsilon/crates/aether-core /build/kernel/epsilon/epsilon/crates/aether-core
+COPY kernel/aether/Aether-Lang/crates/aether-lang /build/kernel/aether/Aether-Lang/crates/aether-lang
 
 # Copy seal-os kernel
 COPY kernel/seal-os /build/kernel/seal-os
 
-# Build kernel
-WORKDIR /build/kernel/seal-os
-RUN cargo +nightly build --release
+# Build kernel (release)
+RUN cd /build/kernel/seal-os && cargo +nightly build --release
 
-# Create ISO
-RUN mkdir -p iso/boot/grub \
-    && cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin \
-    && cp boot/grub/grub.cfg iso/boot/grub/grub.cfg \
-    && grub-mkrescue -o /build/seal-os.iso iso/
+# Copy seal-mkimage tool
+COPY kernel/seal-mkimage /build/kernel/seal-mkimage
 
-# Runtime image with QEMU
+# Build mkimage tool (stable)
+RUN cd /build/kernel/seal-mkimage && cargo +stable build --release
+
+# Create UEFI disk image
+RUN cd /build/kernel/seal-mkimage && cargo +stable run --release
+
+# Runtime stage with QEMU + OVMF
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     qemu-system-x86 \
+    ovmf \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/seal-os.iso /seal-os.iso
+# Copy the built disk image from builder
+COPY --from=builder /build/kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img /seal-os.img
 
-ENV DISPLAY=:0
+# Verify image exists
+RUN test -f /seal-os.img && echo "Disk image ready"
 
+ENV IMG=/seal-os.img
+ENV OVMF=/usr/share/OVMF/OVMF_CODE_4M.fd
+
+# Default: run QEMU smoke test (non-interactive, serial to stdout)
 ENTRYPOINT ["qemu-system-x86_64", \
-    "-cdrom", "/seal-os.iso", \
-    "-serial", "stdio", \
-    "-m", "512M", \
-    "-vga", "std", \
+    "-machine", "q35", \
+    "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd", \
+    "-drive", "file=/seal-os.img,format=raw", \
+    "-nographic", \
+    "-m", "4G", \
     "-no-reboot", \
     "-no-shutdown"]
