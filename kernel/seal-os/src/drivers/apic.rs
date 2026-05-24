@@ -94,6 +94,10 @@ impl LocalApic {
     ///
     /// `pit_ticks` is the PIT reload value for the delay (must fit in 16 bits).
     /// Returns the `initial_count` value to program for a ~1000 Hz tick rate.
+    ///
+    /// # Note
+    /// The caller must program `TIMER_DIV` to the same divider before calling
+    /// this function so that the calibration reflects the real decrement rate.
     pub unsafe fn calibrate_timer(&self, pit_ticks: u32) -> u32 {
         use x86_64::instructions::port::Port;
 
@@ -105,8 +109,10 @@ impl LocalApic {
         ch0.write((pit_ticks & 0xFF) as u8);
         ch0.write(((pit_ticks >> 8) & 0xFF) as u8);
 
-        // Save old timer LVT and program one-shot with vector 0xFE
+        // Save old timer config and set the same divider we use at runtime
         let old_lvt = self.read_reg(TIMER_LVT);
+        let old_div = self.read_reg(TIMER_DIV);
+        self.write_reg(TIMER_DIV, 3); // divide by 16 (same as init_timer)
         self.write_reg(TIMER_LVT, 0xFE);
         self.write_reg(TIMER_INITCNT, 0xFFFFFFFF);
 
@@ -124,8 +130,9 @@ impl LocalApic {
         let current = self.read_reg(TIMER_CURRCNT);
         let elapsed = 0xFFFFFFFFu32 - current;
 
-        // Restore timer LVT
+        // Restore timer config
         self.write_reg(TIMER_LVT, old_lvt);
+        self.write_reg(TIMER_DIV, old_div);
 
         // initial_count for ~1000 Hz (1 ms period = 50 ms / 50)
         elapsed / 50
