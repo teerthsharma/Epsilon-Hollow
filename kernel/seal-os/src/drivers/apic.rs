@@ -92,9 +92,9 @@ impl LocalApic {
 
     /// Calibrate the APIC timer against the PIT.
     ///
-    /// `pit_ticks_for_100ms` is the PIT reload value for a ~100 ms delay.
+    /// `pit_ticks` is the PIT reload value for the delay (must fit in 16 bits).
     /// Returns the `initial_count` value to program for a ~1000 Hz tick rate.
-    pub unsafe fn calibrate_timer(&self, pit_ticks_for_100ms: u32) -> u32 {
+    pub unsafe fn calibrate_timer(&self, pit_ticks: u32) -> u32 {
         use x86_64::instructions::port::Port;
 
         // Temporarily configure PIT channel 0 as one-shot
@@ -102,8 +102,8 @@ impl LocalApic {
         let mut ch0 = Port::<u8>::new(0x40);
 
         cmd.write(0x30); // channel 0, lobyte/hibyte, mode 0, binary
-        ch0.write((pit_ticks_for_100ms & 0xFF) as u8);
-        ch0.write(((pit_ticks_for_100ms >> 8) & 0xFF) as u8);
+        ch0.write((pit_ticks & 0xFF) as u8);
+        ch0.write(((pit_ticks >> 8) & 0xFF) as u8);
 
         // Save old timer LVT and program one-shot with vector 0xFE
         let old_lvt = self.read_reg(TIMER_LVT);
@@ -127,8 +127,8 @@ impl LocalApic {
         // Restore timer LVT
         self.write_reg(TIMER_LVT, old_lvt);
 
-        // initial_count for ~1000 Hz (1 ms period = 100 ms / 100)
-        elapsed / 100
+        // initial_count for ~1000 Hz (1 ms period = 50 ms / 50)
+        elapsed / 50
     }
 }
 
@@ -206,7 +206,7 @@ static LOCAL_APIC_INIT: AtomicBool = AtomicBool::new(false);
 static IOAPIC_INIT: AtomicBool = AtomicBool::new(false);
 static BSP_APIC_ID: AtomicU32 = AtomicU32::new(0);
 
-const PIT_100MS_TICKS: u32 = 119318; // ~100 ms at 1.193182 MHz
+const PIT_50MS_TICKS: u32 = 59659; // ~50 ms at 1.193182 MHz (fits in 16-bit PIT counter)
 
 /// Access the global Local APIC instance.
 ///
@@ -256,14 +256,14 @@ pub unsafe fn init() {
 
 /// Calibrate and start the Local APIC timer on the BSP.
 pub unsafe fn init_local_apic_timer_for_bsp() {
-    let initial_count = LOCAL_APIC.calibrate_timer(PIT_100MS_TICKS);
+    let initial_count = LOCAL_APIC.calibrate_timer(PIT_50MS_TICKS);
     LOCAL_APIC.init_timer(3, initial_count, 48);
     crate::serial_println!("[APIC] BSP timer calibrated, initial_count={}", initial_count);
 }
 
 /// Calibrate and start the Local APIC timer on an AP.
 pub unsafe fn init_local_apic_timer_for_ap() {
-    let initial_count = LOCAL_APIC.calibrate_timer(PIT_100MS_TICKS);
+    let initial_count = LOCAL_APIC.calibrate_timer(PIT_50MS_TICKS);
     LOCAL_APIC.init_timer(3, initial_count, 48);
 }
 
