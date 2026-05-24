@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! First-boot login screen with mascot splash and password prompt.
+//! Real password login screen with username and password fields.
 
 use super::framebuffer::Framebuffer;
 use super::font::{CHAR_WIDTH, CHAR_HEIGHT};
@@ -82,23 +82,29 @@ static MASCOT_32X32: [u8; 32 * 32] = [
 ];
 
 const SCALE: u32 = 6;
-const DEFAULT_PASSWORD: &[u8] = b"seal";
-const MAX_PWD_LEN: usize = 32;
 
 pub struct LoginScreen {
-    password_buf: [u8; MAX_PWD_LEN],
+    username: [u8; 32],
+    username_len: usize,
+    password: [u8; 32],
     password_len: usize,
-    authenticated: bool,
-    failed_attempts: u8,
+    active_field: u8,
+    error_msg: [u8; 64],
+    error_len: usize,
+    authenticated_user: Option<crate::security::passwd::UserEntry>,
 }
 
 impl LoginScreen {
     pub const fn new() -> Self {
         Self {
-            password_buf: [0u8; MAX_PWD_LEN],
+            username: [0u8; 32],
+            username_len: 0,
+            password: [0u8; 32],
             password_len: 0,
-            authenticated: false,
-            failed_attempts: 0,
+            active_field: 0,
+            error_msg: [0u8; 64],
+            error_len: 0,
+            authenticated_user: None,
         }
     }
 
@@ -135,7 +141,6 @@ impl LoginScreen {
                 if idx == 0 {
                     continue;
                 }
-                // Check if any neighbor is transparent -> edge pixel
                 let is_edge = [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)].iter().any(|&(dr, dc)| {
                     let nr = row as i32 + dr;
                     let nc = col as i32 + dc;
@@ -147,7 +152,6 @@ impl LoginScreen {
                 if is_edge {
                     let px = sprite_x + col * SCALE;
                     let py = sprite_y + row * SCALE;
-                    // Draw 1-pixel outline on exposed edges
                     fb.fill_rect(px, py, SCALE, 1, OUTLINE);
                     fb.fill_rect(px, py + SCALE - 1, SCALE, 1, OUTLINE);
                     fb.fill_rect(px, py, 1, SCALE, OUTLINE);
@@ -161,22 +165,34 @@ impl LoginScreen {
         self.draw_centered_text(fb, "S E A L   O S", title_y, theme.fg);
         self.draw_centered_text(fb, "The Geometrical Operating System", title_y + CHAR_HEIGHT + 4, theme.fg);
 
-        // Password prompt
-        let prompt_y = title_y + CHAR_HEIGHT * 3 + 20;
-        self.draw_centered_text(fb, "Enter password:", prompt_y, theme.fg);
-
-        // Password input box
-        let box_w = 200u32;
+        // Input boxes
+        let box_w = 240u32;
         let box_h = CHAR_HEIGHT + 12;
         let box_x = (fb.width.saturating_sub(box_w)) / 2;
-        let box_y = prompt_y + CHAR_HEIGHT + 10;
 
-        // Border
-        fb.fill_rect(box_x - 2, box_y - 2, box_w + 4, box_h + 4, theme.border);
-        // Background
-        fb.fill_rect(box_x, box_y, box_w, box_h, theme.bg);
+        // Username field
+        let user_label_y = title_y + CHAR_HEIGHT * 3 + 20;
+        self.draw_centered_text(fb, "Username:", user_label_y, theme.fg);
+        let user_box_y = user_label_y + CHAR_HEIGHT + 10;
+        self.draw_input_box(fb, box_x, user_box_y, box_w, box_h, self.active_field == 0);
 
-        // Password dots
+        let text_padding = 8u32;
+        let text_x = box_x + text_padding;
+        let text_y = user_box_y + (box_h - CHAR_HEIGHT) / 2;
+        for i in 0..self.username_len as u32 {
+            super::font::draw_char(fb, text_x + i * CHAR_WIDTH, text_y, self.username[i as usize], theme.fg);
+        }
+        if self.active_field == 0 {
+            let cursor_x = text_x + (self.username_len as u32) * CHAR_WIDTH;
+            fb.fill_rect(cursor_x, text_y, 2, CHAR_HEIGHT, theme.fg);
+        }
+
+        // Password field
+        let pwd_label_y = user_box_y + box_h + 20;
+        self.draw_centered_text(fb, "Password:", pwd_label_y, theme.fg);
+        let pwd_box_y = pwd_label_y + CHAR_HEIGHT + 10;
+        self.draw_input_box(fb, box_x, pwd_box_y, box_w, box_h, self.active_field == 1);
+
         let dot_size = 6u32;
         let dot_gap = 12u32;
         let dots_total_w = if self.password_len > 0 {
@@ -185,21 +201,32 @@ impl LoginScreen {
             0
         };
         let dots_x = box_x + (box_w.saturating_sub(dots_total_w)) / 2;
-        let dots_y = box_y + (box_h - dot_size) / 2;
-
+        let dots_y = pwd_box_y + (box_h - dot_size) / 2;
         for i in 0..self.password_len as u32 {
             fb.fill_rect(dots_x + i * dot_gap, dots_y, dot_size, dot_size, theme.fg);
         }
-
-        // Error message
-        if self.failed_attempts > 0 {
-            let err_y = box_y + box_h + 12;
-            self.draw_centered_text(fb, "Incorrect password. Try again.", err_y, theme.close_btn);
+        if self.active_field == 1 {
+            let cursor_x = if self.password_len > 0 {
+                dots_x + (self.password_len as u32) * dot_gap
+            } else {
+                dots_x
+            };
+            fb.fill_rect(cursor_x, dots_y, 2, dot_size, theme.fg);
         }
 
-        // Hint at bottom
-        let hint_y = fb.height - CHAR_HEIGHT - 20;
-        self.draw_centered_text(fb, "Default password: seal", hint_y, theme.border);
+        // Error message
+        if self.error_len > 0 {
+            let err_y = pwd_box_y + box_h + 12;
+            let err_text = core::str::from_utf8(&self.error_msg[..self.error_len]).unwrap_or("Error");
+            self.draw_centered_text(fb, err_text, err_y, theme.close_btn);
+        }
+    }
+
+    fn draw_input_box(&self, fb: &Framebuffer, x: u32, y: u32, w: u32, h: u32, active: bool) {
+        let theme = crate::wm::themes::current_theme();
+        let border_color = if active { OUTLINE } else { theme.border };
+        fb.fill_rect(x - 2, y - 2, w + 4, h + 4, border_color);
+        fb.fill_rect(x, y, w, h, theme.bg);
     }
 
     fn draw_centered_text(&self, fb: &Framebuffer, text: &str, y: u32, color: u32) {
@@ -212,24 +239,42 @@ impl LoginScreen {
 
     pub fn key_press(&mut self, key: u8) -> bool {
         match key {
+            b'\t' => {
+                self.active_field = if self.active_field == 0 { 1 } else { 0 };
+            }
             b'\n' | 13 => {
-                if self.check_password() {
-                    self.authenticated = true;
+                let username = core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("");
+                let password = core::str::from_utf8(&self.password[..self.password_len]).unwrap_or("");
+                if let Some(user) = crate::security::passwd::verify_login(username, password) {
+                    self.authenticated_user = Some(user);
                     return true;
                 } else {
-                    self.failed_attempts = self.failed_attempts.saturating_add(1);
+                    self.set_error("Invalid username or password");
                     self.password_len = 0;
                 }
             }
             8 | 127 => {
-                if self.password_len > 0 {
-                    self.password_len -= 1;
+                if self.active_field == 0 {
+                    if self.username_len > 0 {
+                        self.username_len -= 1;
+                    }
+                } else {
+                    if self.password_len > 0 {
+                        self.password_len -= 1;
+                    }
                 }
             }
             32..=126 => {
-                if self.password_len < MAX_PWD_LEN {
-                    self.password_buf[self.password_len] = key;
-                    self.password_len += 1;
+                if self.active_field == 0 {
+                    if self.username_len < 32 {
+                        self.username[self.username_len] = key;
+                        self.username_len += 1;
+                    }
+                } else {
+                    if self.password_len < 32 {
+                        self.password[self.password_len] = key;
+                        self.password_len += 1;
+                    }
                 }
             }
             _ => {}
@@ -237,20 +282,14 @@ impl LoginScreen {
         false
     }
 
-    fn check_password(&self) -> bool {
-        if self.password_len != DEFAULT_PASSWORD.len() {
-            return false;
-        }
-        let mut ok = true;
-        for i in 0..self.password_len {
-            if self.password_buf[i] != DEFAULT_PASSWORD[i] {
-                ok = false;
-            }
-        }
-        ok
+    fn set_error(&mut self, msg: &str) {
+        let bytes = msg.as_bytes();
+        let len = bytes.len().min(64);
+        self.error_msg[..len].copy_from_slice(&bytes[..len]);
+        self.error_len = len;
     }
 
-    pub fn is_authenticated(&self) -> bool {
-        self.authenticated
+    pub fn authenticated_user(&self) -> Option<&crate::security::passwd::UserEntry> {
+        self.authenticated_user.as_ref()
     }
 }

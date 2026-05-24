@@ -112,6 +112,12 @@ impl Shell {
             "warp" => String::from("[Warp Racer] Starting Warp Racer... Fly through the data stream!"),
 
             // System
+            "whoami" => {
+                match crate::security::passwd::get_current_user() {
+                    Some(user) => user.username,
+                    None => String::from("unknown"),
+                }
+            }
             "memory" => self.cmd_memory(),
 
             // ML
@@ -123,6 +129,15 @@ impl Shell {
 
             // Prefetch
             "prefetch" => self.cmd_prefetch(arg1),
+
+            // TopCrypt / Lypnos Guard
+            "topcrypt" => {
+                let rest = input.strip_prefix("topcrypt ").unwrap_or("");
+                self.cmd_topcrypt(rest)
+            }
+
+            // Tensor visualization
+            "tensor" => self.cmd_tensor(arg1, arg2),
 
             // Calculator
             "calc" => {
@@ -776,6 +791,282 @@ impl Shell {
                 }
             }
         }
+    }
+
+    fn cmd_topcrypt(&mut self, rest: &str) -> String {
+        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        let sub = parts.get(0).copied().unwrap_or("");
+        let arg1 = parts.get(1).copied().unwrap_or("");
+        let arg2 = parts.get(2).copied().unwrap_or("");
+
+        match sub {
+            "encode" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt encode: usage: topcrypt encode <file>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt encode: '{}' not found", arg1),
+                };
+                let topo = crate::fs::topcrypt::encode_bytes(&data, 0x5EA1);
+                let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
+                let topo_name = format!("{}.topo", arg1);
+                if self.fs.exists(&topo_name, self.cwd) {
+                    let _ = self.fs.delete(&topo_name, self.cwd);
+                }
+                match self.fs.store(&topo_name, &serialized, self.cwd) {
+                    Ok(id) => format!(
+                        "[TopCrypt] Encoded {} bytes → {} blocks on S² (inode {})",
+                        data.len(), topo.block_count, id
+                    ),
+                    Err(e) => format!("topcrypt encode: {}", e),
+                }
+            }
+            "decode" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt decode: usage: topcrypt decode <file.topo>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt decode: '{}' not found", arg1),
+                };
+                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let decoded = crate::fs::topcrypt::decode_bytes(&topo);
+                let out_name = if arg1.ends_with(".topo") {
+                    &arg1[..arg1.len() - 5]
+                } else {
+                    arg1
+                };
+                if self.fs.exists(out_name, self.cwd) {
+                    let _ = self.fs.delete(out_name, self.cwd);
+                }
+                match self.fs.store(out_name, &decoded, self.cwd) {
+                    Ok(id) => format!(
+                        "[TopCrypt] Decoded {} blocks → {} bytes (inode {})",
+                        topo.block_count, decoded.len(), id
+                    ),
+                    Err(e) => format!("topcrypt decode: {}", e),
+                }
+            }
+            "lock" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt lock: usage: topcrypt lock <file.topo>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt lock: '{}' not found", arg1),
+                };
+                let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let key = crate::security::topcrypt_guard::LYPNOS_KEY;
+                crate::fs::topcrypt::lock_file(&mut topo, key);
+                let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
+                if self.fs.exists(arg1, self.cwd) {
+                    let _ = self.fs.delete(arg1, self.cwd);
+                }
+                match self.fs.store(arg1, &serialized, self.cwd) {
+                    Ok(_) => format!(
+                        "[Lypnos Guard] File locked. Entropy = {:.3} bits. Sweet dreams.",
+                        topo.lock_entropy
+                    ),
+                    Err(e) => format!("topcrypt lock: {}", e),
+                }
+            }
+            "unlock" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt unlock: usage: topcrypt unlock <file.topo>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt unlock: '{}' not found", arg1),
+                };
+                let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let key = crate::security::topcrypt_guard::LYPNOS_KEY;
+                if !crate::fs::topcrypt::unlock_file(&mut topo, key) {
+                    return format!("topcrypt unlock: incorrect key or corrupted file '{}'", arg1);
+                }
+                let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
+                if self.fs.exists(arg1, self.cwd) {
+                    let _ = self.fs.delete(arg1, self.cwd);
+                }
+                match self.fs.store(arg1, &serialized, self.cwd) {
+                    Ok(_) => format!("[Lypnos Guard] File awakened. Welcome back."),
+                    Err(e) => format!("topcrypt unlock: {}", e),
+                }
+            }
+            "info" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt info: usage: topcrypt info <file.topo>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt info: '{}' not found", arg1),
+                };
+                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                format!(
+                    "Name: {}
+Blocks: {}
+Locked: {}
+Entropy: {:.3} bits
+Seed: {:016x}",
+                    arg1,
+                    topo.block_count,
+                    if topo.locked { "yes" } else { "no" },
+                    topo.lock_entropy,
+                    topo.embedding_seed
+                )
+            }
+            "render" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt render: usage: topcrypt render <file.csv>");
+                }
+                let text = match self.fs.read_text(arg1, self.cwd) {
+                    Some(t) => t,
+                    None => return format!("topcrypt render: '{}' not found", arg1),
+                };
+                let tensor = crate::ml_engine::tensor_viz::parse_csv(&text);
+                let data = &tensor.data;
+                let len = data.len();
+                let mut peaks = 0;
+                let mut valleys = 0;
+                for w in data.windows(3) {
+                    if w[1] > w[0] && w[1] > w[2] {
+                        peaks += 1;
+                    }
+                    if w[1] < w[0] && w[1] < w[2] {
+                        valleys += 1;
+                    }
+                }
+                format!(
+                    "[Lypnos Guard] Rendering {} tensor... peaks: {}, valleys: {}",
+                    len, peaks, valleys
+                )
+            }
+            "export" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt export: usage: topcrypt export <file.topo> [path]");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt export: '{}' not found", arg1),
+                };
+                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let flat = crate::fs::topcrypt::decode_bytes(&topo);
+                let dest = if arg2.is_empty() {
+                    format!("{}.flat", arg1)
+                } else {
+                    String::from(arg2)
+                };
+                let dest_name = dest.rsplit('/').next().unwrap_or("export.flat");
+                if self.fs.exists(dest_name, self.cwd) {
+                    let _ = self.fs.delete(dest_name, self.cwd);
+                }
+                match self.fs.store(dest_name, &flat, self.cwd) {
+                    Ok(_) => format!(
+                        "[TopCrypt] Flattened {} blocks → {} bytes → {}",
+                        topo.block_count, flat.len(), dest
+                    ),
+                    Err(e) => format!("topcrypt export: {}", e),
+                }
+            }
+            "import" => {
+                if arg1.is_empty() {
+                    return String::from("topcrypt import: usage: topcrypt import <file>");
+                }
+                let data = match self.read_file_bytes(arg1) {
+                    Some(d) => d,
+                    None => return format!("topcrypt import: '{}' not found", arg1),
+                };
+                let topo = crate::fs::topcrypt::encode_bytes(&data, 0x5EA1);
+                let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
+                let topo_name = format!("{}.topo", arg1.rsplit('/').next().unwrap_or(arg1));
+                if self.fs.exists(&topo_name, self.cwd) {
+                    let _ = self.fs.delete(&topo_name, self.cwd);
+                }
+                match self.fs.store(&topo_name, &serialized, self.cwd) {
+                    Ok(id) => format!(
+                        "[TopCrypt] Imported {} bytes → {} blocks on S² (inode {})",
+                        data.len(), topo.block_count, id
+                    ),
+                    Err(e) => format!("topcrypt import: {}", e),
+                }
+            }
+            _ => String::from(
+                "TopCrypt / Lypnos Guard commands:
+\
+                 topcrypt encode <file>       — Encode file to topological format
+\
+                 topcrypt decode <file.topo>  — Decode topological file
+\
+                 topcrypt lock <file.topo>    — Lock file with Lypnos Guard
+\
+                 topcrypt unlock <file.topo>  — Unlock file
+\
+                 topcrypt info <file.topo>    — Show topological metadata
+\
+                 topcrypt render <file.csv>   — Render CSV as tensor
+\
+                 topcrypt export <file.topo> [path] — Export to flat file
+\
+                 topcrypt import <file>       — Import flat file to manifold",
+            ),
+        }
+    }
+
+    fn cmd_tensor(&mut self, subcmd: &str, arg: &str) -> String {
+        match subcmd {
+            "render" => {
+                if arg.is_empty() {
+                    crate::wm::app_launcher::launch_app(9);
+                    String::from("[Tensor] Launching tensor viewer with demo pattern")
+                } else {
+                    match self.fs.read_text(arg, self.cwd) {
+                        Some(text) => {
+                            crate::apps::tensor_viewer::set_pending_csv(&text);
+                            crate::wm::app_launcher::launch_app(9);
+                            format!("[Tensor] Launching viewer with '{}'", arg)
+                        }
+                        None => format!("tensor render: '{}' not found", arg),
+                    }
+                }
+            }
+            "info" => {
+                if arg.is_empty() {
+                    return String::from("tensor info: usage: tensor info <file.csv>");
+                }
+                match self.fs.read_text(arg, self.cwd) {
+                    Some(text) => {
+                        let tensor = crate::ml_engine::tensor_viz::parse_csv(&text);
+                        if tensor.data.is_empty() {
+                            return format!("tensor info: '{}' contains no numeric data", arg);
+                        }
+                        let mut min = f32::MAX;
+                        let mut max = f32::MIN;
+                        let mut sum = 0.0f32;
+                        for &v in &tensor.data {
+                            if v < min { min = v; }
+                            if v > max { max = v; }
+                            sum += v;
+                        }
+                        let mean = sum / tensor.data.len() as f32;
+                        let shape_str = tensor.shape.iter().map(|s| format!("{}", s)).collect::<Vec<_>>().join("x");
+                        format!("Tensor: {}\nshape: [{}]\nmin: {:.4}\nmax: {:.4}\nmean: {:.4}\nelements: {}",
+                            arg, shape_str, min, max, mean, tensor.data.len())
+                    }
+                    None => format!("tensor info: '{}' not found", arg),
+                }
+            }
+            _ => String::from(
+                "Tensor commands:\n\
+                 tensor render [file.csv] — Launch 3D tensor viewer\n\
+                 tensor info <file.csv>   — Show tensor statistics",
+            ),
+        }
+    }
+
+    fn read_file_bytes(&self, name: &str) -> Option<Vec<u8>> {
+        let inode_id = self.fs.resolve_path_from(name, self.cwd).ok()?;
+        let inode = self.fs.inode(inode_id)?;
+        Some(inode.data.clone())
     }
 
     fn cmd_prefetch(&self, sub: &str) -> String {

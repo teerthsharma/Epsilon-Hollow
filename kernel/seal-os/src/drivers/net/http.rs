@@ -86,7 +86,7 @@ impl HttpClient {
 
     fn get_http(&self, parsed: &ParsedUrl, ip: [u8; 4]) -> Result<HttpResponse, String> {
         let mut tcp = crate::drivers::net::tcp::TcpSocket::new();
-        tcp.connect(ip, parsed.port);
+        tcp.connect(crate::net::IpAddr::V4(ip), parsed.port);
 
         let start = crate::drivers::interrupts::ticks();
         while tcp.state() != crate::net::tcp::TcpState::Established {
@@ -98,7 +98,7 @@ impl HttpClient {
         }
 
         let req = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.3.1\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.4.5\r\n\r\n",
             parsed.path, parsed.host
         );
         tcp.send(req.as_bytes());
@@ -134,7 +134,7 @@ impl HttpClient {
 
     fn post_http(&self, parsed: &ParsedUrl, ip: [u8; 4], body: &[u8]) -> Result<HttpResponse, String> {
         let mut tcp = crate::drivers::net::tcp::TcpSocket::new();
-        tcp.connect(ip, parsed.port);
+        tcp.connect(crate::net::IpAddr::V4(ip), parsed.port);
 
         let start = crate::drivers::interrupts::ticks();
         while tcp.state() != crate::net::tcp::TcpState::Established {
@@ -146,7 +146,7 @@ impl HttpClient {
         }
 
         let req = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.3.1\r\n\r\n",
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.4.5\r\n\r\n",
             parsed.path, parsed.host, body.len()
         );
         tcp.send(req.as_bytes());
@@ -183,12 +183,12 @@ impl HttpClient {
 
     fn get_https(&self, parsed: &ParsedUrl, ip: [u8; 4]) -> Result<HttpResponse, String> {
         let mut tls = crate::drivers::net::tls_socket::TlsSocket::new();
-        if let Err(e) = tls.connect(ip, parsed.port) {
+        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port) {
             return Err(format!("TLS connect failed: {}", e));
         }
 
         let req = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.3.1\r\n\r\n",
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.4.5\r\n\r\n",
             parsed.path, parsed.host
         );
         if let Err(e) = tls.send(req.as_bytes()) {
@@ -226,12 +226,12 @@ impl HttpClient {
 
     fn post_https(&self, parsed: &ParsedUrl, ip: [u8; 4], body: &[u8]) -> Result<HttpResponse, String> {
         let mut tls = crate::drivers::net::tls_socket::TlsSocket::new();
-        if let Err(e) = tls.connect(ip, parsed.port) {
+        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port) {
             return Err(format!("TLS connect failed: {}", e));
         }
 
         let req = format!(
-            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.3.1\r\n\r\n",
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\nUser-Agent: SealOS/0.4.5\r\n\r\n",
             parsed.path, parsed.host, body.len()
         );
         if let Err(e) = tls.send(req.as_bytes()) {

@@ -7,6 +7,7 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::fs::manifold_fs::ManifoldFS;
+use crate::fs::topcrypt;
 use crate::graphics::font;
 use crate::wm::window::Window;
 
@@ -14,7 +15,9 @@ const BG: u32 = 0x00141420;
 const HEADER_BG: u32 = 0x001A1A2E;
 const FILE_COLOR: u32 = 0x0089B4FA;
 const DIR_COLOR: u32 = 0x00F9E2AF;
+const TOPO_COLOR: u32 = 0x00CBA6F7;
 const TEXT_FG: u32 = 0x00CDD6F4;
+const LOCKED_COLOR: u32 = 0x00585B70;
 const CELL_COLORS: [u32; 8] = [
     0x00F38BA8, 0x00FAB387, 0x00F9E2AF, 0x00A6E3A1,
     0x0094E2D5, 0x0089B4FA, 0x00CBA6F7, 0x00F5C2E7,
@@ -24,6 +27,8 @@ pub struct FileManager {
     cwd: u64,
     path: String,
     selected: usize,
+    last_click_index: Option<usize>,
+    last_click_ticks: u64,
 }
 
 impl FileManager {
@@ -32,6 +37,62 @@ impl FileManager {
             cwd: 0,
             path: String::from("/"),
             selected: 0,
+            last_click_index: None,
+            last_click_ticks: 0,
+        }
+    }
+
+    pub fn cwd(&self) -> u64 {
+        self.cwd
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn selected_name(&self, fs: &ManifoldFS) -> Option<String> {
+        fs.ls(self.cwd).ok()?.get(self.selected).map(|e| e.name.clone())
+    }
+
+    /// Handle a mouse click inside the file manager window.
+    /// Returns an action message for double-clicks.
+    pub fn click(&mut self, _x: u32, y: u32, fs: &ManifoldFS) -> Option<String> {
+        // File list starts at y=32, each row is font::CHAR_HEIGHT + 4
+        if let Ok(entries) = fs.ls(self.cwd) {
+            for (i, _entry) in entries.iter().enumerate() {
+                let ey = 32 + i as u32 * (font::CHAR_HEIGHT + 4);
+                if y >= ey && y < ey + font::CHAR_HEIGHT + 4 {
+                    self.selected = i;
+                    let now = crate::drivers::interrupts::ticks();
+                    let is_double = self.last_click_index == Some(i)
+                        && now.saturating_sub(self.last_click_ticks) < 25;
+                    self.last_click_index = Some(i);
+                    self.last_click_ticks = now;
+                    if is_double {
+                        return self.open_selected(fs);
+                    }
+                    break;
+                }
+            }
+        }
+        None
+    }
+
+    fn open_selected(&self, fs: &ManifoldFS) -> Option<String> {
+        let name = self.selected_name(fs)?;
+        if name.ends_with(".topo") {
+            let locked = topcrypt::is_locked(&name);
+            Some(format!(
+                "[TopCrypt] Decoding '{}'... locked={}. (Full viewer in v0.5.0)",
+                name, locked
+            ))
+        } else if name.ends_with(".csv") {
+            Some(format!(
+                "[TopCrypt] CSV '{}' — use 'topcrypt render {}' to view as tensor",
+                name, name
+            ))
+        } else {
+            None
         }
     }
 
@@ -69,11 +130,18 @@ impl FileManager {
                     break;
                 }
 
+                let is_topo = entry.name.ends_with(".topo");
+                let is_locked = topcrypt::is_locked(&entry.name);
+
                 let icon_color = if entry.kind == "dir" {
                     DIR_COLOR
+                } else if is_topo {
+                    TOPO_COLOR
                 } else {
                     FILE_COLOR
                 };
+
+                let name_color = if is_locked { LOCKED_COLOR } else { TEXT_FG };
 
                 // Selection highlight
                 if i == self.selected {
@@ -91,11 +159,19 @@ impl FileManager {
                 }
 
                 // Icon
-                let icon = if entry.kind == "dir" { "[D]" } else { "[F]" };
+                let icon = if entry.kind == "dir" {
+                    "[D]"
+                } else if is_locked {
+                    "[Z]"
+                } else if is_topo {
+                    "[T]"
+                } else {
+                    "[F]"
+                };
                 render_text(win, 16, y, icon, icon_color);
 
                 // Name
-                render_text(win, 44, y, &entry.name, TEXT_FG);
+                render_text(win, 44, y, &entry.name, name_color);
 
                 // Size + cell info
                 let info = format!("{} pts cell={}", entry.payload_points, entry.voronoi_cell);
@@ -167,5 +243,11 @@ fn render_text(win: &mut Window, x: u32, y: u32, text: &str, color: u32) {
                 }
             }
         }
+    }
+}
+
+pub fn main() {
+    loop {
+        crate::process::scheduler::yield_current();
     }
 }

@@ -17,9 +17,36 @@ use crate::serial_println;
 #[cfg(not(test))]
 use crate::wm::event::InputEvent;
 
+/// Simple scancode-to-ASCII map (US QWERTY, set 1, unshifted).
+/// Index = scancode without bit 7. 0 = no ASCII mapping.
+static SCANCODE_MAP: [u8; 128] = {
+    let mut m = [0u8; 128];
+    m[0x02] = b'1'; m[0x03] = b'2'; m[0x04] = b'3'; m[0x05] = b'4';
+    m[0x06] = b'5'; m[0x07] = b'6'; m[0x08] = b'7'; m[0x09] = b'8';
+    m[0x0A] = b'9'; m[0x0B] = b'0'; m[0x0C] = b'-'; m[0x0D] = b'=';
+    m[0x0E] = b'\x08'; // Backspace
+    m[0x0F] = b'\t';   // Tab
+    m[0x10] = b'q'; m[0x11] = b'w'; m[0x12] = b'e'; m[0x13] = b'r';
+    m[0x14] = b't'; m[0x15] = b'y'; m[0x16] = b'u'; m[0x17] = b'i';
+    m[0x18] = b'o'; m[0x19] = b'p'; m[0x1A] = b'['; m[0x1B] = b']';
+    m[0x1C] = b'\n';   // Enter
+    m[0x1E] = b'a'; m[0x1F] = b's'; m[0x20] = b'd'; m[0x21] = b'f';
+    m[0x22] = b'g'; m[0x23] = b'h'; m[0x24] = b'j'; m[0x25] = b'k';
+    m[0x26] = b'l'; m[0x27] = b';'; m[0x28] = b'\''; m[0x29] = b'`';
+    m[0x2B] = b'\\';
+    m[0x2C] = b'z'; m[0x2D] = b'x'; m[0x2E] = b'c'; m[0x2F] = b'v';
+    m[0x30] = b'b'; m[0x31] = b'n'; m[0x32] = b'm'; m[0x33] = b',';
+    m[0x34] = b'.'; m[0x35] = b'/'; m[0x39] = b' ';
+    m[0x47] = b'7'; m[0x48] = b'8'; m[0x49] = b'9';
+    m[0x4B] = b'4'; m[0x4C] = b'5'; m[0x4D] = b'6';
+    m[0x4F] = b'1'; m[0x50] = b'2'; m[0x51] = b'3'; m[0x52] = b'0';
+    m
+};
+
 const IRQ_OFFSET: u8 = 32;
 
 const VECTOR_TIMER_APIC: u8 = 48;
+const VECTOR_POWER_BUTTON: u8 = 49;
 const VECTOR_IPI_TLB_SHOOTDOWN: u8 = 0xFD;
 pub const VECTOR_IPI_RESCHEDULE: u8 = 0xFE;
 
@@ -46,6 +73,7 @@ pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
     idt.page_fault.set_handler_fn(page_fault_handler);
     idt[VECTOR_TIMER_APIC].set_handler_fn(timer_handler_apic);
+    idt[VECTOR_POWER_BUTTON].set_handler_fn(power_button_handler);
     idt[Irq::Keyboard as u8].set_handler_fn(keyboard_handler);
     idt[Irq::Mouse as u8].set_handler_fn(mouse_handler);
     idt[VECTOR_IPI_RESCHEDULE].set_handler_fn(crate::cpu::smp::reschedule_ipi_handler);
@@ -314,7 +342,31 @@ extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
 extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::process::scheduler::scheduler_tick();
+    crate::drivers::acpi::topological_power::thermal_governor_step();
     crate::drivers::watchdog::check();
+    unsafe {
+        crate::drivers::apic::LOCAL_APIC.eoi();
+    }
+}
+
+#[cfg(not(test))]
+extern "x86-interrupt" fn power_button_handler(_frame: InterruptStackFrame) {
+    // If the system is sleeping, this interrupt is a wake event.
+    if crate::drivers::acpi::topological_power::is_sleeping() {
+        crate::drivers::acpi::topological_power::acpi_wake_handler();
+        unsafe {
+            crate::drivers::apic::LOCAL_APIC.eoi();
+        }
+        return;
+    }
+
+    // ACPI power button status is typically on PM1a_EVT_STS bit 8.
+    // In this minimal implementation we treat the interrupt edge as a
+    // press-and-release pair; a real SCI handler would poll the status
+    // register to distinguish press from release.
+    crate::drivers::acpi::topological_power::power_button_pressed();
+    // For simplicity we immediately release (single-shot behaviour).
+    crate::drivers::acpi::topological_power::power_button_released();
     unsafe {
         crate::drivers::apic::LOCAL_APIC.eoi();
     }
@@ -331,6 +383,11 @@ extern "x86-interrupt" fn keyboard_handler(_frame: InterruptStackFrame) {
             queue.push(InputEvent::KeyRelease(release_code));
         } else {
             queue.push(InputEvent::KeyPress(scancode));
+            // Feed printable characters into the stdin buffer for syscall reads
+            let ascii = SCANCODE_MAP[(scancode & 0x7F) as usize];
+            if ascii != 0 {
+                crate::syscall::table::stdin_push(ascii);
+            }
         }
     }
 
@@ -393,6 +450,44 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
         return;
     }
 
+    // Attempt swap-in for swapped-out pages.
+    let fault_virt = x86_64::VirtAddr::new(addr);
+    if crate::memory::swap::is_swapped(fault_virt) {
+        if unsafe { crate::memory::swap::swap_in_page(fault_virt) } {
+            return;
+        }
+    }
+
+    // T5: Handle COW page fault on write.
+    if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+        let current_pt = crate::process::scheduler::current_page_table().unwrap_or(0);
+        if current_pt != 0 {
+            unsafe {
+                if crate::memory::virt::handle_cow_fault(fault_virt, current_pt) {
+                    return;
+                }
+            }
+        }
+    }
+
+    // Try kernel heap growth for faults in the heap region.
+    const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
+    const HEAP_VIRTUAL_LIMIT: u64 = 0xFFFF_A000_0000_0000;
+    if addr >= HEAP_VIRTUAL_BASE && addr < HEAP_VIRTUAL_LIMIT {
+        if let Some(frame) = crate::memory::phys::alloc_frame() {
+            let page_start = x86_64::VirtAddr::new(addr & !0xFFF);
+            let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            unsafe {
+                if crate::memory::virt::map_page(page_start, frame, flags).is_ok() {
+                    return;
+                }
+                crate::memory::phys::free_frame(frame);
+            }
+        }
+    }
+
     serial_println!("[FAULT] Page fault at {:#x}, error code: {:?}", addr, error_code);
     serial_println!("{:#?}", frame);
     loop { x86_64::instructions::hlt(); }
@@ -425,6 +520,15 @@ extern "x86-interrupt" fn stack_segment_fault_handler(frame: InterruptStackFrame
 extern "x86-interrupt" fn general_protection_fault_handler(frame: InterruptStackFrame, error_code: u64) {
     serial_println!("[FAULT] General Protection Fault (#GP), error code: {:#x}\n{:#?}", error_code, frame);
     loop { x86_64::instructions::hlt(); }
+}
+
+/// Trigger a system reboot via the keyboard controller.
+pub fn reboot() {
+    unsafe {
+        use x86_64::instructions::port::Port;
+        let mut cmd: Port<u8> = Port::new(0x64);
+        cmd.write(0xFE);
+    }
 }
 
 pub fn scancode_to_char(code: u8) -> u8 {

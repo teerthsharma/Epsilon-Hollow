@@ -5,11 +5,16 @@
 
 pub mod aslr;
 pub mod audit;
+pub mod group;
 pub mod kpti;
 pub mod mac;
+pub mod manifold_acl;
+pub mod passwd;
 pub mod retpoline;
 pub mod seccomp;
+pub mod shadow;
 pub mod smap_smep;
+pub mod topcrypt_guard;
 
 /// Initialize all security subsystems.
 ///

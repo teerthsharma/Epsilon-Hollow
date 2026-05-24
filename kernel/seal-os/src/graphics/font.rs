@@ -19,6 +19,12 @@ pub fn draw_char(fb: &super::framebuffer::Framebuffer, x: u32, y: u32, ch: u8, c
     }
 }
 
+pub fn draw_string(fb: &super::framebuffer::Framebuffer, x: u32, y: u32, s: &str, color: u32) {
+    for (i, ch) in s.bytes().enumerate() {
+        draw_char(fb, x + (i as u32) * CHAR_WIDTH, y, ch, color);
+    }
+}
+
 pub fn glyph(ch: u8) -> &'static [u8; 16] {
     if ch < 32 || ch > 126 {
         return &FONT_DATA[0]; // space for unprintable

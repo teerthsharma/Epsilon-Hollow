@@ -10,6 +10,7 @@ use crate::apps::file_manager::FileManager;
 use crate::apps::media_player::MediaPlayer;
 use crate::apps::seal_ide::SealIde;
 use crate::apps::snake::SnakeGame;
+use crate::apps::tensor_viewer::TensorViewer;
 use crate::apps::terminal::Terminal;
 use crate::apps::theorem_viewer::TheoremViewer;
 use crate::apps::warp_racer::WarpRacer;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub snake: SnakeGame,
     pub breakout: BreakoutGame,
     pub warp_racer: WarpRacer,
+    pub tensor_viewer: TensorViewer,
     pub fs: ManifoldFS,
 
     // Window IDs (assigned by compositor)
@@ -39,9 +41,11 @@ pub struct AppState {
     pub snake_id: u32,
     pub breakout_id: u32,
     pub warp_racer_id: u32,
+    pub fm_id: u32,
+    pub tensor_id: u32,
 
     // Track which windows are dirty and need re-render
-    dirty: [bool; 8],
+    dirty: [bool; 10],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -76,6 +80,7 @@ impl AppState {
             snake: SnakeGame::new(400, 380),
             breakout: BreakoutGame::new(400, 380),
             warp_racer: WarpRacer::new(400, 380),
+            tensor_viewer: TensorViewer::new(),
             fs,
             term_id: 0,
             ide_id: 0,
@@ -85,7 +90,9 @@ impl AppState {
             snake_id: 0,
             breakout_id: 0,
             warp_racer_id: 0,
-            dirty: [true; 8],
+            fm_id: 0,
+            tensor_id: 0,
+            dirty: [true; 10],
         }
     }
 
@@ -98,6 +105,8 @@ impl AppState {
         self.snake_id = compositor.create_window("Snake", 100, 100, 400, 380);
         self.breakout_id = compositor.create_window("Breakout", 150, 150, 400, 380);
         self.warp_racer_id = compositor.create_window("Warp Racer", 200, 200, 400, 380);
+        self.fm_id = compositor.create_window("Files", 160, 120, 560, 400);
+        self.tensor_id = compositor.create_window("Tensor Viewer", 180, 140, 520, 360);
 
         // Initial render of all windows
         self.render_all(compositor);
@@ -172,6 +181,10 @@ impl AppState {
         } else if focused_id == self.warp_racer_id {
             send_key_to_game(scancode, |k| self.warp_racer.key_press(k));
             self.dirty[7] = true;
+        } else if focused_id == self.fm_id {
+            self.dirty[8] = true;
+        } else if focused_id == self.tensor_id {
+            self.dirty[9] = true;
         }
     }
 
@@ -179,6 +192,7 @@ impl AppState {
         self.snake.tick();
         self.breakout.tick();
         self.warp_racer.tick();
+        self.tensor_viewer.tick();
     }
 
     pub fn render_dirty(&mut self, compositor: &mut Compositor) {
@@ -230,6 +244,19 @@ impl AppState {
             }
             self.dirty[7] = false;
         }
+        if self.dirty[8] {
+            if let Some(win) = compositor.window_mut(self.fm_id) {
+                let fs = &self.fs;
+                self.file_manager.render_to_window(win, fs);
+            }
+            self.dirty[8] = false;
+        }
+        if self.dirty[9] {
+            if let Some(win) = compositor.window_mut(self.tensor_id) {
+                self.tensor_viewer.render_to_window(win);
+            }
+            self.dirty[9] = false;
+        }
     }
 
     fn render_all(&mut self, compositor: &mut Compositor) {
@@ -257,10 +284,48 @@ impl AppState {
         if let Some(win) = compositor.window_mut(self.warp_racer_id) {
             self.warp_racer.render_to_window(win);
         }
+        if let Some(win) = compositor.window_mut(self.fm_id) {
+            let fs = &self.fs;
+            self.file_manager.render_to_window(win, fs);
+        }
+        if let Some(win) = compositor.window_mut(self.tensor_id) {
+            self.tensor_viewer.render_to_window(win);
+        }
     }
 
     pub fn mark_all_dirty(&mut self) {
-        self.dirty = [true; 8];
+        self.dirty = [true; 10];
+    }
+
+    pub fn focus_app(&mut self, app_id: u8, compositor: &mut Compositor) {
+        let win_id = match app_id {
+            1 => self.term_id,
+            2 => self.ide_id,
+            3 => self.fm_id,
+            4 => self.calc_id,
+            5 => self.tv_id,
+            6 => self.snake_id,
+            7 => self.breakout_id,
+            8 => self.warp_racer_id,
+            9 => self.tensor_id,
+            _ => return,
+        };
+        if win_id == 0 {
+            return;
+        }
+        compositor.focus_window(win_id);
+        match app_id {
+            1 => self.dirty[0] = true,
+            2 => self.dirty[1] = true,
+            3 => self.dirty[8] = true,
+            4 => self.dirty[3] = true,
+            5 => self.dirty[2] = true,
+            6 => self.dirty[5] = true,
+            7 => self.dirty[6] = true,
+            8 => self.dirty[7] = true,
+            9 => self.dirty[9] = true,
+            _ => {}
+        }
     }
 
     fn route_mouse_move(&mut self, compositor: &mut Compositor) {
@@ -302,6 +367,10 @@ impl AppState {
                 } else if focused_id == self.warp_racer_id {
                     self.warp_racer.mouse_move(local_x, local_y);
                     self.dirty[7] = true;
+                } else if focused_id == self.fm_id {
+                    self.dirty[8] = true;
+                } else if focused_id == self.tensor_id {
+                    self.dirty[9] = true;
                 }
             }
         }
@@ -346,6 +415,15 @@ impl AppState {
                 } else if focused_id == self.warp_racer_id {
                     self.warp_racer.mouse_click(local_x, local_y, pressed);
                     self.dirty[7] = true;
+                } else if focused_id == self.fm_id {
+                    if pressed {
+                        if let Some(msg) = self.file_manager.click(local_x, local_y, &self.fs) {
+                            crate::serial_println!("{}", msg);
+                        }
+                    }
+                    self.dirty[8] = true;
+                } else if focused_id == self.tensor_id {
+                    self.dirty[9] = true;
                 }
             }
         }

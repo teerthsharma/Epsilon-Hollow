@@ -1,4 +1,4 @@
-# Seal OS v1.0.0-alpha
+# Seal OS v0.4.5
 
 **The Geometrical Operating System** — where all data is geometry on S² and file moves are O(1) topological surgery.
 

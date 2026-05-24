@@ -13,28 +13,35 @@ pub enum BufferState {
 pub struct Buffer {
     pub dev: u32,
     pub block_id: u64,
-    pub data: [u8; 4096],
+    pub data: Vec<u8>,
     pub state: BufferState,
     pub dirty: bool,
 }
 
 impl Buffer {
-    pub fn new(dev: u32, block_id: u64) -> Self {
+    pub fn new(dev: u32, block_id: u64, block_size: usize) -> Self {
+        let mut data = Vec::with_capacity(block_size);
+        data.resize(block_size, 0);
         Self {
             dev,
             block_id,
-            data: [0; 4096],
+            data,
             state: BufferState::Clean,
             dirty: false,
         }
     }
 
-    pub fn data(&self) -> &[u8; 4096] {
+    pub fn data(&self) -> &[u8] {
         &self.data
     }
 
-    pub fn data_mut(&mut self) -> &mut [u8; 4096] {
+    pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.data
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.state = BufferState::Dirty;
+        self.dirty = true;
     }
 }
 
@@ -43,14 +50,16 @@ pub struct BufferCache {
     cache: BTreeMap<(u32, u64), Buffer>,
     lru: Vec<(u32, u64)>, // Front is oldest, back is newest
     capacity: usize,
+    block_size: usize,
 }
 
 impl BufferCache {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, block_size: usize) -> Self {
         Self {
             cache: BTreeMap::new(),
             lru: Vec::new(),
             capacity,
+            block_size,
         }
     }
 
@@ -59,7 +68,7 @@ impl BufferCache {
             if self.cache.len() >= self.capacity {
                 self.evict();
             }
-            let mut new_buf = Buffer::new(dev, block_id);
+            let mut new_buf = Buffer::new(dev, block_id, self.block_size);
             if read_block(dev, block_id, &mut new_buf.data).is_err() {
                 return None;
             }
@@ -70,21 +79,22 @@ impl BufferCache {
         self.cache.get_mut(&(dev, block_id))
     }
 
-    pub fn write_block(&mut self, dev: u32, block_id: u64, data: &[u8; 4096]) {
+    pub fn write_block(&mut self, dev: u32, block_id: u64, data: &[u8]) {
         if !self.cache.contains_key(&(dev, block_id)) {
             if self.cache.len() >= self.capacity {
                 self.evict();
             }
             self.cache.insert(
                 (dev, block_id),
-                Buffer::new(dev, block_id),
+                Buffer::new(dev, block_id, self.block_size),
             );
         }
 
         self.update_lru(dev, block_id);
 
         let buf = self.cache.get_mut(&(dev, block_id)).unwrap();
-        buf.data.copy_from_slice(data);
+        let len = data.len().min(buf.data.len());
+        buf.data[..len].copy_from_slice(&data[..len]);
         buf.state = BufferState::Dirty;
         buf.dirty = true;
     }
@@ -104,6 +114,10 @@ impl BufferCache {
                 }
             }
         }
+    }
+
+    pub fn sync(&mut self) {
+        self.flush(None);
     }
 
     fn update_lru(&mut self, dev: u32, block_id: u64) {

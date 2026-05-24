@@ -8,6 +8,7 @@
 //! performs at most 8 cell probes + 256 priority bucket pops — all
 //! bounded by compile-time constants.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -24,6 +25,59 @@ use x86_64::PhysAddr;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 
 const VORONOI_CELLS: usize = 8;
+
+// ---------------------------------------------------------------------------
+// ThreadPool — T1/T2 driven worker group
+// ---------------------------------------------------------------------------
+
+pub struct ThreadPool {
+    pub leader_id: u64,
+    pub worker_ids: Vec<u64>,
+    pub affinity_cell: usize,
+}
+
+impl ThreadPool {
+    pub fn new(leader_id: u64, affinity_cell: usize) -> Self {
+        Self {
+            leader_id,
+            worker_ids: Vec::new(),
+            affinity_cell,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JobObject — T1 Voronoi super-cell with T4 governor limits
+// ---------------------------------------------------------------------------
+
+pub struct JobObject {
+    pub job_id: u64,
+    pub cpu_limit_percent: u64,
+    pub mem_limit_pages: u64,
+    pub tasks: Vec<u64>,
+    pub priority_boost: i8,
+}
+
+impl JobObject {
+    pub fn new(job_id: u64) -> Self {
+        Self {
+            job_id,
+            cpu_limit_percent: 100,
+            mem_limit_pages: 0, // 0 = unlimited
+            tasks: Vec::new(),
+            priority_boost: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Process tree — T5 hyperbolic parent-child relationships
+// ---------------------------------------------------------------------------
+
+pub struct ProcessNode {
+    pub parent: Option<u64>,
+    pub children: Vec<u64>,
+}
 
 // ---------------------------------------------------------------------------
 // TaskSlab — stable-index task storage
@@ -164,6 +218,16 @@ pub struct ManifoldScheduler {
     timeslice_base: u64,
     ticks_in_slice: u64,
     schedule_count: u64,
+
+    // T5: Hyperbolic process tree
+    process_tree: BTreeMap<u64, ProcessNode>,
+
+    // Thread pools
+    thread_pools: BTreeMap<u64, ThreadPool>,
+
+    // T1/T4: Job objects
+    jobs: BTreeMap<u64, JobObject>,
+    next_job_id: u64,
 }
 
 impl ManifoldScheduler {
@@ -194,6 +258,10 @@ impl ManifoldScheduler {
             timeslice_base: 10,
             ticks_in_slice: 0,
             schedule_count: 0,
+            process_tree: BTreeMap::new(),
+            thread_pools: BTreeMap::new(),
+            jobs: BTreeMap::new(),
+            next_job_id: 1,
         }
     }
 
@@ -244,9 +312,14 @@ impl ManifoldScheduler {
         name: &str,
         priority: u8,
         elf_data: &[u8],
+        file_mode: u16,
+        file_uid: u32,
+        file_gid: u32,
+        real_uid: u32,
+        real_gid: u32,
     ) -> Result<u64, super::elf::ElfError> {
         let aslr_base = crate::security::aslr::randomize_mmap_base();
-        let loaded = super::elf::load(elf_data, aslr_base)?;
+        let loaded = super::elf::load(elf_data, aslr_base, file_mode, file_uid, file_gid)?;
 
         let user_stack_size = 65536usize;
         let user_stack = vec![0u8; user_stack_size];
@@ -265,6 +338,20 @@ impl ManifoldScheduler {
             loaded.page_table,
         );
         task.user_stack = user_stack;
+        task.uid = real_uid;
+        task.gid = real_gid;
+        task.euid = real_uid;
+        task.egid = real_gid;
+        task.groups = crate::security::group::groups_for_uid(real_uid);
+
+        // setuid / setgid handling
+        if file_mode & 0o4000 != 0 {
+            task.euid = file_uid;
+        }
+        if file_mode & 0o2000 != 0 {
+            task.egid = file_gid;
+        }
+
         let idx = self.slab.alloc(task);
         {
             if let Some(task_ref) = self.slab.get_mut(idx) {
@@ -410,6 +497,10 @@ impl ManifoldScheduler {
                 let stack_top = next_task.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
                 unsafe {
                     crate::memory::gdt::set_kernel_stack(stack_top);
+                }
+                // Set FS base for thread-local storage.
+                if next_task.tls_base != 0 {
+                    crate::memory::virt::set_fs_base(next_task.tls_base);
                 }
             }
 
@@ -568,6 +659,52 @@ impl ManifoldScheduler {
         }
     }
 
+    pub fn current_euid(&self) -> u32 {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .map(|t| t.euid)
+            .unwrap_or(0)
+    }
+
+    pub fn set_current_euid(&mut self, euid: u32) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.euid = euid;
+            }
+        }
+    }
+
+    pub fn current_egid(&self) -> u32 {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .map(|t| t.egid)
+            .unwrap_or(0)
+    }
+
+    pub fn set_current_egid(&mut self, egid: u32) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.egid = egid;
+            }
+        }
+    }
+
+    pub fn current_groups(&self) -> Vec<u32> {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .map(|t| t.groups.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn set_current_groups(&mut self, groups: &[u32]) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.groups.clear();
+                task.groups.extend_from_slice(groups);
+            }
+        }
+    }
+
     pub fn current_page_table(&self) -> Option<u64> {
         let idx = self.current?;
         Some(self.slab.get(idx)?.page_table)
@@ -606,6 +743,16 @@ impl ManifoldScheduler {
 
     pub fn schedule_count(&self) -> u64 {
         self.schedule_count
+    }
+
+    /// T2: Access the spectral prediction state vector.
+    pub fn get_predict_state(&self) -> [f64; 8] {
+        self.predict_state
+    }
+
+    /// T2: Restore the spectral prediction state vector (used on S3 resume).
+    pub fn set_predict_state(&mut self, state: [f64; 8]) {
+        self.predict_state = state;
     }
 
     pub fn mark_current_dead(&mut self) {
@@ -648,21 +795,51 @@ impl ManifoldScheduler {
                 entry: parent.entry,
                 is_userspace: parent.is_userspace,
                 user_stack: parent.user_stack.clone(),
-                page_table: parent.page_table,
+                // T5: COW fork — clone page table, mark writable user pages read-only.
+                page_table: if parent.is_userspace && parent.page_table != 0 {
+                    unsafe {
+                        crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(parent.page_table))
+                    }
+                    .map(|f| f.as_u64())
+                    .unwrap_or(parent.page_table)
+                } else {
+                    parent.page_table
+                },
                 context,
                 xsave_storage,
                 kernel_stack,
                 uid: parent.uid,
                 gid: parent.gid,
+                euid: parent.euid,
+                egid: parent.egid,
+                groups: parent.groups.clone(),
                 cwd: parent.cwd.clone(),
                 brk_end: parent.brk_end,
                 pending_signals: 0,
                 signal_mask: parent.signal_mask,
                 signal_handlers: parent.signal_handlers,
                 signal_saved_context: None,
+                parent_id: Some(parent.id),
+                children: Vec::new(),
+                is_thread: false,
+                thread_group_leader: 0,
+                tls_base: parent.tls_base,
+                tls_slots: parent.tls_slots,
+                affinity_hint: parent.affinity_hint,
+                job_id: parent.job_id,
             };
             (new_id, parent.priority, child)
         };
+
+        // T5: Update hyperbolic process tree.
+        let parent_id = self.slab.get(idx)?.id;
+        self.process_tree.insert(new_id, ProcessNode {
+            parent: Some(parent_id),
+            children: Vec::new(),
+        });
+        if let Some(node) = self.process_tree.get_mut(&parent_id) {
+            node.children.push(new_id);
+        }
 
         let child_idx = self.slab.alloc(child);
         {
@@ -684,6 +861,246 @@ impl ManifoldScheduler {
         self.cell_queues[cell].push(child_idx, priority);
         self.cell_bitmap |= 1 << cell;
         Some(new_id)
+    }
+
+    /// SYS_CLONE — create a thread (CLONE_VM) or lightweight process.
+    pub fn clone_current(&mut self, flags: u64) -> Option<u64> {
+        let idx = self.current?;
+        let parent_id = self.slab.get(idx)?.id;
+
+        const CLONE_VM: u64 = 0x100;
+        const CLONE_THREAD: u64 = 0x10000;
+        let share_vm = flags & CLONE_VM != 0 || flags & CLONE_THREAD != 0;
+
+        let (new_id, priority, child) = {
+            let parent = self.slab.get(idx)?;
+            let new_id = self.next_id;
+            self.next_id += 1;
+
+            let mut kernel_stack = vec![0u8; KERNEL_STACK_SIZE];
+            kernel_stack.copy_from_slice(&parent.kernel_stack);
+
+            let xsave_size = xsave_area_size();
+            let mut xsave_storage = vec![0u8; xsave_size + 64];
+            xsave_storage.copy_from_slice(&parent.xsave_storage);
+            let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
+
+            let mut context = parent.context;
+            context.rax = 0;
+            context.xsave_ptr = xsave_ptr;
+
+            let user_stack_size = 65536usize;
+            let user_stack = vec![0u8; user_stack_size];
+            let user_stack_top = user_stack.as_ptr() as u64 + user_stack_size as u64;
+            let user_stack_top = user_stack_top & !0xF;
+            context.rsp = user_stack_top;
+
+            let page_table = if share_vm {
+                parent.page_table
+            } else {
+                unsafe {
+                    crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(parent.page_table))
+                }
+                .map(|f| f.as_u64())
+                .unwrap_or(parent.page_table)
+            };
+
+            let tls_base = if parent.is_userspace {
+                crate::memory::virt::alloc_virtual_pages(1, 1)
+                    .map(|v| v.as_u64())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            let child = Task {
+                id: new_id,
+                name: parent.name.clone(),
+                state: TaskState::Ready,
+                manifold_embedding: parent.manifold_embedding,
+                voronoi_cell: parent.voronoi_cell,
+                priority: parent.priority,
+                ticks_used: 0,
+                entry: parent.entry,
+                is_userspace: parent.is_userspace,
+                user_stack,
+                page_table,
+                context,
+                xsave_storage,
+                kernel_stack,
+                uid: parent.uid,
+                gid: parent.gid,
+                euid: parent.euid,
+                egid: parent.egid,
+                groups: parent.groups.clone(),
+                cwd: parent.cwd.clone(),
+                brk_end: parent.brk_end,
+                pending_signals: 0,
+                signal_mask: parent.signal_mask,
+                signal_handlers: parent.signal_handlers,
+                signal_saved_context: None,
+                parent_id: Some(parent_id),
+                children: Vec::new(),
+                is_thread: share_vm,
+                thread_group_leader: if share_vm { parent_id } else { 0 },
+                tls_base,
+                tls_slots: [0; 64],
+                affinity_hint: parent.affinity_hint,
+                job_id: parent.job_id,
+            };
+            (new_id, parent.priority, child)
+        };
+
+        if !share_vm {
+            self.process_tree.insert(new_id, ProcessNode {
+                parent: Some(parent_id),
+                children: Vec::new(),
+            });
+            if let Some(node) = self.process_tree.get_mut(&parent_id) {
+                node.children.push(new_id);
+            }
+        } else {
+            let leader_id = parent_id;
+            if let Some(pool) = self.thread_pools.get_mut(&leader_id) {
+                pool.worker_ids.push(new_id);
+            } else {
+                let cell = self.slab.get(idx).map(|t| t.voronoi_cell).unwrap_or(0);
+                let mut pool = ThreadPool::new(leader_id, cell);
+                pool.worker_ids.push(new_id);
+                self.thread_pools.insert(leader_id, pool);
+            }
+        }
+
+        let child_idx = self.slab.alloc(child);
+        {
+            if let Some(task_ref) = self.slab.get_mut(child_idx) {
+                task_ref.voronoi_cell =
+                    Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
+                if share_vm {
+                    task_ref.affinity_hint = task_ref.voronoi_cell;
+                }
+            } else {
+                serial_println!("[scheduler] clone_current: slab index {} invalid after alloc", child_idx);
+                return None;
+            }
+        }
+        let cell = match self.slab.get(child_idx) {
+            Some(t) => t.voronoi_cell,
+            None => {
+                serial_println!("[scheduler] clone_current: slab index {} vanished after update", child_idx);
+                return None;
+            }
+        };
+        self.cell_queues[cell].push(child_idx, priority);
+        self.cell_bitmap |= 1 << cell;
+        Some(new_id)
+    }
+
+    // ---------------------------------------------------------------------------
+    // T5: Topological process tree
+    // ---------------------------------------------------------------------------
+
+    pub fn get_parent_id(&self, id: u64) -> Option<u64> {
+        self.process_tree.get(&id).and_then(|n| n.parent)
+    }
+
+    pub fn collect_subtree(&self, id: u64, out: &mut Vec<u64>) {
+        if let Some(node) = self.process_tree.get(&id) {
+            for &child in &node.children {
+                out.push(child);
+                self.collect_subtree(child, out);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Job objects — T1 Voronoi super-cell + T4 governor adaptation
+    // ---------------------------------------------------------------------------
+
+    pub fn create_job(&mut self, cpu_limit_percent: u64, mem_limit_pages: u64) -> u64 {
+        let job_id = self.next_job_id;
+        self.next_job_id += 1;
+        let mut job = JobObject::new(job_id);
+        job.cpu_limit_percent = cpu_limit_percent;
+        job.mem_limit_pages = mem_limit_pages;
+        self.jobs.insert(job_id, job);
+        job_id
+    }
+
+    pub fn add_task_to_job(&mut self, job_id: u64, task_id: u64) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.tasks.push(task_id);
+        }
+        if let Some(idx) = self.slab.find_by_id(task_id) {
+            if let Some(task) = self.slab.get_mut(idx) {
+                task.job_id = Some(job_id);
+            }
+        }
+    }
+
+    pub fn get_job(&self, job_id: u64) -> Option<&JobObject> {
+        self.jobs.get(&job_id)
+    }
+
+    pub fn get_job_mut(&mut self, job_id: u64) -> Option<&mut JobObject> {
+        self.jobs.get_mut(&job_id)
+    }
+
+    pub fn current_job_id(&self) -> Option<u64> {
+        self.current
+            .and_then(|i| self.slab.get(i))
+            .and_then(|t| t.job_id)
+    }
+
+    /// T4: Adapt job priority based on resource deviation from limit.
+    pub fn adapt_job_priorities(&mut self) {
+        let eps = self.governor.epsilon();
+        for job in self.jobs.values_mut() {
+            if job.cpu_limit_percent == 0 {
+                continue;
+            }
+            let usage_fraction = 0.5f64;
+            let deviation = (usage_fraction - (job.cpu_limit_percent as f64 / 100.0)).abs();
+            if deviation > eps {
+                job.priority_boost = (job.priority_boost - 1).clamp(-20, 20);
+            } else {
+                job.priority_boost = (job.priority_boost + 1).clamp(-20, 20);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Resource limits
+    // ---------------------------------------------------------------------------
+
+    pub fn setrlimit_current(&mut self, resource: u32, limit: u64) {
+        if let Some(idx) = self.current {
+            if let Some(task) = self.slab.get_mut(idx) {
+                match resource {
+                    0 => {}
+                    1 => {}
+                    2 => { task.brk_end = limit; }
+                    3 => {}
+                    4 => {}
+                    5 => {}
+                    9 => {}
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    pub fn getrlimit_current(&self, resource: u32) -> u64 {
+        match resource {
+            0 => self.current.and_then(|i| self.slab.get(i)).map(|t| t.ticks_used).unwrap_or(0),
+            2 => self.current_brk_end(),
+            5 => self.current_job_id().and_then(|jid| self.jobs.get(&jid)).map(|j| j.mem_limit_pages).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    pub fn get_thread_pool(&self, leader_id: u64) -> Option<&ThreadPool> {
+        self.thread_pools.get(&leader_id)
     }
 
     pub fn current_task_cwd(&self) -> String {
@@ -728,11 +1145,16 @@ pub fn spawn_user(
     name: &'static str,
     priority: u8,
     elf_data: &[u8],
+    file_mode: u16,
+    file_uid: u32,
+    file_gid: u32,
+    real_uid: u32,
+    real_gid: u32,
 ) -> Result<u64, super::elf::ElfError> {
     unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.spawn_user(name, priority, elf_data)
+        cpu.scheduler.spawn_user(name, priority, elf_data, file_mode, file_uid, file_gid, real_uid, real_gid)
     }
 }
 
@@ -854,6 +1276,60 @@ pub fn set_current_gid(gid: u32) {
     }
 }
 
+/// Return the supplementary groups of the currently running task.
+pub fn current_groups() -> Vec<u32> {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.current_groups()
+    }
+}
+
+/// Set the effective UID of the currently running task.
+pub fn set_current_euid(uid: u32) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.set_current_euid(uid);
+    }
+}
+
+/// Set the effective GID of the currently running task.
+pub fn set_current_egid(gid: u32) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.set_current_egid(gid);
+    }
+}
+
+/// Return the effective UID of the currently running task (0 if none).
+pub fn current_euid() -> u32 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.current_euid()
+    }
+}
+
+/// Return the effective GID of the currently running task (0 if none).
+pub fn current_egid() -> u32 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.current_egid()
+    }
+}
+
+/// Set the supplementary groups of the currently running task.
+pub fn set_current_groups(groups: &[u32]) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.set_current_groups(groups);
+    }
+}
+
 /// Return the page table (CR3) of the currently running task.
 pub fn current_page_table() -> Option<u64> {
     unsafe {
@@ -905,6 +1381,70 @@ pub fn set_current_cwd(cwd: String) {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
         cpu.scheduler.set_current_cwd(cwd);
+    }
+}
+
+/// Clone the current task (thread or process). Returns the new task ID.
+pub fn clone_current(flags: u64) -> Option<u64> {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.clone_current(flags)
+    }
+}
+
+/// T5: Return the parent ID of the current task.
+pub fn current_parent_id() -> Option<u64> {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        let id = cpu.scheduler.current_task_id();
+        cpu.scheduler.get_parent_id(id)
+    }
+}
+
+/// T5: Collect all descendants of `root_id` into `out`.
+pub fn collect_subtree(root_id: u64, out: &mut Vec<u64>) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.collect_subtree(root_id, out);
+    }
+}
+
+/// T1/T4: Create a job object.
+pub fn create_job(cpu_limit_percent: u64, mem_limit_pages: u64) -> u64 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.create_job(cpu_limit_percent, mem_limit_pages)
+    }
+}
+
+/// T1/T4: Add a task to a job.
+pub fn add_task_to_job(job_id: u64, task_id: u64) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.add_task_to_job(job_id, task_id);
+    }
+}
+
+/// Resource limit setter.
+pub fn setrlimit(resource: u32, limit: u64) {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.setrlimit_current(resource, limit);
+    }
+}
+
+/// Resource limit getter.
+pub fn getrlimit(resource: u32) -> u64 {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.getrlimit_current(resource)
     }
 }
 

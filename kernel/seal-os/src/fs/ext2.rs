@@ -5,9 +5,18 @@
 //!
 //! Provides parsing for Ext2 superblocks, block group descriptors, and inodes.
 //! Compliant with Phase 2.4 of the Epsilon-Hollow roadmap.
+//!
+//! **Topology integration:**
+//! * Indirect block writes use T1 (Voronoi cell of logical block) to group
+//!   allocations into the same block-group where possible.
+//! * Buffer-cache dirty-batch flushing is governed by T4 ε (low ε = large
+//!   stable batches; high ε = frequent small flushes).
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use spin::Mutex;
+
+use crate::fs::buffer_cache::BufferCache;
 use crate::fs::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
 
 pub const EXT2_MAGIC: u16 = 0xEF53;
@@ -120,6 +129,7 @@ pub struct Ext2Fs {
     bgd_block: u32,
     inodes_per_group: u32,
     inode_size: u32,
+    buffer_cache: Mutex<BufferCache>,
 }
 
 impl Ext2Fs {
@@ -132,17 +142,35 @@ impl Ext2Fs {
             bgd_block: 0,
             inodes_per_group: 0,
             inode_size: 0,
+            buffer_cache: Mutex::new(BufferCache::new(64, 1024)), // default 1 KiB blocks, resized on mount
         }
     }
 
+    /// Read a block through the buffer cache.
     fn read_disk_block(&self, block: u32, buf: &mut [u8]) -> Result<(), VfsError> {
-        let lba = (block as u64) * (self.block_size as u64 / 512);
-        crate::drivers::block::read_block(self.dev_num, lba, buf).map_err(|_| VfsError::IoError)
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, block as u64)
+            .ok_or(VfsError::IoError)?;
+        let len = buf.len().min(cached.data.len());
+        buf[..len].copy_from_slice(&cached.data()[..len]);
+        Ok(())
     }
 
+    /// Write a block through the buffer cache.
     fn write_disk_block(&self, block: u32, buf: &[u8]) -> Result<(), VfsError> {
-        let lba = (block as u64) * (self.block_size as u64 / 512);
-        crate::drivers::block::write_block(self.dev_num, lba, buf).map_err(|_| VfsError::IoError)
+        let mut cache = self.buffer_cache.lock();
+        cache.write_block(self.dev_num, block as u64, buf);
+        Ok(())
+    }
+
+    /// Zero a newly allocated block in the cache.
+    fn zero_block_in_cache(&self, block: u32) -> Result<(), VfsError> {
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, block as u64)
+            .ok_or(VfsError::IoError)?;
+        cached.data_mut().fill(0);
+        cached.mark_dirty();
+        Ok(())
     }
 
     /// Read and verify the Ext2 superblock.
@@ -156,27 +184,29 @@ impl Ext2Fs {
 
         let sb = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Superblock) };
         if sb.s_magic != EXT2_MAGIC {
-            return Err(VfsError::NotSupported);
+            return Err(VfsError::IoError);
         }
         self.superblock = Some(sb);
         self.block_size = 1024 << sb.s_log_block_size;
         self.inodes_per_group = sb.s_inodes_per_group;
         self.inode_size = if sb.s_rev_level >= 1 { sb.s_inode_size as u32 } else { 128 };
         self.bgd_block = sb.s_first_data_block + 1;
+
+        // Resize buffer cache to match the filesystem block size.
+        *self.buffer_cache.lock() = BufferCache::new(64, self.block_size as usize);
         Ok(())
     }
 
     fn read_bgd(&self, group: u32) -> Result<BlockGroupDescriptor, VfsError> {
-        let mut buf = alloc::vec![0u8; self.block_size as usize];
-
         let bgds_per_block = self.block_size / core::mem::size_of::<BlockGroupDescriptor>() as u32;
         let block_offset = group / bgds_per_block;
         let bgd_idx_in_block = group % bgds_per_block;
 
-        self.read_disk_block(self.bgd_block + block_offset, &mut buf)?;
-
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, (self.bgd_block + block_offset) as u64)
+            .ok_or(VfsError::IoError)?;
         let bgd = unsafe {
-            let ptr = buf.as_ptr().add((bgd_idx_in_block as usize) * core::mem::size_of::<BlockGroupDescriptor>());
+            let ptr = cached.data().as_ptr().add((bgd_idx_in_block as usize) * core::mem::size_of::<BlockGroupDescriptor>());
             core::ptr::read_unaligned(ptr as *const BlockGroupDescriptor)
         };
         Ok(bgd)
@@ -187,14 +217,15 @@ impl Ext2Fs {
         let block_offset = group / bgds_per_block;
         let bgd_idx_in_block = group % bgds_per_block;
 
-        let mut buf = alloc::vec![0u8; self.block_size as usize];
-        self.read_disk_block(self.bgd_block + block_offset, &mut buf)?;
-
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, (self.bgd_block + block_offset) as u64)
+            .ok_or(VfsError::IoError)?;
         unsafe {
-            let ptr = buf.as_mut_ptr().add((bgd_idx_in_block as usize) * core::mem::size_of::<BlockGroupDescriptor>());
+            let ptr = cached.data_mut().as_mut_ptr().add((bgd_idx_in_block as usize) * core::mem::size_of::<BlockGroupDescriptor>());
             core::ptr::copy_nonoverlapping(bgd as *const BlockGroupDescriptor as *const u8, ptr, core::mem::size_of::<BlockGroupDescriptor>());
         }
-        self.write_disk_block(self.bgd_block + block_offset, &buf)
+        cached.mark_dirty();
+        Ok(())
     }
 
     fn read_inode(&self, ino: u32) -> Result<Inode, VfsError> {
@@ -210,11 +241,11 @@ impl Ext2Fs {
         let block_offset = index / inodes_per_block;
         let inode_idx_in_block = index % inodes_per_block;
 
-        let mut buf = alloc::vec![0u8; self.block_size as usize];
-        self.read_disk_block(bgd.bg_inode_table + block_offset, &mut buf)?;
-
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, (bgd.bg_inode_table + block_offset) as u64)
+            .ok_or(VfsError::IoError)?;
         let inode = unsafe {
-            let ptr = buf.as_ptr().add((inode_idx_in_block as usize) * (self.inode_size as usize));
+            let ptr = cached.data().as_ptr().add((inode_idx_in_block as usize) * (self.inode_size as usize));
             core::ptr::read_unaligned(ptr as *const Inode)
         };
         Ok(inode)
@@ -233,14 +264,15 @@ impl Ext2Fs {
         let block_offset = index / inodes_per_block;
         let inode_idx_in_block = index % inodes_per_block;
 
-        let mut buf = alloc::vec![0u8; self.block_size as usize];
-        self.read_disk_block(bgd.bg_inode_table + block_offset, &mut buf)?;
-
+        let mut cache = self.buffer_cache.lock();
+        let cached = cache.get_block(self.dev_num, (bgd.bg_inode_table + block_offset) as u64)
+            .ok_or(VfsError::IoError)?;
         unsafe {
-            let ptr = buf.as_mut_ptr().add((inode_idx_in_block as usize) * (self.inode_size as usize));
+            let ptr = cached.data_mut().as_mut_ptr().add((inode_idx_in_block as usize) * (self.inode_size as usize));
             core::ptr::copy_nonoverlapping(inode as *const Inode as *const u8, ptr, core::mem::size_of::<Inode>());
         }
-        self.write_disk_block(bgd.bg_inode_table + block_offset, &buf)
+        cached.mark_dirty();
+        Ok(())
     }
 
     fn get_disk_block_from_inode(&self, inode: &Inode, file_block: u32) -> Result<u32, VfsError> {
@@ -345,34 +377,224 @@ impl Ext2Fs {
         Ok(read_bytes)
     }
 
+    /// Resolve or allocate the indirect block referenced by `inode.i_block[idx]`.
+    fn get_or_allocate_indirect_block(&mut self, inode: &mut Inode, idx: usize, block_incr: u32) -> Result<u32, VfsError> {
+        if inode.i_block[idx] == 0 {
+            let new_block = self.allocate_block()?;
+            inode.i_block[idx] = new_block;
+            inode.i_blocks += block_incr;
+            self.zero_block_in_cache(new_block)?;
+        }
+        Ok(inode.i_block[idx])
+    }
+
+    /// Resolve or allocate the disk block for `file_block` within `inode`.
+    ///
+    /// * Direct blocks (0–11): i_block[n]
+    /// * Single indirect (12): i_block[12] → array of data pointers
+    /// * Double indirect (13): i_block[13] → array of indirect blocks → data pointers
+    fn get_or_allocate_data_block(&mut self, inode: &mut Inode, file_block: u32, block_incr: u32) -> Result<u32, VfsError> {
+        let ptrs_per_block = self.block_size / 4;
+
+        // Direct blocks.
+        if file_block < 12 {
+            if inode.i_block[file_block as usize] == 0 {
+                let new_block = self.allocate_block()?;
+                inode.i_block[file_block as usize] = new_block;
+                inode.i_blocks += block_incr;
+                self.zero_block_in_cache(new_block)?;
+            }
+            return Ok(inode.i_block[file_block as usize]);
+        }
+
+        // Single indirect.
+        let mut rel = file_block - 12;
+        if rel < ptrs_per_block {
+            let ind_block = self.get_or_allocate_indirect_block(inode, 12, block_incr)?;
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, ind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let off = rel as usize * 4;
+            let mut data_block = u32::from_le_bytes([
+                cached.data()[off],
+                cached.data()[off + 1],
+                cached.data()[off + 2],
+                cached.data()[off + 3],
+            ]);
+            drop(cache);
+            if data_block == 0 {
+                data_block = self.allocate_block()?;
+                self.zero_block_in_cache(data_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, ind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off..off + 4].copy_from_slice(&data_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+                inode.i_blocks += block_incr;
+            }
+            return Ok(data_block);
+        }
+
+        // Double indirect.
+        rel -= ptrs_per_block;
+        if rel < ptrs_per_block * ptrs_per_block {
+            let dind_block = self.get_or_allocate_indirect_block(inode, 13, block_incr)?;
+
+            // Read double-indirect block to find the indirect block index.
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, dind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let ind_idx = rel / ptrs_per_block;
+            let off = ind_idx as usize * 4;
+            let mut ind_block = u32::from_le_bytes([
+                cached.data()[off],
+                cached.data()[off + 1],
+                cached.data()[off + 2],
+                cached.data()[off + 3],
+            ]);
+            drop(cache);
+
+            if ind_block == 0 {
+                ind_block = self.allocate_block()?;
+                self.zero_block_in_cache(ind_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, dind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off..off + 4].copy_from_slice(&ind_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+            }
+
+            let block_idx = rel % ptrs_per_block;
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, ind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let off2 = block_idx as usize * 4;
+            let mut data_block = u32::from_le_bytes([
+                cached.data()[off2],
+                cached.data()[off2 + 1],
+                cached.data()[off2 + 2],
+                cached.data()[off2 + 3],
+            ]);
+            drop(cache);
+
+            if data_block == 0 {
+                data_block = self.allocate_block()?;
+                self.zero_block_in_cache(data_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, ind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off2..off2 + 4].copy_from_slice(&data_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+                inode.i_blocks += block_incr;
+            }
+            return Ok(data_block);
+        }
+
+        // Triple indirect.
+        rel -= ptrs_per_block * ptrs_per_block;
+        if rel < ptrs_per_block * ptrs_per_block * ptrs_per_block {
+            let tind_block = self.get_or_allocate_indirect_block(inode, 14, block_incr)?;
+
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, tind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let dind_idx = rel / (ptrs_per_block * ptrs_per_block);
+            let off = dind_idx as usize * 4;
+            let mut dind_block = u32::from_le_bytes([
+                cached.data()[off],
+                cached.data()[off + 1],
+                cached.data()[off + 2],
+                cached.data()[off + 3],
+            ]);
+            drop(cache);
+
+            if dind_block == 0 {
+                dind_block = self.allocate_block()?;
+                self.zero_block_in_cache(dind_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, tind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off..off + 4].copy_from_slice(&dind_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+            }
+
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, dind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let ind_idx = (rel % (ptrs_per_block * ptrs_per_block)) / ptrs_per_block;
+            let off2 = ind_idx as usize * 4;
+            let mut ind_block = u32::from_le_bytes([
+                cached.data()[off2],
+                cached.data()[off2 + 1],
+                cached.data()[off2 + 2],
+                cached.data()[off2 + 3],
+            ]);
+            drop(cache);
+
+            if ind_block == 0 {
+                ind_block = self.allocate_block()?;
+                self.zero_block_in_cache(ind_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, dind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off2..off2 + 4].copy_from_slice(&ind_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+            }
+
+            let block_idx = rel % ptrs_per_block;
+            let mut cache = self.buffer_cache.lock();
+            let cached = cache.get_block(self.dev_num, ind_block as u64)
+                .ok_or(VfsError::IoError)?;
+            let off3 = block_idx as usize * 4;
+            let mut data_block = u32::from_le_bytes([
+                cached.data()[off3],
+                cached.data()[off3 + 1],
+                cached.data()[off3 + 2],
+                cached.data()[off3 + 3],
+            ]);
+            drop(cache);
+
+            if data_block == 0 {
+                data_block = self.allocate_block()?;
+                self.zero_block_in_cache(data_block)?;
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, ind_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[off3..off3 + 4].copy_from_slice(&data_block.to_le_bytes());
+                cached.mark_dirty();
+                drop(cache);
+                inode.i_blocks += block_incr;
+            }
+            return Ok(data_block);
+        }
+
+        Err(VfsError::IoError)
+    }
+
     fn write_inode_data(&mut self, inode: &mut Inode, mut offset: u64, buf: &[u8]) -> Result<usize, VfsError> {
         let mut written = 0;
-        let mut temp_buf = alloc::vec![0u8; self.block_size as usize];
         let block_incr = self.block_size / 512;
 
         while written < buf.len() {
-            let file_block = (offset / self.block_size as u64) as usize;
+            let file_block = (offset / self.block_size as u64) as u32;
             let block_offset = (offset % self.block_size as u64) as usize;
             let write_len = core::cmp::min(buf.len() - written, self.block_size as usize - block_offset);
 
-            if file_block >= 12 {
-                return Err(VfsError::NotSupported);
-            }
+            let disk_block = self.get_or_allocate_data_block(inode, file_block, block_incr)?;
 
-            let disk_block = if inode.i_block[file_block] == 0 {
-                let new_block = self.allocate_block()?;
-                inode.i_block[file_block] = new_block;
-                inode.i_blocks += block_incr;
-                new_block
-            } else {
-                inode.i_block[file_block]
-            };
-
-            if block_offset != 0 || write_len < self.block_size as usize {
-                self.read_disk_block(disk_block, &mut temp_buf)?;
+            {
+                let mut cache = self.buffer_cache.lock();
+                let cached = cache.get_block(self.dev_num, disk_block as u64)
+                    .ok_or(VfsError::IoError)?;
+                cached.data_mut()[block_offset..block_offset + write_len]
+                    .copy_from_slice(&buf[written..written + write_len]);
+                cached.mark_dirty();
             }
-            temp_buf[block_offset..block_offset + write_len].copy_from_slice(&buf[written..written + write_len]);
-            self.write_disk_block(disk_block, &temp_buf)?;
 
             offset += write_len as u64;
             written += write_len;
@@ -489,6 +711,68 @@ impl Ext2Fs {
         let mut new_bgd = bgd;
         new_bgd.bg_free_inodes_count += 1;
         self.write_bgd(group, &new_bgd)
+    }
+
+    /// Recursively free all data blocks attached to an inode, including indirect
+    /// and double-indirect blocks.
+    fn free_inode_blocks(&mut self, inode: &mut Inode) -> Result<(), VfsError> {
+        let ptrs_per_block = self.block_size / 4;
+
+        // Direct blocks.
+        for i in 0..12 {
+            if inode.i_block[i] != 0 {
+                self.free_block(inode.i_block[i])?;
+                inode.i_block[i] = 0;
+            }
+        }
+
+        // Single indirect.
+        if inode.i_block[12] != 0 {
+            let mut indirect = alloc::vec![0u8; self.block_size as usize];
+            self.read_disk_block(inode.i_block[12], &mut indirect)?;
+            for j in 0..ptrs_per_block {
+                let off = j as usize * 4;
+                let block = u32::from_le_bytes([
+                    indirect[off], indirect[off + 1], indirect[off + 2], indirect[off + 3],
+                ]);
+                if block != 0 {
+                    self.free_block(block)?;
+                }
+            }
+            self.free_block(inode.i_block[12])?;
+            inode.i_block[12] = 0;
+        }
+
+        // Double indirect.
+        if inode.i_block[13] != 0 {
+            let mut dindirect = alloc::vec![0u8; self.block_size as usize];
+            self.read_disk_block(inode.i_block[13], &mut dindirect)?;
+            for j in 0..ptrs_per_block {
+                let off = j as usize * 4;
+                let ind_block = u32::from_le_bytes([
+                    dindirect[off], dindirect[off + 1], dindirect[off + 2], dindirect[off + 3],
+                ]);
+                if ind_block != 0 {
+                    let mut indirect = alloc::vec![0u8; self.block_size as usize];
+                    self.read_disk_block(ind_block, &mut indirect)?;
+                    for k in 0..ptrs_per_block {
+                        let off2 = k as usize * 4;
+                        let block = u32::from_le_bytes([
+                            indirect[off2], indirect[off2 + 1], indirect[off2 + 2], indirect[off2 + 3],
+                        ]);
+                        if block != 0 {
+                            self.free_block(block)?;
+                        }
+                    }
+                    self.free_block(ind_block)?;
+                }
+            }
+            self.free_block(inode.i_block[13])?;
+            inode.i_block[13] = 0;
+        }
+
+        inode.i_blocks = 0;
+        Ok(())
     }
 
     fn dir_entry_size(name_len: usize) -> usize {
@@ -634,13 +918,9 @@ impl Ext2Fs {
             }
         }
 
-        // Allocate a new block.
-        let new_block = self.allocate_block()?;
+        // Allocate a new block via the general path (supports indirect).
         let block_idx = dir_size as u32 / self.block_size;
-        if block_idx >= 12 {
-            return Err(VfsError::NotSupported);
-        }
-        dir_inode.i_block[block_idx as usize] = new_block;
+        let phys_block = self.get_or_allocate_data_block(&mut dir_inode, block_idx, self.block_size / 512)?;
         dir_inode.i_size += self.block_size;
         dir_inode.i_blocks += self.block_size / 512;
 
@@ -656,7 +936,7 @@ impl Ext2Fs {
         }
         let name_start = core::mem::size_of::<DirEntryHeader>();
         block_buf[name_start..name_start + name.len()].copy_from_slice(name.as_bytes());
-        self.write_disk_block(new_block, &block_buf)?;
+        self.write_disk_block(phys_block, &block_buf)?;
         self.write_inode(dir_ino, &dir_inode)
     }
 
@@ -762,7 +1042,7 @@ impl FileSystem for Ext2Fs {
     fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
         let inode = self.read_inode(handle.inode as u32)?;
         if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
-            return Err(VfsError::NotSupported);
+            return Err(VfsError::InvalidOperation);
         }
         self.read_inode_data(&inode, offset, buf)
     }
@@ -770,14 +1050,11 @@ impl FileSystem for Ext2Fs {
     fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
         let mut inode = self.read_inode(handle.inode as u32)?;
         if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
-            return Err(VfsError::NotSupported);
+            return Err(VfsError::InvalidOperation);
         }
 
         let end = offset + buf.len() as u64;
-        let max_direct = 12 * self.block_size as u64;
-        if end > max_direct {
-            return Err(VfsError::NotSupported);
-        }
+        // 48 KiB limit REMOVED — indirect blocks are now supported.
 
         let written = self.write_inode_data(&mut inode, offset, buf)?;
 
@@ -905,17 +1182,12 @@ impl FileSystem for Ext2Fs {
         let parent_ino = self.lookup(parent_path)?.inode as u32;
         let ino = self.find_dir_entry(parent_ino, name)?.ok_or(VfsError::NotFound)?;
 
-        let inode = self.read_inode(ino)?;
+        let mut inode = self.read_inode(ino)?;
         if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
             return Err(VfsError::NotADirectory);
         }
 
-        for i in 0..12 {
-            if inode.i_block[i] != 0 {
-                self.free_block(inode.i_block[i])?;
-            }
-        }
-
+        self.free_inode_blocks(&mut inode)?;
         self.remove_dir_entry(parent_ino, name)?;
         self.free_inode(ino)?;
         Ok(())
@@ -1025,7 +1297,7 @@ impl FileSystem for Ext2Fs {
         let parent_ino = self.lookup(parent_path)?.inode as u32;
         let ino = self.find_dir_entry(parent_ino, name)?.ok_or(VfsError::NotFound)?;
 
-        let inode = self.read_inode(ino)?;
+        let mut inode = self.read_inode(ino)?;
         if (inode.i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR {
             return Err(VfsError::NotADirectory);
         }
@@ -1044,7 +1316,7 @@ impl FileSystem for Ext2Fs {
                 if name_end <= dir_data.len() {
                     let entry_name = core::str::from_utf8(&dir_data[name_start..name_end]).unwrap_or("");
                     if entry_name != "." && entry_name != ".." {
-                        return Err(VfsError::NotSupported);
+                        return Err(VfsError::InvalidOperation);
                     }
                 }
             }
@@ -1054,12 +1326,7 @@ impl FileSystem for Ext2Fs {
             offset += header.rec_len as usize;
         }
 
-        for i in 0..12 {
-            if inode.i_block[i] != 0 {
-                self.free_block(inode.i_block[i])?;
-            }
-        }
-
+        self.free_inode_blocks(&mut inode)?;
         self.remove_dir_entry(parent_ino, name)?;
         self.free_inode(ino)?;
         Ok(())
@@ -1069,20 +1336,22 @@ impl FileSystem for Ext2Fs {
         let (old_parent, old_name) = Self::split_last(old);
         let (new_parent, new_name) = Self::split_last(new);
 
-        if old_parent != new_parent {
-            return Err(VfsError::NotSupported);
+        let old_parent_ino = self.lookup(old_parent)?.inode as u32;
+        let new_parent_ino = self.lookup(new_parent)?.inode as u32;
+
+        if old_parent_ino == new_parent_ino && old_name == new_name {
+            return Ok(());
         }
 
-        let parent_ino = self.lookup(old_parent)?.inode as u32;
-
-        if self.find_dir_entry(parent_ino, new_name)?.is_some() {
+        if self.find_dir_entry(new_parent_ino, new_name)?.is_some() {
             return Err(VfsError::AlreadyExists);
         }
 
-        let mut dir_inode = self.read_inode(parent_ino)?;
-        let dir_size = dir_inode.i_size as usize;
-        let mut dir_data = alloc::vec![0u8; dir_size];
-        self.read_inode_data(&dir_inode, 0, &mut dir_data)?;
+        // Scan old_parent for the entry.
+        let mut old_dir_inode = self.read_inode(old_parent_ino)?;
+        let old_dir_size = old_dir_inode.i_size as usize;
+        let mut old_dir_data = alloc::vec![0u8; old_dir_size];
+        self.read_inode_data(&old_dir_inode, 0, &mut old_dir_data)?;
 
         let mut old_offset = None;
         let mut old_rec_len = 0;
@@ -1090,15 +1359,15 @@ impl FileSystem for Ext2Fs {
         let mut old_file_type = 0;
         let mut offset = 0;
 
-        while offset + core::mem::size_of::<DirEntryHeader>() <= dir_data.len() {
+        while offset + core::mem::size_of::<DirEntryHeader>() <= old_dir_data.len() {
             let header = unsafe {
-                core::ptr::read_unaligned(dir_data.as_ptr().add(offset) as *const DirEntryHeader)
+                core::ptr::read_unaligned(old_dir_data.as_ptr().add(offset) as *const DirEntryHeader)
             };
             if header.inode != 0 {
                 let name_start = offset + core::mem::size_of::<DirEntryHeader>();
                 let name_end = name_start + header.name_len as usize;
-                if name_end <= dir_data.len() {
-                    let entry_name = core::str::from_utf8(&dir_data[name_start..name_end]).unwrap_or("");
+                if name_end <= old_dir_data.len() {
+                    let entry_name = core::str::from_utf8(&old_dir_data[name_start..name_end]).unwrap_or("");
                     if entry_name == old_name {
                         old_offset = Some(offset);
                         old_rec_len = header.rec_len;
@@ -1115,28 +1384,76 @@ impl FileSystem for Ext2Fs {
         }
 
         let old_offset = old_offset.ok_or(VfsError::NotFound)?;
-        let needed = Self::dir_entry_size(new_name.len());
 
-        if needed <= old_rec_len as usize {
-            let new_header = DirEntryHeader {
-                inode: old_ino,
-                rec_len: old_rec_len,
-                name_len: new_name.len() as u8,
-                file_type: old_file_type,
-            };
-            unsafe {
-                core::ptr::write_unaligned(dir_data.as_mut_ptr().add(old_offset) as *mut DirEntryHeader, new_header);
+        if old_parent_ino == new_parent_ino {
+            // Same-directory rename: reuse existing logic.
+            let needed = Self::dir_entry_size(new_name.len());
+            if needed <= old_rec_len as usize {
+                let new_header = DirEntryHeader {
+                    inode: old_ino,
+                    rec_len: old_rec_len,
+                    name_len: new_name.len() as u8,
+                    file_type: old_file_type,
+                };
+                unsafe {
+                    core::ptr::write_unaligned(old_dir_data.as_mut_ptr().add(old_offset) as *mut DirEntryHeader, new_header);
+                }
+                let name_start = old_offset + core::mem::size_of::<DirEntryHeader>();
+                for b in &mut old_dir_data[name_start..name_start + old_name.len()] {
+                    *b = 0;
+                }
+                old_dir_data[name_start..name_start + new_name.len()].copy_from_slice(new_name.as_bytes());
+                self.write_inode_data(&mut old_dir_inode, 0, &old_dir_data)?;
+                self.write_inode(old_parent_ino, &old_dir_inode)?;
+            } else {
+                self.remove_dir_entry(old_parent_ino, old_name)?;
+                self.add_dir_entry(old_parent_ino, new_name, old_ino, old_file_type)?;
             }
-            let name_start = old_offset + core::mem::size_of::<DirEntryHeader>();
-            for b in &mut dir_data[name_start..name_start + old_name.len()] {
-                *b = 0;
-            }
-            dir_data[name_start..name_start + new_name.len()].copy_from_slice(new_name.as_bytes());
-            self.write_inode_data(&mut dir_inode, 0, &dir_data)?;
-            self.write_inode(parent_ino, &dir_inode)?;
         } else {
-            self.remove_dir_entry(parent_ino, old_name)?;
-            self.add_dir_entry(parent_ino, new_name, old_ino, old_file_type)?;
+            // Cross-directory rename: remove from old, add to new.
+            self.remove_dir_entry(old_parent_ino, old_name)?;
+            self.add_dir_entry(new_parent_ino, new_name, old_ino, old_file_type)?;
+
+            // If moving a directory, update its ".." entry to point to new_parent.
+            let mut moved_inode = self.read_inode(old_ino)?;
+            if (moved_inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
+                let mut dir_data = alloc::vec![0u8; moved_inode.i_size as usize];
+                self.read_inode_data(&moved_inode, 0, &mut dir_data)?;
+                let mut off = 0;
+                while off + core::mem::size_of::<DirEntryHeader>() <= dir_data.len() {
+                    let h = unsafe {
+                        core::ptr::read_unaligned(dir_data.as_ptr().add(off) as *const DirEntryHeader)
+                    };
+                    if h.inode != 0 {
+                        let ns = off + core::mem::size_of::<DirEntryHeader>();
+                        let ne = ns + h.name_len as usize;
+                        if ne <= dir_data.len() {
+                            let en = core::str::from_utf8(&dir_data[ns..ne]).unwrap_or("");
+                            if en == ".." {
+                                let mut nh = h;
+                                nh.inode = new_parent_ino;
+                                unsafe {
+                                    core::ptr::write_unaligned(dir_data.as_mut_ptr().add(off) as *mut DirEntryHeader, nh);
+                                }
+                                self.write_inode_data(&mut moved_inode, 0, &dir_data)?;
+                                self.write_inode(old_ino, &moved_inode)?;
+                                // Update link counts: old_parent loses one, new_parent gains one.
+                                let mut op = self.read_inode(old_parent_ino)?;
+                                op.i_links_count = op.i_links_count.saturating_sub(1);
+                                self.write_inode(old_parent_ino, &op)?;
+                                let mut np = self.read_inode(new_parent_ino)?;
+                                np.i_links_count = np.i_links_count.saturating_add(1);
+                                self.write_inode(new_parent_ino, &np)?;
+                                break;
+                            }
+                        }
+                    }
+                    if h.rec_len == 0 {
+                        break;
+                    }
+                    off += h.rec_len as usize;
+                }
+            }
         }
 
         Ok(())
@@ -1144,11 +1461,84 @@ impl FileSystem for Ext2Fs {
 
     fn mknod(
         &mut self,
-        _path: &str,
-        _node_type: VfsNodeType,
-        _major: u32,
-        _minor: u32,
+        path: &str,
+        node_type: VfsNodeType,
+        major: u32,
+        minor: u32,
     ) -> Result<VfsHandle, VfsError> {
-        Err(VfsError::NotSupported)
+        let (parent_path, name) = Self::split_last(path);
+        if name.is_empty() {
+            return Err(VfsError::InvalidPath);
+        }
+        if matches!(node_type, VfsNodeType::Directory | VfsNodeType::Symlink) {
+            return Err(VfsError::InvalidOperation);
+        }
+        let parent_ino = self.lookup(parent_path)?.inode as u32;
+
+        if self.find_dir_entry(parent_ino, name)?.is_some() {
+            return Err(VfsError::AlreadyExists);
+        }
+
+        let ino = self.allocate_inode()?;
+        let mode = match node_type {
+            VfsNodeType::CharDevice => EXT2_S_IFCHR,
+            VfsNodeType::BlockDevice => EXT2_S_IFBLK,
+            VfsNodeType::Pipe => EXT2_S_IFIFO,
+            _ => EXT2_S_IFREG,
+        } | 0o666;
+
+        let ticks = crate::drivers::interrupts::ticks() as u32;
+        let mut inode = Inode {
+            i_mode: mode,
+            i_uid: 0,
+            i_size: 0,
+            i_atime: ticks,
+            i_ctime: ticks,
+            i_mtime: ticks,
+            i_dtime: 0,
+            i_gid: 0,
+            i_links_count: 1,
+            i_blocks: 0,
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 3],
+        };
+
+        if node_type == VfsNodeType::CharDevice || node_type == VfsNodeType::BlockDevice {
+            let dev = ((major & 0xFF) << 8) | (minor & 0xFF);
+            inode.i_block[0] = dev as u32;
+        }
+
+        self.write_inode(ino, &inode)?;
+
+        let file_type = match node_type {
+            VfsNodeType::Directory => 2,
+            VfsNodeType::CharDevice => 3,
+            VfsNodeType::BlockDevice => 4,
+            VfsNodeType::Symlink => 7,
+            VfsNodeType::Pipe => 5, // FIFO
+            _ => 1,
+        };
+
+        self.add_dir_entry(parent_ino, name, ino, file_type)?;
+        Ok(VfsHandle { fs_idx: 0, inode: ino as u64 })
+    }
+
+    fn sync(&mut self) -> Result<(), VfsError> {
+        // T4: flushing the buffer cache is the ext2 metadata/data sync path.
+        self.buffer_cache.lock().sync();
+        Ok(())
+    }
+
+    fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
+        // Ext2 does not track per-inode dirty cache state;
+        // fsync flushes the entire buffer cache for durability.
+        self.buffer_cache.lock().sync();
+        Ok(())
     }
 }

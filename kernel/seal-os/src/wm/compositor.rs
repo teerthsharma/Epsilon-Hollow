@@ -468,6 +468,33 @@ impl Compositor {
         &self.mouse
     }
 
+    pub fn window_at(&self, mx: u32, my: u32) -> Option<u32> {
+        for win in self.windows.iter().rev() {
+            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
+                continue;
+            }
+            if win.contains(mx, my) {
+                return Some(win.id);
+            }
+        }
+        None
+    }
+
+    pub fn focus_window(&mut self, id: u32) {
+        for w in &mut self.windows {
+            w.focused = false;
+        }
+        let dirty = self.window_mut(id).map(|win| {
+            win.state = WindowState::Normal;
+            win.focused = true;
+            win.render_decorations();
+            Rect { x: win.x, y: win.y, w: win.width, h: win.height }
+        });
+        if let Some(r) = dirty {
+            self.mark_dirty(r.x, r.y, r.w, r.h);
+        }
+    }
+
     pub fn window_count(&self) -> usize {
         self.windows
             .iter()

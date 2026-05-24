@@ -23,7 +23,7 @@ This builds the kernel, creates `seal-os.iso`, and runs it in QEMU. On Linux, X1
 **Expected serial output** (appears in terminal/stdout):
 
 ```
-Seal OS v1.0.0-alpha — The Geometrical Operating System
+Seal OS v0.4.5 — The Geometrical Operating System
 All data = geometry on S^2. File moves = O(1) topological surgery.
 
 [BOOT] Heap initialized (16 MB)
@@ -41,7 +41,7 @@ All data = geometry on S^2. File moves = O(1) topological surgery.
 [Shell] Seal OS Theorem Status
 [Shell] ======================
 [Shell]   T1/TSS = ACTIVE
-[Shell] Seal OS v1.0.0-alpha (x86_64)
+[Shell] Seal OS v0.4.5 (x86_64)
 [Desktop] Rendering desktop environment
 [Desktop] 3 windows active
 [BOOT] Seal OS desktop ready.
@@ -76,7 +76,7 @@ qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std -no-reboot
 - [ ] `grub-mkrescue` produces bootable ISO
 
 ### Boot Verification (Serial Output)
-- [ ] "Seal OS v1.0.0-alpha" banner appears
+- [ ] "Seal OS v0.4.5" banner appears
 - [ ] "Heap initialized (16 MB)" — memory works
 - [ ] "IDT + PIC initialized" — interrupts work
 - [ ] "Governor online: epsilon = 0.1000" — T4 active
@@ -164,7 +164,7 @@ timeout 30 qemu-system-x86_64 \
   -no-reboot 2>&1 | tee /tmp/seal-os.log
 
 # Verify key milestones
-grep -q "Seal OS v1.0.0-alpha" /tmp/seal-os.log && echo "PASS: Boot"
+grep -q "Seal OS v0.4.5" /tmp/seal-os.log && echo "PASS: Boot"
 grep -q "T1-T5 theorems ACTIVE" /tmp/seal-os.log && echo "PASS: Theorems"
 grep -q "Teleported.*O(1)" /tmp/seal-os.log && echo "PASS: Teleport"
 grep -q "desktop ready" /tmp/seal-os.log && echo "PASS: Desktop"

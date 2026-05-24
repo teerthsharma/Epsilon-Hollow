@@ -45,10 +45,15 @@ pub struct LoadedElf {
     pub entry_point: u64,
     pub stack_pointer: u64,
     pub page_table: u64, // physical address of PML4
+    pub file_mode: u16,
+    pub file_uid: u32,
+    pub file_gid: u32,
 }
 
 /// Parse and load a static ELF64 image into fresh user page tables.
-pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
+/// `file_mode`, `file_uid`, and `file_gid` are forwarded for setuid/setgid
+/// handling by the scheduler after loading.
+pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file_gid: u32) -> Result<LoadedElf, ElfError> {
     if !elf_data.get(0..4).map(|s| s == b"\x7FELF").unwrap_or(false) {
         return Err(ElfError::InvalidMagic);
     }
@@ -205,6 +210,9 @@ pub fn load(elf_data: &[u8], aslr_base: u64) -> Result<LoadedElf, ElfError> {
         entry_point,
         stack_pointer: sp,
         page_table: pml4_frame.as_u64(),
+        file_mode,
+        file_uid,
+        file_gid,
     })
 }
 

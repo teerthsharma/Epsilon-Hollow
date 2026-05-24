@@ -20,7 +20,7 @@ pub fn is_first_boot() -> bool {
     !FIRST_BOOT_DONE.load(Ordering::Relaxed)
 }
 
-const TITLE_TEXT: &str = "Welcome to Seal OS v0.3.1";
+const TITLE_TEXT: &str = "Welcome to Seal OS v0.4.5";
 const SUBTITLE_TEXT: &str = "The Geometrical Operating System";
 
 const CAPABILITY_LINES: &[&str] = &[
