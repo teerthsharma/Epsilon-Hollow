@@ -52,6 +52,13 @@ pub fn framebuffer() -> Option<&'static Framebuffer> {
     FRAMEBUFFER.get()
 }
 
+/// Static copy of the UEFI BootInfo.  The original lives on the UEFI firmware
+/// stack in low physical memory; once the physical allocator is initialised
+/// that memory may be re-allocated and overwritten.  We copy it here before
+/// any frame allocations can clobber it.
+#[cfg(not(test))]
+static mut BOOT_INFO: core::mem::MaybeUninit<BootInfo> = core::mem::MaybeUninit::uninit();
+
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -74,6 +81,13 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     serial_println!("All data = geometry on S^2. File moves = O(1) topological surgery.");
     serial_println!("Boot: UEFI (pure Rust, zero assembly)");
     serial_println!("");
+
+    // Copy boot_info into static storage before the physical allocator can
+    // re-use the UEFI stack pages that hold the original.
+    let info = unsafe {
+        BOOT_INFO.write(*info);
+        &*BOOT_INFO.as_ptr()
+    };
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
@@ -119,7 +133,6 @@ pub fn kernel_main(info: &BootInfo) -> ! {
             "jmp {f}",
             stack = in(reg) stack_top,
             f = in(reg) kernel_main_continue as *const (),
-            in("rdi") info,
             options(noreturn)
         );
     }
@@ -128,7 +141,8 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 /// Continuation of `kernel_main` after switching to the idle kernel stack.
 /// Must not be inlined so the `jmp` target has a stable address.
 #[inline(never)]
-extern "C" fn kernel_main_continue(info: &BootInfo) -> ! {
+extern "C" fn kernel_main_continue() -> ! {
+    let info = unsafe { &*BOOT_INFO.as_ptr() };
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
     serial_println!("[BOOT] ACPI init done, free frames = {}", memory::phys::free_count());
