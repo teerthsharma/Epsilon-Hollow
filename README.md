@@ -120,26 +120,8 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **Kernel Log Buffer**: 32 KiB ring buffer, SYS_KMSG_READ for userspace dmesg.
 - **FAT + ext2**: FAT12/16/32 **full read-write** (write/create/mkdir/unlink/rmdir/rename/cluster allocation). ext2 **full read-write** with all indirect block levels (direct + single/double/triple indirect), cross-directory rename, `mknod` for special files.
 - **ioctl Framework**: Generic device control with TCGETS/TCSETS/FIONREAD handlers.
+- 
 
-### ❌ Not Yet Real — Hardware Requires Firmware Blobs
-
-- **GPU**: PCI probe detects Intel/AMD/NVIDIA; no proprietary driver (i915/nouveau/amdgpus beyond scope). Framebuffer init is real; 3D acceleration requires firmware.
-
-### 🚧 Partial — Honest Limits
-
-- **GPU**: Software rendering only. 3D acceleration requires vendor firmware blobs, out of scope.
-- **WiFi / Bluetooth**: Simulated state machines with deterministic scan results. Real firmware blob loading is vendor IP, out of scope.
-
-### ✅ Previously Partial — Now Live
-
-- **TCP Stack**: Wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring. Listen/accept backlog, SYN queue, retransmission timer all active.
-- **DHCP**: Full state machine (Init → Discover → Request → Bound). Auto-sends DISCOVER on boot, polls for 3-second timeout.
-- **DNS**: Builds proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) and sends via UDP to port 53.
-- **ManifoldFS**: AHCI SATA driver probes PCI class 0x01/0x06. `try_mount_disk()` reads first sector and checks superblock. Falls back to ramfs with honest log.
-- **Aether-Lang Stdlib**: `math.pi` / `math.e` real constants. `fs` (read/write/exists/mkdir), `process` (pid, exit), `net` (local_ip, has_nic) modules available.
-- **Retpoline / KPTI**: Compiler flags in `.cargo/config.toml` (`+retpoline`, `--cfg retpoline`). All 16 register thunks. Trampoline page table allocated and installed. `lfence` before `sysretq`.
-
-### ✅ Just Activated — Chief Engineer Edition
 
 Features promoted from stub to real during the latest agentic engineering pass. No timelines. No excuses. Only geometry.
 
@@ -180,7 +162,26 @@ Features promoted from stub to real during the latest agentic engineering pass. 
 - **TopCrypt — Topological File Encryption** (`fs/topcrypt.rs`): Files stored as 64-byte blocks encoded as 16-point clouds on S². Without Seal OS topological decoder, data is indistinguishable from random noise. CRC32 per block. Fisher-Yates shuffle lock with Lypnos key. `topcrypt encode/lock/unlock/info` shell commands.
 - **Lypnos Guard** (`security/topcrypt_guard.rs`): `Ctrl+L` — file dissolves into topological sleep (shuffle + XOR mask). `Ctrl+E` — flatten to bytes for external export. `Ctrl+I` — absorb external file into manifold. Only Seal OS can wake locked files. Default password: `seal`.
 - **3D Tensor Renderer** (`ml_engine/tensor_viz.rs`, `apps/tensor_viewer.rs`): CSV/trading data parsed into tensors, projected via SVD to 3D point clouds, rendered as hyperbolic manifolds. Profit = green peaks, loss = red valleys. `Ctrl+T` launches tensor viewer. `tensor render <file.csv>` shell command.
-- **Vertex Color Rendering** (`graphics/topo_render.rs`): Per-vertex colors interpolated across triangles via barycentric coordinates. Quality 3 = Gouraud + color. Quality 4 = Phong + color + edge AA.
+- **Vertex Color Rendering** (`graphics/topo_render.rs`): Per-vertex colors interpolated across triangles via barycentric coordinates. Quality 3 = Gouraud + color. Quality 4 = Phong + color + edge AA
+
+### ❌ Not Yet Real — Hardware Requires Firmware Blobs
+
+- **GPU**: PCI probe detects Intel/AMD/NVIDIA; no proprietary driver (i915/nouveau/amdgpus beyond scope). Framebuffer init is real; 3D acceleration requires firmware.
+
+### 🚧 Partial — Honest Limits
+
+- **GPU**: Software rendering only. 3D acceleration requires vendor firmware blobs, out of scope.
+- **WiFi / Bluetooth**: Simulated state machines with deterministic scan results. Real firmware blob loading is vendor IP, out of scope.
+
+### ✅ Previously Partial — Now Live
+
+- **TCP Stack**: Wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring. Listen/accept backlog, SYN queue, retransmission timer all active.
+- **DHCP**: Full state machine (Init → Discover → Request → Bound). Auto-sends DISCOVER on boot, polls for 3-second timeout.
+- **DNS**: Builds proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) and sends via UDP to port 53.
+- **ManifoldFS**: AHCI SATA driver probes PCI class 0x01/0x06. `try_mount_disk()` reads first sector and checks superblock. Falls back to ramfs with honest log.
+- **Aether-Lang Stdlib**: `math.pi` / `math.e` real constants. `fs` (read/write/exists/mkdir), `process` (pid, exit), `net` (local_ip, has_nic) modules available.
+- **Retpoline / KPTI**: Compiler flags in `.cargo/config.toml` (`+retpoline`, `--cfg retpoline`). All 16 register thunks. Trampoline page table allocated and installed. `lfence` before `sysretq`.
+.
 
 ---
 
