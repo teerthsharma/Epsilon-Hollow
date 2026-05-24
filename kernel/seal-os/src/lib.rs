@@ -201,6 +201,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     fb.blit();
 
     let mut run_installer = false;
+    let login_start = drivers::interrupts::ticks();
     loop {
         if let Some(event) = drivers::interrupts::poll_event() {
             if let wm::event::InputEvent::KeyPress(scancode) = event {
@@ -217,6 +218,11 @@ fn boot_graphical(fb: &'static Framebuffer) {
                     fb.blit();
                 }
             }
+        }
+        // Auto-login after 3 seconds of inactivity (for CI/headless environments)
+        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
+            serial_println!("[LOGIN] Auto-login (no input detected)");
+            break;
         }
         x86_64::instructions::hlt();
     }
@@ -255,6 +261,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         let mut welcome = wm::welcome::WelcomeScreen::new();
         welcome.render(fb);
         fb.blit();
+        let welcome_start = drivers::interrupts::ticks();
         loop {
             if let Some(event) = drivers::interrupts::poll_event() {
                 if welcome.handle_event(event) {
@@ -263,6 +270,12 @@ fn boot_graphical(fb: &'static Framebuffer) {
                 }
                 welcome.render(fb);
                 fb.blit();
+            }
+            // Auto-dismiss welcome after 3 seconds of inactivity (for CI/headless environments)
+            if drivers::interrupts::ticks().wrapping_sub(welcome_start) > 3000 {
+                serial_println!("[WELCOME] Auto-dismissed (no input detected)");
+                wm::welcome::mark_first_boot_done();
+                break;
             }
             x86_64::instructions::hlt();
         }

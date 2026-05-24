@@ -298,10 +298,17 @@ jobs:
       - name: Boot UEFI image in QEMU and capture serial output
         run: |
           set -euo pipefail
+          IMG_PATH="kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img"
+          if [ ! -f "$IMG_PATH" ]; then
+            echo "Looking for disk image..."
+            find . -name "seal-os.img" -type f
+            IMG_PATH=$(find . -name "seal-os.img" -type f | head -n1)
+          fi
+          echo "Using disk image: $IMG_PATH"
           timeout 45 qemu-system-x86_64 \
             -machine q35 \
             -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-            -drive file=seal-os.img,format=raw \
+            -drive file="$IMG_PATH",format=raw \
             -nographic \
             -m 4G \
             -no-reboot \
