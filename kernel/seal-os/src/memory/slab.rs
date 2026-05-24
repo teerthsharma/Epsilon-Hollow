@@ -39,7 +39,8 @@ impl SlabAllocator {
         let cache = &mut self.caches[idx];
 
         if let Some(ptr) = cache.free_list {
-            cache.free_list = Some(*(ptr as *const *mut u8));
+            let next = *(ptr as *const *mut u8);
+            cache.free_list = if next.is_null() { None } else { Some(next) };
             return Some(ptr);
         }
 

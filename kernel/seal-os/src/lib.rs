@@ -77,6 +77,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1: Memory
     unsafe { memory::init(info); }
+    serial_println!("[BOOT] memory::init() done, free frames = {}", memory::phys::free_count());
     let kernel_start = x86_64::PhysAddr::new(info.kernel_base);
     let kernel_end = x86_64::PhysAddr::new(info.kernel_base + info.kernel_size);
     let fb_start = x86_64::PhysAddr::new(info.fb_addr);
@@ -91,6 +92,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
             fb_end,
         );
     }
+    serial_println!("[BOOT] init_high() done, free frames = {}", memory::phys::free_count());
     memory::topo_ram::init();
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();
@@ -103,35 +105,36 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
-    serial_println!("[BOOT] SMP initialised");
+    serial_println!("[BOOT] SMP initialised, free frames = {}", memory::phys::free_count());
 
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
+    serial_println!("[BOOT] ACPI init done, free frames = {}", memory::phys::free_count());
 
     // Layer 1.5: Security hardening (SMAP/SMEP, MAC, audit)
     security::init_security();
-    serial_println!("[BOOT] Security subsystem initialised (SMAP/SMEP + MAC + audit)");
+    serial_println!("[BOOT] Security subsystem initialised (SMAP/SMEP + MAC + audit), free frames = {}", memory::phys::free_count());
 
     // Layer 2: Interrupts
     drivers::interrupts::init();
-    serial_println!("[BOOT] IDT + PIC initialized");
+    serial_println!("[BOOT] IDT + PIC initialized, free frames = {}", memory::phys::free_count());
     drivers::rtc::init();
-    serial_println!("[BOOT] RTC initialized");
+    serial_println!("[BOOT] RTC initialized, free frames = {}", memory::phys::free_count());
     unsafe { drivers::apic::init_local_apic_timer_for_bsp(); }
     drivers::watchdog::init(5000);
-    serial_println!("[BOOT] Watchdog initialized (5 s)");
+    serial_println!("[BOOT] Watchdog initialized (5 s), free frames = {}", memory::phys::free_count());
 
     // Layer 2b: APIC (foundation for SMP)
     unsafe { drivers::apic::init(); }
-    serial_println!("[BOOT] Local APIC + IO APIC initialised");
+    serial_println!("[BOOT] Local APIC + IO APIC initialised, free frames = {}", memory::phys::free_count());
 
     // Layer 2.5: Syscall MSRs
     process::userspace::init_syscall_msrs();
-    serial_println!("[BOOT] SYSCALL/SYSRET MSRs programmed");
+    serial_println!("[BOOT] SYSCALL/SYSRET MSRs programmed, free frames = {}", memory::phys::free_count());
 
     // Entropy driver (before networking / TLS)
     drivers::entropy::init();
-    serial_println!("[BOOT] Entropy driver initialised");
+    serial_println!("[BOOT] Entropy driver initialised, free frames = {}", memory::phys::free_count());
 
     // When test-mode is enabled, skip desktop boot and run tests
     #[cfg(feature = "test-mode")]
@@ -183,11 +186,13 @@ fn boot_graphical(fb: &'static Framebuffer) {
     );
 
     // Initialize drivers and VFS before login so /etc/passwd is available.
+    serial_println!("[BOOT] Before init_drivers(), free frames = {}", memory::phys::free_count());
     init_drivers();
+    serial_println!("[BOOT] After init_drivers(), free frames = {}", memory::phys::free_count());
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     } else {
-        serial_println!("[ManifoldFS] Initialized");
+        serial_println!("[ManifoldFS] Initialized, free frames = {}", memory::phys::free_count());
     }
     memory::swap::init();
     security::passwd::init_passwd();
