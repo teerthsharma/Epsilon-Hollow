@@ -199,9 +199,9 @@ fn create_fat32_esp(efi_data: &[u8], size: usize) -> Vec<u8> {
 }
 
 /// Create a FAT12 EFI boot image for El Torito UEFI CD/DVD boot.
-/// Size is 4MB to fit the ~1.5MB EFI binary comfortably.
+/// Size is 16MB to fit the ~6MB EFI binary comfortably.
 fn create_fat12_efi_image(efi_data: &[u8]) -> Vec<u8> {
-    let sectors = 8192; // 4MB
+    let sectors = 32768; // 16MB
     let size = sectors * 512;
     let mut img = vec![0u8; size];
     let cursor = Cursor::new(&mut img[..]);

@@ -288,8 +288,8 @@ impl NvmeController {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_IDENTIFY as u64) | (1u64 << 32); // CID = 1
         cmd[1] = nsid as u64;
-        cmd[6] = phys;
-        cmd[10] = (cns as u64) << 0;
+        cmd[3] = phys; // PRP1
+        cmd[5] = (cns as u64) << 0; // CDW10
         self.submit_admin(&cmd);
         let status = self.wait_completion(1)?;
         if status != 0 {
@@ -301,8 +301,8 @@ impl NvmeController {
     fn create_io_cq(&mut self, qid: u16, base: u64, size: u16) -> Result<(), &'static str> {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_CREATE_IO_CQ as u64) | (2u64 << 32);
-        cmd[6] = base;
-        cmd[10] = (size as u64) | ((qid as u64) << 16) | (1u64 << 1); // IEN=1
+        cmd[3] = base; // PRP1
+        cmd[5] = (size as u64) | ((qid as u64) << 16) | (1u64 << 1); // CDW10, IEN=1
         self.submit_admin(&cmd);
         let status = self.wait_completion(2)?;
         if status != 0 {
@@ -314,8 +314,8 @@ impl NvmeController {
     fn create_io_sq(&mut self, qid: u16, base: u64, size: u16, cqid: u16) -> Result<(), &'static str> {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_CREATE_IO_SQ as u64) | (3u64 << 32);
-        cmd[6] = base;
-        cmd[10] = (size as u64) | ((qid as u64) << 16) | ((cqid as u64) << 32) | (1u64 << 0); // PC=1
+        cmd[3] = base; // PRP1
+        cmd[5] = (size as u64) | ((qid as u64) << 16) | ((cqid as u64) << 32) | (1u64 << 0); // CDW10, PC=1
         self.submit_admin(&cmd);
         let status = self.wait_completion(3)?;
         if status != 0 {
@@ -341,10 +341,10 @@ impl NvmeController {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_READ as u64) | (4u64 << 32);
         cmd[1] = 1; // NSID
-        cmd[6] = phys;
-        cmd[10] = lba;
-        cmd[11] = lba >> 32;
-        cmd[12] = ((buf.len() / SECTOR_SIZE) as u64 - 1) & 0xFFFF;
+        cmd[3] = phys; // PRP1
+        cmd[5] = lba; // CDW10
+        cmd[6] = lba >> 32; // CDW11
+        cmd[7] = ((buf.len() / SECTOR_SIZE) as u64 - 1) & 0xFFFF; // CDW12
 
         let tail = self.io_sq_tail as usize;
         let addr = (self.io_sq + tail as u64 * 64) as *mut u64;
@@ -404,10 +404,10 @@ impl NvmeController {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_WRITE as u64) | (5u64 << 32);
         cmd[1] = 1; // NSID
-        cmd[6] = phys;
-        cmd[10] = lba;
-        cmd[11] = lba >> 32;
-        cmd[12] = ((buf.len() / SECTOR_SIZE) as u64 - 1) & 0xFFFF;
+        cmd[3] = phys; // PRP1
+        cmd[5] = lba; // CDW10
+        cmd[6] = lba >> 32; // CDW11
+        cmd[7] = ((buf.len() / SECTOR_SIZE) as u64 - 1) & 0xFFFF; // CDW12
 
         let tail = self.io_sq_tail as usize;
         let addr = (self.io_sq + tail as u64 * 64) as *mut u64;
