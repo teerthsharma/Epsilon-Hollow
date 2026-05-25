@@ -395,7 +395,20 @@ impl ManifoldScheduler {
         }
         cpu.switching = true;
 
-        let guard = cpu.scheduler_lock.lock();
+        // When called from an interrupt handler (interrupts disabled) we must
+        // not spin on the scheduler lock — normal code may already hold it.
+        // Use try_lock() in IRQ context and bail out if the lock is busy.
+        let guard = if x86_64::instructions::interrupts::are_enabled() {
+            cpu.scheduler_lock.lock()
+        } else {
+            match cpu.scheduler_lock.try_lock() {
+                Some(g) => g,
+                None => {
+                    cpu.switching = false;
+                    return;
+                }
+            }
+        };
 
         self.schedule_count += 1;
         self.ticks_in_slice = 0;
