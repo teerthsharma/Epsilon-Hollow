@@ -1174,7 +1174,14 @@ pub fn spawn_user(
 /// Voluntarily yield the CPU.
 pub fn yield_current() {
     unsafe {
-        crate::cpu::this_cpu().scheduler.schedule();
+        let cpu = crate::cpu::this_cpu();
+        if cpu.current_task.is_null() {
+            // The boot thread is not a regular scheduled task; yielding here
+            // would switch away forever because the scheduler has no way to
+            // switch back to a thread that is not in its queues.
+            return;
+        }
+        cpu.scheduler.schedule();
     }
 }
 
