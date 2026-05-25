@@ -80,24 +80,45 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
+                    {messages.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-4 opacity-70">
+                            <Cpu size={48} className="text-gray-700" />
+                            <p className="text-sm tracking-widest uppercase">Kernel ready for input</p>
+                            <div className="flex flex-wrap justify-center gap-3 mt-4">
+                                <button
+                                    onClick={() => sendMessage("Analyze the current system state.")}
+                                    className="px-4 py-2 bg-gray-900 border border-gray-700 rounded-md text-xs hover:bg-gray-800 hover:text-green-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 transition-colors"
+                                >
+                                    Analyze State
+                                </button>
+                                <button
+                                    onClick={() => sendMessage("Initiate learning protocol.")}
+                                    className="px-4 py-2 bg-gray-900 border border-gray-700 rounded-md text-xs hover:bg-gray-800 hover:text-green-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 transition-colors"
+                                >
+                                    Initiate Protocol
+                                </button>
                             </div>
                         </div>
-                    ))}
+                    ) : (
+                        messages.map((msg) => (
+                            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+                                    ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                                    : msg.sender === 'user'
+                                        ? 'border-gray-700 bg-gray-800'
+                                        : 'border-blue-900/30 bg-blue-900/10'
+                                    }`}>
+                                    {msg.isPlasticityEvent && (
+                                        <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                                            <Zap size={12} fill="currentColor" />
+                                            <span>Weights Updated</span>
+                                        </div>
+                                    )}
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                </div>
+                            </div>
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
@@ -126,7 +147,7 @@ export default function ChatInterface() {
                             disabled={!input.trim()}
                             aria-label="Send message"
                             title="Send message"
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
+                            className="p-3 bg-gray-800 hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
                         >
                             <Send size={20} />
                         </button>
