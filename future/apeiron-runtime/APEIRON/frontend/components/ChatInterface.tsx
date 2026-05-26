@@ -80,24 +80,32 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4">
+                            <Cpu size={48} className="text-gray-700 opacity-50" />
+                            <p className="text-sm tracking-widest uppercase">Apeiron Kernel Online</p>
+                            <p className="text-xs">Inject knowledge into the stream to begin.</p>
                         </div>
-                    ))}
+                    ) : (
+                        messages.map((msg) => (
+                            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+                                    ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                                    : msg.sender === 'user'
+                                        ? 'border-gray-700 bg-gray-800'
+                                        : 'border-blue-900/30 bg-blue-900/10'
+                                    }`}>
+                                    {msg.isPlasticityEvent && (
+                                        <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                                            <Zap size={12} fill="currentColor" />
+                                            <span>Weights Updated</span>
+                                        </div>
+                                    )}
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                </div>
+                            </div>
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
