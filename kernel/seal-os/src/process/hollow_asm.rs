@@ -14,7 +14,8 @@ use core::arch::global_asm;
 // Assembly definitions
 // ---------------------------------------------------------------------------
 
-global_asm!(r#"
+global_asm!(
+    r#"
     .global switch_stack_asm
     .align 16
 switch_stack_asm:
@@ -98,7 +99,8 @@ read_tsc:
     shl rdx, 32
     or  rax, rdx
     ret
-"#);
+"#
+);
 
 extern "C" {
     fn switch_stack_asm(old_sp: *mut u64, new_sp: u64);
@@ -130,10 +132,18 @@ pub unsafe fn switch_stack(old_sp: *mut u64, new_sp: u64) {
 pub struct TelemetryWord(pub u64);
 
 impl TelemetryWord {
-    pub fn device_id(self) -> u64 { self.0 >> 48 }
-    pub fn available(self) -> u32 { ((self.0 >> 32) & 0xFFFF) as u32 }
-    pub fn best_index(self) -> u16 { ((self.0 >> 16) & 0xFFFF) as u16 }
-    pub fn best_priority(self) -> u16 { (self.0 & 0xFFFF) as u16 }
+    pub fn device_id(self) -> u64 {
+        self.0 >> 48
+    }
+    pub fn available(self) -> u32 {
+        ((self.0 >> 32) & 0xFFFF) as u32
+    }
+    pub fn best_index(self) -> u16 {
+        ((self.0 >> 16) & 0xFFFF) as u16
+    }
+    pub fn best_priority(self) -> u16 {
+        (self.0 & 0xFFFF) as u16
+    }
 }
 
 /// Scan an I/O ring and return the highest-priority ready entry.
@@ -187,13 +197,7 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test(
-            "hollow_asm::telemetry_empty",
-            test_telemetry_empty_ring,
-        );
-        crate::testing::register_test(
-            "hollow_asm::word_packing",
-            test_telemetry_word_packing,
-        );
+        crate::testing::register_test("hollow_asm::telemetry_empty", test_telemetry_empty_ring);
+        crate::testing::register_test("hollow_asm::word_packing", test_telemetry_word_packing);
     }
 }

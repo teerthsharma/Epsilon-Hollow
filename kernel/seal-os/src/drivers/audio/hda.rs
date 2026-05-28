@@ -3,10 +3,10 @@
 
 //! Intel HDA driver — real CORB/RIRB init, codec probe, widget discovery, PCM stream output.
 
-use core::ptr::{read_volatile, write_volatile};
 use crate::drivers::pci::get_device_by_class;
 use crate::memory::phys::alloc_frame;
 use crate::serial_println;
+use core::ptr::{read_volatile, write_volatile};
 
 // Global Capabilities
 const REG_GCAP: u64 = 0x00;
@@ -108,7 +108,11 @@ impl HdaController {
         };
         serial_println!(
             "[HDA] Found controller at {:02x}:{:02x}.{} — {:04X}:{:04X}",
-            dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id
         );
         Some(Self {
             bar0: dev.bar_address(0),
@@ -130,15 +134,24 @@ impl HdaController {
             self.oss = ((gcap >> 12) & 0xF) as u8;
             self.iss = ((gcap >> 8) & 0xF) as u8;
             self.bss = ((gcap >> 3) & 0x1F) as u8;
-            serial_println!("[HDA] GCAP: OSS={}, ISS={}, BSS={}", self.oss, self.iss, self.bss);
+            serial_println!(
+                "[HDA] GCAP: OSS={}, ISS={}, BSS={}",
+                self.oss,
+                self.iss,
+                self.bss
+            );
 
             let mut gctl = self.read_reg32(REG_GCTL);
             gctl &= !GCTL_CRST;
             self.write_reg32(REG_GCTL, gctl);
-            for _ in 0..100_000 { core::hint::spin_loop(); }
+            for _ in 0..100_000 {
+                core::hint::spin_loop();
+            }
             gctl |= GCTL_CRST;
             self.write_reg32(REG_GCTL, gctl);
-            for _ in 0..100_000 { core::hint::spin_loop(); }
+            for _ in 0..100_000 {
+                core::hint::spin_loop();
+            }
 
             let statests = self.read_reg16(REG_STATESTS);
             serial_println!("[HDA] STATESTS: {:#06x} (codec bits)", statests);
@@ -174,11 +187,16 @@ impl HdaController {
         let fg_count = self.get_param(0, 0, 0x04);
         let start_nid = (fg_count & 0xFF) as u8;
         let count = ((fg_count >> 8) & 0xFF) as u8;
-        serial_println!("[HDA] Codec 0 function groups: start={}, count={}", start_nid, count);
+        serial_println!(
+            "[HDA] Codec 0 function groups: start={}, count={}",
+            start_nid,
+            count
+        );
 
         for fg in start_nid..start_nid + count {
             let fg_type = self.get_param(0, fg, 0x05);
-            if (fg_type & 0x7F) == 0x01 { // Audio Function Group
+            if (fg_type & 0x7F) == 0x01 {
+                // Audio Function Group
                 self.discover_dac(0, fg)?;
                 break;
             }
@@ -204,7 +222,8 @@ impl HdaController {
         for nid in start_nid..start_nid + ncount {
             let cap = self.get_param(codec, nid, 0x09);
             let wtype = (cap >> 20) & 0xF;
-            if wtype == 0 { // Audio Output
+            if wtype == 0 {
+                // Audio Output
                 serial_println!("[HDA] Found DAC widget {}", nid);
                 self.dac_nid = nid;
                 // Power on
@@ -224,7 +243,9 @@ impl HdaController {
             let mut ctl = read_volatile((sd + SD_CTL) as *const u32);
             ctl &= !SD_CTL_RUN;
             write_volatile((sd + SD_CTL) as *mut u32, ctl);
-            for _ in 0..10_000 { core::hint::spin_loop(); }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
 
             // Format: 48kHz, 16-bit, stereo = 0x0011
             write_volatile((sd + SD_FMT) as *mut u16, 0x0011);
@@ -243,7 +264,10 @@ impl HdaController {
             write_volatile((sd + SD_CBL) as *mut u32, 4096);
             write_volatile((sd + SD_LVI) as *mut u16, 0);
             write_volatile((sd + SD_BDPL) as *mut u32, bdl_frame.as_u64() as u32);
-            write_volatile((sd + SD_BDPU) as *mut u32, (bdl_frame.as_u64() >> 32) as u32);
+            write_volatile(
+                (sd + SD_BDPU) as *mut u32,
+                (bdl_frame.as_u64() >> 32) as u32,
+            );
 
             // Set stream number and start
             ctl = (1 << 16) | SD_CTL_IOCE;
@@ -314,7 +338,9 @@ impl HdaController {
 
     fn send_verb(&self, codec: u8, nid: u8, verb: u16, payload: u16) {
         let full = ((verb as u32) << 8) | (payload as u32);
-        unsafe { self.send_immediate_command(codec, nid, full); }
+        unsafe {
+            self.send_immediate_command(codec, nid, full);
+        }
     }
 }
 
@@ -325,7 +351,9 @@ pub fn init() -> Option<()> {
     match ctrl.reset_and_init() {
         Ok(()) => {
             serial_println!("[HDA] Initialized and stream ready");
-            unsafe { HDA_CTRL = Some(ctrl); }
+            unsafe {
+                HDA_CTRL = Some(ctrl);
+            }
             Some(())
         }
         Err(e) => {
@@ -339,5 +367,8 @@ pub fn with_hda<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut HdaController) -> R,
 {
-    unsafe { HDA_CTRL.as_mut().map(f) }
+    unsafe {
+        let ptr = core::ptr::addr_of_mut!(HDA_CTRL);
+        (*ptr).as_mut().map(f)
+    }
 }

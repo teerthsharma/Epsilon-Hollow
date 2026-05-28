@@ -3,8 +3,8 @@
 
 //! Minimal ELF64 loader for static executables.
 
-use x86_64::VirtAddr;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
+use x86_64::VirtAddr;
 
 /// ELF parsing / loading errors.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,7 +53,13 @@ pub struct LoadedElf {
 /// Parse and load a static ELF64 image into fresh user page tables.
 /// `file_mode`, `file_uid`, and `file_gid` are forwarded for setuid/setgid
 /// handling by the scheduler after loading.
-pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file_gid: u32) -> Result<LoadedElf, ElfError> {
+pub fn load(
+    elf_data: &[u8],
+    aslr_base: u64,
+    file_mode: u16,
+    file_uid: u32,
+    file_gid: u32,
+) -> Result<LoadedElf, ElfError> {
     if !elf_data.get(0..4).map(|s| s == b"\x7FELF").unwrap_or(false) {
         return Err(ElfError::InvalidMagic);
     }
@@ -94,7 +100,11 @@ pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file
     // Walk program headers and map PT_LOAD segments.
     for i in 0..phnum {
         let off = phoff
-            .checked_add((i as u64).checked_mul(phentsize as u64).ok_or(ElfError::TooSmall)?)
+            .checked_add(
+                (i as u64)
+                    .checked_mul(phentsize as u64)
+                    .ok_or(ElfError::TooSmall)?,
+            )
             .ok_or(ElfError::TooSmall)?;
         let ph_start = off as usize;
         let ph_end = ph_start.checked_add(56).ok_or(ElfError::TooSmall)?;
@@ -158,7 +168,9 @@ pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file
                 if file_end > elf_data.len() {
                     return Err(ElfError::TooSmall);
                 }
-                let src = elf_data.get(file_start..file_end).ok_or(ElfError::TooSmall)?;
+                let src = elf_data
+                    .get(file_start..file_end)
+                    .ok_or(ElfError::TooSmall)?;
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         src.as_ptr(),
@@ -180,20 +192,28 @@ pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file
     // Allocate user stack (16 KiB, grows down from high address).
     const USER_STACK_PAGES: usize = 4;
     const USER_STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
+    let mut user_stack_top_frame = None;
 
     for i in 0..USER_STACK_PAGES {
         let frame = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
         unsafe {
             core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
         }
+        if i == USER_STACK_PAGES - 1 {
+            user_stack_top_frame = Some(frame.as_u64());
+        }
         let virt = VirtAddr::new(USER_STACK_TOP - ((USER_STACK_PAGES - i) as u64) * 4096);
         unsafe {
             if crate::memory::virt::map_page_to_pml4(
                 virt,
                 frame,
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+                PageTableFlags::PRESENT
+                    | PageTableFlags::WRITABLE
+                    | PageTableFlags::USER_ACCESSIBLE,
                 pml4,
-            ).is_err() {
+            )
+            .is_err()
+            {
                 crate::memory::phys::free_frame(frame);
                 return Err(ElfError::LoadFailed);
             }
@@ -201,10 +221,11 @@ pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file
     }
 
     // Push argc=0, argv=NULL, envp=NULL.
+    let top_frame = user_stack_top_frame.ok_or(ElfError::LoadFailed)?;
     let mut sp = USER_STACK_TOP;
-    sp = push_u64(sp, 0); // envp
-    sp = push_u64(sp, 0); // argv
-    sp = push_u64(sp, 0); // argc
+    sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?; // envp
+    sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?; // argv
+    sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?; // argc
 
     Ok(LoadedElf {
         entry_point,
@@ -216,10 +237,15 @@ pub fn load(elf_data: &[u8], aslr_base: u64, file_mode: u16, file_uid: u32, file
     })
 }
 
-fn push_u64(sp: u64, val: u64) -> u64 {
+fn push_stack_u64(sp: u64, stack_top: u64, top_frame: u64, val: u64) -> Result<u64, ElfError> {
     let sp = sp - 8;
-    unsafe {
-        *(sp as *mut u64) = val;
+    let top_page = stack_top - 4096;
+    if sp < top_page || sp >= stack_top {
+        return Err(ElfError::LoadFailed);
     }
-    sp
+    let offset = sp - top_page;
+    unsafe {
+        *((top_frame + offset) as *mut u64) = val;
+    }
+    Ok(sp)
 }

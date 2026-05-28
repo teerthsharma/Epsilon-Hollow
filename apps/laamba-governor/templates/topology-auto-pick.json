@@ -1,0 +1,11 @@
+{
+  "name": "Topology Auto-Pick",
+  "description": "Data -> VitalsExtractor -> Governor -> Best Topology",
+  "nodes": [
+    { "id": "data", "type": "datasource", "params": { "shape": "tree", "samples": 1000, "dims": 16 }, "position": [50, 100] },
+    { "id": "governor", "type": "comparator", "params": { "mode": "auto" }, "position": [300, 100] }
+  ],
+  "edges": [
+    { "source": "data", "target": "governor" }
+  ]
+}

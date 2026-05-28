@@ -9,7 +9,7 @@ proptest! {
         for (i, name) in names.iter().enumerate() {
             dh.insert(parent_id, name, i as u64);
         }
-        
+
         // Invariant: every inserted name is findable
         for name in &names {
             prop_assert!(dh.lookup(parent_id, name).is_some());

@@ -7,6 +7,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering;
 
 use crate::fs::vfs::{with_vfs, VfsNodeType};
 
@@ -14,14 +15,7 @@ pub struct SealStdlib;
 
 impl SealStdlib {
     pub fn available_modules() -> Vec<&'static str> {
-        alloc::vec![
-            "fs",
-            "process",
-            "math",
-            "net",
-            "graphics",
-            "theorem",
-        ]
+        alloc::vec!["fs", "process", "math", "net", "graphics", "window", "ui", "input", "theorem",]
     }
 
     pub fn call(module: &str, func: &str, args: &[&str]) -> Result<String, String> {
@@ -29,8 +23,12 @@ impl SealStdlib {
             ("fs", "ls") => {
                 let path = args.first().copied().unwrap_or("/");
                 with_vfs(|vfs| {
-                    let handle = vfs.lookup_follow(path).map_err(|e| alloc::format!("lookup error: {:?}", e))?;
-                    let entries = vfs.readdir(handle).map_err(|e| alloc::format!("readdir error: {:?}", e))?;
+                    let handle = vfs
+                        .lookup_follow(path)
+                        .map_err(|e| alloc::format!("lookup error: {:?}", e))?;
+                    let entries = vfs
+                        .readdir(handle)
+                        .map_err(|e| alloc::format!("readdir error: {:?}", e))?;
                     let names: Vec<String> = entries.into_iter().map(|e| e.name).collect();
                     Ok(names.join("\n"))
                 })
@@ -41,11 +39,17 @@ impl SealStdlib {
                     return Err(String::from("fs.read: path required"));
                 }
                 with_vfs(|vfs| {
-                    let handle = vfs.lookup_follow(path).map_err(|e| alloc::format!("lookup error: {:?}", e))?;
-                    let node = vfs.stat(handle).map_err(|e| alloc::format!("stat error: {:?}", e))?;
+                    let handle = vfs
+                        .lookup_follow(path)
+                        .map_err(|e| alloc::format!("lookup error: {:?}", e))?;
+                    let node = vfs
+                        .stat(handle)
+                        .map_err(|e| alloc::format!("stat error: {:?}", e))?;
                     let size = node.size as usize;
                     let mut buf = alloc::vec![0u8; size];
-                    let n = vfs.read(handle, &mut buf, 0).map_err(|e| alloc::format!("read error: {:?}", e))?;
+                    let n = vfs
+                        .read(handle, &mut buf, 0)
+                        .map_err(|e| alloc::format!("read error: {:?}", e))?;
                     let text = core::str::from_utf8(&buf[..n]).unwrap_or("");
                     Ok(String::from(text))
                 })
@@ -59,9 +63,12 @@ impl SealStdlib {
                 with_vfs(|vfs| {
                     let handle = match vfs.lookup_follow(path) {
                         Ok(h) => h,
-                        Err(_) => vfs.create(path).map_err(|e| alloc::format!("create error: {:?}", e))?,
+                        Err(_) => vfs
+                            .create(path)
+                            .map_err(|e| alloc::format!("create error: {:?}", e))?,
                     };
-                    vfs.write(handle, data.as_bytes(), 0).map_err(|e| alloc::format!("write error: {:?}", e))?;
+                    vfs.write(handle, data.as_bytes(), 0)
+                        .map_err(|e| alloc::format!("write error: {:?}", e))?;
                     Ok(String::from("ok"))
                 })
             }
@@ -70,7 +77,8 @@ impl SealStdlib {
                     return Err(String::from("fs.teleport: old and new path required"));
                 }
                 with_vfs(|vfs| {
-                    vfs.rename(args[0], args[1]).map_err(|e| alloc::format!("rename error: {:?}", e))?;
+                    vfs.rename(args[0], args[1])
+                        .map_err(|e| alloc::format!("rename error: {:?}", e))?;
                     Ok(String::from("ok"))
                 })
             }
@@ -99,11 +107,36 @@ impl SealStdlib {
             }
             ("theorem", "status") => {
                 let eps = crate::process::scheduler::governor_epsilon();
-                Ok(alloc::format!(
-                    "T4 Governor ε = {:.4}\nT1-T5 theorems active",
-                    eps
-                ))
+                let mut out = alloc::format!("T4 Governor epsilon = {:.4}", eps);
+                for idx in 0..crate::THEOREM_COUNT {
+                    let ok = crate::THEOREM_STATES[idx].load(Ordering::Relaxed);
+                    let status = if ok {
+                        if idx < 5 {
+                            "ACTIVE"
+                        } else {
+                            "VERIFIED"
+                        }
+                    } else {
+                        "FAILED"
+                    };
+                    out.push('\n');
+                    out.push_str(crate::THEOREM_NAMES[idx]);
+                    out.push_str(": ");
+                    out.push_str(status);
+                }
+                Ok(out)
             }
+            ("graphics", "clear") => Ok(String::from("ok")),
+            ("graphics", "fill_rect") => Ok(String::from("ok")),
+            ("graphics", "draw_text") => Ok(String::from("ok")),
+            ("window", "create") => Ok(String::from("0")),
+            ("window", "close") => Ok(String::from("ok")),
+            ("window", "set_dirty") => Ok(String::from("ok")),
+            ("ui", "button") => Ok(String::from("false")),
+            ("ui", "label") => Ok(String::from("ok")),
+            ("input", "mouse_x") => Ok(String::from("0")),
+            ("input", "mouse_y") => Ok(String::from("0")),
+            ("input", "mouse_pressed") => Ok(String::from("false")),
             _ => Err(alloc::format!("Unknown: {}.{}", module, func)),
         }
     }

@@ -76,16 +76,10 @@ pub fn init() {
         (core::f64::consts::FRAC_PI_2, 0.0),
         (core::f64::consts::PI, 0.0),
         (0.0, core::f64::consts::FRAC_PI_2),
-        (
-            core::f64::consts::FRAC_PI_2,
-            core::f64::consts::FRAC_PI_2,
-        ),
+        (core::f64::consts::FRAC_PI_2, core::f64::consts::FRAC_PI_2),
         (core::f64::consts::PI, core::f64::consts::FRAC_PI_2),
         (0.0, core::f64::consts::PI),
-        (
-            core::f64::consts::FRAC_PI_2,
-            core::f64::consts::PI,
-        ),
+        (core::f64::consts::FRAC_PI_2, core::f64::consts::PI),
     ];
     *TRUST_ZONE_VORONOI.lock() = Some(SphericalVoronoiIndex::new(centroids));
 }

@@ -1,0 +1,2 @@
+[alias]
+	push-ci = !bash scripts/push_with_ci.sh

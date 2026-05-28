@@ -1,0 +1,17 @@
+[engine]
+name = "PGTable-ASM"
+category = "Systems"
+icon = "hard-drive"
+color = "#00B0FF"
+description = "x86_64 paging in pure NASM assembly"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py pgtable-asm"
+working_dir = "~/repos/pgtable-asm"
+
+[engine.inputs]
+config = { type = "string", default = "kpti" }
+
+[engine.outputs]
+report = { type = "file" }

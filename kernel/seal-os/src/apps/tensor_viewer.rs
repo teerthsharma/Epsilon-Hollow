@@ -37,7 +37,8 @@ impl TensorViewer {
         let demo = demo_trading_tensor();
         let stats = compute_stats(&demo);
         let points = tensor_viz::tensor_to_point_cloud(&demo);
-        let mesh = tensor_viz::point_cloud_to_mesh_grid(&points, &demo.data, demo.shape[0], demo.shape[1]);
+        let mesh =
+            tensor_viz::point_cloud_to_mesh_grid(&points, &demo.data, demo.shape[0], demo.shape[1]);
         Self {
             tensor_mesh: Some(mesh),
             camera_angle: 0.0,
@@ -60,7 +61,12 @@ impl TensorViewer {
                     self.stats = compute_stats(&tensor);
                     let points = tensor_viz::tensor_to_point_cloud(&tensor);
                     let mesh = if tensor.shape.len() == 2 {
-                        tensor_viz::point_cloud_to_mesh_grid(&points, &tensor.data, tensor.shape[0], tensor.shape[1])
+                        tensor_viz::point_cloud_to_mesh_grid(
+                            &points,
+                            &tensor.data,
+                            tensor.shape[0],
+                            tensor.shape[1],
+                        )
                     } else {
                         tensor_viz::point_cloud_to_mesh(&points, &tensor.data)
                     };

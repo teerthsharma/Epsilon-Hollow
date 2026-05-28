@@ -1,49 +1,79 @@
 # Seal OS v0.4.5
 
-**The Geometrical Operating System** — where all data is geometry on S² and file moves are O(1) topological surgery.
+**The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves are O(1) topological surgery.
 
-Seal OS is a bare-metal x86_64 operating system built from scratch. Every kernel subsystem — memory, scheduling, filesystem, display — is driven by five topology theorems (T1-T5) from the aether-core mathematics library.
+Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are driven by T1-T5, every boot passes the T1-T10 theorem gate through the `aether_verified` no_std crate, and Aether-Lang is the native OS language layer above the Rust kernel.
 
 ## Quick Start
 
-### Run in Docker (recommended)
+### Run in Oracle VM VirtualBox
 
-```bash
-# From repo root — builds kernel, creates ISO, launches QEMU
-cd kernel/seal-os
+```powershell
+cd kernel\seal-os
+cargo +nightly build --release
 
-# Linux/macOS (requires X11)
-./run.sh
-
-# Windows (requires VcXsrv or Xming with "Disable access control")
-powershell -File run.ps1
-
-# Or directly with docker compose
-docker compose up --build
+cd ..\seal-mkimage
+cargo +stable run --release
 ```
+
+Return to `kernel\seal-os`, then convert the raw image to VDI:
+
+```powershell
+cd ..\seal-os
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build-vbox.ps1
+```
+
+Automated smoke proof:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240
+```
+
+Or manually:
+
+```powershell
+VBoxManage convertfromraw --format VDI target\x86_64-unknown-uefi\release\seal-os.img seal-os.vdi
+```
+
+Attach `seal-os.vdi` as a SATA hard disk in Oracle VM VirtualBox.
+
+Recommended VM settings:
+
+- Type: `Other`, Version: `Other/Unknown (64-bit)`
+- System: enable EFI, 4096 MB RAM, 1-2 CPUs
+- Display: VMSVGA, 128 MB video memory
+- Storage: SATA controller, `seal-os.vdi` attached as hard disk
+- Network: Intel PRO/1000 MT Desktop if networking is needed
 
 ### Build from source
 
-```bash
-# Prerequisites: Rust nightly, grub-mkrescue, xorriso, qemu
+```powershell
+# Prerequisites: Rust nightly + rust-src
 cd kernel/seal-os
 cargo +nightly build --release
 
-# Create bootable ISO
-mkdir -p iso/boot/grub
-cp target/x86_64-unknown-none/release/seal-os iso/boot/kernel.bin
-cp boot/grub/grub.cfg iso/boot/grub/grub.cfg
-grub-mkrescue -o seal-os.iso iso/
-
-# Run in QEMU
-qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 512M -vga std
+# Create bootable UEFI disk image
+cd ..\seal-mkimage
+cargo +stable run --release
 ```
 
-### Boot on real hardware
+### Run in QEMU
 
 ```bash
-dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
-# Boot from USB
+cd kernel/seal-os
+./run-qemu.sh
+```
+
+```powershell
+cd kernel\seal-os
+powershell -File .\run-qemu.ps1
+```
+
+### Optional ISO
+
+```bash
+# From repo root. Requires xorriso, grub-mkrescue, or mkisofs/genisoimage.
+./scripts/build_iso.sh
 ```
 
 ## Architecture
@@ -52,15 +82,15 @@ dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
 Layer 10  │ Terminal, Seal IDE, File Manager, Theorem Viewer
 Layer 9   │ Desktop: wallpaper (Schwarzschild + Faraday), taskbar
 Layer 8   │ Window Manager: compositor, decorations, cursor
-Layer 7   │ Shell: ls, mv (O(1) teleport), find, theorems, race
-Layer 6   │ Syscalls: POSIX + Epsilon extensions (manifold_query, teleport)
+Layer 7   │ SealShell: look, move (O(1) teleport), search, seal, race
+Layer 6   │ Seal ABI + Epsilon extensions (manifold_query, teleport)
 Layer 5   │ ManifoldScheduler: T1 Voronoi task groups, T4 adaptive timeslice
-Layer 4   │ ManifoldFS: THE filesystem — all data = 64 pts on S²
+Layer 4   │ ManifoldFS: raw bytes + S^2 ManifoldPayload embeddings
 Layer 3   │ Framebuffer: 1024x768x32, 8x16 font, boot splash
 Layer 2   │ Interrupts: IDT, PIC, timer (IRQ0), keyboard, mouse
 Layer 1   │ Memory: 16MB heap, bump allocator
-Layer 0   │ Boot: Multiboot2, 32→64 trampoline, GRUB ISO
-          └────── ALL LAYERS DRIVEN BY T1-T5 THEOREMS ──────
+Layer 0   │ Boot: UEFI PE/COFF, GOP framebuffer, GPT/FAT ESP image
+          └────── T1-T10 BOOT GATE; T1-T5 RUNTIME THEOREMS ──────
 ```
 
 ## Theorem Integration
@@ -89,7 +119,7 @@ Directory hierarchy uses hyperbolic geometry metrics. Deep paths have logarithmi
 
 ## ManifoldFS
 
-The filesystem where files are not byte sequences — they are `ManifoldPayload`s: 64-point clouds on the unit sphere S².
+The filesystem where files keep raw bytes for faithful reads/writes and also carry `ManifoldPayload`s: 64-point clouds on the unit sphere S^2 for topology-aware search, placement, and moves.
 
 ```
 Write: data → trigram hash → JL project → L2 normalize → 64 pts on S² (1,536 bytes)
@@ -101,13 +131,13 @@ Find:  encode query → Voronoi cell → O(n/K) content-addressable search
 
 ```
 seal:/$ help
-ls [path]     — list directory (shows Voronoi cells, payload points)
-mkdir <name>  — create directory
-touch <name> <content> — create file (encodes to S² geometry)
-mv <src> <dst>         — O(1) teleport via topological surgery
-find <query>  — content-addressable search via T1 Voronoi
-cd <path>     — change directory
-theorems      — show T1-T5 live status
+look [path]   — list directory (shows Voronoi cells, payload points)
+create <name> — create directory
+write <name> <content> — create file (encodes to S² geometry)
+move <src> <dst>       — O(1) teleport via topological surgery
+search <query> — content-addressable search via T1 Voronoi
+open <path>   — change directory
+seal          — show T1-T10 theorem status
 race <size>   — benchmark: traditional copy vs manifold teleport
 stats         — filesystem statistics
 ps            — list processes
@@ -149,27 +179,28 @@ Visual ManifoldFS browser:
 
 ### Theorem Viewer
 Real-time dashboard:
-- T1-T5 live metrics with progress bars
+- T1-T10 theorem status with progress bars
 - Governor epsilon, entropy, Betti numbers
 - Prefetch accuracy, teleport count, scheduler ticks
 
 ## Desktop
 
 - **Wallpaper**: Procedural black hole visualization with accretion disk rings, plus grid pattern
-- **Taskbar**: Bottom bar with T1-T5 status indicators, epsilon readout, Seal OS branding
+- **Taskbar**: Bottom bar with T1-T10 status indicators, epsilon readout, Seal OS branding
 - **Windows**: Compositing WM with title bars, close buttons, dragging, z-ordering
 
 ## Build Details
 
 | Property | Value |
 |----------|-------|
-| Target | `x86_64-unknown-none` |
-| Kernel size | ~260KB |
-| ISO size | < 10MB |
+| Target | `x86_64-unknown-uefi` |
+| Kernel binary | `target/x86_64-unknown-uefi/release/seal-os.efi` |
+| VM disk image | `target/x86_64-unknown-uefi/release/seal-os.img` |
+| EFI boot image | `target/x86_64-unknown-uefi/release/seal-os-efi.img` |
 | Heap | 16MB static bump allocator |
-| Display | 1024x768x32bpp (Multiboot2 framebuffer) |
+| Display | UEFI GOP framebuffer, 1024x768 target |
 | Font | Embedded 8x16 bitmap (full printable ASCII) |
-| Dependencies | `aether-core` (T1-T5), `x86_64`, `spin`, `libm` |
+| Dependencies | `aether-core`, `aether_verified`, `aether-lang`, `x86_64`, `spin`, `libm`, `uefi` |
 
 ## Project Structure
 
@@ -178,17 +209,16 @@ kernel/seal-os/
 ├── .cargo/config.toml      # Build target + linker config
 ├── Cargo.toml               # Workspace + dependencies
 ├── build.rs                 # Linker script rerun trigger
-├── linker.ld                # Kernel at 1MB, multiboot header first
 ├── Dockerfile               # Multi-stage: build + QEMU runner
 ├── docker-compose.yml       # X11 forwarding for display
-├── boot/grub/grub.cfg       # GRUB menu entry + framebuffer mode
-├── run.sh / run.ps1         # Launch scripts
+├── run-qemu.sh / run-qemu.ps1 # QEMU launch scripts
+├── build-vbox.ps1           # Convert raw image to VirtualBox VDI
 └── src/
     ├── main.rs              # Kernel entry, boot sequence, layer init
     ├── boot/
-    │   ├── boot.S           # 32→64 trampoline with page tables
-    │   ├── mod.rs           # global_asm! include
-    │   └── multiboot2.rs    # Multiboot2 header + FB request tag
+    │   ├── uefi_entry.rs    # UEFI entry and BootInfo handoff
+    │   ├── boot_info.rs     # Firmware data passed to kernel_main
+    │   └── ap_trampoline.rs # SMP AP bootstrap
     ├── memory/
     │   └── mod.rs           # 16MB bump allocator
     ├── drivers/
@@ -202,12 +232,12 @@ kernel/seal-os/
     │   └── wallpaper.rs     # Equation wallpaper renderer
     ├── fs/
     │   ├── encoder.rs       # Data → S² manifold encoder (no_std)
-    │   └── manifold_fs.rs   # ManifoldFS with T1-T5 (no_std)
+    │   └── manifold_fs.rs   # ManifoldFS with T1-T5 runtime math
     ├── process/
     │   ├── task.rs          # Task struct with manifold embedding
     │   └── scheduler.rs     # ManifoldScheduler (T1+T2+T4)
     ├── syscall/
-    │   └── table.rs         # Dispatch: POSIX + Epsilon extensions
+    │   └── table.rs         # Dispatch: Seal ABI + Epsilon extensions
     ├── wm/
     │   ├── compositor.rs    # Compositing WM with T1+T4
     │   ├── window.rs        # Window struct + decorations
@@ -216,11 +246,11 @@ kernel/seal-os/
     │   ├── desktop.rs       # Desktop surface + equation art
     │   └── taskbar.rs       # Bottom bar with theorem indicators
     └── apps/
-        ├── shell.rs         # Built-in shell (ls, mv, find, etc.)
+        ├── shell.rs         # Built-in SealShell
         ├── terminal.rs      # Terminal emulator
         ├── seal_ide.rs      # IDE with syntax highlighting
         ├── file_manager.rs  # Visual ManifoldFS browser
-        └── theorem_viewer.rs # T1-T5 live dashboard
+        └── theorem_viewer.rs # T1-T10 dashboard
 ```
 
 ## License

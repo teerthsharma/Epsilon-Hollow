@@ -43,21 +43,19 @@ impl Process {
                 (userspace::EMERGENCY_SHELL_ELF.to_vec(), 0o755, 0, 0)
             };
 
-        let aslr_base = crate::security::aslr::randomize_mmap_base();
-        match elf::load(&data, aslr_base, file_mode, file_uid, file_gid) {
-            Ok(_loaded) => {
-                let name: &'static str =
-                    if path == "/bin/init" { "init" } else { "userspace" };
-                let _ = scheduler::spawn_user(
-                    name,
-                    5,
-                    &data,
-                    file_mode,
-                    file_uid,
-                    file_gid,
-                    boot_uid,
-                    boot_gid,
-                );
+        let name: &'static str = if path == "/bin/init" {
+            "init"
+        } else {
+            "userspace"
+        };
+        match scheduler::spawn_user(
+            name, 5, &data, file_mode, file_uid, file_gid, boot_uid, boot_gid,
+        ) {
+            Ok(id) if id != 0 => {
+                crate::serial_println!("[execve] Spawned '{}' as task {}", name, id);
+            }
+            Ok(_) => {
+                crate::serial_println!("[execve] Spawn of '{}' returned no task", name);
             }
             Err(e) => {
                 crate::serial_println!("[execve] ELF load failed: {:?}", e);

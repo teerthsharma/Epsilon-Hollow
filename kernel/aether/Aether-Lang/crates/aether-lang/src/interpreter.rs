@@ -103,6 +103,60 @@ pub struct HwCallbacks {
     pub pci_read_config: Option<extern "C" fn(bus: u8, slot: u8, func: u8, offset: u8) -> u32>,
 }
 
+/// Callbacks for graphics operations.
+#[derive(Clone, Copy)]
+pub struct GraphicsCallbacks {
+    pub clear: Option<extern "C" fn(u32, u32)>,
+    pub fill_rect: Option<extern "C" fn(u32, u32, u32, u32, u32, u32)>,
+    pub fill_rounded_rect: Option<extern "C" fn(u32, u32, u32, u32, u32, u32, u32)>,
+    pub draw_text: Option<extern "C" fn(u32, u32, u32, *const u8, usize, u32)>,
+    pub draw_line: Option<extern "C" fn(u32, i32, i32, i32, i32, u32)>,
+    pub draw_circle: Option<extern "C" fn(u32, u32, u32, u32, u32)>,
+    pub set_pixel: Option<extern "C" fn(u32, u32, u32, u32)>,
+    pub gradient_v: Option<extern "C" fn(u32, u32, u32, u32, u32, u32, u32)>,
+    pub glow_rect: Option<extern "C" fn(u32, u32, u32, u32, u32, u32, u32)>,
+}
+
+/// Callbacks for window operations.
+#[derive(Clone, Copy)]
+pub struct WindowCallbacks {
+    pub create: Option<extern "C" fn(*const u8, usize, u32, u32) -> u32>,
+    pub close: Option<extern "C" fn(u32)>,
+    pub set_title: Option<extern "C" fn(u32, *const u8, usize)>,
+    pub focus: Option<extern "C" fn(u32)>,
+    pub width: Option<extern "C" fn(u32) -> u32>,
+    pub height: Option<extern "C" fn(u32) -> u32>,
+    pub set_dirty: Option<extern "C" fn(u32)>,
+}
+
+/// Callbacks for input operations.
+#[derive(Clone, Copy)]
+pub struct InputCallbacks {
+    pub mouse_x: Option<extern "C" fn() -> i32>,
+    pub mouse_y: Option<extern "C" fn() -> i32>,
+    pub mouse_pressed: Option<extern "C" fn() -> bool>,
+    pub key_pressed: Option<extern "C" fn(*mut u8, usize) -> isize>,
+}
+
+/// Input state snapshot.
+#[derive(Clone, Copy)]
+pub struct AetherInputState {
+    pub mouse_x: i32,
+    pub mouse_y: i32,
+    pub mouse_pressed: bool,
+    pub mouse_clicked: bool,
+    pub last_key: [u8; 8],
+}
+
+/// Global input state.
+pub static mut AETHER_INPUT_STATE: AetherInputState = AetherInputState {
+    mouse_x: 0,
+    mouse_y: 0,
+    mouse_pressed: false,
+    mouse_clicked: false,
+    last_key: [0; 8],
+};
+
 /// Global callback registry. The kernel calls `register_kernel_callbacks` at boot.
 pub static mut KERNEL_CALLBACKS: (FsCallbacks, ProcessCallbacks, NetCallbacks, HwCallbacks) = (
     FsCallbacks {
@@ -266,6 +320,34 @@ pub enum NativeFunction {
     ProcessExit,
     NetLocalIp,
     NetHasNic,
+    // Graphics
+    GfxClear,
+    GfxFillRect,
+    GfxFillRoundedRect,
+    GfxDrawText,
+    GfxDrawLine,
+    GfxDrawCircle,
+    GfxSetPixel,
+    GfxGradientV,
+    GfxGlowRect,
+    // Window
+    WinCreate,
+    WinClose,
+    WinSetTitle,
+    WinFocus,
+    WinWidth,
+    WinHeight,
+    WinSetDirty,
+    // Input
+    InMouseX,
+    InMouseY,
+    InMousePressed,
+    InKeyPressed,
+    // UI
+    UiButton,
+    UiPanel,
+    UiLabel,
+    UiSlider,
 }
 
 /// Handle to a manifold workspace
@@ -791,6 +873,14 @@ pub struct Interpreter {
     sample_data: Vec<f64>,
     /// Software framebuffer for render
     pub framebuffer: Option<Framebuffer>,
+    /// Graphics callbacks
+    pub gfx_callbacks: GraphicsCallbacks,
+    /// Window callbacks
+    pub win_callbacks: WindowCallbacks,
+    /// Input callbacks
+    pub input_callbacks: InputCallbacks,
+    /// Current window id
+    pub current_window_id: u32,
 }
 
 impl Interpreter {
@@ -815,6 +905,33 @@ impl Interpreter {
             objects: Vec::new(),
             sample_data: data,
             framebuffer: None,
+            gfx_callbacks: GraphicsCallbacks {
+                clear: None,
+                fill_rect: None,
+                fill_rounded_rect: None,
+                draw_text: None,
+                draw_line: None,
+                draw_circle: None,
+                set_pixel: None,
+                gradient_v: None,
+                glow_rect: None,
+            },
+            win_callbacks: WindowCallbacks {
+                create: None,
+                close: None,
+                set_title: None,
+                focus: None,
+                width: None,
+                height: None,
+                set_dirty: None,
+            },
+            input_callbacks: InputCallbacks {
+                mouse_x: None,
+                mouse_y: None,
+                mouse_pressed: None,
+                key_pressed: None,
+            },
+            current_window_id: 0,
         }
     }
 
@@ -825,6 +942,18 @@ impl Interpreter {
             last_value = self.execute_statement(stmt)?;
         }
         Ok(last_value)
+    }
+
+    /// Call a user-defined function by name with no arguments.
+    pub fn call_function(&mut self, name: &str) -> Result<Value, InterpreterError> {
+        if let Some(Value::Function(func)) = self.variables.get(name).cloned() {
+            let args = Vec::new();
+            return self.execute_function(&func, &args);
+        }
+        Err(InterpreterError::Message(format!(
+            "function '{}' not found",
+            name
+        )))
     }
 
     fn execute_for(&mut self, stmt: &ForStmt) -> Result<Value, InterpreterError> {
@@ -948,6 +1077,10 @@ impl Interpreter {
             "fs" => self.import_fs(stmt),
             "process" => self.import_process(stmt),
             "net" => self.import_net(stmt),
+            "graphics" => self.import_graphics(stmt),
+            "window" => self.import_window(stmt),
+            "ui" => self.import_ui(stmt),
+            "input" => self.import_input(stmt),
             _ => Err(format!("Module '{}' not found", mod_name).into()),
         }
     }
@@ -1105,6 +1238,298 @@ impl Interpreter {
             );
             self.variables
                 .insert(String::from("Ml"), Value::Module(String::from("Ml")));
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_graphics(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "clear" => {
+                    self.variables.insert(
+                        String::from("clear"),
+                        Value::NativeFn(NativeFunction::GfxClear),
+                    );
+                }
+                "fill_rect" => {
+                    self.variables.insert(
+                        String::from("fill_rect"),
+                        Value::NativeFn(NativeFunction::GfxFillRect),
+                    );
+                }
+                "fill_rounded_rect" => {
+                    self.variables.insert(
+                        String::from("fill_rounded_rect"),
+                        Value::NativeFn(NativeFunction::GfxFillRoundedRect),
+                    );
+                }
+                "draw_text" => {
+                    self.variables.insert(
+                        String::from("draw_text"),
+                        Value::NativeFn(NativeFunction::GfxDrawText),
+                    );
+                }
+                "draw_line" => {
+                    self.variables.insert(
+                        String::from("draw_line"),
+                        Value::NativeFn(NativeFunction::GfxDrawLine),
+                    );
+                }
+                "draw_circle" => {
+                    self.variables.insert(
+                        String::from("draw_circle"),
+                        Value::NativeFn(NativeFunction::GfxDrawCircle),
+                    );
+                }
+                "set_pixel" => {
+                    self.variables.insert(
+                        String::from("set_pixel"),
+                        Value::NativeFn(NativeFunction::GfxSetPixel),
+                    );
+                }
+                "gradient_v" => {
+                    self.variables.insert(
+                        String::from("gradient_v"),
+                        Value::NativeFn(NativeFunction::GfxGradientV),
+                    );
+                }
+                "glow_rect" => {
+                    self.variables.insert(
+                        String::from("glow_rect"),
+                        Value::NativeFn(NativeFunction::GfxGlowRect),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in graphics", symbol).into()),
+            };
+        } else {
+            self.variables.insert(
+                String::from("clear"),
+                Value::NativeFn(NativeFunction::GfxClear),
+            );
+            self.variables.insert(
+                String::from("fill_rect"),
+                Value::NativeFn(NativeFunction::GfxFillRect),
+            );
+            self.variables.insert(
+                String::from("fill_rounded_rect"),
+                Value::NativeFn(NativeFunction::GfxFillRoundedRect),
+            );
+            self.variables.insert(
+                String::from("draw_text"),
+                Value::NativeFn(NativeFunction::GfxDrawText),
+            );
+            self.variables.insert(
+                String::from("draw_line"),
+                Value::NativeFn(NativeFunction::GfxDrawLine),
+            );
+            self.variables.insert(
+                String::from("draw_circle"),
+                Value::NativeFn(NativeFunction::GfxDrawCircle),
+            );
+            self.variables.insert(
+                String::from("set_pixel"),
+                Value::NativeFn(NativeFunction::GfxSetPixel),
+            );
+            self.variables.insert(
+                String::from("gradient_v"),
+                Value::NativeFn(NativeFunction::GfxGradientV),
+            );
+            self.variables.insert(
+                String::from("glow_rect"),
+                Value::NativeFn(NativeFunction::GfxGlowRect),
+            );
+            self.variables.insert(
+                String::from("graphics"),
+                Value::Module(String::from("graphics")),
+            );
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_window(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "create" => {
+                    self.variables.insert(
+                        String::from("create"),
+                        Value::NativeFn(NativeFunction::WinCreate),
+                    );
+                }
+                "close" => {
+                    self.variables.insert(
+                        String::from("close"),
+                        Value::NativeFn(NativeFunction::WinClose),
+                    );
+                }
+                "set_title" => {
+                    self.variables.insert(
+                        String::from("set_title"),
+                        Value::NativeFn(NativeFunction::WinSetTitle),
+                    );
+                }
+                "focus" => {
+                    self.variables.insert(
+                        String::from("focus"),
+                        Value::NativeFn(NativeFunction::WinFocus),
+                    );
+                }
+                "width" => {
+                    self.variables.insert(
+                        String::from("width"),
+                        Value::NativeFn(NativeFunction::WinWidth),
+                    );
+                }
+                "height" => {
+                    self.variables.insert(
+                        String::from("height"),
+                        Value::NativeFn(NativeFunction::WinHeight),
+                    );
+                }
+                "set_dirty" => {
+                    self.variables.insert(
+                        String::from("set_dirty"),
+                        Value::NativeFn(NativeFunction::WinSetDirty),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in window", symbol).into()),
+            };
+        } else {
+            self.variables.insert(
+                String::from("create"),
+                Value::NativeFn(NativeFunction::WinCreate),
+            );
+            self.variables.insert(
+                String::from("close"),
+                Value::NativeFn(NativeFunction::WinClose),
+            );
+            self.variables.insert(
+                String::from("set_title"),
+                Value::NativeFn(NativeFunction::WinSetTitle),
+            );
+            self.variables.insert(
+                String::from("focus"),
+                Value::NativeFn(NativeFunction::WinFocus),
+            );
+            self.variables.insert(
+                String::from("width"),
+                Value::NativeFn(NativeFunction::WinWidth),
+            );
+            self.variables.insert(
+                String::from("height"),
+                Value::NativeFn(NativeFunction::WinHeight),
+            );
+            self.variables.insert(
+                String::from("set_dirty"),
+                Value::NativeFn(NativeFunction::WinSetDirty),
+            );
+            self.variables.insert(
+                String::from("window"),
+                Value::Module(String::from("window")),
+            );
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_ui(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "button" => {
+                    self.variables.insert(
+                        String::from("button"),
+                        Value::NativeFn(NativeFunction::UiButton),
+                    );
+                }
+                "panel" => {
+                    self.variables.insert(
+                        String::from("panel"),
+                        Value::NativeFn(NativeFunction::UiPanel),
+                    );
+                }
+                "label" => {
+                    self.variables.insert(
+                        String::from("label"),
+                        Value::NativeFn(NativeFunction::UiLabel),
+                    );
+                }
+                "slider" => {
+                    self.variables.insert(
+                        String::from("slider"),
+                        Value::NativeFn(NativeFunction::UiSlider),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in ui", symbol).into()),
+            };
+        } else {
+            self.variables.insert(
+                String::from("button"),
+                Value::NativeFn(NativeFunction::UiButton),
+            );
+            self.variables.insert(
+                String::from("panel"),
+                Value::NativeFn(NativeFunction::UiPanel),
+            );
+            self.variables.insert(
+                String::from("label"),
+                Value::NativeFn(NativeFunction::UiLabel),
+            );
+            self.variables.insert(
+                String::from("slider"),
+                Value::NativeFn(NativeFunction::UiSlider),
+            );
+            self.variables
+                .insert(String::from("ui"), Value::Module(String::from("ui")));
+        }
+        Ok(Value::Unit)
+    }
+
+    fn import_input(&mut self, stmt: &ImportStmt) -> Result<Value, InterpreterError> {
+        if let Some(symbol) = &stmt.symbol {
+            match symbol.as_str() {
+                "mouse_x" => {
+                    self.variables.insert(
+                        String::from("mouse_x"),
+                        Value::NativeFn(NativeFunction::InMouseX),
+                    );
+                }
+                "mouse_y" => {
+                    self.variables.insert(
+                        String::from("mouse_y"),
+                        Value::NativeFn(NativeFunction::InMouseY),
+                    );
+                }
+                "mouse_pressed" => {
+                    self.variables.insert(
+                        String::from("mouse_pressed"),
+                        Value::NativeFn(NativeFunction::InMousePressed),
+                    );
+                }
+                "key_pressed" => {
+                    self.variables.insert(
+                        String::from("key_pressed"),
+                        Value::NativeFn(NativeFunction::InKeyPressed),
+                    );
+                }
+                _ => return Err(format!("Symbol '{}' not found in input", symbol).into()),
+            };
+        } else {
+            self.variables.insert(
+                String::from("mouse_x"),
+                Value::NativeFn(NativeFunction::InMouseX),
+            );
+            self.variables.insert(
+                String::from("mouse_y"),
+                Value::NativeFn(NativeFunction::InMouseY),
+            );
+            self.variables.insert(
+                String::from("mouse_pressed"),
+                Value::NativeFn(NativeFunction::InMousePressed),
+            );
+            self.variables.insert(
+                String::from("key_pressed"),
+                Value::NativeFn(NativeFunction::InKeyPressed),
+            );
+            self.variables
+                .insert(String::from("input"), Value::Module(String::from("input")));
         }
         Ok(Value::Unit)
     }
@@ -1606,33 +2031,39 @@ impl Interpreter {
         Ok(Value::List(values))
     }
 
+    fn execute_function(
+        &mut self,
+        func: &UserFunction,
+        args: &[CallArg],
+    ) -> Result<Value, InterpreterError> {
+        let mut new_vars = func.closure.clone();
+
+        // Bind parameters
+        for (i, param) in func.decl.params.iter().enumerate() {
+            if let Some(CallArg::Positional(expr)) = args.get(i) {
+                let val = self.evaluate_expr(expr)?;
+                new_vars.insert(param.clone(), val);
+            }
+        }
+
+        // Enable recursion
+        new_vars.insert(func.decl.name.clone(), Value::Function(func.clone()));
+
+        let old_vars = core::mem::replace(&mut self.variables, new_vars);
+        let res = self.execute_stmt_block(&func.decl.body);
+        self.variables = old_vars;
+
+        match res {
+            Err(InterpreterError::Return(v)) => Ok(v),
+            other => other,
+        }
+    }
+
     fn evaluate_call(&mut self, name: &Ident, args: &[CallArg]) -> Result<Value, InterpreterError> {
         if let Some(val) = self.variables.get(name) {
             match val.clone() {
                 Value::NativeFn(func) => self.execute_native_fn(func, args),
-                Value::Function(func) => {
-                    let mut new_vars = func.closure.clone();
-
-                    // Bind parameters
-                    for (i, param) in func.decl.params.iter().enumerate() {
-                        if let Some(CallArg::Positional(expr)) = args.get(i) {
-                            let val = self.evaluate_expr(expr)?;
-                            new_vars.insert(param.clone(), val);
-                        }
-                    }
-
-                    // Enable recursion
-                    new_vars.insert(func.decl.name.clone(), Value::Function(func.clone()));
-
-                    let old_vars = core::mem::replace(&mut self.variables, new_vars);
-                    let res = self.execute_stmt_block(&func.decl.body);
-                    self.variables = old_vars;
-
-                    match res {
-                        Err(InterpreterError::Return(v)) => Ok(v),
-                        other => other,
-                    }
-                }
+                Value::Function(func) => self.execute_function(&func, args),
                 _ => Ok(Value::Unit),
             }
         } else {
@@ -1978,6 +2409,335 @@ impl Interpreter {
                     }
                 }
                 Ok(Value::Bool(false))
+            }
+            // Graphics
+            NativeFunction::GfxClear => {
+                let color = self.get_arg_num(args, 0)? as u32;
+                if let Some(cb) = self.gfx_callbacks.clear {
+                    cb(self.current_window_id, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxFillRect => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let color = self.get_arg_num(args, 4)? as u32;
+                if let Some(cb) = self.gfx_callbacks.fill_rect {
+                    cb(self.current_window_id, x, y, w, h, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxFillRoundedRect => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let r = self.get_arg_num(args, 4)? as u32;
+                let color = self.get_arg_num(args, 5)? as u32;
+                if let Some(cb) = self.gfx_callbacks.fill_rounded_rect {
+                    cb(self.current_window_id, x, y, w, h, r, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxDrawText => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let text = self.get_arg_str(args, 2)?;
+                let color = self.get_arg_num(args, 3)? as u32;
+                if let Some(cb) = self.gfx_callbacks.draw_text {
+                    cb(
+                        self.current_window_id,
+                        x,
+                        y,
+                        text.as_ptr(),
+                        text.len(),
+                        color,
+                    );
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxDrawLine => {
+                let x0 = self.get_arg_num(args, 0)? as i32;
+                let y0 = self.get_arg_num(args, 1)? as i32;
+                let x1 = self.get_arg_num(args, 2)? as i32;
+                let y1 = self.get_arg_num(args, 3)? as i32;
+                let color = self.get_arg_num(args, 4)? as u32;
+                if let Some(cb) = self.gfx_callbacks.draw_line {
+                    cb(self.current_window_id, x0, y0, x1, y1, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxDrawCircle => {
+                let cx = self.get_arg_num(args, 0)? as u32;
+                let cy = self.get_arg_num(args, 1)? as u32;
+                let r = self.get_arg_num(args, 2)? as u32;
+                let color = self.get_arg_num(args, 3)? as u32;
+                if let Some(cb) = self.gfx_callbacks.draw_circle {
+                    cb(self.current_window_id, cx, cy, r, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxSetPixel => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let color = self.get_arg_num(args, 2)? as u32;
+                if let Some(cb) = self.gfx_callbacks.set_pixel {
+                    cb(self.current_window_id, x, y, color);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxGradientV => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let top = self.get_arg_num(args, 4)? as u32;
+                let bottom = self.get_arg_num(args, 5)? as u32;
+                if let Some(cb) = self.gfx_callbacks.gradient_v {
+                    cb(self.current_window_id, x, y, w, h, top, bottom);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::GfxGlowRect => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let spread = self.get_arg_num(args, 4)? as u32;
+                let color = self.get_arg_num(args, 5)? as u32;
+                if let Some(cb) = self.gfx_callbacks.glow_rect {
+                    cb(self.current_window_id, x, y, w, h, spread, color);
+                }
+                Ok(Value::Unit)
+            }
+            // Window
+            NativeFunction::WinCreate => {
+                let title = self
+                    .get_arg_str(args, 0)
+                    .unwrap_or_else(|_| String::from("Aether"));
+                let width = self.get_arg_num(args, 1).unwrap_or(640.0) as u32;
+                let height = self.get_arg_num(args, 2).unwrap_or(480.0) as u32;
+                if let Some(cb) = self.win_callbacks.create {
+                    let id = cb(title.as_ptr(), title.len(), width, height);
+                    return Ok(Value::Num(id as f64));
+                }
+                Ok(Value::Num(0.0))
+            }
+            NativeFunction::WinClose => {
+                let id = self.get_arg_num(args, 0).unwrap_or(0.0) as u32;
+                if let Some(cb) = self.win_callbacks.close {
+                    cb(id);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::WinSetTitle => {
+                let id = self.get_arg_num(args, 0).unwrap_or(0.0) as u32;
+                let title = self.get_arg_str(args, 1).unwrap_or_default();
+                if let Some(cb) = self.win_callbacks.set_title {
+                    cb(id, title.as_ptr(), title.len());
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::WinFocus => {
+                let id = self.get_arg_num(args, 0).unwrap_or(0.0) as u32;
+                self.current_window_id = id;
+                if let Some(cb) = self.win_callbacks.focus {
+                    cb(id);
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::WinWidth => {
+                let id = self
+                    .get_arg_num(args, 0)
+                    .unwrap_or(self.current_window_id as f64) as u32;
+                if let Some(cb) = self.win_callbacks.width {
+                    return Ok(Value::Num(cb(id) as f64));
+                }
+                Ok(Value::Num(0.0))
+            }
+            NativeFunction::WinHeight => {
+                let id = self
+                    .get_arg_num(args, 0)
+                    .unwrap_or(self.current_window_id as f64) as u32;
+                if let Some(cb) = self.win_callbacks.height {
+                    return Ok(Value::Num(cb(id) as f64));
+                }
+                Ok(Value::Num(0.0))
+            }
+            NativeFunction::WinSetDirty => {
+                let id = self
+                    .get_arg_num(args, 0)
+                    .unwrap_or(self.current_window_id as f64) as u32;
+                if let Some(cb) = self.win_callbacks.set_dirty {
+                    cb(id);
+                }
+                Ok(Value::Unit)
+            }
+            // Input
+            NativeFunction::InMouseX => unsafe {
+                if let Some(cb) = self.input_callbacks.mouse_x {
+                    Ok(Value::Num(cb() as f64))
+                } else {
+                    Ok(Value::Num(AETHER_INPUT_STATE.mouse_x as f64))
+                }
+            },
+            NativeFunction::InMouseY => unsafe {
+                if let Some(cb) = self.input_callbacks.mouse_y {
+                    Ok(Value::Num(cb() as f64))
+                } else {
+                    Ok(Value::Num(AETHER_INPUT_STATE.mouse_y as f64))
+                }
+            },
+            NativeFunction::InMousePressed => unsafe {
+                if let Some(cb) = self.input_callbacks.mouse_pressed {
+                    Ok(Value::Bool(cb()))
+                } else {
+                    Ok(Value::Bool(AETHER_INPUT_STATE.mouse_pressed))
+                }
+            },
+            NativeFunction::InKeyPressed => unsafe {
+                if let Some(cb) = self.input_callbacks.key_pressed {
+                    let mut buf = [0u8; 8];
+                    let n = cb(buf.as_mut_ptr(), buf.len());
+                    if n > 0 {
+                        let s = String::from_utf8_lossy(&buf[..n as usize]);
+                        Ok(Value::Str(s.into()))
+                    } else {
+                        let buf = AETHER_INPUT_STATE.last_key;
+                        let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                        let s = String::from_utf8_lossy(&buf[..n]);
+                        Ok(Value::Str(s.into()))
+                    }
+                } else {
+                    let buf = AETHER_INPUT_STATE.last_key;
+                    let n = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    let s = String::from_utf8_lossy(&buf[..n]);
+                    Ok(Value::Str(s.into()))
+                }
+            },
+            // UI
+            NativeFunction::UiButton => {
+                let x = self.get_arg_num(args, 0)? as i32;
+                let y = self.get_arg_num(args, 1)? as i32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let label = self.get_arg_str(args, 4).unwrap_or_default();
+                let bg_color = self.get_arg_num(args, 5)? as u32;
+                let text_color = self.get_arg_num(args, 6)? as u32;
+                unsafe {
+                    if let Some(cb) = self.gfx_callbacks.fill_rounded_rect {
+                        cb(
+                            self.current_window_id,
+                            x as u32,
+                            y as u32,
+                            w,
+                            h,
+                            4,
+                            bg_color,
+                        );
+                    }
+                    if let Some(cb) = self.gfx_callbacks.draw_text {
+                        let tx = x as u32 + 8;
+                        let ty = y as u32 + h / 2 - 6;
+                        cb(
+                            self.current_window_id,
+                            tx,
+                            ty,
+                            label.as_ptr(),
+                            label.len(),
+                            text_color,
+                        );
+                    }
+                    let mx = AETHER_INPUT_STATE.mouse_x;
+                    let my = AETHER_INPUT_STATE.mouse_y;
+                    let clicked = AETHER_INPUT_STATE.mouse_clicked;
+                    let inside = mx >= x && mx < x + w as i32 && my >= y && my < y + h as i32;
+                    Ok(Value::Bool(clicked && inside))
+                }
+            }
+            NativeFunction::UiPanel => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let h = self.get_arg_num(args, 3)? as u32;
+                let title = self.get_arg_str(args, 4).unwrap_or_default();
+                let bg_color = self.get_arg_num(args, 5)? as u32;
+                let title_h = 20u32;
+                if let Some(cb) = self.gfx_callbacks.fill_rounded_rect {
+                    cb(self.current_window_id, x, y, w, h, 6, bg_color);
+                }
+                if let Some(cb) = self.gfx_callbacks.fill_rect {
+                    cb(
+                        self.current_window_id,
+                        x,
+                        y,
+                        w,
+                        title_h,
+                        bg_color & 0x00FFFFFF | 0x33000000,
+                    );
+                }
+                if let Some(cb) = self.gfx_callbacks.draw_text {
+                    cb(
+                        self.current_window_id,
+                        x + 6,
+                        y + 4,
+                        title.as_ptr(),
+                        title.len(),
+                        0x00FFFFFF,
+                    );
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::UiLabel => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let text = self.get_arg_str(args, 2).unwrap_or_default();
+                let color = self.get_arg_num(args, 3)? as u32;
+                if let Some(cb) = self.gfx_callbacks.draw_text {
+                    cb(
+                        self.current_window_id,
+                        x,
+                        y,
+                        text.as_ptr(),
+                        text.len(),
+                        color,
+                    );
+                }
+                Ok(Value::Unit)
+            }
+            NativeFunction::UiSlider => {
+                let x = self.get_arg_num(args, 0)? as u32;
+                let y = self.get_arg_num(args, 1)? as u32;
+                let w = self.get_arg_num(args, 2)? as u32;
+                let min = self.get_arg_num(args, 3).unwrap_or(0.0);
+                let max = self.get_arg_num(args, 4).unwrap_or(100.0);
+                let value = self.get_arg_num(args, 5).unwrap_or(0.0);
+                let color = self.get_arg_num(args, 6)? as u32;
+                let track_h = 4u32;
+                let knob_r = 6u32;
+                let cy = y + knob_r;
+                if let Some(cb) = self.gfx_callbacks.fill_rect {
+                    cb(
+                        self.current_window_id,
+                        x,
+                        cy - track_h / 2,
+                        w,
+                        track_h,
+                        0x00404040,
+                    );
+                }
+                let t = if max > min {
+                    (value - min) / (max - min)
+                } else {
+                    0.0
+                };
+                let knob_x = x + (t * w as f64) as u32;
+                if let Some(cb) = self.gfx_callbacks.draw_circle {
+                    cb(self.current_window_id, knob_x, cy, knob_r, color);
+                }
+                Ok(Value::Unit)
             }
             _ => Ok(Value::Unit),
         }

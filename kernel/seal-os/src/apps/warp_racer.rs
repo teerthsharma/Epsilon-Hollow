@@ -123,10 +123,18 @@ impl WarpRacer {
 
         // Status
         let total = self.hits + self.misses;
-        let ratio = if total > 0 { self.hits as f64 / total as f64 * 100.0 } else { 0.0 };
+        let ratio = if total > 0 {
+            self.hits as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
         let status = alloc::format!(
             "Score:{} Hits:{} Miss:{} Ratio:{:.0}% e={:.3}",
-            self.score, self.hits, self.misses, ratio, self.epsilon
+            self.score,
+            self.hits,
+            self.misses,
+            ratio,
+            self.epsilon
         );
         game_engine::render_text(win, 4, 2, &status, SCORE_COLOR);
 
@@ -134,16 +142,33 @@ impl WarpRacer {
         for &(bx, by, prefetched) in &self.blocks {
             let screen_y = by as i32 - self.scroll_offset as i32;
             if screen_y >= 0 && screen_y < self.height as i32 {
-                let color = if prefetched { PREFETCH_HIT } else { PREFETCH_MISS };
+                let color = if prefetched {
+                    PREFETCH_HIT
+                } else {
+                    PREFETCH_MISS
+                };
                 game_engine::fill_rect(win, bx, screen_y as u32, BLOCK_W, BLOCK_H, color);
             }
         }
 
         // Ship
-        game_engine::fill_rect(win, self.ship_x as u32, self.ship_y as u32, SHIP_W, SHIP_H, SHIP_COLOR);
+        game_engine::fill_rect(
+            win,
+            self.ship_x as u32,
+            self.ship_y as u32,
+            SHIP_W,
+            SHIP_H,
+            SHIP_COLOR,
+        );
 
         if self.game_over {
-            game_engine::render_text(win, self.width / 2 - 60, self.height / 2, "WARP COMPLETE!", 0x0088CCFF);
+            game_engine::render_text(
+                win,
+                self.width / 2 - 60,
+                self.height / 2,
+                "WARP COMPLETE!",
+                0x0088CCFF,
+            );
         }
     }
 

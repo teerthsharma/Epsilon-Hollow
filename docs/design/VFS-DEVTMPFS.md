@@ -1,16 +1,16 @@
 # VFS, /dev Filesystem, tmpfs, and initrd — Design Document
 
 > **Phase 3 Task**: VFS-001
-> **Priority**: HIGH (required for POSIX compatibility, device access, early userspace)
+> **Priority**: HIGH (required for Seal ABI device access and early userspace)
 > **Estimated Effort**: 4 weeks
 > **Blocked by**: Syscall dispatcher, block device abstraction, physical allocator
-> **Blocks**: Shell, libc, device drivers (console, null, zero, random), package manager
+> **Blocks**: SealShell, Aether runtime, device drivers (console, null, zero, random), package manager
 
 ---
 
 ## Overview
 
-Current filesystem is a single `ManifoldFS` instance. POSIX requires a VFS layer that multiplexes across multiple filesystem types: rootfs (ManifoldFS or ext2), `/dev` (devtmpfs), `/tmp` (tmpfs), `/proc` (procfs), and initrd (ramdisk). This design covers the VFS abstraction, devtmpfs, tmpfs, initrd loading, and mount/umount semantics.
+Current filesystem is a single `ManifoldFS` instance. Seal OS uses a VFS layer to multiplex across native filesystem types: rootfs (ManifoldFS or ext2 image interop), `/dev` (devtmpfs), `/tmp` (tmpfs), `/proc` (procfs), and initrd (ramdisk). This design covers the VFS abstraction, devtmpfs, tmpfs, initrd loading, and mount/umount semantics without adopting a Unix contract.
 
 ---
 
@@ -55,7 +55,7 @@ pub struct VfsMount {
 }
 ```
 
-- [x] Define `Inode` struct with all POSIX metadata fields
+- [x] Define `Inode` struct with Seal metadata fields
 - [x] Define `Timespec` struct
 - [x] Define `Dentry` struct with mount point handling
 - [x] Define `VfsMount` struct
@@ -103,7 +103,7 @@ pub trait FileSystem: Send + Sync {
 
 - [x] Define `FileSystem` trait with all methods
 - [x] Define `Errno` enum with all standard errno values
-- [x] Define `Stat` struct matching Linux `struct stat`
+- [x] Define `Stat` struct for Seal ABI metadata
 - [x] Define `SetAttr` struct for setattr
 - [x] Define `DirEntry` struct for readdir
 - [x] Implement `FileOperations` trait for per-file ops

@@ -3,10 +3,10 @@
 
 //! NVMe controller driver — admin + I/O queues, identify, read/write sectors.
 
-use core::ptr::{read_volatile, write_volatile};
 use crate::drivers::pci::get_device_by_class;
 use crate::memory::phys::{alloc_frame, alloc_frames_contiguous};
 use crate::serial_println;
+use core::ptr::{read_volatile, write_volatile};
 
 // Register offsets in BAR0
 const REG_CAP: u64 = 0x00;
@@ -65,8 +65,8 @@ pub struct NvmeController {
     io_cq_head: u16,
     io_phase: bool,
 
-    ns_size: u64,       // sectors
-    ns_capacity: u64,   // sectors
+    ns_size: u64,     // sectors
+    ns_capacity: u64, // sectors
     block_size: u64,
     ready: bool,
 }
@@ -96,13 +96,21 @@ impl NvmeController {
 
     unsafe fn ring_sq_doorbell(&self, qid: u16) {
         let off = self.db_offset(qid, false);
-        let tail = if qid == 0 { self.admin_sq_tail } else { self.io_sq_tail };
+        let tail = if qid == 0 {
+            self.admin_sq_tail
+        } else {
+            self.io_sq_tail
+        };
         write_volatile((self.bar0 + 0x1000 + off) as *mut u32, tail as u32);
     }
 
     unsafe fn ring_cq_doorbell(&self, qid: u16) {
         let off = self.db_offset(qid, true);
-        let head = if qid == 0 { self.admin_cq_head } else { self.io_cq_head };
+        let head = if qid == 0 {
+            self.admin_cq_head
+        } else {
+            self.io_cq_head
+        };
         write_volatile((self.bar0 + 0x1000 + off) as *mut u32, head as u32);
     }
 
@@ -117,7 +125,11 @@ impl NvmeController {
         };
         serial_println!(
             "[NVMe] Found controller at {:02x}:{:02x}.{} — {:04X}:{:04X}",
-            dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id
         );
         Some(Self {
             bar0: dev.bar_address(0),
@@ -152,7 +164,12 @@ impl NvmeController {
             self.max_q_entries = mqes;
             self.page_size = 1u64 << (12 + mpsmin);
             self.doorbell_stride = dstrd;
-            serial_println!("[NVMe] CAP: MQES={}, DSTRD={}B, MPSMIN={}B", mqes, (dstrd + 1) * 4, self.page_size);
+            serial_println!(
+                "[NVMe] CAP: MQES={}, DSTRD={}B, MPSMIN={}B",
+                mqes,
+                (dstrd + 1) * 4,
+                self.page_size
+            );
 
             let vs = self.read_reg32(REG_VS);
             serial_println!("[NVMe] Version {}.{}", vs >> 16, vs & 0xFFFF);
@@ -162,7 +179,9 @@ impl NvmeController {
                 cc &= !CC_EN;
                 self.write_reg32(REG_CC, cc);
                 for _ in 0..1_000_000 {
-                    if self.read_reg32(REG_CSTS) & CSTS_RDY == 0 { break; }
+                    if self.read_reg32(REG_CSTS) & CSTS_RDY == 0 {
+                        break;
+                    }
                     core::hint::spin_loop();
                 }
             }
@@ -204,26 +223,34 @@ impl NvmeController {
         self.identify(CNS_CONTROLLER, 0, &mut id_ctrl)?;
         let serial = &id_ctrl[4..24];
         let model = &id_ctrl[24..64];
-        serial_println!("[NVMe] Model: {}  Serial: {}",
-            core::str::from_utf8(model).unwrap_or("???").trim_end_matches('\0'),
-            core::str::from_utf8(serial).unwrap_or("???").trim_end_matches('\0')
+        serial_println!(
+            "[NVMe] Model: {}  Serial: {}",
+            core::str::from_utf8(model)
+                .unwrap_or("???")
+                .trim_end_matches('\0'),
+            core::str::from_utf8(serial)
+                .unwrap_or("???")
+                .trim_end_matches('\0')
         );
 
         // Identify namespace 1
         let mut id_ns = [0u8; 4096];
         self.identify(CNS_NAMESPACE, 1, &mut id_ns)?;
         self.ns_size = u64::from_le_bytes([
-            id_ns[0], id_ns[1], id_ns[2], id_ns[3],
-            id_ns[4], id_ns[5], id_ns[6], id_ns[7],
+            id_ns[0], id_ns[1], id_ns[2], id_ns[3], id_ns[4], id_ns[5], id_ns[6], id_ns[7],
         ]);
         self.ns_capacity = u64::from_le_bytes([
-            id_ns[8], id_ns[9], id_ns[10], id_ns[11],
-            id_ns[12], id_ns[13], id_ns[14], id_ns[15],
+            id_ns[8], id_ns[9], id_ns[10], id_ns[11], id_ns[12], id_ns[13], id_ns[14], id_ns[15],
         ]);
         let flbas = id_ns[26];
         let lba_fmt = (flbas & 0xF) as usize;
         self.block_size = 1u64 << id_ns[128 + 4 * lba_fmt];
-        serial_println!("[NVMe] NS1 size={} cap={} block_size={}", self.ns_size, self.ns_capacity, self.block_size);
+        serial_println!(
+            "[NVMe] NS1 size={} cap={} block_size={}",
+            self.ns_size,
+            self.ns_capacity,
+            self.block_size
+        );
 
         if self.ns_size == 0 {
             return Err("NVMe namespace 1 has zero size");
@@ -231,13 +258,17 @@ impl NvmeController {
 
         // Create I/O Completion Queue
         let io_cq_frame = alloc_frame().ok_or("NVMe IO CQ alloc failed")?;
-        unsafe { core::ptr::write_bytes(io_cq_frame.as_u64() as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(io_cq_frame.as_u64() as *mut u8, 0, 4096);
+        }
         self.io_cq = io_cq_frame.as_u64();
         self.create_io_cq(1, self.io_cq, IO_Q_DEPTH - 1)?;
 
         // Create I/O Submission Queue
         let io_sq_frame = alloc_frame().ok_or("NVMe IO SQ alloc failed")?;
-        unsafe { core::ptr::write_bytes(io_sq_frame.as_u64() as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(io_sq_frame.as_u64() as *mut u8, 0, 4096);
+        }
         self.io_sq = io_sq_frame.as_u64();
         self.create_io_sq(1, self.io_sq, IO_Q_DEPTH - 1, 1)?;
 
@@ -254,7 +285,9 @@ impl NvmeController {
             }
         }
         self.admin_sq_tail = (self.admin_sq_tail + 1) & (self.max_q_entries.min(64) - 1) as u16;
-        unsafe { self.ring_sq_doorbell(0); }
+        unsafe {
+            self.ring_sq_doorbell(0);
+        }
     }
 
     fn wait_completion(&mut self, _cid: u16) -> Result<u16, &'static str> {
@@ -270,7 +303,8 @@ impl NvmeController {
                     let status = ((cqe_high >> 17) & 0xFFFF) as u16;
                     let _sq_head = (cqe_low & 0xFFFF) as u16;
                     let _cid = ((cqe_low >> 16) & 0xFFFF) as u16;
-                    self.admin_cq_head = (self.admin_cq_head + 1) & (self.max_q_entries.min(64) - 1) as u16;
+                    self.admin_cq_head =
+                        (self.admin_cq_head + 1) & (self.max_q_entries.min(64) - 1) as u16;
                     if self.admin_cq_head == 0 {
                         self.admin_phase = !self.admin_phase;
                     }
@@ -311,7 +345,13 @@ impl NvmeController {
         Ok(())
     }
 
-    fn create_io_sq(&mut self, qid: u16, base: u64, size: u16, cqid: u16) -> Result<(), &'static str> {
+    fn create_io_sq(
+        &mut self,
+        qid: u16,
+        base: u64,
+        size: u16,
+        cqid: u16,
+    ) -> Result<(), &'static str> {
         let mut cmd = [0u64; 8];
         cmd[0] = (OPCODE_CREATE_IO_SQ as u64) | (3u64 << 32);
         cmd[3] = base; // PRP1
@@ -335,7 +375,9 @@ impl NvmeController {
         let phys = if pages == 1 {
             alloc_frame().ok_or("NVMe read alloc failed")?.as_u64()
         } else {
-            alloc_frames_contiguous(pages).ok_or("NVMe read alloc failed")?.as_u64()
+            alloc_frames_contiguous(pages)
+                .ok_or("NVMe read alloc failed")?
+                .as_u64()
         };
 
         let mut cmd = [0u64; 8];
@@ -354,7 +396,9 @@ impl NvmeController {
             }
         }
         self.io_sq_tail = (self.io_sq_tail + 1) & (IO_Q_DEPTH - 1);
-        unsafe { self.ring_sq_doorbell(1); }
+        unsafe {
+            self.ring_sq_doorbell(1);
+        }
 
         // Poll I/O completion
         let timeout = 1_000_000usize;
@@ -395,7 +439,9 @@ impl NvmeController {
         let phys = if pages == 1 {
             alloc_frame().ok_or("NVMe write alloc failed")?.as_u64()
         } else {
-            alloc_frames_contiguous(pages).ok_or("NVMe write alloc failed")?.as_u64()
+            alloc_frames_contiguous(pages)
+                .ok_or("NVMe write alloc failed")?
+                .as_u64()
         };
         unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), phys as *mut u8, buf.len());
@@ -417,7 +463,9 @@ impl NvmeController {
             }
         }
         self.io_sq_tail = (self.io_sq_tail + 1) & (IO_Q_DEPTH - 1);
-        unsafe { self.ring_sq_doorbell(1); }
+        unsafe {
+            self.ring_sq_doorbell(1);
+        }
 
         let timeout = 1_000_000usize;
         for _ in 0..timeout {
@@ -460,7 +508,9 @@ pub fn init() -> Option<()> {
     match ctrl.reset_and_init() {
         Ok(()) => {
             serial_println!("[NVMe] Initialized successfully — NS1 ready for I/O");
-            unsafe { NVME_CTRL = Some(ctrl); }
+            unsafe {
+                NVME_CTRL = Some(ctrl);
+            }
             Some(())
         }
         Err(e) => {
@@ -475,7 +525,8 @@ where
     F: FnOnce(&mut NvmeController) -> R,
 {
     unsafe {
-        NVME_CTRL.as_mut().map(f)
+        let ptr = core::ptr::addr_of_mut!(NVME_CTRL);
+        (*ptr).as_mut().map(f)
     }
 }
 

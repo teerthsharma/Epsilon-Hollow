@@ -6,7 +6,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::context_switch::{TaskContext, KERNEL_STACK_SIZE, init_task_context, xsave_area_size};
+use super::context_switch::{init_task_context, xsave_area_size, TaskContext, KERNEL_STACK_SIZE};
 use super::userspace::UserContext;
 
 #[derive(Debug, Clone, Copy, PartialEq)]

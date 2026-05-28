@@ -96,7 +96,8 @@ impl E1000 {
             mac: [0; 6],
         };
 
-        let tx_layout = Layout::from_size_align(NUM_TX_DESC * core::mem::size_of::<TxDesc>(), 16).ok()?;
+        let tx_layout =
+            Layout::from_size_align(NUM_TX_DESC * core::mem::size_of::<TxDesc>(), 16).ok()?;
         nic.tx_ring = alloc_zeroed(tx_layout) as *mut TxDesc;
         if nic.tx_ring.is_null() {
             return None;
@@ -111,7 +112,8 @@ impl E1000 {
             nic.tx_buffers[i] = buf;
         }
 
-        let rx_layout = Layout::from_size_align(NUM_RX_DESC * core::mem::size_of::<RxDesc>(), 16).ok()?;
+        let rx_layout =
+            Layout::from_size_align(NUM_RX_DESC * core::mem::size_of::<RxDesc>(), 16).ok()?;
         nic.rx_ring = alloc_zeroed(rx_layout) as *mut RxDesc;
         if nic.rx_ring.is_null() {
             return None;
@@ -173,7 +175,10 @@ impl E1000 {
             let tx_phys = Self::phys_addr(self.tx_ring as *mut u8);
             self.write_reg(REG_TDBAL, tx_phys as u32);
             self.write_reg(REG_TDBAH, (tx_phys >> 32) as u32);
-            self.write_reg(REG_TDLEN, (NUM_TX_DESC * core::mem::size_of::<TxDesc>()) as u32);
+            self.write_reg(
+                REG_TDLEN,
+                (NUM_TX_DESC * core::mem::size_of::<TxDesc>()) as u32,
+            );
             self.write_reg(REG_TDH, 0);
             self.write_reg(REG_TDT, 0);
 
@@ -189,7 +194,10 @@ impl E1000 {
             let rx_phys = Self::phys_addr(self.rx_ring as *mut u8);
             self.write_reg(REG_RDBAL, rx_phys as u32);
             self.write_reg(REG_RDBAH, (rx_phys >> 32) as u32);
-            self.write_reg(REG_RDLEN, (NUM_RX_DESC * core::mem::size_of::<RxDesc>()) as u32);
+            self.write_reg(
+                REG_RDLEN,
+                (NUM_RX_DESC * core::mem::size_of::<RxDesc>()) as u32,
+            );
             self.write_reg(REG_RDH, 0);
             self.write_reg(REG_RDT, (NUM_RX_DESC - 1) as u32);
 
@@ -265,7 +273,9 @@ impl Drop for E1000 {
     fn drop(&mut self) {
         unsafe {
             if !self.tx_ring.is_null() {
-                let layout = Layout::from_size_align(NUM_TX_DESC * core::mem::size_of::<TxDesc>(), 16).unwrap();
+                let layout =
+                    Layout::from_size_align(NUM_TX_DESC * core::mem::size_of::<TxDesc>(), 16)
+                        .unwrap();
                 dealloc(self.tx_ring as *mut u8, layout);
             }
             for i in 0..NUM_TX_DESC {
@@ -275,7 +285,9 @@ impl Drop for E1000 {
                 }
             }
             if !self.rx_ring.is_null() {
-                let layout = Layout::from_size_align(NUM_RX_DESC * core::mem::size_of::<RxDesc>(), 16).unwrap();
+                let layout =
+                    Layout::from_size_align(NUM_RX_DESC * core::mem::size_of::<RxDesc>(), 16)
+                        .unwrap();
                 dealloc(self.rx_ring as *mut u8, layout);
             }
             for i in 0..NUM_RX_DESC {

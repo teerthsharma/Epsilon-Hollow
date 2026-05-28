@@ -67,7 +67,7 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-We present Epsilon-Hollow, a topological operating system implemented entirely in Rust that unifies manifold-structured memory, spectral contraction dynamics, and large language model reasoning into a single executable kernel. The system projects semantic states onto spherical and hyperbolic manifolds, achieving $O(1)$ amortized retrieval via Betti-0 component tracking with Union-Find, stable forward prediction via Banach contraction mapping, and thermodynamically viable continuous weight updates on H100-class hardware. We establish ten novel mathematical theorems (T1--T10) with complete proofs, implement each as a verified Rust microkernel, and compose them into a CLI shell that boots with all ten theorems verified in $\sim$30$\mu$s. The world model integrates Minimax 2.7 as an external reasoning cortex over topological memory, enabling counterfactual rollouts through latent dynamics. The complete system comprises 218 passing Rust tests across five crates, with an additional Lean~4 formalization of core theorems. The implementation is available at \url{https://github.com/teerthsharma/Epsilon-Hollow}.
+We present Epsilon-Hollow, a topological operating system implemented entirely in Rust that unifies manifold-structured memory, spectral contraction dynamics, and large language model reasoning into a single executable kernel. The system projects semantic states onto spherical and hyperbolic manifolds, achieving $O(1)$ amortized retrieval via Betti-0 component tracking with Union-Find, stable forward prediction via Banach contraction mapping, and thermodynamic update bounds for ML research workloads. We establish ten mathematical theorem gates (T1--T10), implement each as a Rust boot check, and compose them into a kernel that refuses to claim theorem readiness if a gate fails. Lean~4 formalization is in progress and proof strength is tracked separately from boot-gate status. The implementation is available at \url{https://github.com/teerthsharma/Epsilon-Hollow}.
 \end{abstract}
 
 \linenumbers
@@ -82,7 +82,7 @@ Epsilon-Hollow addresses all three simultaneously. Knowledge retrieval is projec
 
 The central contributions are:
 \begin{enumerate}[nosep]
-  \item Ten independently verifiable mathematical theorems with complete proofs.
+  \item Ten independently checkable theorem gates, with Lean~4 proof coverage tracked separately from runtime boot checks.
   \item A complete Rust implementation: five workspace crates totaling $\sim$5{,}300 lines, 218 tests passing, all ten theorems verified at boot in $\sim$30$\mu$s.
   \item A topological world model composing manifold memory, spectral contraction dynamics, and LLM reasoning (Minimax~2.7) into a runnable CLI operating system.
   \item Lean~4 formalizations of core theorems (Betti bounds, Chebyshev pruning, governor convergence).

@@ -149,7 +149,7 @@ P4 (CR3)          P3                  P2                  P1
                                                         (2 MiB huge pages)
 ```
 
-Higher half base: `0xffff_8000_0000_0000` (standard Linux kernel mapping).
+Higher half base: `0xffff_8000_0000_0000` (common high-half kernel mapping, not an inherited ABI).
 
 - [x] Build P4 page table (one entry for identity map, one for higher half)
 - [x] Build P3 page table for identity map (0-4 GiB)

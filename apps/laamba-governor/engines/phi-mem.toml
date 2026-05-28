@@ -1,0 +1,18 @@
+[engine]
+name = "Phi-Mem"
+category = "Memory"
+icon = "database"
+color = "#B0BEC5"
+description = "Barcode-signature content-addressable storage"
+
+[engine.entry]
+type = "python"
+command = "python engines/wrappers/phi_mem_wrapper.py"
+working_dir = "~/repos/phi-mem"
+
+[engine.inputs]
+text = { type = "string" }
+
+[engine.outputs]
+barcode = { type = "scalar" }
+entry = { type = "file" }

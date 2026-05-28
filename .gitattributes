@@ -1,10 +1,11 @@
-* text=auto eol=lf
+# GitHub language hygiene for Seal OS.
+# Seal OS source is Rust, assembly, and Aether-Lang DSL. Existing Python
+# research artifacts are not part of the OS language surface.
+*.rs linguist-language=Rust
+*.s linguist-language=Assembly
+*.S linguist-language=Assembly
+*.asm linguist-language=Assembly
+*.aether linguist-language=Rust
+*.py linguist-vendored
+*.pyw linguist-vendored
 
-*.rs   text eol=lf
-*.toml text eol=lf
-*.md   text eol=lf
-*.py   text eol=lf
-*.lean text eol=lf
-*.sh   text eol=lf
-*.yml  text eol=lf
-*.yaml text eol=lf

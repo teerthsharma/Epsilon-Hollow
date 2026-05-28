@@ -65,14 +65,46 @@ impl TcpHeader {
         // SAFETY: All fields are at naturally aligned offsets within the struct.
         // We use addr_of! to avoid creating references to packed struct fields.
         unsafe {
-            b[0..2].copy_from_slice(&core::ptr::addr_of!((*self).src_port).read_unaligned().to_be_bytes());
-            b[2..4].copy_from_slice(&core::ptr::addr_of!((*self).dst_port).read_unaligned().to_be_bytes());
-            b[4..8].copy_from_slice(&core::ptr::addr_of!((*self).seq).read_unaligned().to_be_bytes());
-            b[8..12].copy_from_slice(&core::ptr::addr_of!((*self).ack).read_unaligned().to_be_bytes());
-            b[12..14].copy_from_slice(&core::ptr::addr_of!((*self).data_offset_flags).read_unaligned().to_be_bytes());
-            b[14..16].copy_from_slice(&core::ptr::addr_of!((*self).window).read_unaligned().to_be_bytes());
-            b[16..18].copy_from_slice(&core::ptr::addr_of!((*self).checksum).read_unaligned().to_be_bytes());
-            b[18..20].copy_from_slice(&core::ptr::addr_of!((*self).urgent).read_unaligned().to_be_bytes());
+            b[0..2].copy_from_slice(
+                &core::ptr::addr_of!((*self).src_port)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[2..4].copy_from_slice(
+                &core::ptr::addr_of!((*self).dst_port)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[4..8].copy_from_slice(
+                &core::ptr::addr_of!((*self).seq)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[8..12].copy_from_slice(
+                &core::ptr::addr_of!((*self).ack)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[12..14].copy_from_slice(
+                &core::ptr::addr_of!((*self).data_offset_flags)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[14..16].copy_from_slice(
+                &core::ptr::addr_of!((*self).window)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[16..18].copy_from_slice(
+                &core::ptr::addr_of!((*self).checksum)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
+            b[18..20].copy_from_slice(
+                &core::ptr::addr_of!((*self).urgent)
+                    .read_unaligned()
+                    .to_be_bytes(),
+            );
         }
         b
     }
@@ -190,7 +222,9 @@ impl TcpSocket {
                 pseudo.extend_from_slice(&hdr_bytes);
                 pseudo.extend_from_slice(payload);
                 let cksum = crate::net::ipv4::internet_checksum(&pseudo);
-                unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+                unsafe {
+                    core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
+                }
                 let mut pkt = Vec::with_capacity(20 + payload.len());
                 pkt.extend_from_slice(&hdr.to_bytes());
                 pkt.extend_from_slice(payload);
@@ -202,13 +236,17 @@ impl TcpSocket {
                 pseudo.extend_from_slice(&src_ip);
                 pseudo.extend_from_slice(&remote_ip);
                 pseudo.extend_from_slice(&((20 + payload.len()) as u32).to_be_bytes());
-                pseudo.push(0); pseudo.push(0); pseudo.push(0);
+                pseudo.push(0);
+                pseudo.push(0);
+                pseudo.push(0);
                 pseudo.push(6);
                 let hdr_bytes = hdr.to_bytes();
                 pseudo.extend_from_slice(&hdr_bytes);
                 pseudo.extend_from_slice(payload);
                 let cksum = crate::net::ipv4::internet_checksum(&pseudo);
-                unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+                unsafe {
+                    core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
+                }
                 let mut pkt = Vec::with_capacity(20 + payload.len());
                 pkt.extend_from_slice(&hdr.to_bytes());
                 pkt.extend_from_slice(payload);
@@ -235,9 +273,11 @@ impl TcpSocket {
 
     fn retransmit_expired(&mut self) {
         let now = crate::drivers::interrupts::ticks();
-        let found = self.retransmit_queue.iter().find(|entry| {
-            now.wrapping_sub(entry.time) >= self.rto
-        }).map(|entry| (entry.seq, entry.flags, entry.payload.clone()));
+        let found = self
+            .retransmit_queue
+            .iter()
+            .find(|entry| now.wrapping_sub(entry.time) >= self.rto)
+            .map(|entry| (entry.seq, entry.flags, entry.payload.clone()));
         if let Some((seq, flags, payload)) = found {
             self.seq_num = seq;
             self.send_tcp_packet(flags, &payload);
@@ -331,7 +371,10 @@ pub fn poll() {
 
     for (dst_port, remote_ip, remote_port, seq) in pending {
         let mut sockets = TCP_SOCKETS.lock();
-        if let Some(listener_idx) = sockets.iter().position(|s| s.local_port == dst_port && s.state == TcpState::Listen) {
+        if let Some(listener_idx) = sockets
+            .iter()
+            .position(|s| s.local_port == dst_port && s.state == TcpState::Listen)
+        {
             let new_port = {
                 let mut p = NEXT_TCP_PORT.lock();
                 let port = *p;
@@ -386,7 +429,9 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                     if flags & FLAG_SYN != 0 {
                         let remote_port = u16::from_be(hdr.src_port);
                         let seq = u32::from_be(hdr.seq);
-                        PENDING_SYN_QUEUE.lock().push((dst_port, src, remote_port, seq));
+                        PENDING_SYN_QUEUE
+                            .lock()
+                            .push((dst_port, src, remote_port, seq));
                     }
                 }
                 TcpState::SynSent => {

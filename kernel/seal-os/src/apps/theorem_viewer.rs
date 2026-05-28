@@ -1,9 +1,10 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Real-time theorem activity dashboard — T1-T5 live state visualization.
+//! Real-time theorem activity dashboard - T1-T10 core state visualization.
 
 use alloc::format;
+use core::sync::atomic::Ordering;
 
 use crate::graphics::font;
 use crate::wm::window::Window;
@@ -64,43 +65,167 @@ impl TheoremViewer {
         }
         y += 8;
 
-        // T1: TSS (Voronoi)
-        render_theorem(win, 8, y, "T1/TSS", "Topological State Space",
+        render_theorem(
+            win,
+            8,
+            y,
+            "T1/TSS",
+            "Topological State Space",
             &format!("Voronoi: 8 cells, {} lookups, O(1)", self.lookups),
-            1.0, cw);
-        y += 50;
+            1.0,
+            cw,
+            0,
+        );
+        y += 46;
 
-        // T2: SCM (Prefetch)
-        render_theorem(win, 8, y, "T2/SCM", "Spectral Contraction Map",
-            &format!("Prefetch accuracy: {:.0}%, rho=0.700", self.prefetch_accuracy),
-            self.prefetch_accuracy / 100.0, cw);
-        y += 50;
+        render_theorem(
+            win,
+            8,
+            y,
+            "T2/SCM",
+            "Spectral Contraction Map",
+            &format!(
+                "Prefetch accuracy: {:.0}%, rho=0.700",
+                self.prefetch_accuracy
+            ),
+            self.prefetch_accuracy / 100.0,
+            cw,
+            1,
+        );
+        y += 46;
 
-        // T3: GMC (Entropy)
-        render_theorem(win, 8, y, "T3/GMC", "Geometric Measure Convergence",
-            &format!("Entropy: H={:.3} bits, Betti-0={}", self.entropy, self.betti_0),
-            (self.entropy / 3.0).min(1.0), cw);
-        y += 50;
+        render_theorem(
+            win,
+            8,
+            y,
+            "T3/GMC",
+            "Geometric Measure Convergence",
+            &format!(
+                "Entropy: H={:.3} bits, Betti-0={}",
+                self.entropy, self.betti_0
+            ),
+            (self.entropy / 3.0).min(1.0),
+            cw,
+            2,
+        );
+        y += 46;
 
-        // T4: AGCR (Governor)
-        render_theorem(win, 8, y, "T4/AGCR", "Adaptive Geometric Convergence Rate",
-            &format!("epsilon={:.4}, {} scheduler ticks", self.epsilon, self.schedule_count),
-            self.epsilon.min(1.0), cw);
-        y += 50;
+        render_theorem(
+            win,
+            8,
+            y,
+            "T4/AGCR",
+            "Adaptive Geometric Convergence Rate",
+            &format!(
+                "epsilon={:.4}, {} scheduler ticks",
+                self.epsilon, self.schedule_count
+            ),
+            self.epsilon.min(1.0),
+            cw,
+            3,
+        );
+        y += 46;
 
-        // T5: HCS (Hyperbolic)
-        render_theorem(win, 8, y, "T5/HCS", "Hyperbolic Curvature Scaling",
-            &format!("ratio={:.1}x, {} teleports", self.hyperbolic_ratio, self.teleports),
-            (self.hyperbolic_ratio / 10.0).min(1.0), cw);
+        render_theorem(
+            win,
+            8,
+            y,
+            "T5/HCS",
+            "Hyperbolic Curvature Scaling",
+            &format!(
+                "ratio={:.1}x, {} teleports",
+                self.hyperbolic_ratio, self.teleports
+            ),
+            (self.hyperbolic_ratio / 10.0).min(1.0),
+            cw,
+            4,
+        );
+        y += 46;
+
+        render_theorem(
+            win,
+            8,
+            y,
+            "T6/RGCS",
+            "Ring-Allreduce Gradient Coherence",
+            "Boot-verified tangent deviation bound for ML sync",
+            1.0,
+            cw,
+            5,
+        );
+        y += 46;
+
+        render_theorem(
+            win,
+            8,
+            y,
+            "T7/PHKP",
+            "Persistent Homology KV Partitioning",
+            "Boot-verified sparse latency reduction bound",
+            1.0,
+            cw,
+            6,
+        );
+        y += 46;
+
+        render_theorem(
+            win,
+            8,
+            y,
+            "T8/TEB",
+            "Thermodynamic Erasure Bound",
+            "Boot-verified Landauer energy floor",
+            1.0,
+            cw,
+            7,
+        );
+        y += 46;
+
+        render_theorem(
+            win,
+            8,
+            y,
+            "T9/CMA",
+            "Cross-Manifold Alignment",
+            "Boot-verified SVD and curvature alignment bounds",
+            1.0,
+            cw,
+            8,
+        );
+        y += 46;
+
+        render_theorem(
+            win,
+            8,
+            y,
+            "T10/WPHB",
+            "World Predictive Horizon Bound",
+            "Boot-verified information and stability horizon",
+            1.0,
+            cw,
+            9,
+        );
     }
 }
 
-fn render_theorem(win: &mut Window, x: u32, y: u32, id: &str, name: &str,
-                  detail: &str, bar_value: f64, max_w: u32) {
+fn render_theorem(
+    win: &mut Window,
+    x: u32,
+    y: u32,
+    id: &str,
+    name: &str,
+    detail: &str,
+    bar_value: f64,
+    max_w: u32,
+    state_idx: usize,
+) {
+    let active = crate::THEOREM_STATES[state_idx].load(Ordering::Relaxed);
+    let state_color = if active { ACTIVE_COLOR } else { 0x00CC4444 };
+
     // Active indicator dot
     for dy in 0..8u32 {
         for dx in 0..8u32 {
-            win.set_client_pixel(x + dx, y + 3 + dy, ACTIVE_COLOR);
+            win.set_client_pixel(x + dx, y + 3 + dy, state_color);
         }
     }
 

@@ -309,7 +309,9 @@ pub fn register_device(slot_id: u8, bulk_in: u8, bulk_out: u8, max_packet: u16) 
         }
         serial_println!(
             "[MSC] Registering slot={} in={:02X} out={:02X}",
-            slot_id, bulk_in, bulk_out
+            slot_id,
+            bulk_in,
+            bulk_out
         );
         USB_MSC = Some(UsbMassStorage::new(slot_id, bulk_in, bulk_out, max_packet));
     }

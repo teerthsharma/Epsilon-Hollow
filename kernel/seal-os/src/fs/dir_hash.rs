@@ -64,7 +64,12 @@ fn hash_dir_key(parent: u64, name_hash: u64, seed: u64) -> u64 {
 enum Bucket {
     Empty,
     Tombstone,
-    Occupied { parent: u64, name_hash: u64, name: String, inode_id: u64 },
+    Occupied {
+        parent: u64,
+        name_hash: u64,
+        name: String,
+        inode_id: u64,
+    },
 }
 
 /// O(1) directory entry table. Every op is open-addressing with linear probing.
@@ -99,7 +104,9 @@ impl DirHash {
             match &self.buckets[idx] {
                 Bucket::Empty => return (idx, false),
                 Bucket::Tombstone => {}
-                Bucket::Occupied { parent: p, name: n, .. } => {
+                Bucket::Occupied {
+                    parent: p, name: n, ..
+                } => {
                     if *p == parent && n == name {
                         return (idx, true);
                     }
@@ -124,7 +131,13 @@ impl DirHash {
         self.cap_mask = new_cap - 1;
         self.len = 0;
         for bucket in old {
-            if let Bucket::Occupied { parent, name_hash, name, inode_id } = bucket {
+            if let Bucket::Occupied {
+                parent,
+                name_hash,
+                name,
+                inode_id,
+            } = bucket
+            {
                 self.insert_unchecked(parent, name_hash, name, inode_id);
             }
         }
@@ -136,7 +149,12 @@ impl DirHash {
         loop {
             match &self.buckets[idx] {
                 Bucket::Empty | Bucket::Tombstone => {
-                    self.buckets[idx] = Bucket::Occupied { parent, name_hash, name, inode_id };
+                    self.buckets[idx] = Bucket::Occupied {
+                        parent,
+                        name_hash,
+                        name,
+                        inode_id,
+                    };
                     self.len += 1;
                     return;
                 }
@@ -199,7 +217,13 @@ impl DirHash {
     pub fn entries_in_dir(&self, parent: u64) -> Vec<(String, u64)> {
         let mut out = Vec::new();
         for bucket in &self.buckets {
-            if let Bucket::Occupied { parent: p, name, inode_id, .. } = bucket {
+            if let Bucket::Occupied {
+                parent: p,
+                name,
+                inode_id,
+                ..
+            } = bucket
+            {
                 if *p == parent {
                     out.push((name.clone(), *inode_id));
                 }
@@ -212,8 +236,8 @@ impl DirHash {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_insert_lookup() -> TestResult {
         let mut dh = DirHash::new(0x1234);

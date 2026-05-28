@@ -105,7 +105,11 @@ unsafe fn read_msr_warn(addr: u32, name: &str) -> Option<u64> {
     match read_msr_safe(addr) {
         Some(v) => Some(v),
         None => {
-            serial_println!("[AMD] Warning: {} MSR ({:#x}) read 0 or unavailable", name, addr);
+            serial_println!(
+                "[AMD] Warning: {} MSR ({:#x}) read 0 or unavailable",
+                name,
+                addr
+            );
             None
         }
     }
@@ -196,12 +200,21 @@ impl AmdCpuDriver {
         let (family, model, stepping) = amd_family_model_stepping();
         serial_println!(
             "[AMD] Detected AMD processor — family={:#x} model={:#x} stepping={}",
-            family, model, stepping
+            family,
+            model,
+            stepping
         );
 
         if cpb {
             serial_println!("[AMD] Core Performance Boost (CPB) supported");
-            serial_println!("[AMD] CPB currently {}", if self.cpb_enabled() { "enabled" } else { "disabled" });
+            serial_println!(
+                "[AMD] CPB currently {}",
+                if self.cpb_enabled() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
         } else {
             serial_println!("[AMD] Core Performance Boost (CPB) not supported");
         }
@@ -242,11 +255,12 @@ impl AmdCpuDriver {
     /// Enable (`true`) or disable (`false`) Core Performance Boost.
     pub fn set_cpb(&self, enable: bool) {
         if !AMD_DETECTED.load(Ordering::Relaxed) {
-            serial_println!("[AMD] set_cpb ignored: not an AMD CPU");
             return;
         }
         if !CPB_SUPPORTED.load(Ordering::Relaxed) {
-            serial_println!("[AMD] set_cpb ignored: CPB not supported");
+            return;
+        }
+        if self.cpb_enabled() == enable {
             return;
         }
         unsafe {

@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! SealShell — the human-friendly shell. English-first, Unix as silent fallback.
+//! SealShell - the human-friendly shell. Seal-native commands only.
 
 use alloc::format;
 use alloc::string::String;
@@ -55,9 +55,7 @@ impl Shell {
         let arg1 = parts.get(1).copied().unwrap_or("");
         let arg2 = parts.get(2).copied().unwrap_or("");
 
-        let resolved = Self::resolve_alias(cmd);
-
-        match resolved {
+        match cmd {
             "help" => {
                 if arg1.is_empty() {
                     help::handbook()
@@ -153,32 +151,7 @@ impl Shell {
             "stop" => self.media_player.stop(),
             "formats" => MediaPlayer::supported_formats(),
 
-            // pwd (silent unix fallback that doesn't map cleanly)
-            "pwd" => self.cwd_path.clone(),
-
             _ => format!("seal: unknown command '{}' — type 'help' for the handbook", cmd),
-        }
-    }
-
-    fn resolve_alias(cmd: &str) -> &str {
-        match cmd {
-            // Unix silent fallbacks — undocumented, not in help
-            "ls" => "look",
-            "dir" => "look",
-            "cd" => "open",
-            "cat" => "peek",
-            "mkdir" => "create",
-            "touch" => "write",
-            "rm" => "delete",
-            "mv" => "move",
-            "cp" => "copy",
-            "find" | "grep" => "search",
-            "stat" => "info",
-            "uname" => "seal",
-            "ps" => "tasks",
-            "theorems" => "seal",
-            "pip" => "install",
-            _ => cmd,
         }
     }
 
@@ -264,7 +237,9 @@ impl Shell {
         match self.fs.store_text(name, content, self.cwd) {
             Ok(id) => format!(
                 "Wrote '{}' ({} bytes → 64 pts on S², inode {})",
-                name, content.len(), id
+                name,
+                content.len(),
+                id
             ),
             Err(e) => format!("write: {}", e),
         }
@@ -412,8 +387,13 @@ impl Shell {
              Entropy:         {:.3} bits\n\
              Max depth:       {}\n\
              Hyperbolic ratio: {:.1}x",
-            s.total_files, s.total_dirs, s.total_teleports,
-            s.governor_epsilon, s.current_entropy, s.max_depth, s.hyperbolic_ratio
+            s.total_files,
+            s.total_dirs,
+            s.total_teleports,
+            s.governor_epsilon,
+            s.current_entropy,
+            s.max_depth,
+            s.hyperbolic_ratio
         )
     }
 
@@ -427,8 +407,10 @@ impl Shell {
              Allocated: {} bytes ({} MB)\n\
              Total:     {} bytes ({} MB)\n\
              Free:      {} bytes ({} MB)",
-            allocated, allocated_mb,
-            total, total_mb,
+            allocated,
+            allocated_mb,
+            total,
+            total_mb,
             total.saturating_sub(allocated),
             total_mb.saturating_sub(allocated_mb)
         )
@@ -452,22 +434,36 @@ impl Shell {
                      AVX-512:      {}\n\
                      {}\n\
                      Use: ml train [epochs] | ml matmul | ml tensor",
-                    if status.tensor_ops_available { "available" } else { "unavailable" },
-                    if status.neural_net_available { "available" } else { "unavailable" },
-                    if status.avx2_detected { "detected" } else { "not detected" },
-                    if status.avx512_detected { "detected" } else { "not detected" },
+                    if status.tensor_ops_available {
+                        "available"
+                    } else {
+                        "unavailable"
+                    },
+                    if status.neural_net_available {
+                        "available"
+                    } else {
+                        "unavailable"
+                    },
+                    if status.avx2_detected {
+                        "detected"
+                    } else {
+                        "not detected"
+                    },
+                    if status.avx512_detected {
+                        "detected"
+                    } else {
+                        "not detected"
+                    },
                     gpu_line,
                 )
             }
-            "devices" => {
-                String::from(
-                    "ML Compute Devices\n\
+            "devices" => String::from(
+                "ML Compute Devices\n\
                      ═══════════════════\n\
                      CPU:  x86_64 (AVX2/AVX-512 detection pending)\n\
                      GPU:  Not detected (PCI probe pending)\n\
                      NPU:  Not detected",
-                )
-            }
+            ),
             "train" => {
                 let epochs: usize = arg.parse().unwrap_or(1000);
                 let (report, bytes) = crate::ml_engine::demo_train_mlp(epochs);
@@ -494,10 +490,12 @@ impl Shell {
             "generate" => {
                 let seed = if arg.is_empty() { "Seal" } else { arg };
                 let text = crate::ml_engine::demo_generate_text(seed, 120);
-                format!("Markov Generation (seed: '{}')\n\
+                format!(
+                    "Markov Generation (seed: '{}')\n\
                          ══════════════════════════════════\n\
                          {}",
-                    seed, text)
+                    seed, text
+                )
             }
             "tensor" => {
                 // Create a simple 2x3 tensor for demo
@@ -615,7 +613,10 @@ impl Shell {
             return String::from("install: which package? Usage: install <package>");
         }
         let manifest = format!("name={}\nversion=1.0.0\nstatus=metadata-only", pkg);
-        match self.fs.store_text(&format!("{}.pkg", pkg), &manifest, self.cwd) {
+        match self
+            .fs
+            .store_text(&format!("{}.pkg", pkg), &manifest, self.cwd)
+        {
             Ok(id) => format!(
                 "[ManifoldPkg] Resolved '{}' via Voronoi cell lookup\n\
                  [ManifoldPkg] Stored package manifest (inode {})\n\
@@ -640,9 +641,14 @@ impl Shell {
     fn cmd_packages(&self) -> String {
         match self.fs.ls(self.cwd) {
             Ok(entries) => {
-                let pkgs: Vec<_> = entries.iter().filter(|e| e.name.ends_with(".pkg")).collect();
+                let pkgs: Vec<_> = entries
+                    .iter()
+                    .filter(|e| e.name.ends_with(".pkg"))
+                    .collect();
                 if pkgs.is_empty() {
-                    return String::from("[ManifoldPkg] No packages installed — use 'install <package>'");
+                    return String::from(
+                        "[ManifoldPkg] No packages installed — use 'install <package>'",
+                    );
                 }
                 let mut out = String::from("[ManifoldPkg] Installed packages:\n");
                 for p in &pkgs {
@@ -680,9 +686,15 @@ impl Shell {
                 if networks.is_empty() {
                     return String::from("WiFi: no wireless networks found");
                 }
-                let mut out = String::from("WiFi Networks:\n  SSID              SIGNAL  SECURITY\n");
+                let mut out =
+                    String::from("WiFi Networks:\n  SSID              SIGNAL  SECURITY\n");
                 for n in &networks {
-                    out.push_str(&format!("  {:<18}  {:>4}dBm  {}\n", n.ssid, n.signal_dbm, n.security.name()));
+                    out.push_str(&format!(
+                        "  {:<18}  {:>4}dBm  {}\n",
+                        n.ssid,
+                        n.signal_dbm,
+                        n.security.name()
+                    ));
                 }
                 out
             }
@@ -701,9 +713,15 @@ impl Shell {
                 if devices.is_empty() {
                     return String::from("Bluetooth: no devices found");
                 }
-                let mut out = String::from("Bluetooth Devices:\n  NAME                 TYPE   RSSI\n");
+                let mut out =
+                    String::from("Bluetooth Devices:\n  NAME                 TYPE   RSSI\n");
                 for d in &devices {
-                    out.push_str(&format!("  {:<20}  {:<6}  {:>4}dBm\n", d.name, d.device_type.name(), d.rssi_dbm));
+                    out.push_str(&format!(
+                        "  {:<20}  {:<6}  {:>4}dBm\n",
+                        d.name,
+                        d.device_type.name(),
+                        d.rssi_dbm
+                    ));
                 }
                 out
             }
@@ -741,9 +759,15 @@ impl Shell {
         }
         match name {
             "dark" | "light" | "seal" | "matrix" => {
-                format!("[Theme] Switched to '{}' theme (visual change requires re-render)", name)
+                format!(
+                    "[Theme] Switched to '{}' theme (visual change requires re-render)",
+                    name
+                )
             }
-            _ => format!("[Theme] Unknown theme '{}'. Available: dark, light, seal, matrix", name),
+            _ => format!(
+                "[Theme] Unknown theme '{}'. Available: dark, light, seal, matrix",
+                name
+            ),
         }
     }
 
@@ -784,12 +808,10 @@ impl Shell {
                 let secs: u64 = arg.parse().unwrap_or(0);
                 self.media_player.seek(secs)
             }
-            file => {
-                match self.media_player.open(file) {
-                    Ok(s) => s,
-                    Err(e) => e,
-                }
-            }
+            file => match self.media_player.open(file) {
+                Ok(s) => s,
+                Err(e) => e,
+            },
         }
     }
 
@@ -817,7 +839,9 @@ impl Shell {
                 match self.fs.store(&topo_name, &serialized, self.cwd) {
                     Ok(id) => format!(
                         "[TopCrypt] Encoded {} bytes → {} blocks on S² (inode {})",
-                        data.len(), topo.block_count, id
+                        data.len(),
+                        topo.block_count,
+                        id
                     ),
                     Err(e) => format!("topcrypt encode: {}", e),
                 }
@@ -843,7 +867,9 @@ impl Shell {
                 match self.fs.store(out_name, &decoded, self.cwd) {
                     Ok(id) => format!(
                         "[TopCrypt] Decoded {} blocks → {} bytes (inode {})",
-                        topo.block_count, decoded.len(), id
+                        topo.block_count,
+                        decoded.len(),
+                        id
                     ),
                     Err(e) => format!("topcrypt decode: {}", e),
                 }
@@ -882,7 +908,10 @@ impl Shell {
                 let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let key = crate::security::topcrypt_guard::LYPNOS_KEY;
                 if !crate::fs::topcrypt::unlock_file(&mut topo, key) {
-                    return format!("topcrypt unlock: incorrect key or corrupted file '{}'", arg1);
+                    return format!(
+                        "topcrypt unlock: incorrect key or corrupted file '{}'",
+                        arg1
+                    );
                 }
                 let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
                 if self.fs.exists(arg1, self.cwd) {
@@ -943,7 +972,9 @@ Seed: {:016x}",
             }
             "export" => {
                 if arg1.is_empty() {
-                    return String::from("topcrypt export: usage: topcrypt export <file.topo> [path]");
+                    return String::from(
+                        "topcrypt export: usage: topcrypt export <file.topo> [path]",
+                    );
                 }
                 let data = match self.read_file_bytes(arg1) {
                     Some(d) => d,
@@ -963,7 +994,9 @@ Seed: {:016x}",
                 match self.fs.store(dest_name, &flat, self.cwd) {
                     Ok(_) => format!(
                         "[TopCrypt] Flattened {} blocks → {} bytes → {}",
-                        topo.block_count, flat.len(), dest
+                        topo.block_count,
+                        flat.len(),
+                        dest
                     ),
                     Err(e) => format!("topcrypt export: {}", e),
                 }
@@ -985,7 +1018,9 @@ Seed: {:016x}",
                 match self.fs.store(&topo_name, &serialized, self.cwd) {
                     Ok(id) => format!(
                         "[TopCrypt] Imported {} bytes → {} blocks on S² (inode {})",
-                        data.len(), topo.block_count, id
+                        data.len(),
+                        topo.block_count,
+                        id
                     ),
                     Err(e) => format!("topcrypt import: {}", e),
                 }
@@ -1043,12 +1078,21 @@ Seed: {:016x}",
                         let mut max = f32::MIN;
                         let mut sum = 0.0f32;
                         for &v in &tensor.data {
-                            if v < min { min = v; }
-                            if v > max { max = v; }
+                            if v < min {
+                                min = v;
+                            }
+                            if v > max {
+                                max = v;
+                            }
                             sum += v;
                         }
                         let mean = sum / tensor.data.len() as f32;
-                        let shape_str = tensor.shape.iter().map(|s| format!("{}", s)).collect::<Vec<_>>().join("x");
+                        let shape_str = tensor
+                            .shape
+                            .iter()
+                            .map(|s| format!("{}", s))
+                            .collect::<Vec<_>>()
+                            .join("x");
                         format!("Tensor: {}\nshape: [{}]\nmin: {:.4}\nmax: {:.4}\nmean: {:.4}\nelements: {}",
                             arg, shape_str, min, max, mean, tensor.data.len())
                     }
@@ -1080,8 +1124,11 @@ Seed: {:016x}",
                      Decisions:       {}\n\
                      Hit ratio:       {:.1}%\n\
                      Note: prefetch counters are in-memory only (no DMA hardware)",
-                    engine.preset(), engine.epsilon(), engine.phi(),
-                    engine.total_decisions(), engine.hit_ratio() * 100.0
+                    engine.preset(),
+                    engine.epsilon(),
+                    engine.phi(),
+                    engine.total_decisions(),
+                    engine.hit_ratio() * 100.0
                 )
             }
             _ => String::from("prefetch: usage: prefetch status"),

@@ -3,8 +3,8 @@
 
 //! Bounded Voronoi cells — cap at 64 files, split/merge with hysteresis.
 
-use alloc::vec::Vec;
 use aether_core::tss::SphericalVoronoiIndex;
+use alloc::vec::Vec;
 
 const VORONOI_CELLS: usize = 8;
 const MAX_CELL_OCCUPANCY: usize = 64;
@@ -77,13 +77,19 @@ impl VoronoiCap {
         }
     }
 
-    pub fn insert(&mut self, inode_id: u64, payload: &super::encoder::ManifoldPayload) -> (usize, usize) {
+    pub fn insert(
+        &mut self,
+        inode_id: u64,
+        payload: &super::encoder::ManifoldPayload,
+    ) -> (usize, usize) {
         let cell = self.assign_cell(payload);
 
         // Fast path: already split
         if let Some(ref subs) = self.cells[cell].subcells {
             let sub_idx = self.assign_subcell(payload, &subs[0]);
-            self.cells[cell].subcells.as_mut().unwrap()[sub_idx].files.push(inode_id);
+            self.cells[cell].subcells.as_mut().unwrap()[sub_idx]
+                .files
+                .push(inode_id);
             return (cell, sub_idx);
         }
 
@@ -95,7 +101,9 @@ impl VoronoiCap {
                 let subs = self.cells[cell].subcells.as_ref().unwrap();
                 self.assign_subcell(payload, &subs[0])
             };
-            self.cells[cell].subcells.as_mut().unwrap()[sub_idx].files.push(inode_id);
+            self.cells[cell].subcells.as_mut().unwrap()[sub_idx]
+                .files
+                .push(inode_id);
             self.cells[cell].files.retain(|&id| id != inode_id);
             return (cell, sub_idx);
         }
@@ -140,11 +148,9 @@ impl VoronoiCap {
     pub fn cell_sizes(&self) -> Vec<usize> {
         self.cells
             .iter()
-            .map(|c| {
-                match &c.subcells {
-                    None => c.files.len(),
-                    Some(subs) => subs.iter().map(|s| s.files.len()).sum(),
-                }
+            .map(|c| match &c.subcells {
+                None => c.files.len(),
+                Some(subs) => subs.iter().map(|s| s.files.len()).sum(),
             })
             .collect()
     }
@@ -193,9 +199,7 @@ impl VoronoiCap {
         }
         let pt = &payload.points[0];
         let r = libm::sqrt(
-            pt.coords[0] * pt.coords[0]
-                + pt.coords[1] * pt.coords[1]
-                + pt.coords[2] * pt.coords[2],
+            pt.coords[0] * pt.coords[0] + pt.coords[1] * pt.coords[1] + pt.coords[2] * pt.coords[2],
         );
         if r < 1e-12 {
             return 0;
@@ -205,7 +209,11 @@ impl VoronoiCap {
         self.voronoi.locate((theta, phi))
     }
 
-    fn assign_subcell(&self, payload: &super::encoder::ManifoldPayload, reference: &Subcell) -> usize {
+    fn assign_subcell(
+        &self,
+        payload: &super::encoder::ManifoldPayload,
+        reference: &Subcell,
+    ) -> usize {
         if payload.points.is_empty() {
             return 0;
         }
@@ -283,8 +291,16 @@ impl VoronoiCap {
         }
 
         state.subcells = Some([
-            Subcell { files: sub0, boundary, axis },
-            Subcell { files: sub1, boundary, axis: axis },
+            Subcell {
+                files: sub0,
+                boundary,
+                axis,
+            },
+            Subcell {
+                files: sub1,
+                boundary,
+                axis,
+            },
         ]);
         state.files.clear();
         self.splits += 1;
@@ -304,10 +320,10 @@ impl VoronoiCap {
 
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
-    use super::*;
-    use crate::{test_assert, test_assert_eq};
-    use crate::testing::TestResult;
     use super::super::encoder;
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_basic_insert_locate() -> TestResult {
         let mut vc = VoronoiCap::new();

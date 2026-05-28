@@ -3,8 +3,8 @@
 
 //! High-level TCP socket API -- wires to net::tcp and e1000 via net::transmit.
 
-use alloc::vec::Vec;
 use crate::net::tcp::TcpState;
+use alloc::vec::Vec;
 
 pub struct TcpSocket {
     idx: Option<usize>,
@@ -55,7 +55,15 @@ impl TcpSocket {
 
 /// Build and transmit a raw TCP segment over IPv4/Ethernet directly.
 /// Used for driver-level TX where the full frame is assembled here.
-pub fn send_tcp_packet(remote_ip: crate::net::IpAddr, remote_port: u16, local_port: u16, seq: u32, ack: u32, flags: u16, payload: &[u8]) {
+pub fn send_tcp_packet(
+    remote_ip: crate::net::IpAddr,
+    remote_port: u16,
+    local_port: u16,
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    payload: &[u8],
+) {
     #[repr(C, packed)]
     struct TcpHeader {
         src_port: u16,
@@ -88,18 +96,18 @@ pub fn send_tcp_packet(remote_ip: crate::net::IpAddr, remote_port: u16, local_po
             pseudo.push(0);
             pseudo.push(6);
             pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-            let hdr_bytes = unsafe {
-                core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-            };
+            let hdr_bytes =
+                unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             pseudo.extend_from_slice(hdr_bytes);
             pseudo.extend_from_slice(payload);
             let cksum = crate::net::ipv4::internet_checksum(&pseudo);
-            unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+            unsafe {
+                core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
+            }
 
             let mut tcp_seg = Vec::with_capacity(20 + payload.len());
-            let hdr_bytes = unsafe {
-                core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-            };
+            let hdr_bytes =
+                unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             tcp_seg.extend_from_slice(hdr_bytes);
             tcp_seg.extend_from_slice(payload);
             crate::net::ipv4::send_ipv4_packet(remote_ip, 6, &tcp_seg);
@@ -110,20 +118,22 @@ pub fn send_tcp_packet(remote_ip: crate::net::IpAddr, remote_port: u16, local_po
             pseudo.extend_from_slice(&src_ip);
             pseudo.extend_from_slice(&remote_ip);
             pseudo.extend_from_slice(&((20 + payload.len()) as u32).to_be_bytes());
-            pseudo.push(0); pseudo.push(0); pseudo.push(0);
+            pseudo.push(0);
+            pseudo.push(0);
+            pseudo.push(0);
             pseudo.push(6);
-            let hdr_bytes = unsafe {
-                core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-            };
+            let hdr_bytes =
+                unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             pseudo.extend_from_slice(hdr_bytes);
             pseudo.extend_from_slice(payload);
             let cksum = crate::net::ipv4::internet_checksum(&pseudo);
-            unsafe { core::ptr::addr_of_mut!(hdr.checksum).write(cksum); }
+            unsafe {
+                core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
+            }
 
             let mut tcp_seg = Vec::with_capacity(20 + payload.len());
-            let hdr_bytes = unsafe {
-                core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20)
-            };
+            let hdr_bytes =
+                unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             tcp_seg.extend_from_slice(hdr_bytes);
             tcp_seg.extend_from_slice(payload);
             crate::net::ipv6::send_ipv6_packet(remote_ip, 6, &tcp_seg);

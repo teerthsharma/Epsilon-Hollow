@@ -89,7 +89,12 @@ impl AmdGpu {
             return None;
         }
 
-        serial_println!("[AMDGPU] Probing device {:04X}:{:04X} rev={}", dev.vendor_id, dev.device_id, dev.revision);
+        serial_println!(
+            "[AMDGPU] Probing device {:04X}:{:04X} rev={}",
+            dev.vendor_id,
+            dev.device_id,
+            dev.revision
+        );
 
         // -----------------------------------------------------------------
         // 1. Enable PCI bus mastering.
@@ -152,7 +157,9 @@ impl AmdGpu {
             let ver_str = core::str::from_utf8(&bios_version[..bios_version_len]).unwrap_or("???");
             serial_println!("[AMDGPU] BIOS version: {}", ver_str);
         } else {
-            serial_println!("[AMDGPU] BIOS version not readable (ROM BAR may be disabled or unmapped)");
+            serial_println!(
+                "[AMDGPU] BIOS version not readable (ROM BAR may be disabled or unmapped)"
+            );
         }
 
         // -----------------------------------------------------------------
@@ -160,7 +167,9 @@ impl AmdGpu {
         // -----------------------------------------------------------------
         if arch.has_dcn() {
             serial_println!("[AMDGPU] Display Core Next (DCN) present on this generation");
-            serial_println!("[AMDGPU] NOTE: DCN display engine init requires SMU firmware -- skipping");
+            serial_println!(
+                "[AMDGPU] NOTE: DCN display engine init requires SMU firmware -- skipping"
+            );
         } else {
             serial_println!("[AMDGPU] DCN not present on this generation (or unknown)");
         }
@@ -196,7 +205,11 @@ impl AmdGpu {
         serial_println!(
             "[AMDGPU] Final GRBM_STATUS = {:08X} -- {}",
             final_grbm,
-            if idle_hint == 1 { "IDLE" } else { "BUSY/UNKNOWN" }
+            if idle_hint == 1 {
+                "IDLE"
+            } else {
+                "BUSY/UNKNOWN"
+            }
         );
 
         serial_println!(
@@ -339,16 +352,31 @@ impl AmdGpu {
 
         // Enable ROM BAR if it was disabled.
         if !rom_enabled {
-            pci::pci_write32(dev.bus, dev.device, dev.function, PCI_ROM_BAR_OFFSET, rom_bar_raw | 1);
+            pci::pci_write32(
+                dev.bus,
+                dev.device,
+                dev.function,
+                PCI_ROM_BAR_OFFSET,
+                rom_bar_raw | 1,
+            );
         }
 
         // Read signature at offset 0.
         let sig = core::ptr::read_volatile(rom_addr as *const u16);
         if sig != 0x55AA {
-            serial_println!("[AMDGPU] ROM signature {:04X} != 0x55AA -- BIOS not found", sig);
+            serial_println!(
+                "[AMDGPU] ROM signature {:04X} != 0x55AA -- BIOS not found",
+                sig
+            );
             // Restore ROM BAR state before returning.
             if !rom_enabled {
-                pci::pci_write32(dev.bus, dev.device, dev.function, PCI_ROM_BAR_OFFSET, rom_bar_raw);
+                pci::pci_write32(
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    PCI_ROM_BAR_OFFSET,
+                    rom_bar_raw,
+                );
             }
             return (version, 0);
         }
@@ -368,7 +396,11 @@ impl AmdGpu {
             rom_addr,
             sig,
             atom_magic,
-            if is_atombios { "ATOMBIOS" } else { "legacy/unknown" }
+            if is_atombios {
+                "ATOMBIOS"
+            } else {
+                "legacy/unknown"
+            }
         );
 
         // BIOS version string typically at offset 0x50.
@@ -384,7 +416,13 @@ impl AmdGpu {
 
         // Restore ROM BAR if we enabled it.
         if !rom_enabled {
-            pci::pci_write32(dev.bus, dev.device, dev.function, PCI_ROM_BAR_OFFSET, rom_bar_raw);
+            pci::pci_write32(
+                dev.bus,
+                dev.device,
+                dev.function,
+                PCI_ROM_BAR_OFFSET,
+                rom_bar_raw,
+            );
         }
 
         (version, len)
@@ -404,7 +442,7 @@ impl AmdGpu {
 /// Scan PCI bus for an AMD display controller and initialize it.
 /// Returns `Some(AmdGpu)` on success, `None` if no AMD GPU is found.
 pub fn init() -> Option<AmdGpu> {
-    let devices = crate::drivers::pci::enumerate();
+    let devices = crate::drivers::pci::get_devices();
     for dev in &devices {
         if dev.class == 0x03 && dev.vendor_id == 0x1002 {
             return unsafe { AmdGpu::probe(dev) };

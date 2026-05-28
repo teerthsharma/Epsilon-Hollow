@@ -23,13 +23,13 @@ ML researchers and HFT professionals who want a geometry-native, mathematically 
   3. Partitioning — create GPT with EFI System Partition (FAT32) and Root Partition
   4. Format ESP as FAT32, format root as ManifoldFS
   5. Copy kernel EFI binary to ESP/EFI/BOOT/BOOTX64.EFI
-  6. Write GRUB config for disk boot
+  6. Ensure UEFI fallback path `EFI/BOOT/BOOTX64.EFI` is present
   7. Create user account (username + password)
   8. Install progress bar with topological animation
   9. Reboot prompt
 
-### 1.3 GRUB Disk Boot Config
-- `grub.cfg` for installed disk
+### 1.3 UEFI Disk Boot Path
+- `EFI/BOOT/BOOTX64.EFI` on the EFI System Partition
 
 ---
 

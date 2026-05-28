@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GOVERNOR STUDIO</title>
+<style>
+  :root {
+    --bg: #0d0d0d;
+    --panel: #141414;
+    --border: #2a2a2a;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --accent: #00e5ff;
+    --node-data: #ff8c00;
+    --node-topo: #00e5ff;
+    --node-task: #00e676;
+    --node-compare: #ffea00;
+    --node-fusion: #aa00ff;
+    --node-bus: #ff4081;
+    --node-export: #bdbdbd;
+    --node-viz: #ff1744;
+    --wire: #555;
+    --wire-active: var(--accent);
+    --font: 'Segoe UI', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--font);
+    overflow: hidden; height: 100vh; display: flex; flex-direction: column;
+  }
+
+  /* TOP TOOLBAR */
+  #toolbar {
+    height: 42px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 12px; gap: 8px; flex-shrink: 0;
+  }
+  #toolbar h1 { font-size: 14px; color: var(--accent); letter-spacing: 1px; margin-right: 16px; }
+  .btn {
+    background: #222; border: 1px solid var(--border); color: var(--text);
+    padding: 4px 14px; font-size: 12px; cursor: pointer; border-radius: 3px;
+    transition: .15s; text-transform: uppercase; letter-spacing: .5px;
+  }
+  .btn:hover { background: #333; border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .spacer { flex: 1; }
+
+  /* MAIN LAYOUT */
+  #workspace {
+    flex: 1; display: flex; overflow: hidden;
+  }
+
+  /* LEFT PALETTE */
+  #palette {
+    width: 180px; background: var(--panel); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  #palette h3 { font-size: 11px; text-transform: uppercase; color: var(--text-dim); padding: 12px 10px 6px; letter-spacing: 1px; }
+  .palette-item {
+    padding: 8px 12px; margin: 2px 8px; font-size: 12px; cursor: grab;
+    border-radius: 4px; display: flex; align-items: center; gap: 8px;
+    border: 1px solid transparent;
+  }
+  .palette-item:hover { background: #1e1e1e; border-color: var(--border); }
+  .palette-item:active { cursor: grabbing; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* CANVAS AREA */
+  #canvas-wrap {
+    flex: 1; position: relative; overflow: hidden; background: var(--bg);
+  }
+  #grid-canvas, #node-canvas {
+    position: absolute; top: 0; left: 0;
+  }
+
+  /* RIGHT INSPECTOR */
+  #inspector {
+    width: 220px; background: var(--panel); border-left: 1px solid var(--border);
+    padding: 12px; font-size: 12px; overflow-y: auto; flex-shrink: 0;
+  }
+  #inspector h3 { font-size: 11px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 10px; letter-spacing: 1px; }
+  .param-row { margin-bottom: 10px; }
+  .param-row label { display: block; color: var(--text-dim); margin-bottom: 3px; font-size: 11px; }
+  .param-row input, .param-row select {
+    width: 100%; background: #0d0d0d; border: 1px solid var(--border); color: var(--text);
+    padding: 5px 8px; font-size: 12px; border-radius: 3px;
+  }
+
+  /* BOTTOM CONSOLE */
+  #console {
+    height: 160px; background: var(--panel); border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; flex-shrink: 0;
+  }
+  #console-tabs {
+    display: flex; background: #0d0d0d; border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    padding: 6px 16px; font-size: 11px; text-transform: uppercase; cursor: pointer;
+    color: var(--text-dim); border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  #console-body { flex: 1; overflow-y: auto; padding: 8px 12px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.5; }
+  .log-line { margin-bottom: 2px; }
+  .log-info { color: var(--accent); }
+  .log-warn { color: #ffea00; }
+  .log-err { color: #ff1744; }
+  .log-ok { color: var(--node-task); }
+
+  /* RESULTS PANEL */
+  #results { display: none; padding: 8px 12px; overflow-y: auto; }
+  .result-card {
+    background: #0d0d0d; border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; margin-bottom: 6px; font-size: 12px;
+  }
+  .result-card .name { color: var(--accent); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>GOVERNOR STUDIO</h1>
+  <button class="btn primary" id="btn-play">▶ Play</button>
+  <button class="btn" id="btn-stop">■ Stop</button>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-save">Save</button>
+  <button class="btn" id="btn-load">Load</button>
+  <button class="btn" id="btn-clear">Clear</button>
+  <input type="file" id="file-input" style="display:none" accept=".json">
+</div>
+
+<div id="workspace">
+  <div id="palette">
+    <h3>Sources</h3>
+    <div class="palette-item" data-type="datasource">
+      <span class="dot" style="background:var(--node-data)"></span> Data Source
+    </div>
+    <h3>Topologies</h3>
+    <div class="palette-item" data-type="euclidean"><span class="dot" style="background:var(--node-topo)"></span> Euclidean</div>
+    <div class="palette-item" data-type="spherical"><span class="dot" style="background:var(--node-topo)"></span> Spherical</div>
+    <div class="palette-item" data-type="hyperbolic"><span class="dot" style="background:var(--node-topo)"></span> Hyperbolic</div>
+    <div class="palette-item" data-type="grassmannian"><span class="dot" style="background:var(--node-topo)"></span> Grassmannian</div>
+    <div class="palette-item" data-type="product"><span class="dot" style="background:var(--node-topo)"></span> Product</div>
+    <h3>Flow</h3>
+    <div class="palette-item" data-type="comparator"><span class="dot" style="background:var(--node-compare)"></span> Comparator</div>
+    <div class="palette-item" data-type="fusion"><span class="dot" style="background:var(--node-fusion)"></span> Fusion</div>
+    <div class="palette-item" data-type="transferbus"><span class="dot" style="background:var(--node-bus)"></span> Transfer Bus</div>
+    <div class="palette-item" data-type="viz"><span class="dot" style="background:var(--node-viz)"></span> Visualize</div>
+    <div class="palette-item" data-type="export"><span class="dot" style="background:var(--node-export)"></span> Export</div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="grid-canvas"></canvas>
+    <canvas id="node-canvas"></canvas>
+  </div>
+
+  <div id="inspector">
+    <h3>Inspector</h3>
+    <div id="inspector-empty" style="color:var(--text-dim); font-size:11px; margin-top:20px;">
+      Select a node to edit parameters.
+    </div>
+    <div id="inspector-content" style="display:none;"></div>
+  </div>
+</div>
+
+<div id="console">
+  <div id="console-tabs">
+    <div class="tab active" data-tab="logs">Console</div>
+    <div class="tab" data-tab="results">Battle Results</div>
+  </div>
+  <div id="console-body">
+    <div id="logs"></div>
+    <div id="results"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const NODE_W = 160, NODE_H = 70, PORT_R = 5;
+const COLORS = {
+  datasource: '#ff8c00', euclidean:'#00e5ff', spherical:'#00e5ff',
+  hyperbolic:'#00e5ff', grassmannian:'#00e5ff', product:'#00e5ff',
+  comparator:'#ffea00', fusion:'#aa00ff', transferbus:'#ff4081',
+  viz:'#ff1744', export:'#bdbdbd'
+};
+
+let nodes = [], connections = [];
+let nextId = 1;
+let camera = {x:0, y:0, zoom:1};
+let selectedNode = null;
+let draggingNode = null;
+let dragOffset = {x:0,y:0};
+let tempWire = null; // {fromNode, fromOutput, x, y}
+let isPanning = false;
+let panStart = {x:0,y:0};
+
+const wrap = document.getElementById('canvas-wrap');
+const gCan = document.getElementById('grid-canvas');
+const nCan = document.getElementById('node-canvas');
+const gCtx = gCan.getContext('2d');
+const nCtx = nCan.getContext('2d');
+
+function resize() {
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  gCan.width = w; gCan.height = h;
+  nCan.width = w; nCan.height = h;
+  drawGrid();
+  drawNodes();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================================
+// GRID
+// ============================================================
+function drawGrid() {
+  const w = gCan.width, h = gCan.height;
+  gCtx.fillStyle = '#0d0d0d';
+  gCtx.fillRect(0,0,w,h);
+  const step = 40 * camera.zoom;
+  const offX = camera.x % step, offY = camera.y % step;
+  gCtx.strokeStyle = '#1a1a1a';
+  gCtx.lineWidth = 1;
+  gCtx.beginPath();
+  for(let x = offX; x < w; x += step) { gCtx.moveTo(x,0); gCtx.lineTo(x,h); }
+  for(let y = offY; y < h; y += step) { gCtx.moveTo(0,y); gCtx.lineTo(w,y); }
+  gCtx.stroke();
+}
+
+// ============================================================
+// NODES
+// ============================================================
+class Node {
+  constructor(type, x, y) {
+    this.id = nextId++;
+    this.type = type;
+    this.x = x; this.y = y;
+    this.w = NODE_W; this.h = NODE_H;
+    this.params = this.defaultParams(type);
+    this.inputs = this.defaultInputs(type);
+    this.outputs = this.defaultOutputs(type);
+  }
+  defaultParams(t) {
+    if(t==='datasource') return {shape:'blob', samples:500, dims:8};
+    if(t==='euclidean') return {dim:8, k:8};
+    if(t==='spherical') return {dim:8};
+    if(t==='hyperbolic') return {dim:8, c:1.0};
+    if(t==='grassmannian') return {rank:4};
+    if(t==='product') return {factors:'circle+linear'};
+    if(t==='comparator') return {metric:'score'};
+    if(t==='fusion') return {method:'attention'};
+    if(t==='transferbus') return {mode:'route'};
+    if(t==='viz') return {style:'scatter'};
+    if(t==='export') return {format:'npz'};
+    return {};
+  }
+  defaultInputs(t) {
+    if(['datasource'].includes(t)) return [];
+    return ['in'];
+  }
+  defaultOutputs(t) {
+    if(['export','viz'].includes(t)) return [];
+    return ['out'];
+  }
+  portPos(isInput, idx) {
+    const side = isInput ? this.x : this.x + this.w;
+    const n = isInput ? this.inputs.length : this.outputs.length;
+    const gap = this.h / (n + 1);
+    return {x: side, y: this.y + gap * (idx + 1)};
+  }
+  hitTest(mx, my) {
+    return mx >= this.x && mx <= this.x+this.w && my >= this.y && my <= this.y+this.h;
+  }
+  hitPort(mx, my, isInput) {
+    const ports = isInput ? this.inputs : this.outputs;
+    for(let i=0;i<ports.length;i++){
+      const p = this.portPos(isInput, i);
+      const dx=mx-p.x, dy=my-p.y;
+      if(dx*dx+dy*dy < PORT_R*PORT_R*2) return i;
+    }
+    return -1;
+  }
+}
+
+function addNode(type, cx, cy) {
+  const n = new Node(type, (cx - camera.x)/camera.zoom - NODE_W/2, (cy - camera.y)/camera.zoom - NODE_H/2);
+  nodes.push(n);
+  selectNode(n);
+  log(`Added ${type} node #${n.id}`);
+  drawNodes();
+}
+
+// ============================================================
+// DRAWING
+// ============================================================
+function toScreen(x, y) {
+  return {x: x*camera.zoom + camera.x, y: y*camera.zoom + camera.y};
+}
+function toWorld(x, y) {
+  return {x: (x - camera.x)/camera.zoom, y: (y - camera.y)/camera.zoom};
+}
+
+function drawNodes() {
+  nCtx.clearRect(0,0,nCan.width,nCan.height);
+
+  // connections
+  nCtx.lineWidth = 2 * camera.zoom;
+  for(const c of connections) {
+    const a = c.fromNode.portPos(false, c.fromOutput);
+    const b = c.toNode.portPos(true, c.toInput);
+    const sa = toScreen(a.x, a.y);
+    const sb = toScreen(b.x, b.y);
+    nCtx.strokeStyle = '#555';
+    nCtx.beginPath();
+    nCtx.moveTo(sa.x, sa.y);
+    const cp1 = {x: sa.x + 60*camera.zoom, y: sa.y};
+    const cp2 = {x: sb.x - 60*camera.zoom, y: sb.y};
+    nCtx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, sb.x, sb.y);
+    nCtx.stroke();
+  }
+
+  // temp wire
+  if(tempWire) {
+    const a = tempWire.fromNode.portPos(false, tempWire.fromOutput);
+    const sa = toScreen(a.x, a.y);
+    nCtx.strokeStyle = '#00e5ff';
+    nCtx.beginPath();
+    nCtx.moveTo(sa.x, sa.y);
+    const cp1 = {x: sa.x + 60*camera.zoom, y: sa.y};
+    const cp2 = {x: tempWire.x - 60*camera.zoom, y: tempWire.y};
+    nCtx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, tempWire.x, tempWire.y);
+    nCtx.stroke();
+  }
+
+  // nodes
+  for(const n of nodes) {
+    const s = toScreen(n.x, n.y);
+    const sw = n.w * camera.zoom, sh = n.h * camera.zoom;
+    const col = COLORS[n.type] || '#888';
+
+    // shadow
+    nCtx.fillStyle = 'rgba(0,0,0,0.4)';
+    nCtx.fillRect(s.x+4, s.y+4, sw, sh);
+
+    // body
+    nCtx.fillStyle = '#1a1a1a';
+    nCtx.strokeStyle = n===selectedNode ? col : '#333';
+    nCtx.lineWidth = n===selectedNode ? 2 : 1;
+    nCtx.beginPath();
+    nCtx.roundRect(s.x, s.y, sw, sh, 4*camera.zoom);
+    nCtx.fill(); nCtx.stroke();
+
+    // header bar
+    nCtx.fillStyle = col;
+    nCtx.globalAlpha = 0.25;
+    nCtx.fillRect(s.x, s.y, sw, 18*camera.zoom);
+    nCtx.globalAlpha = 1;
+
+    // title
+    nCtx.fillStyle = col;
+    nCtx.font = `bold ${11*camera.zoom}px ${getComputedStyle(document.body).fontFamily}`;
+    nCtx.fillText(n.type.toUpperCase(), s.x + 8*camera.zoom, s.y + 13*camera.zoom);
+
+    // ports
+    for(let i=0;i<n.inputs.length;i++){
+      const p = n.portPos(true, i);
+      const sp = toScreen(p.x, p.y);
+      nCtx.fillStyle = '#fff';
+      nCtx.beginPath();
+      nCtx.arc(sp.x, sp.y, PORT_R*camera.zoom, 0, Math.PI*2);
+      nCtx.fill();
+    }
+    for(let i=0;i<n.outputs.length;i++){
+      const p = n.portPos(false, i);
+      const sp = toScreen(p.x, p.y);
+      nCtx.fillStyle = col;
+      nCtx.beginPath();
+      nCtx.arc(sp.x, sp.y, PORT_R*camera.zoom, 0, Math.PI*2);
+      nCtx.fill();
+    }
+  }
+}
+
+// ============================================================
+// INTERACTION
+// ============================================================
+let mouse = {x:0,y:0};
+
+nCan.addEventListener('mousedown', e => {
+  const rect = nCan.getBoundingClientRect();
+  mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+  const w = toWorld(mouse.x, mouse.y);
+
+  // check ports first
+  for(const n of nodes) {
+    const opi = n.hitPort(w.x, w.y, false);
+    if(opi >= 0) { tempWire = {fromNode:n, fromOutput:opi, x:mouse.x, y:mouse.y}; return; }
+  }
+
+  // check node bodies
+  for(let i=nodes.length-1;i>=0;i--){
+    if(nodes[i].hitTest(w.x, w.y)){
+      draggingNode = nodes[i]; dragOffset = {x:w.x-nodes[i].x, y:w.y-nodes[i].y};
+      selectNode(nodes[i]); return;
+    }
+  }
+
+  // pan
+  isPanning = true; panStart = {x:e.clientX, y:e.clientY};
+  selectedNode = null; updateInspector();
+  drawNodes();
+});
+
+nCan.addEventListener('mousemove', e => {
+  const rect = nCan.getBoundingClientRect();
+  mouse.x = e.clientX - rect.left; mouse.y = e.clientY - rect.top;
+
+  if(tempWire) { tempWire.x = mouse.x; tempWire.y = mouse.y; drawNodes(); }
+  if(draggingNode) {
+    const w = toWorld(mouse.x, mouse.y);
+    draggingNode.x = w.x - dragOffset.x;
+    draggingNode.y = w.y - dragOffset.y;
+    drawNodes();
+  }
+  if(isPanning) {
+    camera.x += e.clientX - panStart.x;
+    camera.y += e.clientY - panStart.y;
+    panStart = {x:e.clientX, y:e.clientY};
+    drawGrid(); drawNodes();
+  }
+});
+
+nCan.addEventListener('mouseup', e => {
+  if(tempWire) {
+    const rect = nCan.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const w = toWorld(mx, my);
+    let hit = null;
+    for(const n of nodes) {
+      const ipi = n.hitPort(w.x, w.y, true);
+      if(ipi >= 0) { hit = {node:n, input:ipi}; break; }
+    }
+    if(hit && hit.node !== tempWire.fromNode) {
+      // remove existing connection to this input
+      connections = connections.filter(c => !(c.toNode === hit.node && c.toInput === hit.input));
+      connections.push({fromNode:tempWire.fromNode, fromOutput:tempWire.fromOutput, toNode:hit.node, toInput:hit.input});
+      log(`Connected ${tempWire.fromNode.type} → ${hit.node.type}`);
+    }
+    tempWire = null; drawNodes();
+  }
+  draggingNode = null;
+  isPanning = false;
+});
+
+nCan.addEventListener('wheel', e => {
+  e.preventDefault();
+  const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+  const newZoom = Math.max(0.3, Math.min(3, camera.zoom * zoomFactor));
+  const rect = nCan.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const w = toWorld(mx, my);
+  camera.x = mx - w.x * newZoom;
+  camera.y = my - w.y * newZoom;
+  camera.zoom = newZoom;
+  drawGrid(); drawNodes();
+}, {passive:false});
+
+nCan.addEventListener('dblclick', e => {
+  const rect = nCan.getBoundingClientRect();
+  const w = toWorld(e.clientX - rect.left, e.clientY - rect.top);
+  for(let i=nodes.length-1;i>=0;i--){
+    if(nodes[i].hitTest(w.x, w.y)){
+      log(`Deleted ${nodes[i].type} #${nodes[i].id}`);
+      connections = connections.filter(c => c.fromNode !== nodes[i] && c.toNode !== nodes[i]);
+      nodes.splice(i,1); selectedNode=null; updateInspector(); drawNodes(); return;
+    }
+  }
+});
+
+// ============================================================
+// PALETTE DRAG
+// ============================================================
+document.querySelectorAll('.palette-item').forEach(item => {
+  item.addEventListener('mousedown', e => {
+    const type = item.dataset.type;
+    const rect = wrap.getBoundingClientRect();
+    addNode(type, rect.width/2, rect.height/2);
+  });
+});
+
+// ============================================================
+// INSPECTOR
+// ============================================================
+function selectNode(n) {
+  selectedNode = n;
+  updateInspector();
+  drawNodes();
+}
+function updateInspector() {
+  const empty = document.getElementById('inspector-empty');
+  const content = document.getElementById('inspector-content');
+  if(!selectedNode) { empty.style.display=''; content.style.display='none'; return; }
+  empty.style.display='none'; content.style.display='';
+  let html = `<div style="color:${COLORS[selectedNode.type]};font-weight:700;margin-bottom:8px;">${selectedNode.type.toUpperCase()} #${selectedNode.id}</div>`;
+  for(const [k,v] of Object.entries(selectedNode.params)){
+    html += `<div class="param-row"><label>${k}</label>`;
+    if(typeof v === 'boolean'){
+      html += `<select onchange="updateParam('${k}',this.value==='true')"><option value="true" ${v?'selected':''}>true</option><option value="false" ${!v?'selected':''}>false</option></select>`;
+    } else if(typeof v === 'number'){
+      html += `<input type="number" step="any" value="${v}" onchange="updateParam('${k}',parseFloat(this.value))">`;
+    } else {
+      html += `<input type="text" value="${v}" onchange="updateParam('${k}',this.value)">`;
+    }
+    html += `</div>`;
+  }
+  content.innerHTML = html;
+}
+window.updateParam = function(key, val) {
+  if(selectedNode) { selectedNode.params[key] = val; }
+};
+
+// ============================================================
+// CONSOLE / RESULTS
+// ============================================================
+function log(msg, cls='log-info') {
+  const logs = document.getElementById('logs');
+  const div = document.createElement('div');
+  div.className = `log-line ${cls}`;
+  div.textContent = `> ${msg}`;
+  logs.appendChild(div);
+  logs.scrollTop = logs.scrollHeight;
+}
+
+function showResult(title, data) {
+  const panel = document.getElementById('results');
+  const card = document.createElement('div');
+  card.className = 'result-card';
+  card.innerHTML = `<div class="name">${title}</div><pre style="margin-top:4px;font-size:11px;color:#aaa;">${JSON.stringify(data,null,2)}</pre>`;
+  panel.appendChild(card);
+  panel.scrollTop = panel.scrollHeight;
+  // switch to results tab
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelector('[data-tab="results"]').classList.add('active');
+  document.getElementById('logs').style.display='none';
+  panel.style.display='';
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('logs').style.display = tab.dataset.tab==='logs' ? '' : 'none';
+    document.getElementById('results').style.display = tab.dataset.tab==='results' ? '' : 'none';
+  });
+});
+
+// ============================================================
+// PLAY / EXECUTE
+// ============================================================
+document.getElementById('btn-play').addEventListener('click', async () => {
+  log('=== BATTLE START ===', 'log-warn');
+  // build execution graph
+  const exec = buildExecGraph();
+  if(!exec) return;
+  try {
+    const resp = await fetch('/api/run_graph', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(exec)
+    });
+    const data = await resp.json();
+    log('Battle complete.', 'log-ok');
+    showResult('BATTLE RESULT', data);
+  } catch(e) {
+    log('Error: ' + e.message, 'log-err');
+  }
+});
+
+function buildExecGraph() {
+  // find data sources (roots)
+  const sources = nodes.filter(n => n.type === 'datasource');
+  if(sources.length === 0) { log('No Data Source node.', 'log-err'); return null; }
+  // serialize nodes + connections
+  const nodeList = nodes.map(n => ({
+    id: n.id, type: n.type, x: n.x, y: n.y,
+    params: n.params, inputs: n.inputs, outputs: n.outputs
+  }));
+  const connList = connections.map(c => ({
+    from: c.fromNode.id, fromOutput: c.fromOutput,
+    to: c.toNode.id, toInput: c.toInput
+  }));
+  return {nodes: nodeList, connections: connList};
+}
+
+// ============================================================
+// SAVE / LOAD
+// ============================================================
+document.getElementById('btn-save').addEventListener('click', () => {
+  const payload = JSON.stringify({nodes, connections, camera}, null, 2);
+  const blob = new Blob([payload], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'governor_project.json';
+  a.click();
+  log('Project saved.');
+});
+
+document.getElementById('btn-load').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const data = JSON.parse(ev.target.result);
+    nodes = []; connections = []; nextId = 1;
+    const idMap = {};
+    for(const nd of data.nodes || []) {
+      const n = new Node(nd.type, nd.x, nd.y);
+      n.id = nd.id; n.params = nd.params;
+      idMap[nd.id] = n; nodes.push(n);
+      nextId = Math.max(nextId, nd.id + 1);
+    }
+    for(const c of data.connections || []) {
+      if(idMap[c.from] && idMap[c.to]) {
+        connections.push({fromNode:idMap[c.from], fromOutput:c.fromOutput, toNode:idMap[c.to], toInput:c.toInput});
+      }
+    }
+    if(data.camera) camera = data.camera;
+    drawGrid(); drawNodes();
+    log('Project loaded.');
+  };
+  reader.readAsText(f);
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  nodes = []; connections = []; selectedNode = null; nextId = 1; updateInspector(); drawNodes();
+  log('Canvas cleared.');
+});
+
+// ============================================================
+// INIT DEMO GRAPH
+// ============================================================
+function initDemo() {
+  const ds = new Node('datasource', 60, 80);
+  const euc = new Node('euclidean', 300, 40);
+  const hyp = new Node('hyperbolic', 300, 140);
+  const comp = new Node('comparator', 540, 90);
+  const viz = new Node('viz', 780, 90);
+  nodes = [ds, euc, hyp, comp, viz];
+  connections = [
+    {fromNode:ds, fromOutput:0, toNode:euc, toInput:0},
+    {fromNode:ds, fromOutput:0, toNode:hyp, toInput:0},
+    {fromNode:euc, fromOutput:0, toNode:comp, toInput:0},
+    {fromNode:hyp, fromOutput:0, toNode:comp, toInput:0},
+    {fromNode:comp, fromOutput:0, toNode:viz, toInput:0},
+  ];
+  nextId = 10;
+  drawNodes();
+  log('Governor Studio ready. Hit PLAY to battle.');
+}
+initDemo();
+</script>
+</body>
+</html>

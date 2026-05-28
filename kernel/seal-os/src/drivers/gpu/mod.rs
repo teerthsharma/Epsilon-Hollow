@@ -72,7 +72,9 @@ impl GpuDriver {
         if self.vendor == GpuVendor::Nvidia {
             if let Some(gpu) = unsafe { nvidia::NvidiaGpu::probe(dev) } {
                 self.vram_mb = gpu.fb_size_mb;
-                unsafe { gpu.init_sequence(dev); }
+                unsafe {
+                    gpu.init_sequence(dev);
+                }
                 *NVIDIA_GPU.lock() = Some(gpu);
             }
         }
@@ -130,7 +132,7 @@ pub fn init() {
 
     // Fallback: generic PCI scan for any display controller.
     let mut driver = GpuDriver::new();
-    let devices = crate::drivers::pci::enumerate();
+    let devices = crate::drivers::pci::get_devices();
     for dev in &devices {
         if dev.class == 0x03 {
             driver.init_from_pci(dev);

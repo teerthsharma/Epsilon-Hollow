@@ -29,8 +29,7 @@ static PRNG_STATE: AtomicU64 = AtomicU64::new(0);
 fn get_seed() -> u64 {
     let tsc = unsafe { core::arch::x86_64::_rdtsc() };
     let cpuid = unsafe { core::arch::x86_64::__cpuid(0) };
-    tsc
-        .wrapping_add(cpuid.eax as u64)
+    tsc.wrapping_add(cpuid.eax as u64)
         .wrapping_add((cpuid.ebx as u64) << 16)
         .wrapping_add((cpuid.ecx as u64) << 32)
         .wrapping_add((cpuid.edx as u64) << 48)

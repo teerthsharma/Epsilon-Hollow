@@ -111,7 +111,13 @@ impl Terminal {
             self.render_line_colored(win, input_row, &prompt, PROMPT_COLOR);
             // Input after prompt
             let input_x = (prompt.len() as u32) * font::CHAR_WIDTH;
-            self.render_text_at(win, input_x, input_row * font::CHAR_HEIGHT, &self.input_buf, FG);
+            self.render_text_at(
+                win,
+                input_x,
+                input_row * font::CHAR_HEIGHT,
+                &self.input_buf,
+                FG,
+            );
 
             // Cursor
             if self.cursor_visible {

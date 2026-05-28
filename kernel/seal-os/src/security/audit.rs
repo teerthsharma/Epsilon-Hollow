@@ -15,10 +15,24 @@ use crate::fs::vfs::with_vfs;
 
 #[derive(Debug, Clone)]
 pub enum AuditEvent {
-    Open { uid: u32, path: String, perms: String },
-    Execve { uid: u32, path: String },
-    Setuid { uid: u32, new_uid: u32 },
-    Sudo { user: String, command: String, success: bool },
+    Open {
+        uid: u32,
+        path: String,
+        perms: String,
+    },
+    Execve {
+        uid: u32,
+        path: String,
+    },
+    Setuid {
+        uid: u32,
+        new_uid: u32,
+    },
+    Sudo {
+        user: String,
+        command: String,
+        success: bool,
+    },
 }
 
 /// In-memory buffer for audit events before VFS flush.
@@ -48,7 +62,11 @@ pub fn audit_log(event: AuditEvent) {
                 uid, new_uid, time
             )
         }
-        AuditEvent::Sudo { user, command, success } => {
+        AuditEvent::Sudo {
+            user,
+            command,
+            success,
+        } => {
             format!(
                 "{{\"event\":\"sudo\",\"user\":\"{}\",\"command\":\"{}\",\"success\":{},\"time\":{}}}\n",
                 user, command, success, time
@@ -123,8 +141,8 @@ pub fn init_audit_log() {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::testing::TestResult;
     use crate::test_assert;
+    use crate::testing::TestResult;
 
     fn test_audit_event_format() -> TestResult {
         let msg = format!(

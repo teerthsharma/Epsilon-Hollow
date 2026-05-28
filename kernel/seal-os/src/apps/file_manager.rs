@@ -19,8 +19,7 @@ const TOPO_COLOR: u32 = 0x00CBA6F7;
 const TEXT_FG: u32 = 0x00CDD6F4;
 const LOCKED_COLOR: u32 = 0x00585B70;
 const CELL_COLORS: [u32; 8] = [
-    0x00F38BA8, 0x00FAB387, 0x00F9E2AF, 0x00A6E3A1,
-    0x0094E2D5, 0x0089B4FA, 0x00CBA6F7, 0x00F5C2E7,
+    0x00F38BA8, 0x00FAB387, 0x00F9E2AF, 0x00A6E3A1, 0x0094E2D5, 0x0089B4FA, 0x00CBA6F7, 0x00F5C2E7,
 ];
 
 pub struct FileManager {
@@ -51,7 +50,10 @@ impl FileManager {
     }
 
     pub fn selected_name(&self, fs: &ManifoldFS) -> Option<String> {
-        fs.ls(self.cwd).ok()?.get(self.selected).map(|e| e.name.clone())
+        fs.ls(self.cwd)
+            .ok()?
+            .get(self.selected)
+            .map(|e| e.name.clone())
     }
 
     /// Handle a mouse click inside the file manager window.

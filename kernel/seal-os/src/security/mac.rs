@@ -18,11 +18,31 @@ pub struct Permissions {
 }
 
 impl Permissions {
-    pub const R: Self = Self { read: true, write: false, execute: false };
-    pub const W: Self = Self { read: false, write: true, execute: false };
-    pub const RW: Self = Self { read: true, write: true, execute: false };
-    pub const X: Self = Self { read: false, write: false, execute: true };
-    pub const RWX: Self = Self { read: true, write: true, execute: true };
+    pub const R: Self = Self {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    pub const W: Self = Self {
+        read: false,
+        write: true,
+        execute: false,
+    };
+    pub const RW: Self = Self {
+        read: true,
+        write: true,
+        execute: false,
+    };
+    pub const X: Self = Self {
+        read: false,
+        write: false,
+        execute: true,
+    };
+    pub const RWX: Self = Self {
+        read: true,
+        write: true,
+        execute: true,
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -84,12 +104,18 @@ pub fn check_file_permission(uid: u32, path: &str, perms: Permissions) -> bool {
 
     for rule in &policy.rules {
         match rule {
-            MacRule::Deny { path: rule_path, perms: rule_perms } => {
+            MacRule::Deny {
+                path: rule_path,
+                perms: rule_perms,
+            } => {
                 if path.starts_with(rule_path) && perms_overlap(perms, *rule_perms) {
                     return false;
                 }
             }
-            MacRule::Allow { path: rule_path, perms: rule_perms } => {
+            MacRule::Allow {
+                path: rule_path,
+                perms: rule_perms,
+            } => {
                 if path.starts_with(rule_path) && perms_overlap(perms, *rule_perms) {
                     return true;
                 }

@@ -1,16 +1,16 @@
 # Ext2 Driver — Design Document
 
 > **Phase 4 Task**: FS-002
-> **Priority**: MEDIUM (interoperability with Linux; required for dual-boot)
+> **Priority**: MEDIUM (legacy ext2 disk image interop)
 > **Estimated Effort**: 4 weeks
 > **Blocked by**: Block device abstraction, buffer cache, physical allocator
-> **Blocks**: Linux rootfs compatibility, package manager, /boot partition
+> **Blocks**: package manager import/export and legacy ext2 data exchange
 
 ---
 
 ## Overview
 
-Ext2 is the de-facto standard for small/embedded Linux filesystems. Supporting ext2 allows Seal OS to read Linux partitions, boot from ext2 /boot, and share data with other OSes. This design covers read-write ext2 v1.0 with standard inode/block sizes.
+Ext2 is a simple legacy on-disk format worth reading for data exchange. Supporting ext2 lets Seal OS import files from existing ext2 images without adopting another OS ABI or boot model. This design covers read-write ext2 v1.0 with standard inode/block sizes.
 
 ---
 

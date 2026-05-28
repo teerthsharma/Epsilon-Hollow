@@ -3,6 +3,7 @@
 
 //! Built-in applications: terminal, IDE, file manager, theorem viewer, games.
 
+pub mod aether_app_host;
 pub mod breakout;
 pub mod calculator;
 pub mod clipboard;
@@ -10,6 +11,7 @@ pub mod file_manager;
 pub mod game_engine;
 pub mod help;
 pub mod installer;
+pub mod laamba_governor;
 pub mod media_player;
 pub mod seal_ide;
 pub mod settings;

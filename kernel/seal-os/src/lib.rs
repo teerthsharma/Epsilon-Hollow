@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code, unused_unsafe, improper_ctypes_definitions, unused_imports, unused_features)]
+#![allow(
+    dead_code,
+    unused_unsafe,
+    improper_ctypes_definitions,
+    unused_imports,
+    unused_features
+)]
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(abi_x86_interrupt))]
 
@@ -19,11 +25,11 @@ pub mod drivers;
 pub mod fs;
 #[cfg(not(test))]
 pub mod graphics;
-pub mod net;
 #[cfg(not(test))]
 pub mod lang;
 pub mod memory;
 pub mod ml_engine;
+pub mod net;
 #[cfg(not(test))]
 pub mod pkg;
 pub mod process;
@@ -35,7 +41,6 @@ pub mod wm;
 
 #[cfg(any(test, feature = "test-mode"))]
 pub mod testing;
-
 
 #[cfg(not(test))]
 use boot::boot_info::BootInfo;
@@ -66,12 +71,24 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 pub static GOVERNOR_EPSILON: AtomicU64 = AtomicU64::new(0);
 
 /// Live theorem activation states (T1–T5).
-pub static THEOREM_STATES: [AtomicBool; 5] = [
+pub const THEOREM_COUNT: usize = 10;
+
+pub static THEOREM_STATES: [AtomicBool; THEOREM_COUNT] = [
     AtomicBool::new(true),
     AtomicBool::new(true),
     AtomicBool::new(true),
     AtomicBool::new(true),
     AtomicBool::new(true),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+];
+
+pub const THEOREM_NAMES: [&str; THEOREM_COUNT] = [
+    "T1/TSS", "T2/SCM", "T3/GMC", "T4/AGCR", "T5/HCS", "T6/RGCS", "T7/PHKP", "T8/TEB", "T9/CMA",
+    "T10/WPHB",
 ];
 
 #[cfg(not(test))]
@@ -85,13 +102,19 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     // Copy boot_info into static storage before the physical allocator can
     // re-use the UEFI stack pages that hold the original.
     let info = unsafe {
-        BOOT_INFO.write(*info);
-        &*BOOT_INFO.as_ptr()
+        let ptr = core::ptr::addr_of_mut!(BOOT_INFO).cast::<BootInfo>();
+        core::ptr::write(ptr, *info);
+        &*ptr
     };
 
     // Layer 1: Memory
-    unsafe { memory::init(info); }
-    serial_println!("[BOOT] memory::init() done, free frames = {}", memory::phys::free_count());
+    unsafe {
+        memory::init(info);
+    }
+    serial_println!(
+        "[BOOT] memory::init() done, free frames = {}",
+        memory::phys::free_count()
+    );
     let kernel_start = x86_64::PhysAddr::new(info.kernel_base);
     let kernel_end = x86_64::PhysAddr::new(info.kernel_base + info.kernel_size);
     let fb_start = x86_64::PhysAddr::new(info.fb_addr);
@@ -106,20 +129,32 @@ pub fn kernel_main(info: &BootInfo) -> ! {
             fb_end,
         );
     }
-    serial_println!("[BOOT] init_high() done, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] init_high() done, free frames = {}",
+        memory::phys::free_count()
+    );
     memory::topo_ram::init();
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();
-    serial_println!("[BOOT] Heap initialized ({} MB detected, {} free frames)", ram_mb, free_frames);
+    serial_println!(
+        "[BOOT] Heap initialized ({} MB detected, {} free frames)",
+        ram_mb,
+        free_frames
+    );
     let test_frame = memory::phys::alloc_frame();
     serial_println!("[DEBUG] alloc_frame test: {:?}", test_frame);
     if let Some(frame) = test_frame {
-        unsafe { memory::phys::free_frame(frame); }
+        unsafe {
+            memory::phys::free_frame(frame);
+        }
     }
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
-    serial_println!("[BOOT] SMP initialised, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] SMP initialised, free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Switch to the BSP idle kernel stack before enabling SMAP.
     // The UEFI firmware stack lives in user-addressable low memory;
@@ -142,35 +177,63 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 /// Must not be inlined so the `jmp` target has a stable address.
 #[inline(never)]
 extern "C" fn kernel_main_continue() -> ! {
-    let info = unsafe { &*BOOT_INFO.as_ptr() };
+    let info = unsafe { &*core::ptr::addr_of!(BOOT_INFO).cast::<BootInfo>() };
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
-    serial_println!("[BOOT] ACPI init done, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] ACPI init done, free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Layer 1.5: Security hardening (SMAP/SMEP, MAC, audit)
     security::init_security();
-    serial_println!("[BOOT] Security subsystem initialised (SMAP/SMEP + MAC + audit), free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] Security subsystem initialised (SMAP/SMEP + MAC + audit), free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Layer 2: Interrupts
     drivers::interrupts::init();
-    serial_println!("[BOOT] IDT + PIC initialized, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] IDT + PIC initialized, free frames = {}",
+        memory::phys::free_count()
+    );
     drivers::rtc::init();
-    serial_println!("[BOOT] RTC initialized, free frames = {}", memory::phys::free_count());
-    unsafe { drivers::apic::init_local_apic_timer_for_bsp(); }
+    serial_println!(
+        "[BOOT] RTC initialized, free frames = {}",
+        memory::phys::free_count()
+    );
+    unsafe {
+        drivers::apic::init_local_apic_timer_for_bsp();
+    }
     drivers::watchdog::init(5000);
-    serial_println!("[BOOT] Watchdog initialized (5 s), free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] Watchdog initialized (5 s), free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Layer 2b: APIC (foundation for SMP)
-    unsafe { drivers::apic::init(); }
-    serial_println!("[BOOT] Local APIC + IO APIC initialised, free frames = {}", memory::phys::free_count());
+    unsafe {
+        drivers::apic::init();
+    }
+    serial_println!(
+        "[BOOT] Local APIC + IO APIC initialised, free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Layer 2.5: Syscall MSRs
     process::userspace::init_syscall_msrs();
-    serial_println!("[BOOT] SYSCALL/SYSRET MSRs programmed, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] SYSCALL/SYSRET MSRs programmed, free frames = {}",
+        memory::phys::free_count()
+    );
 
     // Entropy driver (before networking / TLS)
     drivers::entropy::init();
-    serial_println!("[BOOT] Entropy driver initialised, free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] Entropy driver initialised, free frames = {}",
+        memory::phys::free_count()
+    );
 
     // When test-mode is enabled, skip desktop boot and run tests
     #[cfg(feature = "test-mode")]
@@ -185,7 +248,11 @@ extern "C" fn kernel_main_continue() -> ! {
         if info.fb_addr != 0 {
             crate::FRAMEBUFFER.call_once(|| unsafe {
                 crate::graphics::framebuffer::Framebuffer::new(
-                    info.fb_addr, info.fb_width, info.fb_height, info.fb_pitch, info.fb_bpp,
+                    info.fb_addr,
+                    info.fb_width,
+                    info.fb_height,
+                    info.fb_pitch,
+                    info.fb_bpp,
                 )
             });
         }
@@ -218,17 +285,32 @@ pub fn kernel_main(_info: &boot::boot_info::BootInfo) -> ! {
 fn boot_graphical(fb: &'static Framebuffer) {
     serial_println!(
         "[BOOT] Framebuffer: {}x{}x{}bpp",
-        fb.width, fb.height, fb.bpp
+        fb.width,
+        fb.height,
+        fb.bpp
     );
 
+    // The theorem core is the boot contract. Verify it before UI waits,
+    // driver probes, or graphics work can hide failures in VM smoke.
+    init_theorems();
+
     // Initialize drivers and VFS before login so /etc/passwd is available.
-    serial_println!("[BOOT] Before init_drivers(), free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] Before init_drivers(), free frames = {}",
+        memory::phys::free_count()
+    );
     init_drivers();
-    serial_println!("[BOOT] After init_drivers(), free frames = {}", memory::phys::free_count());
+    serial_println!(
+        "[BOOT] After init_drivers(), free frames = {}",
+        memory::phys::free_count()
+    );
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     } else {
-        serial_println!("[ManifoldFS] Initialized, free frames = {}", memory::phys::free_count());
+        serial_println!(
+            "[ManifoldFS] Initialized, free frames = {}",
+            memory::phys::free_count()
+        );
     }
     memory::swap::init();
     security::passwd::init_passwd();
@@ -260,8 +342,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
                 }
             }
         }
-        // Auto-login after 3 seconds of inactivity (for CI/headless environments)
-        if drivers::interrupts::ticks().wrapping_sub(login_start) > 3000 {
+        // Auto-login quickly for CI/headless VM environments.
+        if drivers::interrupts::ticks().wrapping_sub(login_start) > 500 {
             serial_println!("[LOGIN] Auto-login (no input detected)");
             break;
         }
@@ -270,7 +352,11 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     if let Some(user) = login.authenticated_user() {
         crate::security::passwd::set_current_user(user.clone());
-        serial_println!("[LOGIN] Authenticated as {} (uid={})", user.username, user.uid);
+        serial_println!(
+            "[LOGIN] Authenticated as {} (uid={})",
+            user.username,
+            user.uid
+        );
     } else {
         serial_println!("[LOGIN] Authenticated");
     }
@@ -312,8 +398,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
                 welcome.render(fb);
                 fb.blit();
             }
-            // Auto-dismiss welcome after 3 seconds of inactivity (for CI/headless environments)
-            if drivers::interrupts::ticks().wrapping_sub(welcome_start) > 3000 {
+            // Auto-dismiss quickly for CI/headless VM environments.
+            if drivers::interrupts::ticks().wrapping_sub(welcome_start) > 500 {
                 serial_println!("[WELCOME] Auto-dismissed (no input detected)");
                 wm::welcome::mark_first_boot_done();
                 break;
@@ -323,24 +409,34 @@ fn boot_graphical(fb: &'static Framebuffer) {
         serial_println!("[WELCOME] Completed");
     }
 
+    serial_println!("[BOOT] Splash render start");
     let mut console = graphics::console::Console::new(fb);
     graphics::splash::render_splash(&mut console);
+    serial_println!("[BOOT] Splash render done");
     fb.blit();
+    serial_println!("[BOOT] Splash blit done");
     graphics::splash::draw_progress_bar(fb, 10, "Memory & paging");
+    serial_println!("[BOOT] Splash progress ready");
 
-    init_theorems();
     graphics::splash::draw_progress_bar(fb, 20, "Topology theorems");
+    serial_println!("[BOOT] Topology progress drawn");
 
     graphics::splash::draw_progress_bar(fb, 30, "");
+    serial_println!("[BOOT] Scheduler init start");
 
     init_scheduler();
+    serial_println!("[BOOT] Scheduler init done");
     graphics::splash::draw_progress_bar(fb, 35, "Task scheduler");
+    serial_println!("[BOOT] Scheduler progress drawn");
 
     // Enter the scheduler so that spawned kernel tasks actually execute.
     // When they yield, we resume here and continue desktop initialisation.
+    serial_println!("[BOOT] Scheduler first yield start");
     process::scheduler::yield_current();
+    serial_println!("[BOOT] Scheduler first yield returned");
 
     syscall::table::init_syscall_fs();
+    serial_println!("[BOOT] Syscall FS ready");
     graphics::splash::draw_progress_bar(fb, 40, "");
 
     init_manifold_pkg();
@@ -351,9 +447,9 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     graphics::splash::draw_progress_bar(fb, 65, "Window manager");
 
-    // Boot-time DHCP poll with 3-second timeout
+    // Boot-time DHCP poll with a short headless-safe timeout
     let dhcp_start = drivers::interrupts::ticks();
-    while !net::dhcp::has_lease() && drivers::interrupts::ticks().wrapping_sub(dhcp_start) < 3000 {
+    while !net::dhcp::has_lease() && drivers::interrupts::ticks().wrapping_sub(dhcp_start) < 500 {
         net::poll();
         x86_64::instructions::hlt();
     }
@@ -375,22 +471,29 @@ fn boot_graphical(fb: &'static Framebuffer) {
     init_games();
     graphics::splash::draw_progress_bar(fb, 85, "");
 
-    crate::apps::settings::GLOBAL_SETTINGS.lock().init_defaults();
+    crate::apps::settings::GLOBAL_SETTINGS
+        .lock()
+        .init_defaults();
 
     serial_println!("[BOOT] All layers initialized.");
     graphics::splash::draw_progress_bar(fb, 95, "");
 
-    // Stage 5: Userspace Init Handoff
-    let init = process::create("/bin/init");
-    init.execve("/bin/init", &["/bin/init"], &[]);
+    // Stage 5: Userspace Init Handoff. If `/bin/init` is absent on the
+    // current image, keep booting the native desktop instead of blocking.
+    if fs::vfs::with_vfs(|vfs| vfs.lookup_follow("/bin/init")).is_ok() {
+        let init = process::create("/bin/init");
+        init.execve("/bin/init", &["/bin/init"], &[]);
+    } else {
+        serial_println!("[execve] '/bin/init' not found; continuing with kernel desktop");
+    }
 
-    for _ in 0..30_000_000u64 {
+    for _ in 0..300_000u64 {
         core::hint::spin_loop();
     }
 
     graphics::splash::draw_progress_bar(fb, 100, "Ready");
 
-    for _ in 0..20_000_000u64 {
+    for _ in 0..200_000u64 {
         core::hint::spin_loop();
     }
 
@@ -399,10 +502,16 @@ fn boot_graphical(fb: &'static Framebuffer) {
     fb.blit();
 
     let mut compositor = wm::compositor::Compositor::new();
+    unsafe {
+        crate::lang::set_compositor_ptr(&mut compositor);
+    }
     let mut app_state = wm::app_state::AppState::new();
 
     app_state.create_windows(&mut compositor);
     serial_println!("[SealShell] Loaded");
+
+    // Bring up the Seal-native control surface first; LAAMBA stays a launchable app lane.
+    app_state.focus_app(1, &mut compositor);
     serial_println!("[Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8");
 
     app_state.terminal.key_press(b'h');
@@ -418,9 +527,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
     fb.blit();
 
     serial_println!(
-        "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer)",
+        "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer, Tensor Viewer, LAAMBA Governor)",
         compositor.window_count()
     );
+    drivers::watchdog::enable();
     serial_println!("[BOOT] Seal OS desktop ready.");
     serial_println!("[EVENT] Entering real event loop — keyboard and mouse active");
 
@@ -431,6 +541,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
 
     loop {
+        drivers::watchdog::pet();
         while let Some(event) = drivers::interrupts::poll_event() {
             // Global keyboard shortcuts (TopCrypt / Lypnos Guard / Tensor View)
             match event {
@@ -440,9 +551,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
                 wm::event::InputEvent::KeyRelease(0x1D) => {
                     CTRL_HELD.store(false, Ordering::Relaxed);
                 }
-                wm::event::InputEvent::KeyPress(scancode)
-                    if CTRL_HELD.load(Ordering::Relaxed) =>
-                {
+                wm::event::InputEvent::KeyPress(scancode) if CTRL_HELD.load(Ordering::Relaxed) => {
                     match scancode {
                         0x26 => {
                             // Ctrl+L — Lypnos Lock
@@ -521,7 +630,10 @@ fn lypnos_lock_selected(app_state: &mut wm::app_state::AppState) -> String {
         Some(n) => n,
         None => return String::from("[Lypnos Guard] No file selected."),
     };
-    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+    let data = match app_state
+        .fs
+        .resolve_path_from(&name, app_state.file_manager.cwd())
+    {
         Ok(id) => match app_state.fs.inode(id) {
             Some(inode) => inode.data.clone(),
             None => return format!("[Lypnos Guard] '{}' inode missing", name),
@@ -542,7 +654,10 @@ fn topcrypt_export_selected(app_state: &mut wm::app_state::AppState) -> String {
         Some(_) => return String::from("[TopCrypt] Selected file is not .topo"),
         None => return String::from("[TopCrypt] No file selected."),
     };
-    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+    let data = match app_state
+        .fs
+        .resolve_path_from(&name, app_state.file_manager.cwd())
+    {
         Ok(id) => match app_state.fs.inode(id) {
             Some(inode) => inode.data.clone(),
             None => return format!("[TopCrypt] '{}' inode missing", name),
@@ -553,7 +668,11 @@ fn topcrypt_export_selected(app_state: &mut wm::app_state::AppState) -> String {
     let flat = fs::topcrypt::decode_bytes(&topo);
     let out_name = alloc::format!("{}.flat", name);
     match app_state.fs.store(&out_name, &flat, 0) {
-        Ok(_) => alloc::format!("[TopCrypt] File flattened for export: {} ({} bytes)", out_name, flat.len()),
+        Ok(_) => alloc::format!(
+            "[TopCrypt] File flattened for export: {} ({} bytes)",
+            out_name,
+            flat.len()
+        ),
         Err(e) => alloc::format!("[TopCrypt] Export failed: {:?}", e),
     }
 }
@@ -564,7 +683,10 @@ fn topcrypt_import_selected(app_state: &mut wm::app_state::AppState) -> String {
         Some(n) => n,
         None => return String::from("[TopCrypt] No file selected."),
     };
-    let data = match app_state.fs.resolve_path_from(&name, app_state.file_manager.cwd()) {
+    let data = match app_state
+        .fs
+        .resolve_path_from(&name, app_state.file_manager.cwd())
+    {
         Ok(id) => match app_state.fs.inode(id) {
             Some(inode) => inode.data.clone(),
             None => return format!("[TopCrypt] '{}' inode missing", name),
@@ -575,10 +697,15 @@ fn topcrypt_import_selected(app_state: &mut wm::app_state::AppState) -> String {
     let blocks = topo.block_count as usize;
     let topo_name = alloc::format!("{}.topo", name);
     let serialized = fs::topcrypt::decode_bytes(&topo);
-    match app_state.fs.store(&topo_name, &serialized, app_state.file_manager.cwd()) {
+    match app_state
+        .fs
+        .store(&topo_name, &serialized, app_state.file_manager.cwd())
+    {
         Ok(id) => alloc::format!(
             "[TopCrypt] File absorbed into manifold: {} → {} blocks on S² (inode {})",
-            topo_name, blocks, id
+            topo_name,
+            blocks,
+            id
         ),
         Err(e) => alloc::format!("[TopCrypt] Import failed: {:?}", e),
     }
@@ -608,25 +735,93 @@ fn init_theorems() {
     use aether_core::governor::GeometricGovernor;
     use aether_core::tss::SphericalVoronoiIndex;
 
+    let theorem_ok = verify_topology_theorems();
+    let mut all_verified = true;
+    for (idx, ok) in theorem_ok.iter().enumerate() {
+        THEOREM_STATES[idx].store(*ok, Ordering::Relaxed);
+        all_verified &= *ok;
+    }
+
     let governor = GeometricGovernor::new();
     let epsilon = governor.epsilon();
     GOVERNOR_EPSILON.store(epsilon.to_bits(), Ordering::Relaxed);
+    serial_println!("[T4/AGCR] Governor online: epsilon = {:.4}", epsilon);
+
+    let centroids = tss_boot_centroids();
+    let voronoi = SphericalVoronoiIndex::<TSS_BOOT_CELL_COUNT>::new(centroids);
+    let cell = voronoi.locate((0.5, 0.5));
     serial_println!(
-        "[T4/AGCR] Governor online: epsilon = {:.4}",
-        epsilon
+        "[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell {}",
+        cell
     );
 
-    let centroids = [
-        (0.0, 0.0), (1.57, 0.0), (3.14, 0.0), (0.0, 1.57),
-        (1.57, 1.57), (3.14, 1.57), (0.0, 3.14), (1.57, 3.14),
-    ];
-    let voronoi = SphericalVoronoiIndex::<8>::new(centroids);
-    let cell = voronoi.locate((0.5, 0.5));
-    serial_println!("[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell {}", cell);
-    serial_println!("[BOOT] All T1-T5 theorems ACTIVE");
-    for state in &THEOREM_STATES {
-        state.store(true, Ordering::Relaxed);
+    for (name, ok) in THEOREM_NAMES.iter().zip(theorem_ok.iter()) {
+        serial_println!(
+            "[THEOREM] {} {}",
+            name,
+            if *ok { "VERIFIED" } else { "FAILED" }
+        );
     }
+
+    if !all_verified {
+        panic!("Seal OS theorem core failed boot verification");
+    }
+
+    serial_println!("[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths");
+}
+
+fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
+    use aether_verified::{
+        aether_agcr, aether_gmc, aether_hcs, aether_scm, aether_tss, aether_world,
+    };
+
+    let centroids = tss_boot_centroids();
+    let theta = aether_tss::theta_min_from_epsilon(0.5);
+    let t1 = aether_tss::verify_packing_bound(centroids.len(), theta)
+        && aether_tss::verify_separation(&centroids, theta);
+
+    let alpha = 0.1;
+    let s1 = 5.0;
+    let s2 = 3.0;
+    let pred = 4.0;
+    let t_s1 = aether_scm::apply_operator(s1, pred, alpha);
+    let t_s2 = aether_scm::apply_operator(s2, pred, alpha);
+    let t2 = aether_scm::lipschitz_constant(alpha) < 1.0
+        && aether_scm::verify_contraction(f64::abs(s1 - s2), f64::abs(t_s1 - t_s2), alpha);
+
+    let t3 =
+        aether_gmc::verify_entropy_nonincreasing(100, 50, 1000) && aether_gmc::max_merges(8) == 7;
+
+    let rho = aether_agcr::contraction_rate(0.01, 0.05, 1.0);
+    let t4 = rho > 0.0
+        && rho < 1.0
+        && aether_agcr::half_life(rho).is_finite()
+        && aether_agcr::gain_margin_stable(0.01, 0.05, 1.0);
+
+    let t5 =
+        aether_hcs::verify_hcs(1.0, 4, 128, 10) && aether_hcs::separation_ratio(1.0, 4, 10) > 60.0;
+
+    let t6_bound = aether_world::tangent_deviation_bound(0.01, 1.0, 128);
+    let t6 = t6_bound > 0.0
+        && t6_bound < 0.01
+        && aether_world::sync_frequency(0.01, 128, 0.001, 1.0, 1.0) > 0.0;
+
+    let base_latency = aether_world::betti_latency(800, 150, 50);
+    let sparse_latency = aether_world::sparse_latency(base_latency, 0.7);
+    let t7 = sparse_latency < base_latency && base_latency < 5000.0;
+
+    let landauer = aether_world::landauer_energy_per_bit(300.0);
+    let t8 = landauer > 2.8e-21 && landauer < 2.9e-21;
+
+    let align = aether_world::alignment_error_bound(0.5, 1.0);
+    let curve = aether_world::procrustes_curvature_error(1.0, 0.5, 128, 128);
+    let t9 = align > 0.86 && align < 0.87 && curve > 0.0 && curve < 0.001;
+
+    let h_info = aether_world::predictive_horizon(1000, 128, 1e-4, 10.0);
+    let h_stability = aether_world::paper_horizon_estimate();
+    let t10 = h_info > 1e5 && h_stability > 1e6;
+
+    [t1, t2, t3, t4, t5, t6, t7, t8, t9, t10]
 }
 
 #[cfg(not(test))]
@@ -678,10 +873,30 @@ fn init_aether_lang() {
     serial_println!("[Aether-Lang] Titan VM ready (no_std mode)");
 }
 
+const TSS_BOOT_CELL_COUNT: usize = 8;
+
+fn tss_boot_centroids() -> [(f64, f64); TSS_BOOT_CELL_COUNT] {
+    let north = 0.615_479_708_670_387_4; // asin(1 / sqrt(3))
+    let south = -north;
+    let step = core::f64::consts::FRAC_PI_4;
+    [
+        (north, step),
+        (north, step * 3.0),
+        (north, step * 5.0),
+        (north, step * 7.0),
+        (south, step),
+        (south, step * 3.0),
+        (south, step * 5.0),
+        (south, step * 7.0),
+    ]
+}
+
 #[cfg(not(test))]
 fn init_drivers() {
     drivers::cpu::intel::init();
-    unsafe { drivers::cpu::amd::init(); }
+    unsafe {
+        drivers::cpu::amd::init();
+    }
     drivers::pci::init();
     if drivers::block::ahci::init().is_none() {
         serial_println!("[AHCI] Initialization failed, continuing without AHCI");
@@ -726,7 +941,7 @@ fn init_async_runtime() {
 fn init_games() {
     serial_println!("[Games] Snake, Breakout, Warp Racer available");
     serial_println!("[Calculator] Scientific calculator ready");
-    serial_println!("[SealPlayer] Media player ready (WAV/PCM playback; additional formats planned)");
+    serial_println!(
+        "[SealPlayer] Media player ready (WAV/PCM playback; additional formats planned)"
+    );
 }
-
-

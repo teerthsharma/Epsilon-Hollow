@@ -4,8 +4,8 @@
 pub mod acpi;
 pub mod apic;
 pub mod audio;
-pub mod bluetooth;
 pub mod block;
+pub mod bluetooth;
 pub mod cpu;
 pub mod disk;
 pub mod entropy;

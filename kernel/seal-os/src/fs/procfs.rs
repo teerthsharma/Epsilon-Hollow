@@ -62,7 +62,10 @@ impl FileSystem for ProcFs {
             5 => {
                 let (allocated, total) = crate::memory::heap_stats();
                 let free = total - allocated;
-                format!("total: {}\nfree: {}\nallocated: {}\n", total, free, allocated)
+                format!(
+                    "total: {}\nfree: {}\nallocated: {}\n",
+                    total, free, allocated
+                )
             }
             6 => String::from("1/"),
             _ => return Err(VfsError::NotFound),

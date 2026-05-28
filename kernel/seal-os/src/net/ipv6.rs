@@ -53,16 +53,14 @@ impl Ipv6Header {
             next_header: bytes[6],
             hop_limit: bytes[7],
             src: [
-                bytes[8], bytes[9], bytes[10], bytes[11],
-                bytes[12], bytes[13], bytes[14], bytes[15],
-                bytes[16], bytes[17], bytes[18], bytes[19],
-                bytes[20], bytes[21], bytes[22], bytes[23],
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15], bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21],
+                bytes[22], bytes[23],
             ],
             dst: [
-                bytes[24], bytes[25], bytes[26], bytes[27],
-                bytes[28], bytes[29], bytes[30], bytes[31],
-                bytes[32], bytes[33], bytes[34], bytes[35],
-                bytes[36], bytes[37], bytes[38], bytes[39],
+                bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30],
+                bytes[31], bytes[32], bytes[33], bytes[34], bytes[35], bytes[36], bytes[37],
+                bytes[38], bytes[39],
             ],
         })
     }
@@ -166,14 +164,10 @@ pub fn send_icmpv6_echo_request(dst: [u8; 16], seq: u16) {
     pseudo.push(0);
     pseudo.push(0);
     pseudo.push(58);
-    let bytes = unsafe {
-        core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8)
-    };
+    let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
     pseudo.extend_from_slice(bytes);
     pkt.checksum = crate::net::ipv4::internet_checksum(&pseudo);
-    let bytes = unsafe {
-        core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8)
-    };
+    let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
     send_ipv6_packet(dst, 58, bytes);
 }
 
@@ -209,7 +203,7 @@ fn send_neighbor_advertisement(target: [u8; 16], dst: [u8; 16]) {
     buf.push(0);
     buf.push(0);
     buf.push(0); // checksum placeholder
-    // Flags: Solicited + Override
+                 // Flags: Solicited + Override
     buf.extend_from_slice(&0x6000_0000u32.to_be_bytes());
     buf.extend_from_slice(&target);
     // Source link-layer address option
@@ -327,9 +321,7 @@ fn send_neighbor_solicitation(target: [u8; 16]) -> Result<(), &'static str> {
     frame.extend_from_slice(&src_mac);
     frame.extend_from_slice(&0x86DD_u16.to_be_bytes());
     let hdr = Ipv6Header::new(58, src, dst, buf.len());
-    let hdr_bytes = unsafe {
-        core::slice::from_raw_parts(&hdr as *const _ as *const u8, 40)
-    };
+    let hdr_bytes = unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 40) };
     frame.extend_from_slice(hdr_bytes);
     frame.extend_from_slice(&buf);
     crate::net::transmit(&frame);

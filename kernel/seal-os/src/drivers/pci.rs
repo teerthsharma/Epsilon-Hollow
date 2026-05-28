@@ -146,7 +146,9 @@ pub fn get_devices() -> Vec<PciDevice> {
 }
 
 pub fn get_device_by_class(class: u8, subclass: u8, prog_if: u8) -> Option<PciDevice> {
-    PCI_DEVICES.lock().iter().find(|d| {
-        d.class == class && d.subclass == subclass && d.prog_if == prog_if
-    }).cloned()
+    PCI_DEVICES
+        .lock()
+        .iter()
+        .find(|d| d.class == class && d.subclass == subclass && d.prog_if == prog_if)
+        .cloned()
 }

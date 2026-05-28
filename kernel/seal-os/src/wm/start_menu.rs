@@ -3,8 +3,8 @@
 
 //! Start menu popup.
 
-use crate::graphics::framebuffer::Framebuffer;
 use crate::graphics::font;
+use crate::graphics::framebuffer::Framebuffer;
 use crate::wm::themes;
 
 pub struct StartMenu {
@@ -21,15 +21,50 @@ struct MenuItem {
 }
 
 const ITEMS: &[MenuItem] = &[
-    MenuItem { name: "Terminal", app_id: 1 },
-    MenuItem { name: "IDE", app_id: 2 },
-    MenuItem { name: "Files", app_id: 3 },
-    MenuItem { name: "Calc", app_id: 4 },
-    MenuItem { name: "Theorems", app_id: 5 },
-    MenuItem { name: "Snake", app_id: 6 },
-    MenuItem { name: "Breakout", app_id: 7 },
-    MenuItem { name: "Warp Racer", app_id: 8 },
-    MenuItem { name: "Tensor Viewer", app_id: 9 },
+    MenuItem {
+        name: "LAAMBA Governor",
+        app_id: 10,
+    },
+    MenuItem {
+        name: "Terminal",
+        app_id: 1,
+    },
+    MenuItem {
+        name: "IDE",
+        app_id: 2,
+    },
+    MenuItem {
+        name: "Files",
+        app_id: 3,
+    },
+    MenuItem {
+        name: "Calc",
+        app_id: 4,
+    },
+    MenuItem {
+        name: "Theorems",
+        app_id: 5,
+    },
+    MenuItem {
+        name: "Snake",
+        app_id: 6,
+    },
+    MenuItem {
+        name: "Breakout",
+        app_id: 7,
+    },
+    MenuItem {
+        name: "Warp Racer",
+        app_id: 8,
+    },
+    MenuItem {
+        name: "Tensor Viewer",
+        app_id: 9,
+    },
+    MenuItem {
+        name: "Aether App",
+        app_id: 11,
+    },
 ];
 
 const ITEM_H: u32 = 20;
@@ -62,14 +97,32 @@ impl StartMenu {
         let theme = themes::current_theme();
         fb.fill_rect(self.x, self.y, self.width, self.height, theme.bg);
         fb.fill_rect(self.x, self.y, self.width, 1, theme.border);
-        fb.fill_rect(self.x, self.y + self.height - 1, self.width, 1, theme.border);
+        fb.fill_rect(
+            self.x,
+            self.y + self.height - 1,
+            self.width,
+            1,
+            theme.border,
+        );
         fb.fill_rect(self.x, self.y, 1, self.height, theme.border);
-        fb.fill_rect(self.x + self.width - 1, self.y, 1, self.height, theme.border);
+        fb.fill_rect(
+            self.x + self.width - 1,
+            self.y,
+            1,
+            self.height,
+            theme.border,
+        );
 
         for (i, item) in ITEMS.iter().enumerate() {
             let iy = self.y + 4 + i as u32 * ITEM_H;
             for (j, ch) in item.name.bytes().enumerate() {
-                font::draw_char(fb, self.x + 8 + j as u32 * font::CHAR_WIDTH, iy, ch, theme.fg);
+                font::draw_char(
+                    fb,
+                    self.x + 8 + j as u32 * font::CHAR_WIDTH,
+                    iy,
+                    ch,
+                    theme.fg,
+                );
             }
         }
     }

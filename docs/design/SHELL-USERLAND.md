@@ -1,16 +1,17 @@
-# Shell, Userspace, and libc — Design Document
+# SealShell, Userspace, and Aether Runtime - Design Document
 
 > **Phase 3 Task**: USER-001
 > **Priority**: HIGH (required for interactive use, running binaries, package manager)
 > **Estimated Effort**: 5 weeks
 > **Blocked by**: Syscall dispatcher, VFS, devtmpfs, initrd
 > **Blocks**: Package manager, development workflow, SSH server
+> **Status**: SUPERSEDED where it describes POSIX, Unix utilities, or libc. Seal OS uses Seal ABI, SealShell, and Aether-Lang.
 
 ---
 
 ## Overview
 
-The kernel is useless without userspace. This design covers the init process, a POSIX shell, core utilities, and a minimal libc that allows compiling standard C programs against Seal OS.
+The kernel is useless without userspace. This design now targets Seal-native init, SealShell, Aether-Lang bindings, and ManifoldFS tooling. It is not a POSIX shell or libc compatibility plan.
 
 ---
 
@@ -52,11 +53,11 @@ fn init_main() {
 - [x] Implement `reboot()` and `poweroff()` commands
 - [x] Implement emergency shell fallback if init fails
 
-### 2. POSIX Shell (`/bin/sh`)
+### 2. SealShell
 
-Minimal POSIX-compliant shell. Supports:
+Minimal Seal-native shell. Supports:
 
-- [x] Command execution (`ls -la`)
+- [x] Command execution (`look /`)
 - [x] Argument passing (`echo hello world`)
 - [x] Environment variables (`FOO=bar echo $FOO`)
 - [x] Variable expansion (`$HOME`, `${VAR}`)
@@ -71,14 +72,14 @@ Minimal POSIX-compliant shell. Supports:
 - [x] Loops (`for`, `while`, `until`)
 - [x] Functions (`foo() { ... }`)
 - [x] Signal handling (`trap`)
-- [x] Builtins: `cd`, `pwd`, `echo`, `exit`, `export`, `unset`, `alias`, `source`, `umask`
+- [x] Builtins: `look`, `open`, `peek`, `move`, `search`, `tasks`, `seal`
 - [x] Execute external binaries via `execve()`
 - [x] Search `PATH` for commands
-- [x] Parse shebang (`#!/bin/sh`) for scripts
+- [x] Parse Aether script metadata for app launch
 
 ### 3. Core Utilities
 
-Essential Unix utilities, implemented in Rust or C:
+Essential Seal utilities, implemented in Rust or Aether-Lang:
 
 | Utility | Priority | Description |
 |---|---|---|
@@ -139,7 +140,9 @@ Essential Unix utilities, implemented in Rust or C:
 - [x] Implement `kill` via `kill()` syscall
 - [x] Implement `mount` / `umount` via syscalls
 
-### 4. libc — Minimal C Library
+### 4. Legacy C Library Notes (Not Target)
+
+This block is retained only as historical reference for host interop experiments. It is not a Seal OS target. Native apps use Aether-Lang and Seal ABI bindings.
 
 ```c
 // stdio.h

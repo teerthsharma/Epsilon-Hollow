@@ -17,12 +17,12 @@ use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
 use aether_core::tss::SphericalVoronoiIndex;
 
-use super::context_switch::{switch_context, TaskContext, KERNEL_STACK_SIZE, xsave_area_size};
-use super::task::{Task, TaskState, align_up};
+use super::context_switch::{switch_context, xsave_area_size, TaskContext, KERNEL_STACK_SIZE};
+use super::task::{align_up, Task, TaskState};
 use crate::serial_println;
 
-use x86_64::PhysAddr;
 use x86_64::registers::control::{Cr3, Cr3Flags};
+use x86_64::PhysAddr;
 
 const VORONOI_CELLS: usize = 8;
 
@@ -139,9 +139,11 @@ impl TaskSlab {
     }
 
     fn find_by_id(&self, id: u64) -> Option<usize> {
-        self.slots.iter().enumerate().find(|(_, s)| {
-            s.task.as_ref().map(|t| t.id == id).unwrap_or(false)
-        }).map(|(idx, _)| idx)
+        self.slots
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.task.as_ref().map(|t| t.id == id).unwrap_or(false))
+            .map(|(idx, _)| idx)
     }
 }
 
@@ -248,8 +250,14 @@ impl ManifoldScheduler {
             current: None,
             voronoi: SphericalVoronoiIndex::<8>::new(centroids),
             cell_queues: [
-                CellQueue::new(), CellQueue::new(), CellQueue::new(), CellQueue::new(),
-                CellQueue::new(), CellQueue::new(), CellQueue::new(), CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
+                CellQueue::new(),
             ],
             cell_bitmap: 0,
             governor: GeometricGovernor::new(),
@@ -298,7 +306,10 @@ impl ManifoldScheduler {
         let cell = match self.slab.get(idx) {
             Some(t) => t.voronoi_cell,
             None => {
-                serial_println!("[scheduler] spawn: slab index {} vanished after update", idx);
+                serial_println!(
+                    "[scheduler] spawn: slab index {} vanished after update",
+                    idx
+                );
                 return 0;
             }
         };
@@ -321,11 +332,6 @@ impl ManifoldScheduler {
         let aslr_base = crate::security::aslr::randomize_mmap_base();
         let loaded = super::elf::load(elf_data, aslr_base, file_mode, file_uid, file_gid)?;
 
-        let user_stack_size = 65536usize;
-        let user_stack = vec![0u8; user_stack_size];
-        let user_stack_top = user_stack.as_ptr() as u64 + user_stack_size as u64;
-        let user_stack_top = user_stack_top & !0xF;
-
         let id = self.next_id;
         self.next_id += 1;
 
@@ -334,10 +340,9 @@ impl ManifoldScheduler {
             name,
             priority,
             loaded.entry_point,
-            user_stack_top,
+            loaded.stack_pointer,
             loaded.page_table,
         );
-        task.user_stack = user_stack;
         task.uid = real_uid;
         task.gid = real_gid;
         task.euid = real_uid;
@@ -358,14 +363,20 @@ impl ManifoldScheduler {
                 task_ref.voronoi_cell =
                     Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
             } else {
-                serial_println!("[scheduler] spawn_user: slab index {} invalid after alloc", idx);
+                serial_println!(
+                    "[scheduler] spawn_user: slab index {} invalid after alloc",
+                    idx
+                );
                 return Ok(0);
             }
         }
         let cell = match self.slab.get(idx) {
             Some(t) => t.voronoi_cell,
             None => {
-                serial_println!("[scheduler] spawn_user: slab index {} vanished after update", idx);
+                serial_println!(
+                    "[scheduler] spawn_user: slab index {} vanished after update",
+                    idx
+                );
                 return Ok(0);
             }
         };
@@ -437,15 +448,16 @@ impl ManifoldScheduler {
                     let priority = task.priority;
                     let idx = self.slab.alloc(task);
                     if let Some(task_ref) = self.slab.get_mut(idx) {
-                        task_ref.voronoi_cell = Self::compute_voronoi_cell(
-                            &task_ref.manifold_embedding,
-                            &self.voronoi,
-                        );
+                        task_ref.voronoi_cell =
+                            Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
                         let cell = task_ref.voronoi_cell;
                         self.cell_queues[cell].push(idx, priority);
                         self.cell_bitmap |= 1 << cell;
                     } else {
-                        serial_println!("[scheduler] schedule: stolen task slab index {} invalid", idx);
+                        serial_println!(
+                            "[scheduler] schedule: stolen task slab index {} invalid",
+                            idx
+                        );
                     }
                     next = self.select_next_task();
                     break;
@@ -464,7 +476,12 @@ impl ManifoldScheduler {
             }
 
             let old_task_dead = old_idx
-                .map(|i| self.slab.get(i).map(|t| t.state == TaskState::Dead).unwrap_or(false))
+                .map(|i| {
+                    self.slab
+                        .get(i)
+                        .map(|t| t.state == TaskState::Dead)
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false);
 
             let old_ctx = match old_idx {
@@ -472,7 +489,10 @@ impl ManifoldScheduler {
                     if let Some(t) = self.slab.get_mut(idx) {
                         &mut t.context as *mut TaskContext
                     } else {
-                        serial_println!("[scheduler] schedule: old task {} missing for context switch", idx);
+                        serial_println!(
+                            "[scheduler] schedule: old task {} missing for context switch",
+                            idx
+                        );
                         &mut cpu.idle_context as *mut TaskContext
                     }
                 }
@@ -482,7 +502,10 @@ impl ManifoldScheduler {
             let next_task = match self.slab.get_mut(next_idx) {
                 Some(t) => t,
                 None => {
-                    serial_println!("[scheduler] schedule: next task {} missing, going idle", next_idx);
+                    serial_println!(
+                        "[scheduler] schedule: next task {} missing, going idle",
+                        next_idx
+                    );
                     cpu.is_idle = true;
                     drop(guard);
                     cpu.switching = false;
@@ -500,7 +523,11 @@ impl ManifoldScheduler {
                 .apply(&self.predict_state, &next_task.manifold_embedding);
 
             // T4: Governor adapts based on scheduling deviation
-            let deviation = if self.schedule_count % 2 == 0 { 0.5 } else { 1.5 };
+            let deviation = if self.schedule_count % 2 == 0 {
+                0.5
+            } else {
+                1.5
+            };
             self.governor.adapt(deviation, 0.01);
 
             let next_ctx = &next_task.context as *const TaskContext;
@@ -539,7 +566,7 @@ impl ManifoldScheduler {
                 // Switch address space if necessary.  Safe because the
                 // kernel higher-half is identity-mapped in every PML4.
                 let frame = x86_64::structures::paging::PhysFrame::containing_address(
-                    PhysAddr::new(target_cr3)
+                    PhysAddr::new(target_cr3),
                 );
                 Cr3::write(frame, Cr3Flags::empty());
                 switch_context(old_ctx, next_ctx);
@@ -598,7 +625,10 @@ impl ManifoldScheduler {
                 }
                 return Some(idx);
             } else {
-                serial_println!("[scheduler] select_next_task: cell {} bitmap set but queue empty", cell);
+                serial_println!(
+                    "[scheduler] select_next_task: cell {} bitmap set but queue empty",
+                    cell
+                );
                 self.cell_bitmap &= !(1 << cell);
             }
         }
@@ -617,15 +647,18 @@ impl ManifoldScheduler {
     }
 
     pub fn list_tasks(&self) -> Vec<(u64, &str, &str, u8, usize)> {
-        self.slab.iter().map(|t| {
-            let state = match t.state {
-                TaskState::Ready => "ready",
-                TaskState::Running => "running",
-                TaskState::Blocked => "blocked",
-                TaskState::Dead => "dead",
-            };
-            (t.id, t.name.as_str(), state, t.priority, t.voronoi_cell)
-        }).collect()
+        self.slab
+            .iter()
+            .map(|t| {
+                let state = match t.state {
+                    TaskState::Ready => "ready",
+                    TaskState::Running => "running",
+                    TaskState::Blocked => "blocked",
+                    TaskState::Dead => "dead",
+                };
+                (t.id, t.name.as_str(), state, t.priority, t.voronoi_cell)
+            })
+            .collect()
     }
 
     pub fn current_task_name(&self) -> &str {
@@ -811,7 +844,9 @@ impl ManifoldScheduler {
                 // T5: COW fork — clone page table, mark writable user pages read-only.
                 page_table: if parent.is_userspace && parent.page_table != 0 {
                     unsafe {
-                        crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(parent.page_table))
+                        crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
+                            parent.page_table,
+                        ))
                     }
                     .map(|f| f.as_u64())
                     .unwrap_or(parent.page_table)
@@ -846,10 +881,13 @@ impl ManifoldScheduler {
 
         // T5: Update hyperbolic process tree.
         let parent_id = self.slab.get(idx)?.id;
-        self.process_tree.insert(new_id, ProcessNode {
-            parent: Some(parent_id),
-            children: Vec::new(),
-        });
+        self.process_tree.insert(
+            new_id,
+            ProcessNode {
+                parent: Some(parent_id),
+                children: Vec::new(),
+            },
+        );
         if let Some(node) = self.process_tree.get_mut(&parent_id) {
             node.children.push(new_id);
         }
@@ -860,14 +898,20 @@ impl ManifoldScheduler {
                 task_ref.voronoi_cell =
                     Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
             } else {
-                serial_println!("[scheduler] fork_current: slab index {} invalid after alloc", child_idx);
+                serial_println!(
+                    "[scheduler] fork_current: slab index {} invalid after alloc",
+                    child_idx
+                );
                 return None;
             }
         }
         let cell = match self.slab.get(child_idx) {
             Some(t) => t.voronoi_cell,
             None => {
-                serial_println!("[scheduler] fork_current: slab index {} vanished after update", child_idx);
+                serial_println!(
+                    "[scheduler] fork_current: slab index {} vanished after update",
+                    child_idx
+                );
                 return None;
             }
         };
@@ -912,7 +956,9 @@ impl ManifoldScheduler {
                 parent.page_table
             } else {
                 unsafe {
-                    crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(parent.page_table))
+                    crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
+                        parent.page_table,
+                    ))
                 }
                 .map(|f| f.as_u64())
                 .unwrap_or(parent.page_table)
@@ -965,10 +1011,13 @@ impl ManifoldScheduler {
         };
 
         if !share_vm {
-            self.process_tree.insert(new_id, ProcessNode {
-                parent: Some(parent_id),
-                children: Vec::new(),
-            });
+            self.process_tree.insert(
+                new_id,
+                ProcessNode {
+                    parent: Some(parent_id),
+                    children: Vec::new(),
+                },
+            );
             if let Some(node) = self.process_tree.get_mut(&parent_id) {
                 node.children.push(new_id);
             }
@@ -993,14 +1042,20 @@ impl ManifoldScheduler {
                     task_ref.affinity_hint = task_ref.voronoi_cell;
                 }
             } else {
-                serial_println!("[scheduler] clone_current: slab index {} invalid after alloc", child_idx);
+                serial_println!(
+                    "[scheduler] clone_current: slab index {} invalid after alloc",
+                    child_idx
+                );
                 return None;
             }
         }
         let cell = match self.slab.get(child_idx) {
             Some(t) => t.voronoi_cell,
             None => {
-                serial_println!("[scheduler] clone_current: slab index {} vanished after update", child_idx);
+                serial_println!(
+                    "[scheduler] clone_current: slab index {} vanished after update",
+                    child_idx
+                );
                 return None;
             }
         };
@@ -1092,7 +1147,9 @@ impl ManifoldScheduler {
                 match resource {
                     0 => {}
                     1 => {}
-                    2 => { task.brk_end = limit; }
+                    2 => {
+                        task.brk_end = limit;
+                    }
                     3 => {}
                     4 => {}
                     5 => {}
@@ -1105,9 +1162,17 @@ impl ManifoldScheduler {
 
     pub fn getrlimit_current(&self, resource: u32) -> u64 {
         match resource {
-            0 => self.current.and_then(|i| self.slab.get(i)).map(|t| t.ticks_used).unwrap_or(0),
+            0 => self
+                .current
+                .and_then(|i| self.slab.get(i))
+                .map(|t| t.ticks_used)
+                .unwrap_or(0),
             2 => self.current_brk_end(),
-            5 => self.current_job_id().and_then(|jid| self.jobs.get(&jid)).map(|j| j.mem_limit_pages).unwrap_or(0),
+            5 => self
+                .current_job_id()
+                .and_then(|jid| self.jobs.get(&jid))
+                .map(|j| j.mem_limit_pages)
+                .unwrap_or(0),
             _ => 0,
         }
     }
@@ -1130,7 +1195,6 @@ impl ManifoldScheduler {
             }
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,9 +1203,9 @@ impl ManifoldScheduler {
 
 /// Initialize the BSP scheduler.
 pub fn init() {
-    unsafe {
-        crate::cpu::this_cpu().scheduler = ManifoldScheduler::new();
-    }
+    // The BSP scheduler is constructed in `cpu::init_bsp()` before GS base is
+    // installed. Rebuilding it here would allocate a large scheduler object on
+    // the live kernel stack and drop the existing per-CPU scheduler.
 }
 
 /// Spawn a kernel task on the current CPU.
@@ -1167,7 +1231,9 @@ pub fn spawn_user(
     unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.spawn_user(name, priority, elf_data, file_mode, file_uid, file_gid, real_uid, real_gid)
+        cpu.scheduler.spawn_user(
+            name, priority, elf_data, file_mode, file_uid, file_gid, real_uid, real_gid,
+        )
     }
 }
 
@@ -1188,7 +1254,11 @@ pub fn yield_current() {
 /// Called by the timer interrupt handler.
 pub fn scheduler_tick() {
     unsafe {
-        crate::cpu::this_cpu().scheduler.tick();
+        let cpu = crate::cpu::this_cpu();
+        if cpu.current_task.is_null() {
+            return;
+        }
+        cpu.scheduler.tick();
     }
 }
 
@@ -1238,7 +1308,11 @@ pub fn current_task_name() -> &'static str {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
         let name = cpu.scheduler.current_task_name();
-        if name == "idle" { "idle" } else { "task" }
+        if name == "idle" {
+            "idle"
+        } else {
+            "task"
+        }
     }
 }
 
@@ -1518,8 +1592,8 @@ pub fn cpu_task_count(cpu_num: u32) -> usize {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_spawn_increments_count() -> TestResult {
         let mut sched = ManifoldScheduler::new();
@@ -1555,7 +1629,10 @@ pub mod tests {
         let eps_before = sched.governor_epsilon();
         sched.spawn("task", 5, || {});
         let eps_after = sched.governor_epsilon();
-        test_assert!(eps_after != eps_before || eps_after == eps_before, "governor epsilon checked");
+        test_assert!(
+            eps_after != eps_before || eps_after == eps_before,
+            "governor epsilon checked"
+        );
         TestResult::Pass
     }
 
@@ -1567,11 +1644,23 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test("kernel_foundation::spawn_increments_count", test_spawn_increments_count);
-        crate::testing::register_test("kernel_foundation::schedule_selects_ready_task", test_schedule_selects_ready_task);
-        crate::testing::register_test("kernel_foundation::tick_advances_timeslice", test_tick_advances_timeslice);
+        crate::testing::register_test(
+            "kernel_foundation::spawn_increments_count",
+            test_spawn_increments_count,
+        );
+        crate::testing::register_test(
+            "kernel_foundation::schedule_selects_ready_task",
+            test_schedule_selects_ready_task,
+        );
+        crate::testing::register_test(
+            "kernel_foundation::tick_advances_timeslice",
+            test_tick_advances_timeslice,
+        );
         crate::testing::register_test("kernel_foundation::governor_adapts", test_governor_adapts);
-        crate::testing::register_test("kernel_foundation::adaptive_timeslice_changes", test_adaptive_timeslice_changes);
+        crate::testing::register_test(
+            "kernel_foundation::adaptive_timeslice_changes",
+            test_adaptive_timeslice_changes,
+        );
     }
 }
 

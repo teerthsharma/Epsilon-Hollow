@@ -1,0 +1,17 @@
+[engine]
+name = "Hollow-ASM"
+category = "Systems"
+icon = "cpu"
+color = "#00B0FF"
+description = "Bare-metal topological scheduling microkernel"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py hollow-asm"
+working_dir = "~/repos/hollow-asm"
+
+[engine.inputs]
+target = { type = "string", default = "x86_64" }
+
+[engine.outputs]
+boot = { type = "file" }

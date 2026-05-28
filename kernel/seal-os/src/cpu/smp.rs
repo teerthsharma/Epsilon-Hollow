@@ -8,11 +8,10 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::InterruptStackFrame;
 
-use super::{PerCpu, alloc_ap_cpu, CPU_COUNT};
+use super::{alloc_ap_cpu, PerCpu, CPU_COUNT};
 use crate::boot::ap_trampoline::{
-    TRAMPOLINE_PAGE, OFF_AP_MAIN_ADDR, OFF_AP_PER_CPU_PTR, OFF_BSP_PML4,
-    OFF_GDTR, OFF_GDT_START, OFF_LONG64_PTR, OFF_PROT32_PTR, OFF_32BIT_CODE,
-    OFF_64BIT_CODE, ap_trampoline,
+    ap_trampoline, OFF_32BIT_CODE, OFF_64BIT_CODE, OFF_AP_MAIN_ADDR, OFF_AP_PER_CPU_PTR,
+    OFF_BSP_PML4, OFF_GDTR, OFF_GDT_START, OFF_LONG64_PTR, OFF_PROT32_PTR, TRAMPOLINE_PAGE,
 };
 use crate::serial_println;
 
@@ -31,7 +30,9 @@ pub static TLB_SHOOTDOWN_ACK: spin::Mutex<bool> = spin::Mutex::new(false);
 // ---------------------------------------------------------------------------
 
 pub fn smp_init() {
-    unsafe { super::init_bsp(); }
+    unsafe {
+        super::init_bsp();
+    }
     serial_println!("[SMP] BSP per-CPU data initialized");
 
     // Query ACPI for CPU topology.
@@ -105,7 +106,11 @@ pub fn smp_init() {
         if ready {
             serial_println!("[SMP] AP {} (APIC {}) online", cpu_num, apic_id);
         } else {
-            serial_println!("[SMP] AP {} (APIC {}) FAILED to come online", cpu_num, apic_id);
+            serial_println!(
+                "[SMP] AP {} (APIC {}) FAILED to come online",
+                cpu_num,
+                apic_id
+            );
         }
     }
 
@@ -239,11 +244,15 @@ fn prepare_trampoline_page() {
 
         // Far-jump pointers
         let prot32_ptr = (TRAMPOLINE_PAGE + OFF_PROT32_PTR) as *mut u8;
-        prot32_ptr.cast::<u16>().write_unaligned(OFF_32BIT_CODE as u16);
+        prot32_ptr
+            .cast::<u16>()
+            .write_unaligned(OFF_32BIT_CODE as u16);
         prot32_ptr.add(2).cast::<u16>().write_unaligned(0x0008);
 
         let long64_ptr = (TRAMPOLINE_PAGE + OFF_LONG64_PTR) as *mut u8;
-        long64_ptr.cast::<u32>().write_unaligned(OFF_64BIT_CODE as u32);
+        long64_ptr
+            .cast::<u32>()
+            .write_unaligned(OFF_64BIT_CODE as u32);
         long64_ptr.add(4).cast::<u16>().write_unaligned(0x0018);
 
         // BSP PML4
@@ -251,10 +260,12 @@ fn prepare_trampoline_page() {
         ((TRAMPOLINE_PAGE + OFF_BSP_PML4) as *mut u64).write_unaligned(pml4);
 
         // AP per-cpu pointer (filled per-AP at runtime)
-        ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64).write_unaligned(AP_PER_CPU_PTR.load(Ordering::SeqCst));
+        ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64)
+            .write_unaligned(AP_PER_CPU_PTR.load(Ordering::SeqCst));
 
         // ap_main address
-        ((TRAMPOLINE_PAGE + OFF_AP_MAIN_ADDR) as *mut u64).write_unaligned(ap_main as *const () as u64);
+        ((TRAMPOLINE_PAGE + OFF_AP_MAIN_ADDR) as *mut u64)
+            .write_unaligned(ap_main as *const () as u64);
     }
 }
 

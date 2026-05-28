@@ -103,11 +103,7 @@ impl Console {
             unsafe {
                 let buf = self.fb.back_buffer_ptr();
                 if !buf.is_null() {
-                    core::ptr::copy(
-                        buf.add(scroll_pixels),
-                        buf,
-                        total_pixels - scroll_pixels,
-                    );
+                    core::ptr::copy(buf.add(scroll_pixels), buf, total_pixels - scroll_pixels);
                     let start = total_pixels - scroll_pixels;
                     for i in start..total_pixels {
                         core::ptr::write_volatile(buf.add(i), theme.console_bg);
@@ -172,7 +168,11 @@ impl Console {
         for row in 0..CHAR_HEIGHT {
             let bits = glyph[row as usize];
             for col in 0..CHAR_WIDTH {
-                let color = if bits & (0x80 >> col) != 0 { fg } else { theme.console_bg };
+                let color = if bits & (0x80 >> col) != 0 {
+                    fg
+                } else {
+                    theme.console_bg
+                };
                 self.fb.put_pixel(x + col, y + row, color);
             }
         }

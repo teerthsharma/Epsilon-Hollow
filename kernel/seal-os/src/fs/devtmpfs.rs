@@ -41,8 +41,10 @@ impl DevTmpFs {
     pub fn init_default_devices(&mut self) {
         self.mknod("/zero", VfsNodeType::CharDevice, 1, 5).unwrap();
         self.mknod("/null", VfsNodeType::CharDevice, 1, 3).unwrap();
-        self.mknod("/random", VfsNodeType::CharDevice, 1, 8).unwrap();
-        self.mknod("/console", VfsNodeType::CharDevice, 5, 1).unwrap();
+        self.mknod("/random", VfsNodeType::CharDevice, 1, 8)
+            .unwrap();
+        self.mknod("/console", VfsNodeType::CharDevice, 5, 1)
+            .unwrap();
     }
 
     fn resolve(&self, path: &str) -> Option<u64> {
@@ -57,7 +59,10 @@ impl DevTmpFs {
 impl FileSystem for DevTmpFs {
     fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {
         let id = self.resolve(path).ok_or(VfsError::NotFound)?;
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], _offset: u64) -> Result<usize, VfsError> {
@@ -104,10 +109,7 @@ impl FileSystem for DevTmpFs {
                 Ok(buf.len())
             }
             _ => {
-                let content = self
-                    .content
-                    .entry(handle.inode)
-                    .or_insert_with(Vec::new);
+                let content = self.content.entry(handle.inode).or_insert_with(Vec::new);
                 content.clear();
                 content.extend_from_slice(buf);
                 Ok(buf.len())
@@ -133,7 +135,10 @@ impl FileSystem for DevTmpFs {
             .get_mut(&self.root_id)
             .unwrap()
             .insert(String::from(path), id);
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
@@ -155,7 +160,10 @@ impl FileSystem for DevTmpFs {
             .get_mut(&self.root_id)
             .unwrap()
             .insert(String::from(path), id);
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), VfsError> {
@@ -166,7 +174,10 @@ impl FileSystem for DevTmpFs {
             .and_then(|e| e.get(path).copied())
             .ok_or(VfsError::NotFound)?;
         self.nodes.remove(&id);
-        self.dir_entries.get_mut(&self.root_id).unwrap().remove(path);
+        self.dir_entries
+            .get_mut(&self.root_id)
+            .unwrap()
+            .remove(path);
         self.content.remove(&id);
         Ok(())
     }
@@ -273,7 +284,10 @@ impl FileSystem for DevTmpFs {
             .get_mut(&self.root_id)
             .unwrap()
             .insert(String::from(path), id);
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn sync(&mut self) -> Result<(), VfsError> {

@@ -21,6 +21,8 @@ pub fn launch_app(app_id: u8) {
         7 => crate::apps::breakout::main,
         8 => crate::apps::warp_racer::main,
         9 => crate::apps::tensor_viewer::main,
+        10 => crate::apps::laamba_governor::main,
+        11 => crate::apps::aether_app_host::main,
         _ => return,
     };
     crate::process::scheduler::spawn("app", 5, entry);

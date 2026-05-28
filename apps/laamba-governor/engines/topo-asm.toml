@@ -1,0 +1,22 @@
+[engine]
+name = "Topo-ASM"
+category = "Topology"
+icon = "cpu"
+color = "#AA00FF"
+description = "AVX-512 persistent homology in x86_64 assembly"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py topo-asm"
+working_dir = "~/repos/topo-asm"
+
+[engine.inputs]
+points = { type = "point_cloud" }
+dim_max = { type = "int", default = 1, range = [0, 2] }
+
+[engine.outputs]
+barcodes = { type = "tensor" }
+betti = { type = "scalar" }
+
+[engine.metrics]
+compute_time = { source = "stdout", pattern = "time: ([0-9.]+)s" }

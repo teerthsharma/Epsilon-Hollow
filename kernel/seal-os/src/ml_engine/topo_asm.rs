@@ -16,7 +16,8 @@ use core::arch::global_asm;
 // Scalar assembly baseline
 // ---------------------------------------------------------------------------
 
-global_asm!(r#"
+global_asm!(
+    r#"
     .global simd_landscape_distance
     .align 16
 simd_landscape_distance:
@@ -83,13 +84,15 @@ simd_betti_accumulate:
 
 .Lbetti_done:
     ret
-"#);
+"#
+);
 
 // ---------------------------------------------------------------------------
 // AVX-512 vectorized path (compiled unconditionally; runtime-guarded)
 // ---------------------------------------------------------------------------
 
-global_asm!(r#"
+global_asm!(
+    r#"
     .global simd_landscape_distance_avx512
     .align 16
 simd_landscape_distance_avx512:
@@ -151,7 +154,8 @@ simd_landscape_distance_avx512:
 .Lzero_avx:
     vpxorq xmm0, xmm0, xmm0
     ret
-"#);
+"#
+);
 
 extern "C" {
     fn simd_landscape_distance(a: *const f64, b: *const f64, len: usize) -> f64;
@@ -232,9 +236,9 @@ pub mod tests {
 
     fn test_betti_count() -> TestResult {
         let barcode = [
-            (0.0, 1.0),  // finite -> count
-            (1.0, 1.0),  // infinite (birth == death) -> skip
-            (2.0, 5.0),  // finite -> count
+            (0.0, 1.0), // finite -> count
+            (1.0, 1.0), // infinite (birth == death) -> skip
+            (2.0, 5.0), // finite -> count
         ];
         let c = betti_count(&barcode, 0);
         if c != 2 {

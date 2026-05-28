@@ -1,0 +1,17 @@
+[engine]
+name = "Aether-Lang"
+category = "Runtime"
+icon = "zap"
+color = "#00E676"
+description = "Topology programming language with Lean 4 verified kernel"
+
+[engine.entry]
+type = "python"
+command = "python engines/wrappers/aether_wrapper.py"
+working_dir = "~/repos/Aether-Lang"
+
+[engine.inputs]
+script = { type = "file" }
+
+[engine.outputs]
+result = { type = "scalar" }

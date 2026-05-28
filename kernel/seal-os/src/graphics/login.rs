@@ -3,8 +3,8 @@
 
 //! Real password login screen with username and password fields.
 
+use super::font::{CHAR_HEIGHT, CHAR_WIDTH};
 use super::framebuffer::Framebuffer;
-use super::font::{CHAR_WIDTH, CHAR_HEIGHT};
 
 // Mascot palette — fixed 16-color palette, DO NOT change these values
 const DARK_BG: u32 = 0x00080810;
@@ -26,22 +26,22 @@ const SHADOW: u32 = 0x00202030;
 // 32x32 mascot sprite — each u8 indexes into the palette below
 // Simplified pixel art of a penguin + seal hugging
 static MASCOT_PALETTE: [u32; 16] = [
-    DARK_BG,        // 0 - transparent/bg
-    PENGUIN_BODY,   // 1
-    PENGUIN_BELLY,  // 2
-    PENGUIN_BEAK,   // 3
-    PENGUIN_FEET,   // 4
-    PENGUIN_CHEEK,  // 5
-    PENGUIN_EYE,    // 6
+    DARK_BG,           // 0 - transparent/bg
+    PENGUIN_BODY,      // 1
+    PENGUIN_BELLY,     // 2
+    PENGUIN_BEAK,      // 3
+    PENGUIN_FEET,      // 4
+    PENGUIN_CHEEK,     // 5
+    PENGUIN_EYE,       // 6
     PENGUIN_EYE_SHINE, // 7
-    SEAL_BODY,      // 8
-    SEAL_DARK,      // 9
-    SEAL_SPOTS,     // A
-    SEAL_EYE,       // B
-    SEAL_NOSE,      // C
-    OUTLINE,        // D
-    SHADOW,         // E
-    SEAL_BODY,      // F (duplicate for convenience)
+    SEAL_BODY,         // 8
+    SEAL_DARK,         // 9
+    SEAL_SPOTS,        // A
+    SEAL_EYE,          // B
+    SEAL_NOSE,         // C
+    OUTLINE,           // D
+    SHADOW,            // E
+    SEAL_BODY,         // F (duplicate for convenience)
 ];
 
 #[rustfmt::skip]
@@ -141,14 +141,16 @@ impl LoginScreen {
                 if idx == 0 {
                     continue;
                 }
-                let is_edge = [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)].iter().any(|&(dr, dc)| {
-                    let nr = row as i32 + dr;
-                    let nc = col as i32 + dc;
-                    if nr < 0 || nr >= 32 || nc < 0 || nc >= 32 {
-                        return true;
-                    }
-                    MASCOT_32X32[(nr * 32 + nc) as usize] == 0
-                });
+                let is_edge = [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)]
+                    .iter()
+                    .any(|&(dr, dc)| {
+                        let nr = row as i32 + dr;
+                        let nc = col as i32 + dc;
+                        if nr < 0 || nr >= 32 || nc < 0 || nc >= 32 {
+                            return true;
+                        }
+                        MASCOT_32X32[(nr * 32 + nc) as usize] == 0
+                    });
                 if is_edge {
                     let px = sprite_x + col * SCALE;
                     let py = sprite_y + row * SCALE;
@@ -163,7 +165,12 @@ impl LoginScreen {
         // Title below mascot
         let title_y = sprite_y + 32 * SCALE + 20;
         self.draw_centered_text(fb, "S E A L   O S", title_y, theme.fg);
-        self.draw_centered_text(fb, "The Geometrical Operating System", title_y + CHAR_HEIGHT + 4, theme.fg);
+        self.draw_centered_text(
+            fb,
+            "The Geometrical Operating System",
+            title_y + CHAR_HEIGHT + 4,
+            theme.fg,
+        );
 
         // Input boxes
         let box_w = 240u32;
@@ -180,7 +187,13 @@ impl LoginScreen {
         let text_x = box_x + text_padding;
         let text_y = user_box_y + (box_h - CHAR_HEIGHT) / 2;
         for i in 0..self.username_len as u32 {
-            super::font::draw_char(fb, text_x + i * CHAR_WIDTH, text_y, self.username[i as usize], theme.fg);
+            super::font::draw_char(
+                fb,
+                text_x + i * CHAR_WIDTH,
+                text_y,
+                self.username[i as usize],
+                theme.fg,
+            );
         }
         if self.active_field == 0 {
             let cursor_x = text_x + (self.username_len as u32) * CHAR_WIDTH;
@@ -217,7 +230,8 @@ impl LoginScreen {
         // Error message
         if self.error_len > 0 {
             let err_y = pwd_box_y + box_h + 12;
-            let err_text = core::str::from_utf8(&self.error_msg[..self.error_len]).unwrap_or("Error");
+            let err_text =
+                core::str::from_utf8(&self.error_msg[..self.error_len]).unwrap_or("Error");
             self.draw_centered_text(fb, err_text, err_y, theme.close_btn);
         }
     }
@@ -243,8 +257,10 @@ impl LoginScreen {
                 self.active_field = if self.active_field == 0 { 1 } else { 0 };
             }
             b'\n' | 13 => {
-                let username = core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("");
-                let password = core::str::from_utf8(&self.password[..self.password_len]).unwrap_or("");
+                let username =
+                    core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("");
+                let password =
+                    core::str::from_utf8(&self.password[..self.password_len]).unwrap_or("");
                 if let Some(user) = crate::security::passwd::verify_login(username, password) {
                     self.authenticated_user = Some(user);
                     return true;

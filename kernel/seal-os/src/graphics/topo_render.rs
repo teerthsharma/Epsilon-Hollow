@@ -6,9 +6,9 @@
 //! Implements a full software 3D pipeline: hyperbolic projection (T5), spectral LOD (T2),
 //! Betti mesh integrity (T3), Voronoi spatial partition (T1), and adaptive quality governor (T4).
 
-use alloc::vec::Vec;
 use crate::graphics::htek;
 use crate::wm::window::Window;
+use alloc::vec::Vec;
 
 /// Per-vertex manifold embedding (16 points on S², quantized)
 pub struct TopoMesh {
@@ -60,7 +60,10 @@ pub fn with_render_state<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut RenderState) -> R,
 {
-    unsafe { RENDER_STATE.as_mut().map(f) }
+    unsafe {
+        let ptr = core::ptr::addr_of_mut!(RENDER_STATE);
+        (*ptr).as_mut().map(f)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +141,12 @@ pub fn adaptive_quality(frame_ms: u32) {
     });
 }
 
-pub fn project_vertex(v: &[f32; 3], cam: &Camera, screen_w: u32, screen_h: u32) -> Option<[f32; 4]> {
+pub fn project_vertex(
+    v: &[f32; 3],
+    cam: &Camera,
+    screen_w: u32,
+    screen_h: u32,
+) -> Option<[f32; 4]> {
     hyperbolic_project(v, cam, screen_w, screen_h)
 }
 
@@ -146,7 +154,8 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
     let frame_start = crate::drivers::interrupts::ticks();
 
     let state = unsafe {
-        match RENDER_STATE.as_mut() {
+        let ptr = core::ptr::addr_of_mut!(RENDER_STATE);
+        match (*ptr).as_mut() {
             Some(s) => s,
             None => return,
         }
@@ -230,9 +239,33 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
             let p0 = projected[tri[0] as usize];
             let p1 = projected[tri[1] as usize];
             let p2 = projected[tri[2] as usize];
-            htek::draw_aa_line(target, p0[0] as i32, p0[1] as i32, p1[0] as i32, p1[1] as i32, 0xFFFFFF, 255);
-            htek::draw_aa_line(target, p1[0] as i32, p1[1] as i32, p2[0] as i32, p2[1] as i32, 0xFFFFFF, 255);
-            htek::draw_aa_line(target, p2[0] as i32, p2[1] as i32, p0[0] as i32, p0[1] as i32, 0xFFFFFF, 255);
+            htek::draw_aa_line(
+                target,
+                p0[0] as i32,
+                p0[1] as i32,
+                p1[0] as i32,
+                p1[1] as i32,
+                0xFFFFFF,
+                255,
+            );
+            htek::draw_aa_line(
+                target,
+                p1[0] as i32,
+                p1[1] as i32,
+                p2[0] as i32,
+                p2[1] as i32,
+                0xFFFFFF,
+                255,
+            );
+            htek::draw_aa_line(
+                target,
+                p2[0] as i32,
+                p2[1] as i32,
+                p0[0] as i32,
+                p0[1] as i32,
+                0xFFFFFF,
+                255,
+            );
         }
     } else {
         let mut depth_buffer = vec![f32::MAX; (cw * ch) as usize];
@@ -329,7 +362,12 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
 // T5 — Hyperbolic projection
 // ---------------------------------------------------------------------------
 
-pub fn hyperbolic_project(v: &[f32; 3], cam: &Camera, screen_w: u32, screen_h: u32) -> Option<[f32; 4]> {
+pub fn hyperbolic_project(
+    v: &[f32; 3],
+    cam: &Camera,
+    screen_w: u32,
+    screen_h: u32,
+) -> Option<[f32; 4]> {
     let fwd = vec3_normalize(&vec3_sub(&cam.look_at, &cam.position));
     let right = vec3_normalize(&vec3_cross(&fwd, &cam.up));
     let up = vec3_cross(&right, &fwd);
@@ -445,8 +483,9 @@ fn compute_lod(mesh: &TopoMesh, camera: &Camera, quality: u8) -> Vec<[u32; 3]> {
 
         let area = ((x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)).abs() * 0.5;
 
-        let avg_deg = (degrees[tri[0] as usize] + degrees[tri[1] as usize] + degrees[tri[2] as usize]) as f32
-            / (3.0 * max_degree as f32);
+        let avg_deg =
+            (degrees[tri[0] as usize] + degrees[tri[1] as usize] + degrees[tri[2] as usize]) as f32
+                / (3.0 * max_degree as f32);
         let importance = area * (1.0 + avg_deg);
 
         if importance >= threshold || threshold == 0.0 {
@@ -465,9 +504,21 @@ fn betti_one_check(triangles: &[[u32; 3]]) -> bool {
     // Simplified manifold check: no edge may be shared by more than 2 triangles.
     let mut edges: Vec<((u32, u32), u32)> = Vec::new();
     for tri in triangles {
-        let e0 = if tri[0] < tri[1] { (tri[0], tri[1]) } else { (tri[1], tri[0]) };
-        let e1 = if tri[1] < tri[2] { (tri[1], tri[2]) } else { (tri[2], tri[1]) };
-        let e2 = if tri[2] < tri[0] { (tri[2], tri[0]) } else { (tri[0], tri[2]) };
+        let e0 = if tri[0] < tri[1] {
+            (tri[0], tri[1])
+        } else {
+            (tri[1], tri[0])
+        };
+        let e1 = if tri[1] < tri[2] {
+            (tri[1], tri[2])
+        } else {
+            (tri[2], tri[1])
+        };
+        let e2 = if tri[2] < tri[0] {
+            (tri[2], tri[0])
+        } else {
+            (tri[0], tri[2])
+        };
         for e in [e0, e1, e2] {
             let mut found = false;
             for (edge, count) in edges.iter_mut() {
@@ -626,18 +677,22 @@ fn rasterize_triangle(
                             if use_vertex_colors {
                                 let r = (vert_colors_rgb[0][0] as f32 * b0
                                     + vert_colors_rgb[1][0] as f32 * b1
-                                    + vert_colors_rgb[2][0] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][0] as f32 * b2)
+                                    as u8;
                                 let g = (vert_colors_rgb[0][1] as f32 * b0
                                     + vert_colors_rgb[1][1] as f32 * b1
-                                    + vert_colors_rgb[2][1] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][1] as f32 * b2)
+                                    as u8;
                                 let b = (vert_colors_rgb[0][2] as f32 * b0
                                     + vert_colors_rgb[1][2] as f32 * b1
-                                    + vert_colors_rgb[2][2] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][2] as f32 * b2)
+                                    as u8;
                                 ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
                             } else {
                                 let r = (vert_colors[0][0] as f32 * b0
                                     + vert_colors[1][0] as f32 * b1
-                                    + vert_colors[2][0] as f32 * b2) as u8;
+                                    + vert_colors[2][0] as f32 * b2)
+                                    as u8;
                                 ((r as u32) << 16) | ((r as u32) << 8) | (r as u32)
                             }
                         }
@@ -673,13 +728,16 @@ fn rasterize_triangle(
                             if use_vertex_colors {
                                 let r = (vert_colors_rgb[0][0] as f32 * b0
                                     + vert_colors_rgb[1][0] as f32 * b1
-                                    + vert_colors_rgb[2][0] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][0] as f32 * b2)
+                                    as u8;
                                 let g = (vert_colors_rgb[0][1] as f32 * b0
                                     + vert_colors_rgb[1][1] as f32 * b1
-                                    + vert_colors_rgb[2][1] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][1] as f32 * b2)
+                                    as u8;
                                 let b_col = (vert_colors_rgb[0][2] as f32 * b0
                                     + vert_colors_rgb[1][2] as f32 * b1
-                                    + vert_colors_rgb[2][2] as f32 * b2) as u8;
+                                    + vert_colors_rgb[2][2] as f32 * b2)
+                                    as u8;
                                 let lit_r = ((r as f32 * b) as u8).min(255);
                                 let lit_g = ((g as f32 * b) as u8).min(255);
                                 let lit_b = ((b_col as f32 * b) as u8).min(255);

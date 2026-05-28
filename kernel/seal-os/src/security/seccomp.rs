@@ -32,7 +32,7 @@ pub const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 
 // Classic BPF opcodes (subset)
 const BPF_LD_W_ABS: u16 = 0x20;
-const BPF_JMP_JEQ: u16 = 0x05 | 0x10;       // 0x15
+const BPF_JMP_JEQ: u16 = 0x05 | 0x10; // 0x15
 const BPF_RET: u16 = 0x06;
 
 /// Per-task seccomp filters keyed by task ID.
@@ -72,11 +72,7 @@ pub fn seccomp_check(task_id: u64, syscall_num: u64) -> u32 {
         match insn.code {
             BPF_LD_W_ABS => {
                 // Load syscall number from argument offset k (0 = syscall_num)
-                acc = if insn.k == 0 {
-                    syscall_num as u32
-                } else {
-                    0
-                };
+                acc = if insn.k == 0 { syscall_num as u32 } else { 0 };
                 pc += 1;
             }
             BPF_JMP_JEQ => {
@@ -105,16 +101,36 @@ pub fn seccomp_check(task_id: u64, syscall_num: u64) -> u32 {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use alloc::vec;
-    use crate::testing::TestResult;
     use crate::test_assert_eq;
+    use crate::testing::TestResult;
+    use alloc::vec;
 
     fn test_seccomp_allow() -> TestResult {
         let filter = vec![
-            SeccompInsn { code: BPF_LD_W_ABS, jt: 0, jf: 0, k: 0 },
-            SeccompInsn { code: BPF_JMP_JEQ, jt: 0, jf: 1, k: 1 },
-            SeccompInsn { code: BPF_RET, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW },
-            SeccompInsn { code: BPF_RET, jt: 0, jf: 0, k: SECCOMP_RET_KILL },
+            SeccompInsn {
+                code: BPF_LD_W_ABS,
+                jt: 0,
+                jf: 0,
+                k: 0,
+            },
+            SeccompInsn {
+                code: BPF_JMP_JEQ,
+                jt: 0,
+                jf: 1,
+                k: 1,
+            },
+            SeccompInsn {
+                code: BPF_RET,
+                jt: 0,
+                jf: 0,
+                k: SECCOMP_RET_ALLOW,
+            },
+            SeccompInsn {
+                code: BPF_RET,
+                jt: 0,
+                jf: 0,
+                k: SECCOMP_RET_KILL,
+            },
         ];
         seccomp_load_filter(99, &filter).unwrap();
         let action = seccomp_check(99, 1);

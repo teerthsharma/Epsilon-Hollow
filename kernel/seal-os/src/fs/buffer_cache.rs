@@ -1,6 +1,6 @@
+use crate::drivers::block::{read_block, write_block};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::drivers::block::{read_block, write_block};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferState {
@@ -84,10 +84,8 @@ impl BufferCache {
             if self.cache.len() >= self.capacity {
                 self.evict();
             }
-            self.cache.insert(
-                (dev, block_id),
-                Buffer::new(dev, block_id, self.block_size),
-            );
+            self.cache
+                .insert((dev, block_id), Buffer::new(dev, block_id, self.block_size));
         }
 
         self.update_lru(dev, block_id);

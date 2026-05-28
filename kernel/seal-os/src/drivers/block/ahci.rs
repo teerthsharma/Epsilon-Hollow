@@ -14,7 +14,7 @@ use crate::memory::phys::alloc_frame;
 use crate::serial_print;
 use crate::serial_println;
 
-use super::{BlockDevice, BlockError, register_block_device};
+use super::{register_block_device, BlockDevice, BlockError};
 
 // ── HBA global registers ────────────────────────────────────────────────────
 const HBA_CAP: u64 = 0x00;
@@ -22,9 +22,9 @@ const HBA_GHC: u64 = 0x04;
 const HBA_IS: u64 = 0x08;
 const HBA_PI: u64 = 0x0C;
 
-const GHC_HR: u32 = 1 << 0;   // HBA Reset
-const GHC_IE: u32 = 1 << 1;   // Interrupt Enable
-const GHC_AE: u32 = 1 << 31;  // AHCI Enable
+const GHC_HR: u32 = 1 << 0; // HBA Reset
+const GHC_IE: u32 = 1 << 1; // Interrupt Enable
+const GHC_AE: u32 = 1 << 31; // AHCI Enable
 
 // ── Port registers (offset from port base) ──────────────────────────────────
 const PORT_CLB: u64 = 0x00;
@@ -227,8 +227,8 @@ impl AhciPort {
         let cl_ptr = (*self.cl).data.as_mut_ptr() as *mut u32;
         let slot_cl_ptr = cl_ptr.add(slot as usize * 8);
 
-        let cfl = 5; 
-        
+        let cfl = 5;
+
         let mut bytes_left = len;
         let mut prdt_idx = 0;
         let mut current_phys = buf_phys;
@@ -242,8 +242,12 @@ impl AhciPort {
         let prdt_base = ct_ptr.add(0x80) as *mut u32;
 
         while bytes_left > 0 && prdt_idx < 65535 {
-            let chunk = if bytes_left > 0x400000 { 0x400000 } else { bytes_left }; // Max 4MB per entry
-            
+            let chunk = if bytes_left > 0x400000 {
+                0x400000
+            } else {
+                bytes_left
+            }; // Max 4MB per entry
+
             let prdt = prdt_base.add(prdt_idx * 4);
             prdt.add(0).write_volatile(current_phys as u32);
             prdt.add(1).write_volatile((current_phys >> 32) as u32);
@@ -256,14 +260,16 @@ impl AhciPort {
         }
 
         let prdtl = prdt_idx as u16;
-        let dw0 = (cfl as u32)
-            | ((if write { 1 } else { 0 }) << 6)
-            | ((prdtl as u32) << 16);
+        let dw0 = (cfl as u32) | ((if write { 1 } else { 0 }) << 6) | ((prdtl as u32) << 16);
 
         slot_cl_ptr.write_volatile(dw0);
         slot_cl_ptr.add(1).write_volatile(0); // PRDBC
-        slot_cl_ptr.add(2).write_volatile(self.ct_phys[slot as usize] as u32);
-        slot_cl_ptr.add(3).write_volatile((self.ct_phys[slot as usize] >> 32) as u32);
+        slot_cl_ptr
+            .add(2)
+            .write_volatile(self.ct_phys[slot as usize] as u32);
+        slot_cl_ptr
+            .add(3)
+            .write_volatile((self.ct_phys[slot as usize] >> 32) as u32);
         for i in 4..8 {
             slot_cl_ptr.add(i).write_volatile(0);
         }
@@ -304,7 +310,7 @@ impl AhciPort {
         fis.add(9).write_volatile((lba >> 32) as u8);
         fis.add(10).write_volatile((lba >> 40) as u8);
         fis.add(11).write_volatile((count >> 8) as u8); // feature high
-        fis.add(12).write_volatile((slot << 3) as u8);  // Tag in Sector Count bits 7:3
+        fis.add(12).write_volatile((slot << 3) as u8); // Tag in Sector Count bits 7:3
         fis.add(13).write_volatile(0);
         fis.add(14).write_volatile(0);
         fis.add(15).write_volatile(0);
@@ -323,15 +329,20 @@ impl AhciPort {
         }
 
         let slot = self.find_free_slot().unwrap();
-        let actual_bytes = core::cmp::min(bytes, 4096); 
-        
+        let actual_bytes = core::cmp::min(bytes, 4096);
+
         let mut retries = 0;
         loop {
             self.stop_port();
-            self.setup_command(slot, false, self.buf_phys[slot as usize], actual_bytes as u32);
+            self.setup_command(
+                slot,
+                false,
+                self.buf_phys[slot as usize],
+                actual_bytes as u32,
+            );
             self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, lba, (actual_bytes / 512) as u16);
             self.start_port();
-            
+
             if let Err(_) = self.send_command(slot) {
                 retries += 1;
                 if retries > 3 {
@@ -366,20 +377,22 @@ impl AhciPort {
         prefetch_engine.record_lba(lba);
         if prefetch_engine.should_prefetch(&[lba]) {
             // In a full implementation, we would queue an async read for lba + count here.
-            crate::serial_println!("[AHCI] Aether-Link suggests prefetching LBA {}", lba + count as u64);
+            crate::serial_println!(
+                "[AHCI] Aether-Link suggests prefetching LBA {}",
+                lba + count as u64
+            );
         }
 
-        core::ptr::copy_nonoverlapping((*self.buf[slot as usize]).as_ptr(), buf.as_mut_ptr(), actual_bytes);
+        core::ptr::copy_nonoverlapping(
+            (*self.buf[slot as usize]).as_ptr(),
+            buf.as_mut_ptr(),
+            actual_bytes,
+        );
         self.free_slot(slot);
         Ok(())
     }
 
-    pub unsafe fn write_sectors(
-        &self,
-        lba: u64,
-        count: u16,
-        buf: &[u8],
-    ) -> Result<(), BlockError> {
+    pub unsafe fn write_sectors(&self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
         if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
@@ -388,15 +401,29 @@ impl AhciPort {
         let slot = self.find_free_slot().unwrap();
         let actual_bytes = core::cmp::min(bytes, 4096);
 
-        core::ptr::copy_nonoverlapping(buf.as_ptr(), (*self.buf[slot as usize]).as_mut_ptr(), actual_bytes);
+        core::ptr::copy_nonoverlapping(
+            buf.as_ptr(),
+            (*self.buf[slot as usize]).as_mut_ptr(),
+            actual_bytes,
+        );
 
         let mut retries = 0;
         loop {
             self.stop_port();
-            self.setup_command(slot, true, self.buf_phys[slot as usize], actual_bytes as u32);
-            self.fill_fis(slot, ATA_CMD_WRITE_DMA_EXT, lba, (actual_bytes / 512) as u16);
+            self.setup_command(
+                slot,
+                true,
+                self.buf_phys[slot as usize],
+                actual_bytes as u32,
+            );
+            self.fill_fis(
+                slot,
+                ATA_CMD_WRITE_DMA_EXT,
+                lba,
+                (actual_bytes / 512) as u16,
+            );
             self.start_port();
-            
+
             if let Err(_) = self.send_command(slot) {
                 retries += 1;
                 if retries > 3 {
@@ -442,11 +469,15 @@ impl AhciPort {
 
         self.setup_command(slot, false, self.buf_phys[slot as usize], bytes as u32);
         self.fill_fis_ncq(slot, ATA_CMD_READ_FPDMA_QUEUED, lba, count);
-        
+
         self.send_command_async(slot, true);
         self.wait_command_complete(slot)?;
-        
-        core::ptr::copy_nonoverlapping((*self.buf[slot as usize]).as_ptr(), buf.as_mut_ptr(), bytes);
+
+        core::ptr::copy_nonoverlapping(
+            (*self.buf[slot as usize]).as_ptr(),
+            buf.as_mut_ptr(),
+            bytes,
+        );
         self.free_slot(slot);
         Ok(())
     }
@@ -463,15 +494,19 @@ impl AhciPort {
         }
 
         let slot = self.find_free_slot().unwrap();
-        
-        core::ptr::copy_nonoverlapping(buf.as_ptr(), (*self.buf[slot as usize]).as_mut_ptr(), bytes);
+
+        core::ptr::copy_nonoverlapping(
+            buf.as_ptr(),
+            (*self.buf[slot as usize]).as_mut_ptr(),
+            bytes,
+        );
 
         self.setup_command(slot, true, self.buf_phys[slot as usize], bytes as u32);
         self.fill_fis_ncq(slot, ATA_CMD_WRITE_FPDMA_QUEUED, lba, count);
-        
+
         self.send_command_async(slot, true);
         self.wait_command_complete(slot)?;
-        
+
         self.free_slot(slot);
         Ok(())
     }
@@ -500,7 +535,7 @@ impl BlockDevice for AhciPort {
 
     fn num_sectors(&self) -> u64 {
         // Fallback or placeholder for now until we store capacity from IDENTIFY
-        0x10000000 
+        0x10000000
     }
 
     fn read_sectors(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
@@ -511,7 +546,7 @@ impl BlockDevice for AhciPort {
         if self.ncq_supported.load(Ordering::SeqCst) {
             unsafe { self.read_sectors_ncq(lba, count, buf) }
         } else {
-            // Note: ahci read_sectors function also expects count. 
+            // Note: ahci read_sectors function also expects count.
             // the inner functions take care of actual bytes logic.
             unsafe { self.read_sectors(lba, count, buf) }
         }
@@ -583,9 +618,7 @@ pub fn init() -> Option<()> {
             if pi & (1 << i) == 0 {
                 continue;
             }
-            let sig = read_volatile(
-                (base + 0x100 + i as u64 * 0x80 + PORT_SIG) as *const u32,
-            );
+            let sig = read_volatile((base + 0x100 + i as u64 * 0x80 + PORT_SIG) as *const u32);
             serial_println!("[AHCI] Port {} signature: {:#x}", i, sig);
             if sig == SIG_SATA {
                 port_idx = Some(i);
@@ -605,11 +638,17 @@ pub fn init() -> Option<()> {
 
         let cl_phys = match alloc_frame() {
             Some(addr) => addr.as_u64(),
-            None => { serial_println!("[AHCI] Error: No memory for CL"); return None; }
+            None => {
+                serial_println!("[AHCI] Error: No memory for CL");
+                return None;
+            }
         };
         let fis_phys = match alloc_frame() {
             Some(addr) => addr.as_u64(),
-            None => { serial_println!("[AHCI] Error: No memory for FIS"); return None; }
+            None => {
+                serial_println!("[AHCI] Error: No memory for FIS");
+                return None;
+            }
         };
 
         let mut ct_phys = [0u64; 32];
@@ -620,15 +659,21 @@ pub fn init() -> Option<()> {
         for i in 0..32 {
             ct_phys[i] = match alloc_frame() {
                 Some(addr) => addr.as_u64(),
-                None => { serial_println!("[AHCI] Error: No memory for CT {}", i); return None; }
+                None => {
+                    serial_println!("[AHCI] Error: No memory for CT {}", i);
+                    return None;
+                }
             };
             buf_phys[i] = match alloc_frame() {
                 Some(addr) => addr.as_u64(),
-                None => { serial_println!("[AHCI] Error: No memory for BUF {}", i); return None; }
+                None => {
+                    serial_println!("[AHCI] Error: No memory for BUF {}", i);
+                    return None;
+                }
             };
             ct_ptrs[i] = ct_phys[i] as *mut CommandTable;
             buf_ptrs[i] = buf_phys[i] as *mut [u8; 4096];
-            
+
             // zeroing
             for j in 0..4096 {
                 (ct_phys[i] as *mut u8).add(j).write_volatile(0);
@@ -695,7 +740,7 @@ pub fn init() -> Option<()> {
             base,
             ports: Vec::new(),
         };
-        
+
         let port_ref = Box::leak(Box::new(port));
         register_block_device(0x800, port_ref);
         serial_println!("[AHCI] Registered as block device 0x800");

@@ -3,8 +3,8 @@
 
 //! O(1) inode allocator — Vec-indexed slab with generation counters.
 
-use alloc::vec::Vec;
 use super::manifold_fs::Inode;
+use alloc::vec::Vec;
 
 struct SlotState {
     generation: u32,
@@ -152,8 +152,8 @@ impl InodeSlab {
 pub mod tests {
     use super::*;
     use crate::fs::manifold_fs::{InodeKind, InodeMetadata};
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
     use alloc::string::String;
     use alloc::vec;
 
@@ -217,6 +217,9 @@ pub mod tests {
     pub fn register_all() {
         crate::testing::register_test("inode_slab::alloc_and_get", test_alloc_and_get);
         crate::testing::register_test("inode_slab::free_invalidates", test_free_invalidates);
-        crate::testing::register_test("inode_slab::free_reuse_generation", test_free_reuse_generation);
+        crate::testing::register_test(
+            "inode_slab::free_reuse_generation",
+            test_free_reuse_generation,
+        );
     }
 }

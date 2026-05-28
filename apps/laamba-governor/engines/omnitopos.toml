@@ -1,0 +1,23 @@
+[engine]
+name = "OmniTopos"
+category = "Physics"
+icon = "globe"
+color = "#FF6B35"
+description = "Cosmological phase sequence from persistent homology"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py omnitopos"
+working_dir = "~/repos/charlie"
+
+[engine.inputs]
+steps = { type = "int", default = 50, range = [10, 1000] }
+seed = { type = "int", default = 42 }
+
+[engine.outputs]
+phase_state = { type = "timeseries" }
+betti_sequence = { type = "timeseries" }
+
+[engine.metrics]
+phase = { source = "stdout", pattern = "phase: ([A-Z_]+)" }
+residual = { source = "stdout", pattern = "residual: ([0-9.e-]+)" }

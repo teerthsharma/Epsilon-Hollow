@@ -92,7 +92,7 @@ jobs:
             - **SealPlayer**: media player (WAV/PCM playback)
             - **Games**: Snake, Breakout, Warp Racer
             - **Desktop**: compositing WM with themes (dark/light/seal/matrix)
-            - All T1-T5 topology theorems active in kernel
+            - T1-T10 theorem gate verified at boot; T1-T5 active in kernel runtime paths
 
             ### Honest limits
             - **WiFi / Bluetooth**: Simulated state machines with deterministic scan/connect/pair. Real firmware blobs are vendor IP, out of scope.
@@ -127,7 +127,9 @@ jobs:
             # QEMU with UEFI firmware
             qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
 
-            # VirtualBox (attach .img as SATA hard disk, type: Other)
-            # Or boot from seal-os.iso (UEFI required)
+            # VirtualBox
+            VBoxManage convertfromraw --format VDI seal-os.img seal-os.vdi
+            # Create VM: Other/Unknown (64-bit), EFI enabled, SATA/AHCI, attach seal-os.vdi
+            # Or boot from seal-os.iso as UEFI optical media.
             ```
           prerelease: true

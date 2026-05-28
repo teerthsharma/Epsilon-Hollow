@@ -10,7 +10,6 @@ use crate::graphics::framebuffer::Framebuffer;
 const CURSOR_W: u32 = 10;
 const CURSOR_H: u32 = 16;
 
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CursorShape {
     Arrow,

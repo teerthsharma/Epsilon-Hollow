@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Syscall dispatch table. Standard POSIX-like + Epsilon extensions.
+//! Seal ABI dispatch table: native OS calls plus Epsilon theorem extensions.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -173,7 +173,9 @@ fn stdin_read(dst: &mut [u8]) -> usize {
     while n < dst.len() {
         let rd = STDIN_RD_IDX.load(Ordering::Acquire) as usize;
         let wr = STDIN_WR_IDX.load(Ordering::Acquire) as usize;
-        if rd == wr { break; }
+        if rd == wr {
+            break;
+        }
         if let Some(buf) = STDIN_BUF.try_lock() {
             dst[n] = buf[rd];
         }
@@ -303,7 +305,8 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 let mut buf = alloc::vec![0u8; len.min(4096)];
                 let read_len = stdin_read(&mut buf);
                 unsafe {
-                    if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read_len]).is_err() {
+                    if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read_len]).is_err()
+                    {
                         return SyscallResult::err(14); // EFAULT
                     }
                 }
@@ -317,7 +320,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 match with_vfs(|vfs| vfs.read(handle, &mut buf, 0)) {
                     Ok(read_len) => {
                         unsafe {
-                            if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read_len]).is_err() {
+                            if crate::security::smap_smep::copy_to_user(buf_ptr, &buf[..read_len])
+                                .is_err()
+                            {
                                 return SyscallResult::err(14); // EFAULT
                             }
                         }
@@ -429,7 +434,10 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let gid = crate::process::scheduler::current_gid();
             let groups = crate::process::scheduler::current_groups();
             if crate::security::manifold_acl::check_access(
-                uid, gid, &groups, &file_stat,
+                uid,
+                gid,
+                &groups,
+                &file_stat,
                 crate::security::manifold_acl::PERM_EXEC,
                 &path,
             ) == crate::security::manifold_acl::AccessDecision::Deny
@@ -460,13 +468,28 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
 
             if buf.starts_with(b"\x7FELF") {
                 let aslr_base = crate::security::aslr::randomize_mmap_base();
-                match crate::process::elf::load(&buf, aslr_base, file_stat.mode, file_stat.uid, file_stat.gid) {
+                match crate::process::elf::load(
+                    &buf,
+                    aslr_base,
+                    file_stat.mode,
+                    file_stat.uid,
+                    file_stat.gid,
+                ) {
                     Ok(_loaded) => {
-                        let name: &'static str = if path == "/bin/init" { "init" } else { "userspace" };
+                        let name: &'static str = if path == "/bin/init" {
+                            "init"
+                        } else {
+                            "userspace"
+                        };
                         let _ = crate::process::scheduler::spawn_user(
-                            name, 5, &buf,
-                            file_stat.mode, file_stat.uid, file_stat.gid,
-                            real_uid, real_gid,
+                            name,
+                            5,
+                            &buf,
+                            file_stat.mode,
+                            file_stat.uid,
+                            file_stat.gid,
+                            real_uid,
+                            real_gid,
                         );
                     }
                     Err(_) => return SyscallResult::err(8), // ENOEXEC
@@ -501,12 +524,23 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     return SyscallResult::err(8); // ENOEXEC
                 }
                 let aslr_base = crate::security::aslr::randomize_mmap_base();
-                match crate::process::elf::load(&interp_buf, aslr_base, interp_stat.mode, interp_stat.uid, interp_stat.gid) {
+                match crate::process::elf::load(
+                    &interp_buf,
+                    aslr_base,
+                    interp_stat.mode,
+                    interp_stat.uid,
+                    interp_stat.gid,
+                ) {
                     Ok(_loaded) => {
                         let _ = crate::process::scheduler::spawn_user(
-                            "interpreter", 5, &interp_buf,
-                            interp_stat.mode, interp_stat.uid, interp_stat.gid,
-                            real_uid, real_gid,
+                            "interpreter",
+                            5,
+                            &interp_buf,
+                            interp_stat.mode,
+                            interp_stat.uid,
+                            interp_stat.gid,
+                            real_uid,
+                            real_gid,
                         );
                     }
                     Err(_) => return SyscallResult::err(8), // ENOEXEC
@@ -540,9 +574,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             }
         }
 
-        SYS_WAITPID => {
-            SyscallResult::ok(arg0 as i64)
-        }
+        SYS_WAITPID => SyscallResult::ok(arg0 as i64),
 
         SYS_MMAP => {
             let len = arg1 as usize;
@@ -617,10 +649,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             }
         }
 
-        SYS_MANIFOLD_QUERY => SyscallResult::with_data(
-            0,
-            format!("theorem_{}: ACTIVE", arg0),
-        ),
+        SYS_MANIFOLD_QUERY => {
+            if arg0 == 0 || arg0 as usize > crate::THEOREM_COUNT {
+                SyscallResult::err(22)
+            } else {
+                let idx = arg0 as usize - 1;
+                let state = crate::THEOREM_STATES[idx].load(Ordering::Relaxed);
+                let status = if state {
+                    if idx < 5 {
+                        "ACTIVE"
+                    } else {
+                        "VERIFIED"
+                    }
+                } else {
+                    "FAILED"
+                };
+                SyscallResult::with_data(0, format!("{}: {}", crate::THEOREM_NAMES[idx], status))
+            }
+        }
 
         SYS_TELEPORT => {
             let path = {
@@ -629,9 +675,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             };
             let src = arg0;
             let dst = arg1;
-            let result = with_fs_inode(|fs| {
-                fs.teleport(&path, src, dst).map(|r| r.inode_id)
-            });
+            let result = with_fs_inode(|fs| fs.teleport(&path, src, dst).map(|r| r.inode_id));
             if result.code >= 0 {
                 SyscallResult::with_data(
                     0,
@@ -642,10 +686,28 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             }
         }
 
-        SYS_THEOREM_STATUS => SyscallResult::with_data(
-            0,
-            String::from("T1:ACTIVE T2:ACTIVE T3:ACTIVE T4:ACTIVE T5:ACTIVE"),
-        ),
+        SYS_THEOREM_STATUS => {
+            let mut out = String::new();
+            for idx in 0..crate::THEOREM_COUNT {
+                let ok = crate::THEOREM_STATES[idx].load(Ordering::Relaxed);
+                let status = if ok {
+                    if idx < 5 {
+                        "ACTIVE"
+                    } else {
+                        "VERIFIED"
+                    }
+                } else {
+                    "FAILED"
+                };
+                if idx > 0 {
+                    out.push(' ');
+                }
+                out.push_str(crate::THEOREM_NAMES[idx]);
+                out.push(':');
+                out.push_str(status);
+            }
+            SyscallResult::with_data(0, out)
+        }
 
         SYS_PKG_INSTALL => {
             let name_ptr = arg0 as *const u8;
@@ -671,26 +733,26 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let list: String = if pkg.package_count() == 0 {
                 String::from("no packages installed")
             } else {
-                pkg.list().iter().map(|m| format!("{} v{}\n", m.name, m.version)).collect()
+                pkg.list()
+                    .iter()
+                    .map(|m| format!("{} v{}\n", m.name, m.version))
+                    .collect()
             };
             SyscallResult::with_data(0, list)
         }
-        SYS_WIFI_SCAN => SyscallResult::with_data(
-            0,
-            String::from("wifi_scan: no wireless hardware detected"),
-        ),
+        SYS_WIFI_SCAN => {
+            SyscallResult::with_data(0, String::from("wifi_scan: no wireless hardware detected"))
+        }
         SYS_WIFI_CONNECT => SyscallResult::with_data(
             0,
             String::from("wifi_connect: no wireless hardware detected"),
         ),
-        SYS_BT_SCAN => SyscallResult::with_data(
-            0,
-            String::from("bt_scan: no Bluetooth adapter detected"),
-        ),
-        SYS_BT_PAIR => SyscallResult::with_data(
-            0,
-            String::from("bt_pair: no Bluetooth adapter detected"),
-        ),
+        SYS_BT_SCAN => {
+            SyscallResult::with_data(0, String::from("bt_scan: no Bluetooth adapter detected"))
+        }
+        SYS_BT_PAIR => {
+            SyscallResult::with_data(0, String::from("bt_pair: no Bluetooth adapter detected"))
+        }
         SYS_SETTING_GET => {
             let key_ptr = arg0 as *const u8;
             let key = unsafe { copy_path_from_user(key_ptr).unwrap_or_default() };
@@ -832,7 +894,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let mut table = FILE_TABLE.lock();
             if let Some(entry) = table.get_mut(&fd) {
                 let new_offset = match whence {
-                    0 => offset, // SEEK_SET
+                    0 => offset,                       // SEEK_SET
                     1 => entry.offset as i64 + offset, // SEEK_CUR
                     2 => {
                         let size = with_vfs(|vfs| vfs.stat(entry.handle))
@@ -964,7 +1026,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 SyscallResult::ok(crate::process::signal::sys_kill(target as u64, sig))
             }
         }
-        SYS_SIGACTION => SyscallResult::ok(crate::process::signal::sys_sigaction(arg0 as u8, arg1, arg2)),
+        SYS_SIGACTION => SyscallResult::ok(crate::process::signal::sys_sigaction(
+            arg0 as u8, arg1, arg2,
+        )),
         SYS_SIGRETURN => crate::process::signal::sys_sigreturn_call(),
         SYS_PIPE => crate::syscall::pipe::dispatch_pipe(arg0),
         SYS_DUP => crate::syscall::pipe::dispatch_dup(arg0),
@@ -974,12 +1038,10 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_SETTIMEOFDAY => crate::syscall::time::dispatch_settimeofday(arg0, arg1),
         SYS_WATCHDOG => crate::syscall::time::dispatch_watchdog(arg0),
         SYS_IOCTL => crate::syscall::ioctl::dispatch_ioctl(arg0, arg1, arg2),
-        SYS_SYNC => {
-            match crate::fs::sync() {
-                Ok(()) => SyscallResult::ok(0),
-                Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
-            }
-        }
+        SYS_SYNC => match crate::fs::sync() {
+            Ok(()) => SyscallResult::ok(0),
+            Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
+        },
 
         SYS_SETRLIMIT => {
             crate::process::scheduler::setrlimit(arg0 as u32, arg1);
@@ -1013,7 +1075,11 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             crate::security::audit::audit_log(crate::security::audit::AuditEvent::Open {
                 uid,
                 path,
-                perms: if arg1 & 0x1 != 0 { String::from("w") } else { String::from("r") },
+                perms: if arg1 & 0x1 != 0 {
+                    String::from("w")
+                } else {
+                    String::from("r")
+                },
             });
         }
         SYS_EXEC => {

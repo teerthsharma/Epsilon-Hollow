@@ -171,19 +171,14 @@ impl NvidiaGpu {
         dev.enable_bus_mastering();
 
         serial_println!("[NVGPU] Step 2: Resetting PMC");
-        let enable = core::ptr::read_volatile((self.bar0_phys + NV_PMC_ENABLE as u64) as *const u32);
-        core::ptr::write_volatile(
-            (self.bar0_phys + NV_PMC_ENABLE as u64) as *mut u32,
-            0,
-        );
+        let enable =
+            core::ptr::read_volatile((self.bar0_phys + NV_PMC_ENABLE as u64) as *const u32);
+        core::ptr::write_volatile((self.bar0_phys + NV_PMC_ENABLE as u64) as *mut u32, 0);
         // Small spin-wait for reset to propagate
         for _ in 0..1000 {
             core::hint::spin_loop();
         }
-        core::ptr::write_volatile(
-            (self.bar0_phys + NV_PMC_ENABLE as u64) as *mut u32,
-            enable,
-        );
+        core::ptr::write_volatile((self.bar0_phys + NV_PMC_ENABLE as u64) as *mut u32, enable);
 
         serial_println!("[NVGPU] Step 3: Waiting for idle");
         for _ in 0..10_000 {
@@ -201,11 +196,13 @@ impl NvidiaGpu {
 }
 
 pub fn init() -> Option<NvidiaGpu> {
-    let devices = crate::drivers::pci::enumerate();
+    let devices = crate::drivers::pci::get_devices();
     for dev in &devices {
         if dev.class == 0x03 && dev.vendor_id == 0x10DE {
             if let Some(gpu) = unsafe { NvidiaGpu::probe(dev) } {
-                unsafe { gpu.init_sequence(dev); }
+                unsafe {
+                    gpu.init_sequence(dev);
+                }
                 return Some(gpu);
             }
         }

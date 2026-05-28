@@ -3,8 +3,8 @@
 
 //! Power menu popup.
 
-use crate::graphics::framebuffer::Framebuffer;
 use crate::graphics::font;
+use crate::graphics::framebuffer::Framebuffer;
 use crate::wm::themes;
 
 pub struct PowerMenu {
@@ -28,9 +28,18 @@ struct MenuItem {
 }
 
 const ITEMS: &[MenuItem] = &[
-    MenuItem { name: "Shutdown", action: PowerAction::Shutdown },
-    MenuItem { name: "Reboot", action: PowerAction::Reboot },
-    MenuItem { name: "Logout", action: PowerAction::Logout },
+    MenuItem {
+        name: "Shutdown",
+        action: PowerAction::Shutdown,
+    },
+    MenuItem {
+        name: "Reboot",
+        action: PowerAction::Reboot,
+    },
+    MenuItem {
+        name: "Logout",
+        action: PowerAction::Logout,
+    },
 ];
 
 const ITEM_H: u32 = 24;
@@ -64,14 +73,32 @@ impl PowerMenu {
         let theme = themes::current_theme();
         fb.fill_rect(self.x, self.y, self.width, self.height, theme.bg);
         fb.fill_rect(self.x, self.y, self.width, 1, theme.border);
-        fb.fill_rect(self.x, self.y + self.height - 1, self.width, 1, theme.border);
+        fb.fill_rect(
+            self.x,
+            self.y + self.height - 1,
+            self.width,
+            1,
+            theme.border,
+        );
         fb.fill_rect(self.x, self.y, 1, self.height, theme.border);
-        fb.fill_rect(self.x + self.width - 1, self.y, 1, self.height, theme.border);
+        fb.fill_rect(
+            self.x + self.width - 1,
+            self.y,
+            1,
+            self.height,
+            theme.border,
+        );
 
         for (i, item) in ITEMS.iter().enumerate() {
             let iy = self.y + 6 + i as u32 * ITEM_H;
             for (j, ch) in item.name.bytes().enumerate() {
-                font::draw_char(fb, self.x + 8 + j as u32 * font::CHAR_WIDTH, iy, ch, theme.fg);
+                font::draw_char(
+                    fb,
+                    self.x + 8 + j as u32 * font::CHAR_WIDTH,
+                    iy,
+                    ch,
+                    theme.fg,
+                );
             }
         }
     }

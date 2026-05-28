@@ -1,0 +1,22 @@
+[engine]
+name = "Lambda-Topo"
+category = "Topology"
+icon = "database"
+color = "#AA00FF"
+description = "TDA memory system with ripser + FAISS"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py lambda-topo"
+working_dir = "~/repos/lambda-topo"
+
+[engine.inputs]
+k_neighbors = { type = "int", default = 15, range = [5, 100] }
+index_type = { type = "string", default = "IVFFlat" }
+
+[engine.outputs]
+signatures = { type = "tensor" }
+index = { type = "file" }
+
+[engine.metrics]
+query_time = { source = "stdout", pattern = "query: ([0-9.]+)ms" }

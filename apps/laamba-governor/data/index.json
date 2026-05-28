@@ -1,0 +1,60 @@
+{
+  "datasets": [
+    {
+      "name": "ring.csv",
+      "path": "ring.csv",
+      "description": "800 points on a 2D ring (cos/sin + noise) \u2014 spherical topology should win",
+      "expected_topology": "spherical",
+      "shape": [
+        800,
+        2
+      ],
+      "rows": 800,
+      "cols": 2,
+      "type": "point_cloud",
+      "format": "csv"
+    },
+    {
+      "name": "tree.csv",
+      "path": "tree.csv",
+      "description": "800 points with exponential first dim, 8 dims \u2014 hyperbolic should win",
+      "expected_topology": "hyperbolic_poincare",
+      "shape": [
+        800,
+        8
+      ],
+      "rows": 800,
+      "cols": 8,
+      "type": "point_cloud",
+      "format": "csv"
+    },
+    {
+      "name": "blob.csv",
+      "path": "blob.csv",
+      "description": "800 points, 8 dims, standard normal \u2014 euclidean should win",
+      "expected_topology": "euclidean",
+      "shape": [
+        800,
+        8
+      ],
+      "rows": 800,
+      "cols": 8,
+      "type": "point_cloud",
+      "format": "csv"
+    },
+    {
+      "name": "swiss_roll.csv",
+      "path": "swiss_roll.csv",
+      "description": "1000 points, 3D swiss roll",
+      "expected_topology": "mixed_curvature",
+      "shape": [
+        1000,
+        3
+      ],
+      "rows": 1000,
+      "cols": 3,
+      "type": "point_cloud",
+      "format": "csv"
+    }
+  ]
+}

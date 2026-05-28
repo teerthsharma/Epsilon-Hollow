@@ -1,10 +1,12 @@
 # Epsilon-Hollow
 
-A bare-metal x86_64 operating system built for **ML model training** and **high-frequency trading**, where every byte on disk is a point cloud on the unit sphere, every file move is O(1) topological surgery, and every kernel decision — from page allocation to I/O prefetch — is driven by five formally verified topology theorems.
+Seal OS is a bare-metal x86_64 operating system for **ML model training** and **high-frequency trading** research. It is written in Rust, boots through UEFI, uses a native Seal ABI, and treats OS decisions as topology problems.
 
 **Aether-Lang (AEGIS)** is the HolyC of Seal OS — a real language with lexer, parser, AST, and interpreter, wired directly into the kernel runtime.
 
-Written in Rust. No libc. No POSIX. No compromises.
+Seal OS is not Linux, not Unix, not POSIX, and not a libc target. Familiar syscall names are Seal ABI entry points with Seal-defined semantics. No fake compatibility costume.
+
+Current contract: kernel Rust owns hardware, memory, drivers, scheduling, and theorem gates. Aether-Lang owns native scripts, app logic, shell automation, topology commands, and future self-hosting flows.
 
 ```
 Seal OS v0.4.5 — The Geometrical Operating System
@@ -14,7 +16,7 @@ All data = geometry on S². File moves = O(1) topological surgery.
 [BOOT] IDT + PIC initialized
 [T4/AGCR] Governor online: epsilon = 0.1000
 [T1/TSS]  Voronoi index: 8 cells, test lookup -> cell 0
-[BOOT] All T1-T5 theorems ACTIVE
+[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [ManifoldFS] Teleported 'hello.txt' (19 bytes) in 1 ticks — O(1)
 [Scheduler] 4 tasks, running 'kernel', epsilon=0.1000
 [Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8
@@ -33,7 +35,7 @@ All data = geometry on S². File moves = O(1) topological surgery.
 - [System Calls](#system-calls)
 - [Graphics and Desktop](#graphics-and-desktop)
 - [Built-in Applications](#built-in-applications)
-- [The Five Theorems](#the-five-theorems)
+- [The Ten Theorems](#the-ten-theorems)
 - [aether-core — Math Foundation](#aether-core--math-foundation)
 - [Epsilon — Context Teleportation](#epsilon--context-teleportation)
 - [Aether-Link — I/O Superkernel](#aether-link--io-superkernel)
@@ -50,7 +52,7 @@ All data = geometry on S². File moves = O(1) topological surgery.
 
 ## Design Philosophy
 
-Seal OS is built on a single premise: **operating system decisions are geometry problems**. Not metaphorically — literally. Every byte of storage, every page of memory, every scheduling decision is represented as a point cloud on the unit sphere S² and manipulated using five formally verified topology theorems.
+Seal OS is built on a single premise: **operating system decisions are geometry problems**. Not metaphorically - literally. Memory, scheduling, prefetch, and ManifoldFS metadata/content embeddings are represented as point clouds on the unit sphere S^2. Persistent raw bytes are still stored for faithful reads and writes until the payload-first disk layout is finished. T1-T5 manipulate runtime paths today; T6-T10 are boot gates for the ML/HFT world model.
 
 ### Why S²?
 
@@ -71,7 +73,7 @@ Traditional OS design uses graphs (filesystems), arrays (memory), and queues (sc
 - **Hyperbolic geometry** for natural hierarchical clustering (short-lived vs long-lived allocations)
 - **PD control** for adaptive resource governance with stability guarantees
 
-### The Five Theorems (T1–T5)
+### The Ten Theorems (T1-T10)
 
 | Theorem | Mathematical Basis | Kernel Application |
 |---------|-------------------|-------------------|
@@ -81,7 +83,7 @@ Traditional OS design uses graphs (filesystems), arrays (memory), and queues (sc
 | **T4 — PD Control** | Proportional-derivative feedback on manifold deviation | Adaptive allocation granularity, render quality scaling, scheduler timeslice adaptation |
 | **T5 — Hyperbolic Curvature** | Poincaré disk model with constant negative curvature | Memory lifetime classification, camera projection for wide FOV, hierarchical data clustering |
 
-Each theorem is formally verified in Lean 4 (see `kernel/aether/aether-verified/lean/`). The proofs establish bounds on convergence, stability, and information-theoretic optimality.
+T1-T5 are runtime-applied throughout the bare-metal kernel. T6-T10 are boot-verified theorem gates for the ML/HFT world-model path. Lean 4 proof artifacts live in `kernel/aether/aether-verified/lean/`; proof strength is tracked in [docs/THEOREMS.md](docs/THEOREMS.md) because some bounds are full proofs and some are layered bridge checks.
 
 ---
 
@@ -100,9 +102,9 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **Window Manager**: Compositor with z-order, window decorations, minimize/maximize/resize, 5 cursor shapes (arrow/I-beam/hand/resize), desktop + taskbar, first-run welcome wizard
 - **Filesystem**: ManifoldFS in-memory (Voronoi indexing, O(1) teleport, content-addressable find)
 - **Scheduler**: ManifoldScheduler with Voronoi task groups, governor-based timeslice adaptation
-- **Syscalls**: 36 POSIX-like + Epsilon extensions (exit, read/write/open/close, exec, fork, waitpid, mmap, getpid/stat/mkdir/chdir/getcwd/getppid, setuid/setgid/seteuid/setegid, lseek, unlink, rmdir, rename, nanosleep, reboot, gettimeofday, getrandom, kmsg_read, kill, sigaction, sigreturn, pipe, dup/dup2, brk, watchdog, ioctl + manifold_query, teleport, theorem_status, pkg_install/remove/list, wifi_scan/connect, bt_scan/pair, setting_get/set)
+- **Seal ABI**: native kernel calls + Epsilon extensions (exit, read/write/open/close, exec, fork, waitpid, mmap, getpid/stat/mkdir/chdir/getcwd/getppid, uid/gid calls, lseek, unlink, rmdir, rename, nanosleep, reboot, gettimeofday, getrandom, kmsg_read, signal, pipe, dup/dup2, brk, watchdog, ioctl + manifold_query, teleport, theorem_status, pkg_install/remove/list, wifi_scan/connect, bt_scan/pair, setting_get/set)
 - **Security**: ASLR, seccomp filters, SMAP/SMEP detection, KPTI with real CR3 swap, retpoline thunks (rax–r15), lfence barriers, audit logging
-- **Math**: aether-core `no_std` library — T1–T5 theorems (Voronoi, spectral contraction, entropy governor, PD control, hyperbolic separation)
+- **Math**: `aether-core` and `aether_verified` `no_std` libraries - T1-T10 theorem core. T1-T5 actively drive runtime decisions; T6-T10 are checked during boot and exposed through theorem status.
 - **Language**: Aether-Lang lexer, parser, AST, interpreter, and VM integrated into the kernel runtime
 - **Applications**: SealShell (30+ commands), terminal emulator, calculator, Snake, Breakout, Warp Racer, Seal IDE, theorem viewer
 - **Media**: WAV/PCM playback with real RIFF/WAVE header parser
@@ -112,7 +114,7 @@ Seal OS is a research kernel. Here's what's actually running versus what's plann
 - **TLS 1.3 + HTTPS**: AES-128-GCM + HKDF-SHA256 PSK handshake. Real encrypt/decrypt. HttpClient transparently uses TlsSocket for https://.
 - **Package Manager**: Remote install over HTTPS — queries registry, downloads .eph, verifies Ed25519 signature, extracts to ManifoldFS.
 - **Settings**: Live BTreeMap<String,String> with theme/font/wallpaper defaults.
-- **Signals**: POSIX signal subsystem — SIGKILL, SIGSEGV, SIGINT, SIGTERM, SIGPIPE, SIGALRM, SIGCHLD, SIGUSR1/2. Per-task pending/mask/handlers. Signal frames on user stack.
+- **Signals**: Seal-native signal subsystem — SIGKILL, SIGSEGV, SIGINT, SIGTERM, SIGPIPE, SIGALRM, SIGCHLD, SIGUSR1/2. Per-task pending/mask/handlers. Signal frames on user stack.
 - **Pipes + dup + brk**: In-memory pipe filesystem, fd duplication, user heap growth.
 - **RTC + Watchdog**: CMOS real-time clock, gettimeofday syscall. APIC timer watchdog with keyboard-controller reset on hang.
 - **Hardware Entropy**: RDRAND + RDSEED with CPUID probe and carry-flag retry. SYS_GETRANDOM.
@@ -151,7 +153,7 @@ Features promoted from stub to real during the latest agentic engineering pass. 
 - **Double Buffering**: `Framebuffer` gains `back_buffer` allocated after heap init. `put_pixel` writes to back buffer, `blit()` does fast `copy_nonoverlapping` to VRAM. Eliminates tearing during login, welcome, desktop, and compositor loops.
 - **Panic Screen**: Red background + white "PANIC" text + message rendered to framebuffer. Serial output still happens, but users **see** the crash.
 - **Kernel Message Ring Buffer** (`drivers/kmsg.rs`): 32 KiB fixed `.bss` ring buffer, `SYS_KMSG_READ` syscall for userspace `dmesg` equivalent.
-- **POSIX Signals** (`process/signal.rs`): Full signal subsystem — `SIGKILL`, `SIGSEGV`, `SIGINT`, `SIGTERM`, `SIGUSR1/2`, `SIGPIPE`, `SIGALRM`, `SIGCHLD`, and more. Per-task pending bitmap, signal mask, handler table. Signal frames built on user stack with `sigreturn` trampoline. `SYS_KILL`, `SYS_SIGACTION`, `SYS_SIGRETURN` wired.
+- **Seal Signals** (`process/signal.rs`): Full signal subsystem — `SIGKILL`, `SIGSEGV`, `SIGINT`, `SIGTERM`, `SIGUSR1/2`, `SIGPIPE`, `SIGALRM`, `SIGCHLD`, and more. Per-task pending bitmap, signal mask, handler table. Signal frames built on user stack with `sigreturn` trampoline. `SYS_KILL`, `SYS_SIGACTION`, `SYS_SIGRETURN` wired.
 - **Pipes + dup + brk** (`fs/pipe.rs`, `syscall/pipe.rs`): In-memory pipe filesystem with 64KB ring buffers. `SYS_PIPE` returns two fds (read/write). `SYS_DUP` / `SYS_DUP2` clone fd entries. `SYS_BRK` grows/shrinks per-task user heap via `mmap_user`.
 - **RTC + Watchdog** (`drivers/rtc.rs`, `drivers/watchdog.rs`): CMOS RTC via ports 0x70/0x71 with BCD/binary detection and 12/24-hour handling. `SYS_GETTIMEOFDAY` returns seconds since epoch + microsecond interpolation. `SYS_SETTIMEOFDAY` returns EPERM (honest). APIC timer watchdog — `SYS_WATCHDOG` pets it; if CPU hangs >5s, keyboard controller reset triggers.
 - **Real USB Mass Storage** (`drivers/usb/mass_storage.rs`): SCSI Bulk-Only Transport (BBB) with CBW/CSW. Commands: INQUIRY, READ CAPACITY(10), READ(10), WRITE(10). xHCI bulk endpoint setup with transfer rings and event polling. Implements `BlockDevice` trait, registers as block device 1.
@@ -185,6 +187,19 @@ Features promoted from stub to real during the latest agentic engineering pass. 
 
 ---
 
+## OS Language and Bundled Apps
+
+Aether-Lang is the native Seal OS language layer. Kernel Rust owns hardware,
+memory safety, scheduling, drivers, and theorem gates. Aether-Lang owns native
+scripts, app logic, shell automation, topology commands, and the future
+self-hosting flow.
+
+LAAMBA/Lambda Governor is a bundled native app workload and control surface. It
+is important, but it is not the kernel identity and not the OS architecture.
+The OS remains Seal OS: bare-metal Rust plus Aether-Lang on the Seal ABI.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -201,7 +216,7 @@ graph TB
 
     subgraph "Layer 9 — Desktop"
         WALL["Wallpaper<br/>Schwarzschild metric + Faraday tensor"]
-        TBAR["Taskbar<br/>[T1:●][T2:●][T3:●][T4:●][T5:●] ε=0.042"]
+        TBAR["Taskbar<br/>T1-T10 status strip<br/>epsilon=0.042"]
     end
 
     subgraph "Layer 8 — Window Manager"
@@ -211,11 +226,11 @@ graph TB
     end
 
     subgraph "Layer 7 — Shell"
-        SHELL["Shell<br/>ls, cat, mv (O(1) teleport), find,<br/>ps, theorems, race, stats"]
+        SHELL["SealShell<br/>look, peek, move (O(1) teleport), search,<br/>tasks, seal, race, stats"]
     end
 
     subgraph "Layer 6 — Syscalls"
-        POSIX["POSIX: 36 syscalls<br/>fork/exec/pipe/dup/brk/signal/ioctl<br/>gettimeofday/getrandom/kmsg"]
+        ABI["Seal ABI: native syscalls<br/>fork/exec/pipe/dup/brk/signal/ioctl<br/>gettimeofday/getrandom/kmsg"]
         EPSILON_SYS["Epsilon: manifold_query,<br/>teleport, theorem_status,<br/>pkg_install, setting_get/set"]
     end
 
@@ -263,9 +278,9 @@ graph TB
     COMP --> FB
     TOPO3D --> FB
     WIN --> EVT
-    SHELL --> POSIX & EPSILON_SYS
-    POSIX & EPSILON_SYS --> SCHED
-    POSIX & EPSILON_SYS --> MFS
+    SHELL --> ABI & EPSILON_SYS
+    ABI & EPSILON_SYS --> SCHED
+    ABI & EPSILON_SYS --> MFS
     SCHED --> HEAP
     MFS --> ENC
     ENC --> HEAP
@@ -286,7 +301,7 @@ graph TB
     style UEFIBOOT fill:#0d1117,stroke:#58a6ff,color:#fff
 ```
 
-Every layer above Layer 0 is driven by the T1–T5 theorems. There is no separate "theorem layer" — the math is the kernel.
+Every runtime layer above Layer 0 is driven by T1-T5, and every boot must pass the T1-T10 theorem gate. There is no separate "theorem layer" - the math is the kernel.
 
 ---
 
@@ -638,7 +653,7 @@ flowchart TB
 
 ## ManifoldFS — The Filesystem
 
-This is not ext4. This is not FAT. Files are not byte sequences. Files are **64-point clouds on the unit sphere S²**.
+This is not ext4. This is not FAT. ManifoldFS keeps faithful raw bytes for reads and writes, plus **64-point ManifoldPayload embeddings on the unit sphere S^2** for content addressing, Voronoi indexing, topology-aware moves, and future payload-first disk layout work.
 
 ```mermaid
 graph TD
@@ -675,7 +690,7 @@ graph TD
 
 **Why O(1) teleport?** A traditional `mv` copies data. ManifoldFS doesn't touch the data at all — it updates two BTreeMap entries (remove from source directory, insert into destination directory) and adjusts the inode's parent pointer. The payload stays in place. The file's identity is its geometry, not its location.
 
-**Data storage**: Each inode stores both the raw bytes (for faithful `read()`/`write()`) and the ManifoldPayload (S² point cloud for content-addressable search and Voronoi indexing). `teleport_bulk()` supports moving entire directories — designed for ML dataset reorganization. `store_large()` accepts size hints for prefetch tuning on datasets >100 MB.
+**Data storage**: Each inode stores both raw bytes (for faithful `read()`/`write()`) and the ManifoldPayload (S^2 point cloud for content-addressable search and Voronoi indexing). The literal "every byte on disk is a point cloud" target is tracked by [docs/MANIFOLDFS-O1-DESIGN.md](docs/MANIFOLDFS-O1-DESIGN.md); current code is not allowed to pretend that target is already fully closed. `teleport_bulk()` supports moving entire directories, designed for ML dataset reorganization. `store_large()` accepts size hints for prefetch tuning on datasets >100 MB.
 
 **Theorem integration in ManifoldFS:**
 
@@ -800,7 +815,7 @@ graph LR
     S0 & S1 & S2 & S3 & S4 & S5 & S6 & S7 & S8 & S9 & S10 & S11 & S12 & S13 & S14 & S15 & S16 & S17 & S18 & S19 & S20 & S21 & S22 & S23 & S24 & S25 & S26 & S27 & S28 & S29 & S30 & S31 & S32 & S33 & S34 & S35 & S100 & S101 & S102 & S103 & S106 & S108 & S110 --> RES
 ```
 
-The syscall table is dispatched via a match on the syscall number. POSIX calls provide standard OS semantics. Epsilon extensions expose the theorem engine to userspace — any process can query the current governor epsilon, Voronoi cell count, or trigger an O(1) file teleport.
+The syscall table is dispatched via a match on the syscall number. Seal ABI calls provide native kernel semantics without POSIX inheritance. Epsilon extensions expose the theorem engine to userspace: any process can query theorem status, governor epsilon, Voronoi cell count, or trigger an O(1) file teleport.
 
 ---
 
@@ -809,7 +824,7 @@ The syscall table is dispatched via a match on the syscall number. POSIX calls p
 ```mermaid
 graph TD
     subgraph "Framebuffer (Layer 3)"
-        FB["Multiboot2 Framebuffer Tag<br/>addr: 0xFD000000<br/>1024×768, pitch=4096, 32bpp<br/>volatile writes via raw pointer"]
+        FB["UEFI GOP Framebuffer<br/>1024x768 target, pitch from firmware<br/>32bpp volatile writes via raw pointer"]
         FONT["8×16 Bitmap Font + 16×32 AA Scaled"]
         CONSOLE["Scrolling Console<br/>128×48 character grid<br/>pitch-aware line advance"]
     end
@@ -907,7 +922,7 @@ graph TD
         MV["move — O(1) teleport<br/>prints: ticks, governor ε"]
         FIND["search — content-addressable search<br/>encode query → dot product match"]
         RACE["race — benchmark teleport vs copy<br/>teleport: ~50μs constant<br/>copy: 0.5 ns/byte (scales)"]
-        THEOREMS["seal — system info + T1-T5 status"]
+        THEOREMS["seal - system info + T1-T10 status"]
         CALC_CMD["calc — scientific calculator"]
         PLAY_CMD["play — media playback"]
     end
@@ -926,11 +941,11 @@ graph TD
     subgraph "Seal IDE (apps/seal_ide.rs)"
         IDE_EDIT["Code editor panel"]
         IDE_TREE["File tree sidebar (ManifoldFS)"]
-        IDE_STATUS["Status bar: line/col, lang, ε, T1-T5"]
+        IDE_STATUS["Status bar: line/col, lang, epsilon, T1-T10"]
     end
 
     subgraph "Theorem Viewer (apps/theorem_viewer.rs)"
-        TV_LIST["T1-T5 status display"]
+        TV_LIST["T1-T10 status display"]
         TV_EPS["Governor ε real-time"]
         TV_BETTI["Betti-0 count"]
     end
@@ -970,25 +985,25 @@ Native media player — every ML engineer needs their anime:
 
 ---
 
-## The Five Theorems
+## The Ten Theorems
 
-These are not decorative. Every kernel subsystem calls into them at runtime.
+These are not decorative. T1-T5 drive runtime kernel paths today. T6-T10 are boot-verified theorem gates for the HFT/ML world-model path and are exposed through theorem status.
 
 ```mermaid
 graph TD
     subgraph "T1 — Topological State Synchronization (TSS)"
         T1_WHAT["SphericalVoronoiIndex&lt;K&gt;<br/>O(1)-amortized retrieval on S²<br/>great_circle_distance for cell assignment"]
-        T1_WHERE["Used in: ManifoldFS file lookup,<br/>scheduler task groups,<br/>WM hit-test, memory frame locality"]
+        T1_WHERE["Used in: ManifoldFS file lookup,<br/>scheduler task groups,<br/>memory frame locality"]
     end
 
     subgraph "T2 — Spectral Contraction Mapping (SCM)"
         T2_WHAT["SpectralContractionOperator&lt;D&gt;<br/>Banach fixed-point iteration<br/>contraction ratio < 1 guaranteed"]
-        T2_WHERE["Used in: file prefetch prediction,<br/>scheduler next-task prediction,<br/>encoder state evolution"]
+        T2_WHERE["Used in: file prefetch prediction,<br/>scheduler next-task prediction,<br/>topological RAM prefetch"]
     end
 
     subgraph "T3 — Geometric Memory Consolidation (GMC)"
         T3_WHAT["Renyi entropy bound<br/>Betti-0 measures fragmentation<br/>threshold: 2.0 bits"]
-        T3_WHERE["Used in: ManifoldFS cell merging,<br/>directory reorganization,<br/>memory defragmentation trigger"]
+        T3_WHERE["Used in: ManifoldFS cell merging,<br/>directory entropy,<br/>memory fragmentation trigger"]
     end
 
     subgraph "T4 — Adaptive Governor Control (AGCR)"
@@ -998,7 +1013,7 @@ graph TD
 
     subgraph "T5 — Hyperbolic Curvature Separation (HCS)"
         T5_WHAT["Hyperbolic vs Euclidean separation<br/>negative curvature → exponential<br/>growth of distinguishable states"]
-        T5_WHERE["Used in: ManifoldFS path resolution,<br/>process tree layout,<br/>deep directory traversal"]
+        T5_WHERE["Used in: ManifoldFS path depth,<br/>memory lifetime class,<br/>topological power mapping"]
     end
 
     T1_WHAT --> T1_WHERE
@@ -1016,13 +1031,13 @@ graph TD
 
 | ID | Name | Formal Statement | Governs |
 |----|------|------------------|---------|
-| T1 | TSS | O(1) retrieval via spherical Voronoi tessellation | file lookup, task groups, hit-test |
+| T1 | TSS | O(1) retrieval via spherical Voronoi tessellation | file lookup, task groups, memory locality |
 | T2 | SCM | Spectral contraction toward fixed-point attractor | prefetch, next-task prediction |
 | T3 | GMC | Renyi entropy bound on memory consolidation | cell merging, defrag triggers |
 | T4 | AGCR | PD governor convergence (eigenvalue-bounded) | timeslice, cache, FPS, heap |
-| T5 | HCS | Hyperbolic vs Euclidean separation ratio | path resolution, tree layout |
+| T5 | HCS | Hyperbolic vs Euclidean separation ratio | path depth, lifetime classes, power mapping |
 
-Five more theorems (T6–T10) are formally verified but not yet active in the kernel:
+Boot-verified HFT/ML theorem gates:
 
 | ID | Name | What |
 |----|------|------|
@@ -1171,7 +1186,7 @@ graph TD
     end
 
     subgraph "Bindings"
-        PY["Python interop<br/>(bindings/python/)"]
+        AETHER_BIND["Aether-Lang native bindings"]
     end
 
     PARSE --> BIO & TITAN
@@ -1184,7 +1199,7 @@ graph TD
 
 ## Lean 4 Proofs
 
-All ten theorems are mechanically verified in Lean 4, built against Mathlib.
+All ten theorem checks build into `kernel/seal-os` through the `aether_verified` no_std crate. Lean 4 artifacts live beside them; [docs/THEOREMS.md](docs/THEOREMS.md) tracks which claims are full proofs, layered bridge checks, or placeholders still needing stronger formalization.
 
 ```
 kernel/aether/aether-verified/lean/
@@ -1218,7 +1233,7 @@ graph TD
     subgraph "Testing"
         TEST["cargo test --workspace"]
         MIRI["Miri UB detection<br/>(state, os, proptest)"]
-        PYTHON["Python compileall + unittest"]
+        AETHER_CI["Aether-Lang and Rust audit gates"]
     end
 
     subgraph "Security"
@@ -1234,8 +1249,8 @@ graph TD
     subgraph "Kernel"
         KBUILD["Build kernel (nightly)<br/>verify binary < 512KB"]
         KCLIPPY["Kernel clippy (nightly)"]
-        KISO["Build ISO<br/>grub-mkrescue<br/>verify ISO < 64MB"]
-        KQEMU["QEMU smoke test<br/>4GB RAM, 45s timeout<br/>11 boot milestones"]
+        KISO["Build UEFI image<br/>seal-mkimage<br/>verify image"]
+        KQEMU["QEMU smoke test<br/>4GB RAM, 45s timeout<br/>hard theorem gates + soft milestones"]
     end
 
     subgraph "Formal Verification"
@@ -1245,20 +1260,25 @@ graph TD
     KBUILD --> KISO --> KQEMU
 ```
 
-**QEMU smoke test verifies 11 boot milestones:**
-1. Banner printed
-2. Heap initialized
-3. Interrupts configured
-4. T4 governor started
-5. T1 Voronoi active (8 cells)
-6. All T1-T5 theorems ACTIVE
-7. ManifoldFS initialized
-8. O(1) teleportation demonstrated
-9. Scheduler started
-10. Syscalls verified
-11. Shell executed
+**QEMU smoke test gates are split into hard and soft milestones.**
 
-**Toolchains**: Rust 1.85 (stable), nightly (kernel + Miri), Python 3.11, Lean 4.7.0.
+Hard gates must pass:
+
+1. UEFI entry and Seal OS banner
+2. Heap initialized
+3. IDT + PIC initialized
+4. SYSCALL/SYSRET MSRs programmed
+5. T4 governor online
+6. T1 Voronoi index reports 8 cells
+7. All ten theorem lines `[THEOREM] Tn/... VERIFIED`
+8. The summary line `All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths`
+9. Image verifier passes before boot
+
+Soft milestones are observed when present but must not be documented as hard
+proof until CI requires them: Shell, desktop, package manager, games, optional
+hardware drivers, and demo teleport output.
+
+**Toolchains**: Rust 1.85 (stable), nightly (kernel + Miri), Aether-Lang, Lean 4.7.0.
 
 ---
 
@@ -1277,7 +1297,7 @@ Epsilon-Hollow/
 │   │   │   ├── fs/                 # ManifoldFS + FAT + ext2 + PipeFS + VFS (devtmpfs, procfs, sysfs)
 │   │   │   ├── graphics/           # Framebuffer, double-buffer, font, console, splash, wallpaper, htek, topo_render
 │   │   │   ├── process/            # ManifoldScheduler, context switch, ELF loader, userspace (ring-3)
-│   │   │   ├── syscall/            # 36 syscalls: POSIX + signals + pipes + RTC + Epsilon extensions
+│   │   │   ├── syscall/            # Seal ABI calls + signals + pipes + RTC + Epsilon extensions
 │   │   │   ├── wm/                 # Compositor, windows, desktop, taskbar
 │   │   │   ├── cpu/                # SMP bring-up (INIT-SIPI-SIPI)
 │   │   │   ├── net/                # TCP/IP stack (ARP, DHCP, DNS, ICMP, IPv4, TCP, UDP)
@@ -1291,18 +1311,18 @@ Epsilon-Hollow/
 │   │   └── build.rs                # Build configuration
 │   │
 │   ├── epsilon/epsilon/crates/
-│   │   ├── aether-core/            # T1-T5 math: TSS, SCM, topology, governor
+│   │   ├── aether-core/            # Runtime math for T1-T5
 │   │   ├── epsilon/                # Context teleportation (bridge, manifold, governor)
 │   │   └── epsilon-os/             # World model REPL
 │   │
 │   └── aether/
 │       ├── Aether-Lang/crates/     # Topological DSL runtime + CLI
 │       ├── aether-link/            # I/O superkernel (~18 ns/cycle)
-│       └── aether-verified/lean/   # Lean 4 theorem proofs
+│       └── aether-verified/        # no_std T1-T10 theorem checks + Lean 4 artifacts
 │
 ├── infrastructure/                 # K8s manifests, orchestrator, training
 ├── scripts/                        # BOM check, demo, model download
-├── tests/                          # Python integration tests
+├── tests/                          # Legacy research tests, not the Seal OS language surface
 ├── .github/workflows/ci.yml        # 16-job CI pipeline
 ├── Cargo.toml                      # Workspace root (10 member crates)
 └── deny.toml                       # License + dependency policy
@@ -1317,10 +1337,12 @@ Epsilon-Hollow/
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Rust (stable) | 1.85+ | Workspace crates |
+| Rust (stable) | 1.88+ | LAAMBA Governor Tauri backend |
 | Rust (nightly) | latest | Seal OS kernel (`#![feature(abi_x86_interrupt)]`) |
 | QEMU | any | `qemu-system-x86_64` for testing |
-| GRUB | 2.x | `grub-mkrescue` for ISO creation |
-| Python | 3.11 | Integration tests |
+| Oracle VM VirtualBox | 7.x | Primary GUI VM target |
+| OVMF/EDK2 | any | UEFI firmware for QEMU |
+| Aether-Lang | repo-local | Native Seal OS scripts and app logic |
 | Lean | 4.7.0 | Formal proofs (optional) |
 
 ### Quick Start
@@ -1334,23 +1356,39 @@ cargo test --workspace
 cd kernel/seal-os
 cargo +nightly build --release
 
-# Create bootable ISO (Linux only — needs grub-mkrescue, xorriso, mtools)
-./scripts/build_iso.sh
+# Create the UEFI disk image used by QEMU and Oracle VM VirtualBox
+cd ../seal-mkimage
+cargo +stable run --release
 
-# Run in QEMU
-qemu-system-x86_64 -cdrom seal-os.iso -serial stdio -m 4G -vga std
+# Output image:
+# kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
 
-# Run in VirtualBox (UEFI — OVMF required)
-# Create VM → System → Enable EFI → Storage → attach seal-os.iso → Boot
+# Run in QEMU (Linux/macOS)
+cd ../seal-os
+./run-qemu.sh
 
-# Run headless (serial only)
-qemu-system-x86_64 -cdrom seal-os.iso -nographic -m 4G
+# Run in QEMU (Windows, if QEMU + OVMF are installed)
+powershell -File .\run-qemu.ps1
 
-# Boot on real hardware
-dd if=seal-os.iso of=/dev/sdX bs=4M status=progress
+# Run in Oracle VM VirtualBox
+# Windows helper, requires VBoxManage on PATH:
+powershell -File .\build-vbox.ps1
+#
+# Manual conversion:
+# VBoxManage convertfromraw --format VDI target/x86_64-unknown-uefi/release/seal-os.img seal-os.vdi
+#
+# VM settings:
+# Type=Other, Version=Other/Unknown (64-bit)
+# Enable EFI, RAM=4096 MB, CPUs=1-2
+# Display=VMSVGA, video memory=128 MB
+# Storage=SATA/AHCI, attach seal-os.vdi
+# Network=Intel PRO/1000 MT Desktop if networking is needed
+
+# Optional ISO for CD/DVD boot on Linux:
+../../scripts/build_iso.sh
 ```
 
-Download the latest ISO from [Releases](../../releases).
+The current first-class build artifact is `seal-os.img`, a raw GPT disk with a FAT EFI System Partition containing `EFI/BOOT/BOOTX64.EFI`. For Oracle VM VirtualBox, convert it to `seal-os.vdi` with `build-vbox.ps1` or `VBoxManage convertfromraw`.
 
 ### System Requirements
 
@@ -1382,7 +1420,7 @@ This is a research kernel. Here are the real limitations as of 0.4.5 (May 2026):
 8. **WiFi/BT**: Simulated state machines with deterministic scan/connect/pair. Real firmware blobs are vendor IP, out of scope.
 9. **TLS not production-grade**: The random source falls back to deterministic LCG if RDRAND is unavailable. Do not use for production crypto.
 10. **No floating-point in kernel IRQ handlers**: The kernel uses libm for transcendental functions. FPU state is saved/restored on context switch but not used in IRQ handlers.
-11. **No POSIX signals fully wired**: Signal delivery works but sigaltstack and SA_RESTART are not implemented.
+11. **Signal restart gaps**: Signal delivery works but sigaltstack and automatic interrupted-call restart are not implemented.
 12. **Installer is simulated**: The disk installer UI exists but actual GPT partitioning and filesystem formatting are not yet implemented. This requires raw block device write access.
 13. **No kernel modules**: Everything is built-in. No loadable kernel module framework.
 14. **Static ELF only**: The ELF loader does not support dynamic linking or shared libraries.
@@ -1392,7 +1430,7 @@ This is a research kernel. Here are the real limitations as of 0.4.5 (May 2026):
 
 ## Seal OS vs The World
 
-How does a geometry-native research kernel compare to production operating systems? This table is honest — Seal OS is v0.4.5. It wins on ideas, not on driver count.
+How does a geometry-native research kernel compare to production operating systems? This table is a capability map for Seal OS v0.4.5, not a blanket victory claim. Seal OS aims to beat Ubuntu on the benchmark set in [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md); the claim becomes true only for rows with fresh Seal OS and Ubuntu measurements under the same constraints.
 
 | Feature | **Seal OS v0.4.5** | **Redox OS 0.9.0** | **Ubuntu 24.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
 |---|---|---|---|---|---|---|
@@ -1403,13 +1441,13 @@ How does a geometry-native research kernel compare to production operating syste
 | **Min RAM** | 4 GB | 512 MB | 4 GB | 512 MB | 4 GB | 8 GB |
 | **Boot target** | `x86_64-unknown-uefi` | `x86_64-unknown-redox` | `x86_64-linux-gnu` | `x86_64-linux-gnu` | proprietary | proprietary |
 | **Filesystem** | ManifoldFS (S² geometry) | RedoxFS (CoW) | ext4 / btrfs | ext4 | NTFS / ReFS | APFS |
-| **File identity** | 64-point cloud on S² | byte sequence | byte sequence | byte sequence | byte sequence | byte sequence |
+| **File identity** | Raw bytes + S^2 ManifoldPayload embedding | byte sequence | byte sequence | byte sequence | byte sequence | byte sequence |
 | **File move** | O(1) topological surgery | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same FS) | rename (O(1) same vol) | rename (O(1) same vol) |
 | **Content-addressable lookup** | Native (Voronoi cell) | No | No (needs `locate`) | No (needs `locate`) | No (Windows Search) | No (Spotlight) |
 | **Scheduler** | ManifoldScheduler (T1+T2+T4) | Round-robin | CFS / EEVDF | CFS | Hybrid priority | Grand Central Dispatch |
 | **Adaptive control** | GeometricGovernor (PD on manifold) | No | cpufreq governors | cpufreq governors | Dynamic tick | Timer coalescing |
-| **Formal verification** | Lean 4 (T1-T10, Mathlib) | Partial (cosmic, relibc) | Partial (sel4 for ARM) | None | None | None |
-| **Math-driven kernel** | Yes (all 5 theorems active) | No | No | No | No | No |
+| **Formal verification** | Lean 4 in progress; Rust boot gates active | Partial (cosmic, relibc) | Partial (seL4 adjacent, not Linux-wide) | None | None | None |
+| **Math-driven kernel** | Yes (T1-T5 active, T6-T10 boot-checked) | No | No | No | No | No |
 | **Topological data analysis** | Native (Betti numbers, Voronoi) | No | Userspace only | Userspace only | No | No |
 | **Predictive prefetch** | T2 spectral contraction | No | readahead heuristic | readahead heuristic | Superfetch/SysMain | Speculative prefetch |
 | **GPU offload ready** | PCI detection only (driver pending) | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
@@ -1418,16 +1456,16 @@ How does a geometry-native research kernel compare to production operating syste
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
 | **Shell** | SealShell (30+ English-first commands) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
 | **Package manager** | ManifoldPkg (Voronoi deps) | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
-| **Syscalls** | 36 (POSIX + signals + pipes + RTC + Epsilon) | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
+| **Syscalls** | Seal ABI + Epsilon theorem extensions | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
 | **USB support** | Real — xHCI controller, HID boot keyboards/mice, Mass Storage SCSI BBB | Basic (xHCI) | Full | Full | Full | Full |
 | **Network stack** | Real — TCP/UDP/DHCP/DNS + TLS 1.3 + HTTPS client | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
 | **Driver count** | 15+ (serial, kbd, mouse, timer, PCI, NVMe, AHCI, e1000, xHCI, HDA, WiFi probe, BT probe, GPU probe, entropy, RTC) | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
 | **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
 | **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |
-| **Theorem count** | 10 (5 active, 5 verified) | 0 | 0 | 0 | 0 | 0 |
+| **Theorem count** | 10 boot-gated; T1-T5 active in runtime paths | 0 | 0 | 0 | 0 | 0 |
 | **Teleportation** | Yes (O(1) file move) | No | No | No | No | No |
 
-**Where Seal OS leads**: mathematical rigor, topological data primitives, content-addressable filesystem, formally verified kernel theorems, adaptive governor, O(1) teleportation. No other OS encodes files as geometry or uses Voronoi tessellations for scheduling.
+**Where Seal OS leads as a design**: mathematical kernel primitives, topological data embeddings, content-addressable ManifoldFS metadata, theorem-gated boot, adaptive governor, and O(1) same-filesystem topological moves. **Where Seal OS must still prove superiority**: repeatable Ubuntu comparison benchmarks for HFT/ML workloads, driver maturity, security hardening, and long-running reliability.
 
 **Where Seal OS trails**: GPU drivers (no proprietary firmware), WiFi/BT (no vendor blobs), self-hosting, userspace ecosystem, multi-user permissions, security hardening maturity. It's a research kernel — not yet a daily driver.
 
@@ -1444,7 +1482,7 @@ Every claim in this README has a supplementary document. Every document traces t
 | Document | What it covers | Key source files |
 |----------|---------------|-----------------|
 | [Seal OS README](kernel/seal-os/README.md) | Kernel overview, quick start, concept | `kernel/seal-os/src/main.rs` |
-| [Seal OS Architecture](kernel/seal-os/ARCHITECTURE.md) | Boot sequence, init, hardware setup | `src/boot/boot.S`, `src/main.rs` |
+| [Seal OS Architecture](kernel/seal-os/ARCHITECTURE.md) | UEFI boot sequence, init, hardware setup | `src/boot/uefi_entry.rs`, `src/lib.rs` |
 | [Seal OS Testing](kernel/seal-os/TESTING.md) | Prerequisites, Docker, manual tests | CI pipeline, QEMU smoke test |
 
 ### Technical References (docs/)
@@ -1453,10 +1491,10 @@ Every claim in this README has a supplementary document. Every document traces t
 |----------|---------------|-----------------|
 | [Theorem Reference (T1-T10)](docs/THEOREMS.md) | All 10 theorems: math, implementation, Lean proofs, callsites | `aether-core/src/tss.rs`, `governor.rs`, `scm.rs`, `topology.rs` |
 | [ManifoldFS Reference](docs/MANIFOLDFS.md) | Encoding pipeline, inode structure, O(1) teleport, content search | `seal-os/src/fs/encoder.rs`, `manifold_fs.rs` |
-| [Boot Sequence Reference](docs/BOOT.md) | BIOS→GRUB→boot.S→Rust, page tables, GDT, linker | `src/boot/boot.S`, `linker.ld`, `build.rs` |
-| [Syscall Reference](docs/SYSCALLS.md) | All 36 syscalls: POSIX + signals + pipes + RTC + Epsilon | `src/syscall/table.rs` |
+| [Boot Sequence Reference](docs/BOOT.md) | UEFI firmware to Seal kernel, GOP, VM image path | `src/boot/uefi_entry.rs`, `kernel/seal-mkimage` |
+| [Syscall Reference](docs/SYSCALLS.md) | Seal ABI calls + signals + pipes + RTC + Epsilon | `src/syscall/table.rs` |
 | [CI Pipeline Reference](docs/CI.md) | All 16 CI jobs, QEMU milestones, toolchains | `.github/workflows/ci.yml` |
-| [Memory Reference](docs/MEMORY.md) | Physical layout, bump allocator, 4GB identity map, MMIO | `src/memory/mod.rs`, `src/boot/boot.S` |
+| [Memory Reference](docs/MEMORY.md) | Physical layout, allocator, UEFI map, MMIO | `src/memory/mod.rs`, `src/boot/uefi_entry.rs` |
 
 ### Research and Specifications
 
@@ -1508,7 +1546,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**89678 lines of Rust** across 345 files · 0 lines of x86 assembly · 803 lines of Lean 4 proofs · 14641 lines of Python — **105122 total**
+**Seal OS language surface**: Rust kernel, assembly boot/context edges where needed, and Aether-Lang DSL. Legacy Python research files are not part of the Seal OS GitHub language target and are quarantined by `.gitattributes` until removed or rewritten.
 <!-- RUST_LINE_COUNT_END -->
 
 </p>

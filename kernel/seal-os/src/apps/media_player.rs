@@ -63,7 +63,17 @@ impl ContainerFormat {
     }
 
     pub fn is_video(&self) -> bool {
-        matches!(self, Self::Mp4 | Self::Avi | Self::Mkv | Self::Mov | Self::Webm | Self::Flv | Self::Wmv | Self::Ogg)
+        matches!(
+            self,
+            Self::Mp4
+                | Self::Avi
+                | Self::Mkv
+                | Self::Mov
+                | Self::Webm
+                | Self::Flv
+                | Self::Wmv
+                | Self::Ogg
+        )
     }
 
     pub fn is_audio_only(&self) -> bool {
@@ -198,8 +208,10 @@ impl MediaPlayer {
             PlaybackState::Playing => String::from("[SealPlayer] Already playing."),
             PlaybackState::Paused => {
                 self.state = PlaybackState::Playing;
-                format!("[SealPlayer] Resumed at {}",
-                    format_time(self.position_secs))
+                format!(
+                    "[SealPlayer] Resumed at {}",
+                    format_time(self.position_secs)
+                )
             }
             PlaybackState::Stopped => {
                 if let Some(name) = &self.current_file {
@@ -269,7 +281,9 @@ impl MediaPlayer {
                     let _ = self.open(&name);
                 }
             }
-            b's' => { self.stop(); }
+            b's' => {
+                self.stop();
+            }
             b'+' => {
                 let v = (self.volume + 5).min(100);
                 self.volume_set(v);
@@ -297,18 +311,26 @@ impl MediaPlayer {
         if let (Some(name), Some(info)) = (&self.current_file, &self.current_info) {
             out.push_str(&format!(
                 "  File: {}\n  Format: {}\n  Position: {} / {}\n",
-                name, info.container.name(),
-                format_time(self.position_secs), format_time(info.duration_secs)
+                name,
+                info.container.name(),
+                format_time(self.position_secs),
+                format_time(info.duration_secs)
             ));
             if info.container.is_video() {
                 out.push_str(&format!(
                     "  Video: {} ({}x{} @ {}fps)\n",
-                    info.video_codec.name(), info.width, info.height, info.fps
+                    info.video_codec.name(),
+                    info.width,
+                    info.height,
+                    info.fps
                 ));
             }
             out.push_str(&format!(
                 "  Audio: {} ({}Hz, {}ch)\n  Bitrate: {} kbps",
-                info.audio_codec.name(), info.sample_rate, info.channels, info.bitrate_kbps
+                info.audio_codec.name(),
+                info.sample_rate,
+                info.channels,
+                info.bitrate_kbps
             ));
         }
 
@@ -349,7 +371,9 @@ impl MediaPlayer {
 
     pub fn show_playlist(&self) -> String {
         if self.playlist.is_empty() {
-            return String::from("[SealPlayer] Playlist empty. Use 'play add <file>' to add tracks.");
+            return String::from(
+                "[SealPlayer] Playlist empty. Use 'play add <file>' to add tracks.",
+            );
         }
         let mut out = String::from("[SealPlayer] Playlist\n══════════════════════\n");
         for (i, f) in self.playlist.iter().enumerate() {
@@ -406,7 +430,9 @@ impl MediaPlayer {
                 let vp_w = cw - m * 2;
                 let vp_h = ch.saturating_sub(vp_y + 80).min(300);
 
-                htek::fill_rounded_rect_gradient(win, m, vp_y, vp_w, vp_h, 6, 0x000A0A12, 0x00060608);
+                htek::fill_rounded_rect_gradient(
+                    win, m, vp_y, vp_w, vp_h, 6, 0x000A0A12, 0x00060608,
+                );
                 htek::stroke_rounded_rect(win, m, vp_y, vp_w, vp_h, 6, 1, 0x00303050);
 
                 // State icon in center
@@ -440,7 +466,8 @@ impl MediaPlayer {
 
             // Progress fill
             if info.duration_secs > 0 {
-                let progress = ((self.position_secs as u32) * bar_w) / (info.duration_secs as u32).max(1);
+                let progress =
+                    ((self.position_secs as u32) * bar_w) / (info.duration_secs as u32).max(1);
                 if progress > 0 {
                     htek::fill_rounded_rect(win, bar_x, ctrl_y, progress.max(6), 6, 3, 0x0000CCAA);
                     // Playhead dot
@@ -452,7 +479,11 @@ impl MediaPlayer {
             }
 
             // Time display
-            let time_str = format!("{} / {}", format_time(self.position_secs), format_time(info.duration_secs));
+            let time_str = format!(
+                "{} / {}",
+                format_time(self.position_secs),
+                format_time(info.duration_secs)
+            );
             htek::render_text_small(win, m + 4, ctrl_y + 12, &time_str, 0x00AAAABB);
 
             // Bitrate info (right)
@@ -461,15 +492,37 @@ impl MediaPlayer {
             htek::render_text_small(win, br_x, ctrl_y + 12, &br_str, 0x00666688);
 
             // Audio info
-            let audio_str = format!("{} {}Hz {}ch", info.audio_codec.name(), info.sample_rate, info.channels);
+            let audio_str = format!(
+                "{} {}Hz {}ch",
+                info.audio_codec.name(),
+                info.sample_rate,
+                info.channels
+            );
             let aw = audio_str.len() as u32 * htek::TEXT_CHAR_W;
             htek::render_text_small(win, (cw - aw) / 2, ctrl_y + 12, &audio_str, 0x00555577);
-
         } else {
             // No media loaded — show placeholder
             let center_y = ch / 2 - 40;
-            htek::fill_rounded_rect_gradient(win, m, m + 50, cw - m * 2, ch - m * 2 - 100, 10, 0x000E0E1A, 0x00080810);
-            htek::stroke_rounded_rect(win, m, m + 50, cw - m * 2, ch - m * 2 - 100, 10, 1, 0x00252540);
+            htek::fill_rounded_rect_gradient(
+                win,
+                m,
+                m + 50,
+                cw - m * 2,
+                ch - m * 2 - 100,
+                10,
+                0x000E0E1A,
+                0x00080810,
+            );
+            htek::stroke_rounded_rect(
+                win,
+                m,
+                m + 50,
+                cw - m * 2,
+                ch - m * 2 - 100,
+                10,
+                1,
+                0x00252540,
+            );
 
             // Big play icon (triangle via lines)
             let icon_cx = cw / 2;
@@ -555,16 +608,25 @@ fn format_media_info(filename: &str, info: &MediaInfo) -> String {
     if info.container.is_video() {
         out.push_str(&format!(
             "  Video: {} ({}x{} @ {}fps, {} kbps)\n",
-            info.video_codec.name(), info.width, info.height, info.fps, info.bitrate_kbps
+            info.video_codec.name(),
+            info.width,
+            info.height,
+            info.fps,
+            info.bitrate_kbps
         ));
     }
 
     out.push_str(&format!(
         "  Audio: {} ({}Hz, {}ch)\n",
-        info.audio_codec.name(), info.sample_rate, info.channels
+        info.audio_codec.name(),
+        info.sample_rate,
+        info.channels
     ));
 
-    out.push_str(&format!("  Duration: {}\n", format_time(info.duration_secs)));
+    out.push_str(&format!(
+        "  Duration: {}\n",
+        format_time(info.duration_secs)
+    ));
     out.push_str("[SealPlayer] Playing...");
     out
 }

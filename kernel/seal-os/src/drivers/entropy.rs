@@ -77,8 +77,7 @@ pub fn rdseed_u64() -> Option<u64> {
 /// Prefers RDSEED, falls back to RDRAND, and finally to a ticks-based
 /// deterministic LCG when neither instruction is available.
 pub fn getrandom(buf: &mut [u8]) -> bool {
-    let hw = RDRAND_AVAILABLE.load(Ordering::Relaxed)
-        || RDSEED_AVAILABLE.load(Ordering::Relaxed);
+    let hw = RDRAND_AVAILABLE.load(Ordering::Relaxed) || RDSEED_AVAILABLE.load(Ordering::Relaxed);
 
     if hw {
         let mut ok = true;

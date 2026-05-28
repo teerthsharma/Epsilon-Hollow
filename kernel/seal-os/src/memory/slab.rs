@@ -24,12 +24,30 @@ impl SlabAllocator {
     const fn new() -> Self {
         Self {
             caches: [
-                SlabCache { obj_size: 64, free_list: None },
-                SlabCache { obj_size: 128, free_list: None },
-                SlabCache { obj_size: 256, free_list: None },
-                SlabCache { obj_size: 512, free_list: None },
-                SlabCache { obj_size: 1024, free_list: None },
-                SlabCache { obj_size: 2048, free_list: None },
+                SlabCache {
+                    obj_size: 64,
+                    free_list: None,
+                },
+                SlabCache {
+                    obj_size: 128,
+                    free_list: None,
+                },
+                SlabCache {
+                    obj_size: 256,
+                    free_list: None,
+                },
+                SlabCache {
+                    obj_size: 512,
+                    free_list: None,
+                },
+                SlabCache {
+                    obj_size: 1024,
+                    free_list: None,
+                },
+                SlabCache {
+                    obj_size: 2048,
+                    free_list: None,
+                },
             ],
         }
     }

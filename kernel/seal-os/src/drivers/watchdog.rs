@@ -17,6 +17,18 @@ pub fn init(period_ms: u32) {
     WATCHDOG_PERIOD_MS.store(period_ms, Ordering::Relaxed);
     WATCHDOG_DEADLINE.store(now.saturating_add(period_ms as u64), Ordering::Relaxed);
     WATCHDOG_PETTED.store(true, Ordering::Relaxed);
+    WATCHDOG_ENABLED.store(false, Ordering::Relaxed);
+}
+
+/// Arm the watchdog after boot reaches a point where regular petting exists.
+pub fn enable() {
+    let period = WATCHDOG_PERIOD_MS.load(Ordering::Relaxed) as u64;
+    if period == 0 {
+        return;
+    }
+    let now = crate::drivers::interrupts::ticks();
+    WATCHDOG_DEADLINE.store(now.saturating_add(period), Ordering::Relaxed);
+    WATCHDOG_PETTED.store(true, Ordering::Relaxed);
     WATCHDOG_ENABLED.store(true, Ordering::Relaxed);
 }
 
@@ -65,6 +77,7 @@ pub fn check() {
 
 /// Force an immediate system reset via the keyboard controller.
 pub fn force_reset() {
+    crate::serial_println!("[WATCHDOG] Deadline missed; forcing reset");
     unsafe {
         let mut cmd: Port<u8> = Port::new(0x64);
         cmd.write(0xFE);

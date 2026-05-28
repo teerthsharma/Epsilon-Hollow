@@ -3,12 +3,12 @@
 
 //! FAT12/16/32 filesystem driver (read-only v1).
 
+use crate::drivers::block;
+use crate::fs::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use crate::drivers::block;
-use crate::fs::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FatType {
@@ -146,9 +146,8 @@ impl FatFs {
             return Err(VfsError::IoError);
         }
 
-        let root_dir_sectors =
-            ((bpb.root_entries as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
-                / bpb.bytes_per_sector as u32;
+        let root_dir_sectors = ((bpb.root_entries as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
+            / bpb.bytes_per_sector as u32;
         let data_sectors = total_sectors.saturating_sub(
             (bpb.reserved_sectors as u32) + (bpb.num_fats as u32 * fat_size) + root_dir_sectors,
         );
@@ -188,8 +187,12 @@ impl FatFs {
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; (self.bytes_per_sector as usize) * 2];
-                block::read_block(self.dev_num, fat_sector, &mut buf[..self.bytes_per_sector as usize])
-                    .map_err(|_| VfsError::IoError)?;
+                block::read_block(
+                    self.dev_num,
+                    fat_sector,
+                    &mut buf[..self.bytes_per_sector as usize],
+                )
+                .map_err(|_| VfsError::IoError)?;
                 if entry_offset == self.bytes_per_sector as usize - 1 {
                     block::read_block(
                         self.dev_num,
@@ -199,11 +202,9 @@ impl FatFs {
                     .map_err(|_| VfsError::IoError)?;
                 }
                 let entry = if cluster % 2 == 0 {
-                    (buf[entry_offset] as u16 | ((buf[entry_offset + 1] as u16 & 0x0F) << 8))
-                        as u32
+                    (buf[entry_offset] as u16 | ((buf[entry_offset + 1] as u16 & 0x0F) << 8)) as u32
                 } else {
-                    ((buf[entry_offset] as u16 >> 4)
-                        | ((buf[entry_offset + 1] as u16) << 4)) as u32
+                    ((buf[entry_offset] as u16 >> 4) | ((buf[entry_offset + 1] as u16) << 4)) as u32
                 };
                 Ok(entry)
             }
@@ -212,7 +213,8 @@ impl FatFs {
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-                block::read_block(self.dev_num, fat_sector, &mut buf).map_err(|_| VfsError::IoError)?;
+                block::read_block(self.dev_num, fat_sector, &mut buf)
+                    .map_err(|_| VfsError::IoError)?;
                 let entry = u16::from_le_bytes([buf[entry_offset], buf[entry_offset + 1]]) as u32;
                 Ok(entry)
             }
@@ -221,7 +223,8 @@ impl FatFs {
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-                block::read_block(self.dev_num, fat_sector, &mut buf).map_err(|_| VfsError::IoError)?;
+                block::read_block(self.dev_num, fat_sector, &mut buf)
+                    .map_err(|_| VfsError::IoError)?;
                 let entry = u32::from_le_bytes([
                     buf[entry_offset],
                     buf[entry_offset + 1],
@@ -273,7 +276,8 @@ impl FatFs {
             let byte_in_sector = sector_offset % self.bytes_per_sector as usize;
             let sector = self.cluster_to_sector(cluster) + sector_in_cluster as u64;
             let mut sector_buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-            block::read_block(self.dev_num, sector, &mut sector_buf).map_err(|_| VfsError::IoError)?;
+            block::read_block(self.dev_num, sector, &mut sector_buf)
+                .map_err(|_| VfsError::IoError)?;
             let to_copy = core::cmp::min(
                 buf.len() - buf_written,
                 self.bytes_per_sector as usize - byte_in_sector,
@@ -300,7 +304,8 @@ impl FatFs {
         let mut entries = Vec::new();
         let mut offset = 0;
         while offset + 32 <= data.len() {
-            let raw = unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry) };
+            let raw =
+                unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry) };
             offset += 32;
             if raw.name[0] == 0x00 {
                 break;
@@ -315,10 +320,22 @@ impl FatFs {
                 continue;
             }
 
-            let name_len = raw.name.iter().position(|&b| b == b' ').unwrap_or(raw.name.len());
-            let name = core::str::from_utf8(&raw.name[..name_len]).unwrap_or("").to_string();
-            let ext_len = raw.ext.iter().position(|&b| b == b' ').unwrap_or(raw.ext.len());
-            let ext = core::str::from_utf8(&raw.ext[..ext_len]).unwrap_or("").to_string();
+            let name_len = raw
+                .name
+                .iter()
+                .position(|&b| b == b' ')
+                .unwrap_or(raw.name.len());
+            let name = core::str::from_utf8(&raw.name[..name_len])
+                .unwrap_or("")
+                .to_string();
+            let ext_len = raw
+                .ext
+                .iter()
+                .position(|&b| b == b' ')
+                .unwrap_or(raw.ext.len());
+            let ext = core::str::from_utf8(&raw.ext[..ext_len])
+                .unwrap_or("")
+                .to_string();
             let full_name = if ext.is_empty() {
                 name
             } else {
@@ -362,24 +379,41 @@ impl FatFs {
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; (self.bytes_per_sector as usize) * 2];
-                block::read_block(self.dev_num, fat_sector, &mut buf[..self.bytes_per_sector as usize])
-                    .map_err(|_| VfsError::IoError)?;
+                block::read_block(
+                    self.dev_num,
+                    fat_sector,
+                    &mut buf[..self.bytes_per_sector as usize],
+                )
+                .map_err(|_| VfsError::IoError)?;
                 if entry_offset == self.bytes_per_sector as usize - 1 {
-                    block::read_block(self.dev_num, fat_sector + 1, &mut buf[self.bytes_per_sector as usize..])
-                        .map_err(|_| VfsError::IoError)?;
+                    block::read_block(
+                        self.dev_num,
+                        fat_sector + 1,
+                        &mut buf[self.bytes_per_sector as usize..],
+                    )
+                    .map_err(|_| VfsError::IoError)?;
                 }
                 if cluster % 2 == 0 {
                     buf[entry_offset] = (value & 0x0FF) as u8;
-                    buf[entry_offset + 1] = (buf[entry_offset + 1] & 0xF0) | (((value >> 8) & 0x0F) as u8);
+                    buf[entry_offset + 1] =
+                        (buf[entry_offset + 1] & 0xF0) | (((value >> 8) & 0x0F) as u8);
                 } else {
                     buf[entry_offset] = (buf[entry_offset] & 0x0F) | (((value << 4) & 0xF0) as u8);
                     buf[entry_offset + 1] = ((value >> 4) & 0x0FF) as u8;
                 }
-                block::write_block(self.dev_num, fat_sector, &buf[..self.bytes_per_sector as usize])
-                    .map_err(|_| VfsError::IoError)?;
+                block::write_block(
+                    self.dev_num,
+                    fat_sector,
+                    &buf[..self.bytes_per_sector as usize],
+                )
+                .map_err(|_| VfsError::IoError)?;
                 if entry_offset == self.bytes_per_sector as usize - 1 {
-                    block::write_block(self.dev_num, fat_sector + 1, &buf[self.bytes_per_sector as usize..self.bytes_per_sector as usize + 1])
-                        .map_err(|_| VfsError::IoError)?;
+                    block::write_block(
+                        self.dev_num,
+                        fat_sector + 1,
+                        &buf[self.bytes_per_sector as usize..self.bytes_per_sector as usize + 1],
+                    )
+                    .map_err(|_| VfsError::IoError)?;
                 }
             }
             FatType::Fat16 => {
@@ -387,20 +421,29 @@ impl FatFs {
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-                block::read_block(self.dev_num, fat_sector, &mut buf).map_err(|_| VfsError::IoError)?;
+                block::read_block(self.dev_num, fat_sector, &mut buf)
+                    .map_err(|_| VfsError::IoError)?;
                 buf[entry_offset..entry_offset + 2].copy_from_slice(&(value as u16).to_le_bytes());
-                block::write_block(self.dev_num, fat_sector, &buf).map_err(|_| VfsError::IoError)?;
+                block::write_block(self.dev_num, fat_sector, &buf)
+                    .map_err(|_| VfsError::IoError)?;
             }
             FatType::Fat32 => {
                 let fat_offset = cluster * 4;
                 let fat_sector = self.fat_start + (fat_offset / bytes_per_sector) as u64;
                 let entry_offset = (fat_offset % bytes_per_sector) as usize;
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-                block::read_block(self.dev_num, fat_sector, &mut buf).map_err(|_| VfsError::IoError)?;
-                let existing = u32::from_le_bytes([buf[entry_offset], buf[entry_offset + 1], buf[entry_offset + 2], buf[entry_offset + 3]]);
+                block::read_block(self.dev_num, fat_sector, &mut buf)
+                    .map_err(|_| VfsError::IoError)?;
+                let existing = u32::from_le_bytes([
+                    buf[entry_offset],
+                    buf[entry_offset + 1],
+                    buf[entry_offset + 2],
+                    buf[entry_offset + 3],
+                ]);
                 let new_val = (existing & 0xF0000000) | (value & 0x0FFFFFFF);
                 buf[entry_offset..entry_offset + 4].copy_from_slice(&new_val.to_le_bytes());
-                block::write_block(self.dev_num, fat_sector, &buf).map_err(|_| VfsError::IoError)?;
+                block::write_block(self.dev_num, fat_sector, &buf)
+                    .map_err(|_| VfsError::IoError)?;
             }
         }
         Ok(())
@@ -428,7 +471,8 @@ impl FatFs {
         let sector = self.cluster_to_sector(c);
         let zero = alloc::vec![0u8; self.bytes_per_sector as usize];
         for s in 0..self.sectors_per_cluster {
-            block::write_block(self.dev_num, sector + s as u64, &zero).map_err(|_| VfsError::IoError)?;
+            block::write_block(self.dev_num, sector + s as u64, &zero)
+                .map_err(|_| VfsError::IoError)?;
         }
         Ok(c)
     }
@@ -443,7 +487,12 @@ impl FatFs {
         Ok(())
     }
 
-    fn write_clusters(&mut self, start_cluster: u32, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
+    fn write_clusters(
+        &mut self,
+        start_cluster: u32,
+        buf: &[u8],
+        offset: u64,
+    ) -> Result<usize, VfsError> {
         if start_cluster < 2 || buf.is_empty() {
             return Ok(0);
         }
@@ -473,7 +522,8 @@ impl FatFs {
             let byte_in_sector = sector_offset % self.bytes_per_sector as usize;
             let sector = self.cluster_to_sector(cluster) + sector_in_cluster as u64;
             let mut sector_buf = alloc::vec![0u8; self.bytes_per_sector as usize];
-            block::read_block(self.dev_num, sector, &mut sector_buf).map_err(|_| VfsError::IoError)?;
+            block::read_block(self.dev_num, sector, &mut sector_buf)
+                .map_err(|_| VfsError::IoError)?;
             let to_copy = core::cmp::min(
                 buf.len() - buf_written,
                 self.bytes_per_sector as usize - byte_in_sector,
@@ -503,7 +553,8 @@ impl FatFs {
         let mut data = Vec::new();
         if cluster == 0 {
             let size = self.bpb.root_entries as usize * 32;
-            let sectors = (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
+            let sectors =
+                (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
             data.resize(size, 0);
             for i in 0..sectors {
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
@@ -535,7 +586,8 @@ impl FatFs {
     fn write_dir_raw(&mut self, cluster: u32, data: &[u8]) -> Result<(), VfsError> {
         if cluster == 0 {
             let size = self.bpb.root_entries as usize * 32;
-            let sectors = (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
+            let sectors =
+                (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
             for i in 0..sectors {
                 let start = i * self.bytes_per_sector as usize;
                 let end = core::cmp::min(start + self.bytes_per_sector as usize, size);
@@ -546,7 +598,8 @@ impl FatFs {
             }
         } else {
             let mut c = cluster;
-            let _cluster_size = (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
+            let _cluster_size =
+                (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
             let mut offset = 0;
             while offset < data.len() {
                 let sector = self.cluster_to_sector(c);
@@ -576,20 +629,37 @@ impl FatFs {
         Ok(())
     }
 
-    fn find_entry_in_dir(&self, dir_cluster: u32, name: &str) -> Result<(usize, DirEntry, u32), VfsError> {
+    fn find_entry_in_dir(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+    ) -> Result<(usize, DirEntry, u32), VfsError> {
         let data = self.read_dir_raw(dir_cluster)?;
         let mut offset = 0;
         while offset + 32 <= data.len() {
-            let raw = unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry) };
+            let raw =
+                unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry) };
             if raw.name[0] == 0x00 {
                 break;
             }
             if raw.name[0] != 0xE5 && raw.attr != 0x0F && raw.attr & 0x08 == 0 {
-                let name_len = raw.name.iter().position(|&b| b == b' ').unwrap_or(raw.name.len());
+                let name_len = raw
+                    .name
+                    .iter()
+                    .position(|&b| b == b' ')
+                    .unwrap_or(raw.name.len());
                 let base = core::str::from_utf8(&raw.name[..name_len]).unwrap_or("");
-                let ext_len = raw.ext.iter().position(|&b| b == b' ').unwrap_or(raw.ext.len());
+                let ext_len = raw
+                    .ext
+                    .iter()
+                    .position(|&b| b == b' ')
+                    .unwrap_or(raw.ext.len());
                 let ext = core::str::from_utf8(&raw.ext[..ext_len]).unwrap_or("");
-                let full_name = if ext.is_empty() { base.to_string() } else { format!("{}.{}", base, ext) };
+                let full_name = if ext.is_empty() {
+                    base.to_string()
+                } else {
+                    format!("{}.{}", base, ext)
+                };
                 if full_name.eq_ignore_ascii_case(name) {
                     return Ok((offset, raw, dir_cluster));
                 }
@@ -613,7 +683,14 @@ impl FatFs {
         Err(VfsError::IoError)
     }
 
-    fn add_dir_entry(&mut self, dir_cluster: u32, name: &str, attr: u8, first_cluster: u32, size: u32) -> Result<(), VfsError> {
+    fn add_dir_entry(
+        &mut self,
+        dir_cluster: u32,
+        name: &str,
+        attr: u8,
+        first_cluster: u32,
+        size: u32,
+    ) -> Result<(), VfsError> {
         let (n, e) = Self::name_to_83(name);
         let entry = DirEntry {
             name: n,
@@ -654,7 +731,8 @@ impl FatFs {
                 tail = next;
             }
             self.write_fat_entry(tail, new_c)?;
-            let cluster_size = (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
+            let cluster_size =
+                (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
             data.resize(data.len() + cluster_size, 0);
             free_offset = Some(offset);
         }
@@ -667,14 +745,21 @@ impl FatFs {
     }
 
     fn remove_dir_entry(&mut self, dir_cluster: u32, name: &str) -> Result<(), VfsError> {
-        let (offset, _raw, _dc) = self.find_entry_in_dir(dir_cluster, name).map_err(|_| VfsError::NotFound)?;
+        let (offset, _raw, _dc) = self
+            .find_entry_in_dir(dir_cluster, name)
+            .map_err(|_| VfsError::NotFound)?;
         let mut data = self.read_dir_raw(dir_cluster)?;
         data[offset] = 0xE5;
         self.write_dir_raw(dir_cluster, &data)?;
         Ok(())
     }
 
-    fn update_dir_entry_size(&mut self, dir_cluster: u32, name: &str, size: u32) -> Result<(), VfsError> {
+    fn update_dir_entry_size(
+        &mut self,
+        dir_cluster: u32,
+        name: &str,
+        size: u32,
+    ) -> Result<(), VfsError> {
         let (offset, _raw, _dc) = self.find_entry_in_dir(dir_cluster, name)?;
         let mut data = self.read_dir_raw(dir_cluster)?;
         let size_off = offset + 28;
@@ -694,12 +779,20 @@ impl FatFs {
     fn resolve_parent_and_name(&self, path: &str) -> Result<(u32, String), VfsError> {
         let (parent_path, name) = Self::split_path(path);
         let parent_cluster = if parent_path.is_empty() {
-            if self.fat_type == FatType::Fat32 { self.root_cluster } else { 0 }
+            if self.fat_type == FatType::Fat32 {
+                self.root_cluster
+            } else {
+                0
+            }
         } else {
             let handle = self.lookup_path(parent_path)?;
-            if handle.inode == 1 && self.fat_type != FatType::Fat32 { 0 }
-            else if self.fat_type == FatType::Fat32 && handle.inode == self.root_cluster as u64 { self.root_cluster }
-            else { handle.inode as u32 }
+            if handle.inode == 1 && self.fat_type != FatType::Fat32 {
+                0
+            } else if self.fat_type == FatType::Fat32 && handle.inode == self.root_cluster as u64 {
+                self.root_cluster
+            } else {
+                handle.inode as u32
+            }
         };
         Ok((parent_cluster, String::from(name)))
     }
@@ -763,18 +856,32 @@ impl FatFs {
 
     fn find_entry_location_by_cluster(&self, cluster: u32) -> Result<(u32, usize), VfsError> {
         let mut queue = VecDeque::new();
-        let root_data = self.read_dir_raw(if self.fat_type != FatType::Fat32 { 0 } else { self.root_cluster })?;
-        queue.push_back((root_data, if self.fat_type != FatType::Fat32 { 0 } else { self.root_cluster }));
+        let root_data = self.read_dir_raw(if self.fat_type != FatType::Fat32 {
+            0
+        } else {
+            self.root_cluster
+        })?;
+        queue.push_back((
+            root_data,
+            if self.fat_type != FatType::Fat32 {
+                0
+            } else {
+                self.root_cluster
+            },
+        ));
 
         while let Some((data, dir_cluster)) = queue.pop_front() {
             let mut offset = 0;
             while offset + 32 <= data.len() {
-                let raw = unsafe { core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry) };
+                let raw = unsafe {
+                    core::ptr::read_unaligned(data.as_ptr().add(offset) as *const DirEntry)
+                };
                 if raw.name[0] == 0x00 {
                     break;
                 }
                 if raw.name[0] != 0xE5 && raw.attr != 0x0F && raw.attr & 0x08 == 0 {
-                    let fc = ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
+                    let fc =
+                        ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
                     if fc == cluster && cluster >= 2 {
                         return Ok((dir_cluster, offset));
                     }
@@ -911,7 +1018,10 @@ impl FileSystem for FatFs {
         }
         let new_c = self.allocate_cluster()?;
         self.add_dir_entry(parent_cluster, &name, 0x20, new_c, 0)?;
-        Ok(VfsHandle { fs_idx: 0, inode: new_c as u64 })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: new_c as u64,
+        })
     }
 
     fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
@@ -952,13 +1062,17 @@ impl FileSystem for FatFs {
             first_cluster_low: (parent_cluster & 0xFFFF) as u16,
             size: 0,
         };
-        let mut dir_data = alloc::vec![0u8; self.bytes_per_sector as usize * self.sectors_per_cluster as usize];
+        let mut dir_data =
+            alloc::vec![0u8; self.bytes_per_sector as usize * self.sectors_per_cluster as usize];
         unsafe {
             core::ptr::write_unaligned(dir_data.as_mut_ptr() as *mut DirEntry, dot);
             core::ptr::write_unaligned(dir_data.as_mut_ptr().add(32) as *mut DirEntry, dotdot);
         }
         self.write_dir_raw(new_c, &dir_data)?;
-        Ok(VfsHandle { fs_idx: 0, inode: new_c as u64 })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: new_c as u64,
+        })
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), VfsError> {
@@ -967,7 +1081,8 @@ impl FileSystem for FatFs {
         if raw.attr & 0x10 != 0 {
             return Err(VfsError::InvalidOperation);
         }
-        let first_cluster = ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
+        let first_cluster =
+            ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
         if first_cluster >= 2 {
             self.free_cluster_chain(first_cluster)?;
         }
@@ -981,7 +1096,8 @@ impl FileSystem for FatFs {
         if raw.attr & 0x10 == 0 {
             return Err(VfsError::NotADirectory);
         }
-        let first_cluster = ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
+        let first_cluster =
+            ((raw.first_cluster_high as u32) << 16) | (raw.first_cluster_low as u32);
         // Directory must be empty (only . and .. allowed).
         if first_cluster >= 2 {
             let entries = self.read_dir_cluster(first_cluster)?;
@@ -1090,10 +1206,18 @@ impl FileSystem for FatFs {
         };
         Ok(VfsNode {
             size: entry.size as u64,
-            permissions: if node_type == VfsNodeType::Directory { 0o755 } else { 0o644 },
+            permissions: if node_type == VfsNodeType::Directory {
+                0o755
+            } else {
+                0o644
+            },
             uid: 0,
             gid: 0,
-            mode: if node_type == VfsNodeType::Directory { 0o755 } else { 0o644 },
+            mode: if node_type == VfsNodeType::Directory {
+                0o755
+            } else {
+                0o644
+            },
             atime: 0,
             mtime: 0,
             node_type,

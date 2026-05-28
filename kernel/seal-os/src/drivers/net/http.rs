@@ -33,7 +33,9 @@ fn parse_url(url: &str) -> Result<ParsedUrl, String> {
     let (host, port) = match host_port.find(':') {
         Some(idx) => {
             let h = &host_port[..idx];
-            let p = host_port[idx + 1..].parse::<u16>().map_err(|_| String::from("bad port"))?;
+            let p = host_port[idx + 1..]
+                .parse::<u16>()
+                .map_err(|_| String::from("bad port"))?;
             (h, p)
         }
         None => (host_port, if secure { 443 } else { 80 }),
@@ -116,7 +118,9 @@ impl HttpClient {
             {
                 loop {
                     let n = tcp.recv(&mut buf);
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     response.extend_from_slice(&buf[..n]);
                 }
                 break;
@@ -132,7 +136,12 @@ impl HttpClient {
         Self::parse_response(&response)
     }
 
-    fn post_http(&self, parsed: &ParsedUrl, ip: [u8; 4], body: &[u8]) -> Result<HttpResponse, String> {
+    fn post_http(
+        &self,
+        parsed: &ParsedUrl,
+        ip: [u8; 4],
+        body: &[u8],
+    ) -> Result<HttpResponse, String> {
         let mut tcp = crate::drivers::net::tcp::TcpSocket::new();
         tcp.connect(crate::net::IpAddr::V4(ip), parsed.port);
 
@@ -165,7 +174,9 @@ impl HttpClient {
             {
                 loop {
                     let n = tcp.recv(&mut buf);
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     response.extend_from_slice(&buf[..n]);
                 }
                 break;
@@ -208,7 +219,9 @@ impl HttpClient {
             {
                 loop {
                     let n = tls.recv(&mut buf);
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     response.extend_from_slice(&buf[..n]);
                 }
                 break;
@@ -224,7 +237,12 @@ impl HttpClient {
         Self::parse_response(&response)
     }
 
-    fn post_https(&self, parsed: &ParsedUrl, ip: [u8; 4], body: &[u8]) -> Result<HttpResponse, String> {
+    fn post_https(
+        &self,
+        parsed: &ParsedUrl,
+        ip: [u8; 4],
+        body: &[u8],
+    ) -> Result<HttpResponse, String> {
         let mut tls = crate::drivers::net::tls_socket::TlsSocket::new();
         if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port) {
             return Err(format!("TLS connect failed: {}", e));
@@ -254,7 +272,9 @@ impl HttpClient {
             {
                 loop {
                     let n = tls.recv(&mut buf);
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     response.extend_from_slice(&buf[..n]);
                 }
                 break;
@@ -316,13 +336,23 @@ impl HttpClient {
             }
         }
 
-        let header_end = text.find("\r\n\r\n")
+        let header_end = text
+            .find("\r\n\r\n")
             .or_else(|| text.find("\n\n"))
             .ok_or("no header/body boundary")?;
-        let body_start = header_end + if text[header_end..].starts_with("\r\n\r\n") { 4 } else { 2 };
+        let body_start = header_end
+            + if text[header_end..].starts_with("\r\n\r\n") {
+                4
+            } else {
+                2
+            };
         let body = data[body_start..].to_vec();
 
-        Ok(HttpResponse { status, headers, body })
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 

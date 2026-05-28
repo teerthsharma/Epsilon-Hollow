@@ -4,9 +4,9 @@
 //! Virtual File System core — mounts multiple filesystems and routes operations.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -114,13 +114,15 @@ pub struct Vfs {
 
 impl Vfs {
     pub fn new() -> Self {
-        Self {
-            mounts: Vec::new(),
-        }
+        Self { mounts: Vec::new() }
     }
 
     /// Check Mandatory Access Control for `path` with `perms`.
-    fn check_mac(&self, path: &str, perms: crate::security::mac::Permissions) -> Result<(), VfsError> {
+    fn check_mac(
+        &self,
+        path: &str,
+        perms: crate::security::mac::Permissions,
+    ) -> Result<(), VfsError> {
         let uid = crate::process::scheduler::current_uid();
         if !crate::security::mac::check_file_permission(uid, path, perms) {
             return Err(VfsError::PermissionDenied);
@@ -168,14 +170,19 @@ impl Vfs {
             inode: handle.inode,
         };
         drop(fs_guard);
-        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
+        HANDLE_PATHS
+            .lock()
+            .insert((fs_idx, handle.inode), String::from(path));
         // T1–T5: Enforce node-level permissions on lookup (open / exec).
         let node = self.stat(vfs_handle)?;
         let uid = crate::process::scheduler::current_uid();
         let gid = crate::process::scheduler::current_gid();
         let groups = crate::process::scheduler::current_groups();
         if crate::security::manifold_acl::check_access(
-            uid, gid, &groups, &node,
+            uid,
+            gid,
+            &groups,
+            &node,
             crate::security::manifold_acl::PERM_READ,
             path,
         ) == crate::security::manifold_acl::AccessDecision::Deny
@@ -199,10 +206,7 @@ impl Vfs {
             current = if target.starts_with('/') {
                 target.to_string()
             } else {
-                let dir = current
-                    .rfind('/')
-                    .map(|i| &current[..i + 1])
-                    .unwrap_or("/");
+                let dir = current.rfind('/').map(|i| &current[..i + 1]).unwrap_or("/");
                 format!("{}{}", dir, target)
             };
         }
@@ -220,7 +224,10 @@ impl Vfs {
             let gid = crate::process::scheduler::current_gid();
             let groups = crate::process::scheduler::current_groups();
             if crate::security::manifold_acl::check_access(
-                uid, gid, &groups, &node,
+                uid,
+                gid,
+                &groups,
+                &node,
                 crate::security::manifold_acl::PERM_READ,
                 path,
             ) == crate::security::manifold_acl::AccessDecision::Deny
@@ -251,7 +258,10 @@ impl Vfs {
             let gid = crate::process::scheduler::current_gid();
             let groups = crate::process::scheduler::current_groups();
             if crate::security::manifold_acl::check_access(
-                uid, gid, &groups, &node,
+                uid,
+                gid,
+                &groups,
+                &node,
                 crate::security::manifold_acl::PERM_WRITE,
                 path,
             ) == crate::security::manifold_acl::AccessDecision::Deny
@@ -295,7 +305,9 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let mut fs_guard = mount.fs.lock();
         let handle = fs_guard.create(rel)?;
-        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
+        HANDLE_PATHS
+            .lock()
+            .insert((fs_idx, handle.inode), String::from(path));
         Ok(VfsHandle {
             fs_idx,
             inode: handle.inode,
@@ -308,7 +320,9 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let mut fs_guard = mount.fs.lock();
         let handle = fs_guard.mkdir(rel)?;
-        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
+        HANDLE_PATHS
+            .lock()
+            .insert((fs_idx, handle.inode), String::from(path));
         Ok(VfsHandle {
             fs_idx,
             inode: handle.inode,
@@ -321,7 +335,9 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let mut fs_guard = mount.fs.lock();
         fs_guard.unlink(rel)?;
-        HANDLE_PATHS.lock().remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
+        HANDLE_PATHS
+            .lock()
+            .remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
         Ok(())
     }
 
@@ -331,7 +347,9 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let mut fs_guard = mount.fs.lock();
         fs_guard.rmdir(rel)?;
-        HANDLE_PATHS.lock().remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
+        HANDLE_PATHS
+            .lock()
+            .remove(&(fs_idx, fs_guard.lookup(rel).map(|h| h.inode).unwrap_or(0)));
         Ok(())
     }
 
@@ -345,7 +363,9 @@ impl Vfs {
             let mut fs_guard = mount.fs.lock();
             fs_guard.rename(old_rel, new_rel)?;
             if let Ok(handle) = fs_guard.lookup(new_rel) {
-                HANDLE_PATHS.lock().insert((old_fs_idx, handle.inode), String::from(new));
+                HANDLE_PATHS
+                    .lock()
+                    .insert((old_fs_idx, handle.inode), String::from(new));
             }
             if let Ok(old_handle) = fs_guard.lookup(old_rel) {
                 HANDLE_PATHS.lock().remove(&(old_fs_idx, old_handle.inode));
@@ -365,7 +385,10 @@ impl Vfs {
             let mut total_read = 0usize;
             while total_read < data.len() {
                 let n = old_fs.read(
-                    VfsHandle { fs_idx: 0, inode: old_handle.inode },
+                    VfsHandle {
+                        fs_idx: 0,
+                        inode: old_handle.inode,
+                    },
                     &mut data[total_read..],
                     total_read as u64,
                 )?;
@@ -390,7 +413,9 @@ impl Vfs {
             let mut old_fs2 = old_mount2.fs.lock();
             old_fs2.unlink(old_rel)?;
             HANDLE_PATHS.lock().remove(&(old_fs_idx, old_handle.inode));
-            HANDLE_PATHS.lock().insert((new_fs_idx, new_handle.inode), String::from(new));
+            HANDLE_PATHS
+                .lock()
+                .insert((new_fs_idx, new_handle.inode), String::from(new));
             Ok(())
         }
     }
@@ -407,7 +432,9 @@ impl Vfs {
         let mount = &self.mounts[fs_idx];
         let mut fs_guard = mount.fs.lock();
         let handle = fs_guard.mknod(rel, node_type, major, minor)?;
-        HANDLE_PATHS.lock().insert((fs_idx, handle.inode), String::from(path));
+        HANDLE_PATHS
+            .lock()
+            .insert((fs_idx, handle.inode), String::from(path));
         Ok(VfsHandle {
             fs_idx,
             inode: handle.inode,

@@ -1,0 +1,25 @@
+{
+  "name": "Battle Royale",
+  "description": "5 topologies fight on same data",
+  "nodes": [
+    { "id": "data", "type": "datasource", "params": { "shape": "ring", "samples": 800, "dims": 2 }, "position": [50, 200] },
+    { "id": "euclidean", "type": "euclidean", "params": { "dim": 8 }, "position": [300, 50] },
+    { "id": "spherical", "type": "spherical", "params": { "dim": 8 }, "position": [300, 130] },
+    { "id": "hyperbolic", "type": "hyperbolic", "params": { "dim": 8 }, "position": [300, 210] },
+    { "id": "grassmannian", "type": "grassmannian", "params": { "rank": 4 }, "position": [300, 290] },
+    { "id": "product", "type": "product", "params": {}, "position": [300, 370] },
+    { "id": "compare", "type": "comparator", "params": {}, "position": [600, 200] }
+  ],
+  "edges": [
+    { "source": "data", "target": "euclidean" },
+    { "source": "data", "target": "spherical" },
+    { "source": "data", "target": "hyperbolic" },
+    { "source": "data", "target": "grassmannian" },
+    { "source": "data", "target": "product" },
+    { "source": "euclidean", "target": "compare" },
+    { "source": "spherical", "target": "compare" },
+    { "source": "hyperbolic", "target": "compare" },
+    { "source": "grassmannian", "target": "compare" },
+    { "source": "product", "target": "compare" }
+  ]
+}

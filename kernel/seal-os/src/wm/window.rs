@@ -83,10 +83,7 @@ impl Window {
     }
 
     pub fn in_title_bar(&self, px: u32, py: u32) -> bool {
-        px >= self.x
-            && px < self.x + self.width
-            && py >= self.y
-            && py < self.y + TITLE_BAR_HEIGHT
+        px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + TITLE_BAR_HEIGHT
     }
 
     pub fn in_close_button(&self, px: u32, py: u32) -> bool {

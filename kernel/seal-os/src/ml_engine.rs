@@ -7,10 +7,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use aether_core::ml::{
-    Activation, DenseLayer, MLP, OptimizerConfig, Tensor,
-};
 use aether_core::ml::linalg::LossConfig;
+use aether_core::ml::{Activation, DenseLayer, OptimizerConfig, Tensor, MLP};
 
 pub mod tensor_viz;
 pub mod topo_asm;
@@ -94,7 +92,10 @@ fn detect_gpu() -> Option<(String, u16, u16)> {
                 _ => "Unknown",
             };
             return Some((
-                format!("{} {:04X}:{:04X}", vendor_name, dev.vendor_id, dev.device_id),
+                format!(
+                    "{} {:04X}:{:04X}",
+                    vendor_name, dev.vendor_id, dev.device_id
+                ),
                 dev.vendor_id,
                 dev.device_id,
             ));
@@ -118,7 +119,9 @@ pub fn tensor_from_data(data: Vec<f64>, shape: Vec<usize>) -> Result<Tensor, Str
 /// Matrix multiply two tensors.
 pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     if a.shape.len() < 2 || b.shape.len() < 2 {
-        return Err(String::from("Both tensors must have at least 2 dimensions for matmul"));
+        return Err(String::from(
+            "Both tensors must have at least 2 dimensions for matmul",
+        ));
     }
     let a_cols = a.shape.last().unwrap();
     let b_rows = b.shape[b.shape.len().saturating_sub(2)];
@@ -376,7 +379,8 @@ pub fn save_model_bytes(name: &str, bytes: &[u8]) -> Result<String, String> {
 pub fn load_model(name: &str) -> Result<MLP, String> {
     let fs = crate::fs::manifold_fs::ManifoldFS::new();
     let root = 0u64;
-    let inode_id = fs.resolve_path_from(name, root)
+    let inode_id = fs
+        .resolve_path_from(name, root)
         .map_err(|_| format!("Model '{}' not found", name))?;
     let inode = fs.inode(inode_id).ok_or("Inode missing")?;
     let bytes = &inode.data;
@@ -412,7 +416,12 @@ impl MarkovChain {
         for i in 0..chars.len() - self.order {
             let key: String = chars[i..i + self.order].iter().collect();
             let next = chars[i + self.order];
-            *self.transitions.entry(key.clone()).or_default().entry(next).or_insert(0) += 1;
+            *self
+                .transitions
+                .entry(key.clone())
+                .or_default()
+                .entry(next)
+                .or_insert(0) += 1;
             *self.total_counts.entry(key).or_insert(0) += 1;
         }
     }
@@ -451,8 +460,7 @@ impl MarkovChain {
 }
 
 /// Built-in corpus for Markov training.
-const DEFAULT_CORPUS: &str =
-    "Seal OS is the geometrical operating system. \
+const DEFAULT_CORPUS: &str = "Seal OS is the geometrical operating system. \
      All data is geometry on the unit sphere. \
      File moves are O(1) topological surgery. \
      The governor controls epsilon with a PID controller. \

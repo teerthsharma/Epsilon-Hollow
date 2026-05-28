@@ -19,9 +19,7 @@ const BRICK_ROWS: u32 = 5;
 const BRICK_GAP: u32 = 4;
 const BRICK_TOP: u32 = 30;
 
-const BRICK_COLORS: [u32; 5] = [
-    0x00CC4444, 0x00CC8844, 0x00CCCC44, 0x0044CC44, 0x004488CC,
-];
+const BRICK_COLORS: [u32; 5] = [0x00CC4444, 0x00CC8844, 0x00CCCC44, 0x0044CC44, 0x004488CC];
 
 pub struct BreakoutGame {
     width: u32,

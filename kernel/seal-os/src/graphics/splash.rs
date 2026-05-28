@@ -27,17 +27,20 @@ pub fn render_splash(console: &mut Console) {
     console.write_str("\n");
     console.write_colored("                  .----`-.___.'-`----.", theme.splash_color);
     console.write_str("\n");
-    console.write_colored("                 /                     \\", theme.splash_color);
+    console.write_colored(
+        "                 /                     \\",
+        theme.splash_color,
+    );
     console.write_str("\n");
     console.write_colored("                |   S E A L   O S   |", theme.splash_color);
     console.write_str("\n");
-    console.write_colored("                 \\___________________/", theme.splash_color);
+    console.write_colored(
+        "                 \\___________________/",
+        theme.splash_color,
+    );
     console.write_str("\n\n");
 
-    console.write_colored(
-        "            The Geometrical Operating System",
-        theme.fg,
-    );
+    console.write_colored("            The Geometrical Operating System", theme.fg);
     console.write_str("\n");
     console.write_colored("                    v0.4.5", theme.fg);
     console.write_str("\n\n");
@@ -54,7 +57,13 @@ pub fn draw_progress_bar(fb: &Framebuffer, progress: u32, label: &str) {
     let bar_y = fb.height - 120;
 
     // Subtle border
-    fb.fill_rect(bar_x - 1, bar_y - 1, bar_width + 2, bar_height + 2, theme.border);
+    fb.fill_rect(
+        bar_x - 1,
+        bar_y - 1,
+        bar_width + 2,
+        bar_height + 2,
+        theme.border,
+    );
 
     // Background
     fb.fill_rect(bar_x, bar_y, bar_width, bar_height, theme.progress_bg);
@@ -73,10 +82,22 @@ pub fn draw_progress_bar(fb: &Framebuffer, progress: u32, label: &str) {
     };
 
     // Clear old label text area to avoid ghosting
-    fb.fill_rect(bar_x - 1, label_y, bar_width + 2, super::font::CHAR_HEIGHT + 2, theme.bg);
+    fb.fill_rect(
+        bar_x - 1,
+        label_y,
+        bar_width + 2,
+        super::font::CHAR_HEIGHT + 2,
+        theme.bg,
+    );
 
     // Draw new label
     for (i, ch) in label.bytes().enumerate() {
-        super::font::draw_char(fb, label_x + (i as u32) * super::font::CHAR_WIDTH, label_y, ch, theme.fg);
+        super::font::draw_char(
+            fb,
+            label_x + (i as u32) * super::font::CHAR_WIDTH,
+            label_y,
+            ch,
+            theme.fg,
+        );
     }
 }

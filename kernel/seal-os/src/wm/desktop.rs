@@ -78,14 +78,96 @@ fn init_icons(state: &mut DesktopState) {
         return;
     }
     state.icons = vec![
-        DesktopIcon { name: "Terminal", x: 20, y: 50, width: 48, height: 48, color: 0x0044CC44, app_id: 1 },
-        DesktopIcon { name: "IDE", x: 120, y: 50, width: 48, height: 48, color: 0x004444CC, app_id: 2 },
-        DesktopIcon { name: "Files", x: 220, y: 50, width: 48, height: 48, color: 0x00CCCC44, app_id: 3 },
-        DesktopIcon { name: "Calc", x: 320, y: 50, width: 48, height: 48, color: 0x00CC8844, app_id: 4 },
-        DesktopIcon { name: "Theorems", x: 420, y: 50, width: 48, height: 48, color: 0x008844CC, app_id: 5 },
-        DesktopIcon { name: "Snake", x: 520, y: 50, width: 48, height: 48, color: 0x00CC4444, app_id: 6 },
-        DesktopIcon { name: "Breakout", x: 620, y: 50, width: 48, height: 48, color: 0x0044CCCC, app_id: 7 },
-        DesktopIcon { name: "Warp Racer", x: 720, y: 50, width: 48, height: 48, color: 0x00CC44CC, app_id: 8 },
+        DesktopIcon {
+            name: "LAAMBA",
+            x: 20,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00FFAA44,
+            app_id: 10,
+        },
+        DesktopIcon {
+            name: "Terminal",
+            x: 120,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x0044CC44,
+            app_id: 1,
+        },
+        DesktopIcon {
+            name: "IDE",
+            x: 220,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x004444CC,
+            app_id: 2,
+        },
+        DesktopIcon {
+            name: "Files",
+            x: 320,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00CCCC44,
+            app_id: 3,
+        },
+        DesktopIcon {
+            name: "Calc",
+            x: 420,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00CC8844,
+            app_id: 4,
+        },
+        DesktopIcon {
+            name: "Theorems",
+            x: 520,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x008844CC,
+            app_id: 5,
+        },
+        DesktopIcon {
+            name: "Snake",
+            x: 620,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00CC4444,
+            app_id: 6,
+        },
+        DesktopIcon {
+            name: "Breakout",
+            x: 720,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x0044CCCC,
+            app_id: 7,
+        },
+        DesktopIcon {
+            name: "Warp Racer",
+            x: 820,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00CC44CC,
+            app_id: 8,
+        },
+        DesktopIcon {
+            name: "Aether",
+            x: 920,
+            y: 50,
+            width: 48,
+            height: 48,
+            color: 0x00A6E3A1,
+            app_id: 11,
+        },
     ];
 }
 
@@ -114,7 +196,13 @@ fn draw_icon(fb: &Framebuffer, icon: &DesktopIcon) {
     fb.fill_rect(icon.x, icon.y, icon.width, icon.height, icon.color);
     let text_y = icon.y + icon.height + 4;
     for (i, ch) in icon.name.bytes().enumerate() {
-        font::draw_char(fb, icon.x + i as u32 * font::CHAR_WIDTH, text_y, ch, 0x00FFFFFF);
+        font::draw_char(
+            fb,
+            icon.x + i as u32 * font::CHAR_WIDTH,
+            text_y,
+            ch,
+            0x00FFFFFF,
+        );
     }
 }
 
@@ -125,7 +213,10 @@ pub fn handle_input(
     app_state: &mut AppState,
 ) -> bool {
     match event {
-        InputEvent::MouseButton { button: 0, pressed: true } => {
+        InputEvent::MouseButton {
+            button: 0,
+            pressed: true,
+        } => {
             let mx = compositor.mouse_state().x as u32;
             let my = compositor.mouse_state().y as u32;
             handle_click(mx, my, fb, compositor, app_state)
@@ -207,7 +298,11 @@ fn handle_click(
     if my < taskbar_y {
         if compositor.window_at(mx, my).is_none() {
             for icon in &state.icons {
-                if mx >= icon.x && mx < icon.x + icon.width && my >= icon.y && my < icon.y + icon.height {
+                if mx >= icon.x
+                    && mx < icon.x + icon.width
+                    && my >= icon.y
+                    && my < icon.y + icon.height
+                {
                     let app_id = icon.app_id;
                     drop(state);
                     crate::wm::app_launcher::launch_app(app_id);
@@ -241,71 +336,84 @@ pub fn clear_logout_request() {
 
 fn render_equation_wallpaper(fb: &Framebuffer) {
     let theme = crate::wm::themes::current_theme();
-    // Decorative grid pattern (subtle)
-    for y in (0..fb.height - 28).step_by(64) {
+    let content_bottom = fb.height.saturating_sub(taskbar::taskbar_height());
+    if fb.width == 0 || content_bottom == 0 {
+        return;
+    }
+
+    // Cheap topology wallpaper. Boot must prove desktop readiness before it
+    // spends time on decorative floating-point rendering.
+    for y in (0..content_bottom).step_by(64) {
         for x in 0..fb.width {
             fb.put_pixel(x, y, theme.bg);
         }
     }
     for x in (0..fb.width).step_by(64) {
-        for y in 0..fb.height - 28 {
+        for y in 0..content_bottom {
             fb.put_pixel(x, y, theme.bg);
         }
     }
 
-    // Central glow effect (radial gradient from center)
     let cx = fb.width / 2;
-    let cy = (fb.height - 28) / 2;
-    for y in (cy.saturating_sub(200))..((cy + 200).min(fb.height - 28)) {
-        for x in (cx.saturating_sub(300))..((cx + 300).min(fb.width)) {
-            let dx = (x as i32 - cx as i32) as f64;
-            let dy = (y as i32 - cy as i32) as f64;
-            let dist = libm::sqrt(dx * dx + dy * dy);
-            if dist < 250.0 {
-                let intensity = ((1.0 - dist / 250.0) * 12.0) as u32;
-                let r = (intensity).min(20);
-                let g = (intensity).min(15);
-                let b = (intensity + 5).min(30);
-                fb.put_pixel(x, y, (r << 16) | (g << 8) | b);
-            }
-        }
+    let cy = content_bottom / 2;
+    let accent = theme.accent;
+    let border = theme.border;
+
+    for r in (24..160u32).step_by(16) {
+        draw_ellipse_outline(fb, cx, cy, r, r / 3, border);
     }
 
-    // Draw a simple circular "black hole" visualization at center
-    for angle_i in 0..360 {
-        let angle = (angle_i as f64) * core::f64::consts::PI / 180.0;
-        for r in 40..60 {
-            let x = cx as f64 + r as f64 * libm::cos(angle);
-            let y = cy as f64 + r as f64 * libm::sin(angle);
-            if x >= 0.0 && y >= 0.0 {
-                let px = x as u32;
-                let py = y as u32;
-                if px < fb.width && py < fb.height - 28 {
-                    let fade = ((r - 40) as f64 / 20.0 * 80.0) as u32;
-                    let color = (fade << 16) | ((fade / 2) << 8) | (fade + 20).min(255);
-                    fb.put_pixel(px, py, color);
-                }
-            }
+    for offset in 0..42u32 {
+        let color = if offset % 2 == 0 { accent } else { theme.bg };
+        let w = 84u32.saturating_sub(offset * 2);
+        if w == 0 {
+            break;
         }
+        fb.fill_rect(
+            cx.saturating_sub(w / 2),
+            cy.saturating_sub(offset),
+            w,
+            1,
+            color,
+        );
+        fb.fill_rect(cx.saturating_sub(w / 2), cy + offset, w, 1, color);
     }
 
-    // Accretion disk rings
-    for ring in 0..3 {
-        let base_r = 70 + ring * 25;
-        for angle_i in 0..720 {
-            let angle = (angle_i as f64) * core::f64::consts::PI / 360.0;
-            let r = base_r as f64 + 5.0 * libm::sin(angle * 3.0);
-            let x = cx as f64 + r * libm::cos(angle);
-            let y = cy as f64 + r * libm::sin(angle) * 0.4; // elliptical
-            if x >= 0.0 && y >= 0.0 {
-                let px = x as u32;
-                let py = y as u32;
-                if px < fb.width && py < fb.height - 28 {
-                    let intensity = 180 - ring * 50;
-                    fb.put_pixel(px, py, (intensity << 16) | ((intensity / 2) << 8) | 0x20);
-                }
-            }
+    for d in (0..180u32).step_by(12) {
+        let x0 = cx.saturating_sub(d);
+        let x1 = (cx + d).min(fb.width.saturating_sub(1));
+        let y0 = cy.saturating_sub(d / 2);
+        let y1 = (cy + d / 2).min(content_bottom.saturating_sub(1));
+        fb.put_pixel(x0, y0, accent);
+        fb.put_pixel(x1, y0, accent);
+        fb.put_pixel(x0, y1, accent);
+        fb.put_pixel(x1, y1, accent);
+    }
+}
+
+fn draw_ellipse_outline(fb: &Framebuffer, cx: u32, cy: u32, rx: u32, ry: u32, color: u32) {
+    if rx == 0 || ry == 0 {
+        return;
+    }
+
+    let content_bottom = fb.height.saturating_sub(taskbar::taskbar_height());
+    let mut x = 0u32;
+    while x <= rx {
+        let y = ry.saturating_mul(rx.saturating_sub(x)) / rx;
+        let left = cx.saturating_sub(x);
+        let right = (cx + x).min(fb.width.saturating_sub(1));
+        let top = cy.saturating_sub(y);
+        let bottom = (cy + y).min(content_bottom.saturating_sub(1));
+
+        if top < content_bottom {
+            fb.put_pixel(left, top, color);
+            fb.put_pixel(right, top, color);
         }
+        if bottom < content_bottom {
+            fb.put_pixel(left, bottom, color);
+            fb.put_pixel(right, bottom, color);
+        }
+        x += 2;
     }
 }
 
@@ -319,7 +427,10 @@ fn render_equations_text(fb: &Framebuffer) {
 
     let lines: &[(u32, &str)] = &[
         (theme.border, "Schwarzschild metric:"),
-        (theme.accent, "ds^2 = -(1-2GM/rc^2)dt^2 + (1-2GM/rc^2)^-1 dr^2 + r^2 dO^2"),
+        (
+            theme.accent,
+            "ds^2 = -(1-2GM/rc^2)dt^2 + (1-2GM/rc^2)^-1 dr^2 + r^2 dO^2",
+        ),
         (theme.fg, ""),
         (theme.border, "Faraday tensor F^uv:"),
         (theme.fg, "[ 0   -Ex  -Ey  -Ez ]"),

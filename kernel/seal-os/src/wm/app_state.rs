@@ -4,9 +4,11 @@
 //! Desktop application state manager — owns all running apps, routes input events
 //! to the focused window, ticks games, and re-renders dirty windows.
 
+use crate::apps::aether_app_host::AetherAppHost;
 use crate::apps::breakout::BreakoutGame;
 use crate::apps::calculator::Calculator;
 use crate::apps::file_manager::FileManager;
+use crate::apps::laamba_governor::LaambaGovernor;
 use crate::apps::media_player::MediaPlayer;
 use crate::apps::seal_ide::SealIde;
 use crate::apps::snake::SnakeGame;
@@ -30,6 +32,8 @@ pub struct AppState {
     pub breakout: BreakoutGame,
     pub warp_racer: WarpRacer,
     pub tensor_viewer: TensorViewer,
+    pub laamba: LaambaGovernor,
+    pub aether_app_host: AetherAppHost,
     pub fs: ManifoldFS,
 
     // Window IDs (assigned by compositor)
@@ -43,9 +47,11 @@ pub struct AppState {
     pub warp_racer_id: u32,
     pub fm_id: u32,
     pub tensor_id: u32,
+    pub laamba_id: u32,
+    pub aether_id: u32,
 
     // Track which windows are dirty and need re-render
-    dirty: [bool; 10],
+    dirty: [bool; 12],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -65,10 +71,13 @@ impl AppState {
         let vol_a = fs.mkdir("vol_a", 0).unwrap_or(1);
         let _vol_b = fs.mkdir("vol_b", 0).unwrap_or(2);
         let docs = fs.mkdir("docs", 0).unwrap_or(3);
-        fs.store_text("hello.txt", "Hello from Seal OS!", vol_a).ok();
-        fs.store_text("kernel.rs", "fn _start() -> ! { loop {} }", vol_a).ok();
+        fs.store_text("hello.txt", "Hello from Seal OS!", vol_a)
+            .ok();
+        fs.store_text("kernel.rs", "fn _start() -> ! { loop {} }", vol_a)
+            .ok();
         fs.store_text("readme.txt", "Welcome to Seal OS", docs).ok();
-        fs.store_text("notes.txt", "Topological file surgery", docs).ok();
+        fs.store_text("notes.txt", "Topological file surgery", docs)
+            .ok();
 
         Self {
             terminal: Terminal::new(600, 400),
@@ -81,6 +90,8 @@ impl AppState {
             breakout: BreakoutGame::new(400, 380),
             warp_racer: WarpRacer::new(400, 380),
             tensor_viewer: TensorViewer::new(),
+            laamba: LaambaGovernor::new(),
+            aether_app_host: AetherAppHost::new(),
             fs,
             term_id: 0,
             ide_id: 0,
@@ -92,14 +103,16 @@ impl AppState {
             warp_racer_id: 0,
             fm_id: 0,
             tensor_id: 0,
-            dirty: [true; 10],
+            laamba_id: 0,
+            aether_id: 0,
+            dirty: [true; 12],
         }
     }
 
     pub fn create_windows(&mut self, compositor: &mut Compositor) {
         self.term_id = compositor.create_window("Terminal", 40, 40, 600, 400);
         self.ide_id = compositor.create_window("Seal IDE", 120, 80, 640, 440);
-        self.tv_id = compositor.create_window("Theorems", 500, 60, 420, 340);
+        self.tv_id = compositor.create_window("Theorems", 500, 60, 460, 560);
         self.calc_id = compositor.create_window("Calculator", 680, 100, 280, 440);
         self.player_id = compositor.create_window("SealPlayer", 200, 160, 520, 380);
         self.snake_id = compositor.create_window("Snake", 100, 100, 400, 380);
@@ -107,6 +120,8 @@ impl AppState {
         self.warp_racer_id = compositor.create_window("Warp Racer", 200, 200, 400, 380);
         self.fm_id = compositor.create_window("Files", 160, 120, 560, 400);
         self.tensor_id = compositor.create_window("Tensor Viewer", 180, 140, 520, 360);
+        self.laamba_id = compositor.create_window("LAAMBA Governor", 80, 40, 900, 650);
+        self.aether_id = compositor.create_window("Aether App", 200, 200, 640, 480);
 
         // Initial render of all windows
         self.render_all(compositor);
@@ -185,6 +200,18 @@ impl AppState {
             self.dirty[8] = true;
         } else if focused_id == self.tensor_id {
             self.dirty[9] = true;
+        } else if focused_id == self.laamba_id {
+            let ch = scancode_to_char(scancode);
+            if ch != 0 {
+                self.laamba.key_press(ch);
+            }
+            self.dirty[10] = true;
+        } else if focused_id == self.aether_id {
+            let ch = scancode_to_char(scancode);
+            if ch != 0 {
+                self.aether_app_host.key_press(ch);
+            }
+            self.dirty[11] = true;
         }
     }
 
@@ -257,6 +284,18 @@ impl AppState {
             }
             self.dirty[9] = false;
         }
+        if self.dirty[10] {
+            if let Some(win) = compositor.window_mut(self.laamba_id) {
+                self.laamba.render_to_window(win);
+            }
+            self.dirty[10] = false;
+        }
+        if self.dirty[11] {
+            if let Some(win) = compositor.window_mut(self.aether_id) {
+                self.aether_app_host.render_to_window(win);
+            }
+            self.dirty[11] = false;
+        }
     }
 
     fn render_all(&mut self, compositor: &mut Compositor) {
@@ -291,10 +330,16 @@ impl AppState {
         if let Some(win) = compositor.window_mut(self.tensor_id) {
             self.tensor_viewer.render_to_window(win);
         }
+        if let Some(win) = compositor.window_mut(self.laamba_id) {
+            self.laamba.render_to_window(win);
+        }
+        if let Some(win) = compositor.window_mut(self.aether_id) {
+            self.aether_app_host.render_to_window(win);
+        }
     }
 
     pub fn mark_all_dirty(&mut self) {
-        self.dirty = [true; 10];
+        self.dirty = [true; 12];
     }
 
     pub fn focus_app(&mut self, app_id: u8, compositor: &mut Compositor) {
@@ -308,6 +353,8 @@ impl AppState {
             7 => self.breakout_id,
             8 => self.warp_racer_id,
             9 => self.tensor_id,
+            10 => self.laamba_id,
+            11 => self.aether_id,
             _ => return,
         };
         if win_id == 0 {
@@ -324,6 +371,8 @@ impl AppState {
             7 => self.dirty[6] = true,
             8 => self.dirty[7] = true,
             9 => self.dirty[9] = true,
+            10 => self.dirty[10] = true,
+            11 => self.dirty[11] = true,
             _ => {}
         }
     }
@@ -371,6 +420,12 @@ impl AppState {
                     self.dirty[8] = true;
                 } else if focused_id == self.tensor_id {
                     self.dirty[9] = true;
+                } else if focused_id == self.laamba_id {
+                    self.laamba.mouse_move(local_x, local_y);
+                    self.dirty[10] = true;
+                } else if focused_id == self.aether_id {
+                    self.aether_app_host.mouse_move(local_x, local_y);
+                    self.dirty[11] = true;
                 }
             }
         }
@@ -424,6 +479,12 @@ impl AppState {
                     self.dirty[8] = true;
                 } else if focused_id == self.tensor_id {
                     self.dirty[9] = true;
+                } else if focused_id == self.laamba_id {
+                    self.laamba.mouse_click(local_x, local_y, pressed);
+                    self.dirty[10] = true;
+                } else if focused_id == self.aether_id {
+                    self.aether_app_host.mouse_click(local_x, local_y, pressed);
+                    self.dirty[11] = true;
                 }
             }
         }
@@ -431,7 +492,11 @@ impl AppState {
 }
 
 fn send_key_to_game(scancode: u8, mut key_press: impl FnMut(u8)) {
-    let ch = if scancode == 0x39 { b' ' } else { scancode_to_char(scancode) };
+    let ch = if scancode == 0x39 {
+        b' '
+    } else {
+        scancode_to_char(scancode)
+    };
     if ch != 0 {
         key_press(ch);
     }

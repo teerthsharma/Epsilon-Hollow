@@ -1,0 +1,19 @@
+{
+  "name": "Cross-Topology Fusion",
+  "description": "Blend all topologies via attention",
+  "nodes": [
+    { "id": "data", "type": "datasource", "params": { "shape": "swiss_roll", "samples": 1000, "dims": 3 }, "position": [50, 200] },
+    { "id": "euclidean", "type": "euclidean", "params": { "dim": 8 }, "position": [300, 100] },
+    { "id": "spherical", "type": "spherical", "params": { "dim": 8 }, "position": [300, 200] },
+    { "id": "hyperbolic", "type": "hyperbolic", "params": { "dim": 8 }, "position": [300, 300] },
+    { "id": "fusion", "type": "fusion", "params": { "method": "attention" }, "position": [600, 200] }
+  ],
+  "edges": [
+    { "source": "data", "target": "euclidean" },
+    { "source": "data", "target": "spherical" },
+    { "source": "data", "target": "hyperbolic" },
+    { "source": "euclidean", "target": "fusion" },
+    { "source": "spherical", "target": "fusion" },
+    { "source": "hyperbolic", "target": "fusion" }
+  ]
+}

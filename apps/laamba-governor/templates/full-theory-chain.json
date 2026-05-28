@@ -1,0 +1,19 @@
+{
+  "name": "Full Theory Chain",
+  "description": "Faraday -> Hamilton -> OmniTopos",
+  "nodes": [
+    { "id": "data", "type": "datasource", "params": { "shape": "blob", "samples": 500, "dims": 8 }, "position": [50, 100] },
+    { "id": "faraday", "type": "euclidean", "engine_id": "faraday", "params": { "epochs": 50000, "resolution": 64 }, "position": [300, 50] },
+    { "id": "hamilton", "type": "spherical", "engine_id": "hamilton", "params": { "n_bodies": 4, "dim": 16 }, "position": [300, 150] },
+    { "id": "omnitopos", "type": "hyperbolic", "engine_id": "omnitopos", "params": { "steps": 50, "seed": 42 }, "position": [300, 250] },
+    { "id": "compare", "type": "comparator", "params": {}, "position": [600, 150] }
+  ],
+  "edges": [
+    { "source": "data", "target": "faraday" },
+    { "source": "data", "target": "hamilton" },
+    { "source": "data", "target": "omnitopos" },
+    { "source": "faraday", "target": "compare" },
+    { "source": "hamilton", "target": "compare" },
+    { "source": "omnitopos", "target": "compare" }
+  ]
+}

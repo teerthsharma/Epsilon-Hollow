@@ -7,7 +7,7 @@ use alloc::string::String;
 use core::sync::atomic::Ordering;
 
 use crate::fs::pipe::create_pipe;
-use crate::syscall::table::{FdEntry, FILE_TABLE, NEXT_FD, SyscallResult};
+use crate::syscall::table::{FdEntry, SyscallResult, FILE_TABLE, NEXT_FD};
 
 pub const SYS_PIPE: u64 = 28;
 pub const SYS_DUP: u64 = 29;

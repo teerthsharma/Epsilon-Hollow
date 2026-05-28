@@ -222,7 +222,13 @@ impl WelcomeScreen {
             let bits = g[row as usize];
             for col in 0..CHAR_WIDTH {
                 if bits & (0x80 >> col) != 0 {
-                    fb.fill_rect(x + col * LARGE_SCALE, y + row * LARGE_SCALE, LARGE_SCALE, LARGE_SCALE, color);
+                    fb.fill_rect(
+                        x + col * LARGE_SCALE,
+                        y + row * LARGE_SCALE,
+                        LARGE_SCALE,
+                        LARGE_SCALE,
+                        color,
+                    );
                 }
             }
         }

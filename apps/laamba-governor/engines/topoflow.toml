@@ -1,0 +1,19 @@
+[engine]
+name = "TopoFlow"
+category = "Topology"
+icon = "activity"
+color = "#AA00FF"
+description = "3D persistent homology landscape visualization"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py topoflow"
+working_dir = "~/repos/agentic-dream-topoflow"
+
+[engine.inputs]
+input = { type = "point_cloud" }
+max_dim = { type = "int", default = 1, range = [0, 2] }
+
+[engine.outputs]
+gif = { type = "file" }
+png = { type = "file" }

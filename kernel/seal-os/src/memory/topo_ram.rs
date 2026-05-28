@@ -75,8 +75,7 @@ impl TopoRam {
         let mut seeds = [[0u16; 32]; VORONOI_SEEDS];
         for s in 0..VORONOI_SEEDS {
             for a in 0..32usize {
-                let tmp: usize = s.wrapping_mul(7919)
-                    .wrapping_add(a.wrapping_mul(104729));
+                let tmp: usize = s.wrapping_mul(7919).wrapping_add(a.wrapping_mul(104729));
                 seeds[s][a] = (tmp % 65536) as u16;
             }
         }
@@ -85,7 +84,8 @@ impl TopoRam {
         for i in 0..count {
             let mut embedding = [0u16; 32];
             for a in 0..32usize {
-                let tmp: usize = (base_frame + i).wrapping_mul(1103515245)
+                let tmp: usize = (base_frame + i)
+                    .wrapping_mul(1103515245)
                     .wrapping_add(12345)
                     .wrapping_add(a.wrapping_mul(65537));
                 embedding[a] = (tmp % 65536) as u16;
@@ -121,7 +121,6 @@ impl TopoRam {
             update_spectral(self);
         }
     }
-
 }
 fn zone_for_global_frame(global: usize) -> ZoneHint {
     if global < LOW_FRAME_LIMIT {
@@ -180,8 +179,7 @@ fn reseed_voronoi(topo: &mut TopoRam) {
 
     if picked < VORONOI_SEEDS {
         for i in picked..VORONOI_SEEDS {
-            let idx = (i.wrapping_mul(65537).wrapping_add(7))
-                % topo.frame_meta.len().max(1);
+            let idx = (i.wrapping_mul(65537).wrapping_add(7)) % topo.frame_meta.len().max(1);
             new_seeds[i] = topo.frame_meta[idx].embedding;
         }
     }
@@ -523,7 +521,9 @@ fn alloc_frames_in_zone(
                 }
             }
             for f in &frames {
-                unsafe { phys::free_frame(*f); }
+                unsafe {
+                    phys::free_frame(*f);
+                }
             }
             if !ok {
                 break;
@@ -620,7 +620,11 @@ pub fn init() {
     let high = TopoRam::new(LOW_FRAME_LIMIT, high_count);
     let pcie_bar = TopoRam::new(0, 0); // empty until BARs are registered
 
-    *ZONES.lock() = Some(Zones { low, high, pcie_bar });
+    *ZONES.lock() = Some(Zones {
+        low,
+        high,
+        pcie_bar,
+    });
 }
 
 /// Register a PCI BAR range as the PCIE_BAR zone.
@@ -638,11 +642,7 @@ pub fn register_pcie_bar(start: PhysAddr, pages: usize) {
 }
 
 /// Allocate `count` frames, optionally biased toward `hint` embedding.
-pub fn alloc_frames(
-    count: usize,
-    zone: ZoneHint,
-    hint: Option<&[u16; 32]>,
-) -> Option<PhysAddr> {
+pub fn alloc_frames(count: usize, zone: ZoneHint, hint: Option<&[u16; 32]>) -> Option<PhysAddr> {
     if count == 0 {
         return None;
     }
@@ -701,7 +701,9 @@ pub fn free_frames(addr: PhysAddr, count: usize) {
             meta.lifetime_class = class;
             propagate_class(topo, lidx, class);
         }
-        unsafe { phys::free_frame(frame_addr); }
+        unsafe {
+            phys::free_frame(frame_addr);
+        }
         topo.free_count += 1;
         topo.tick = topo.tick.wrapping_add(1);
         if topo.tick % 1024 == 0 {
@@ -764,7 +766,9 @@ pub fn frame_access_density(addr: PhysAddr) -> Option<u32> {
         ZoneHint::PcieBar => &mut zones.pcie_bar,
     };
     let lidx = gidx.saturating_sub(topo.base_frame);
-    topo.frame_meta.get(lidx).map(|m| m.access_history.count_ones())
+    topo.frame_meta
+        .get(lidx)
+        .map(|m| m.access_history.count_ones())
 }
 
 /// Find candidate frames for swap-out (T5: high bit-density = short-lived).

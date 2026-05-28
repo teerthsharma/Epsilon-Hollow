@@ -12,8 +12,8 @@ use super::cursor;
 use super::event::MouseState;
 use super::taskbar;
 use super::window::{Window, WindowState};
-use crate::graphics::framebuffer::Framebuffer;
 use crate::graphics::font;
+use crate::graphics::framebuffer::Framebuffer;
 use crate::wm::themes;
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,12 @@ impl Rect {
         let y = self.y.min(other.y);
         let x2 = (self.x + self.w).max(other.x + other.w);
         let y2 = (self.y + self.h).max(other.y + other.h);
-        Rect { x, y, w: x2 - x, h: y2 - y }
+        Rect {
+            x,
+            y,
+            w: x2 - x,
+            h: y2 - y,
+        }
     }
 }
 
@@ -104,7 +109,12 @@ impl Compositor {
         let mut win = Window::new(id, title, x, y, w, h);
         win.focused = self.windows.is_empty();
         win.render_decorations();
-        let win_rect = Rect { x: win.x, y: win.y, w: win.width, h: win.height };
+        let win_rect = Rect {
+            x: win.x,
+            y: win.y,
+            w: win.width,
+            h: win.height,
+        };
         self.windows.push(win);
         self.mark_dirty(win_rect.x, win_rect.y, win_rect.w, win_rect.h);
         id
@@ -194,13 +204,19 @@ impl Compositor {
 
                 if new_w < MIN_W {
                     new_w = MIN_W;
-                    if matches!(edge, ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft) {
+                    if matches!(
+                        edge,
+                        ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft
+                    ) {
                         new_x = (old_x + old_w) as i32 - MIN_W;
                     }
                 }
                 if new_h < MIN_H {
                     new_h = MIN_H;
-                    if matches!(edge, ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight) {
+                    if matches!(
+                        edge,
+                        ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight
+                    ) {
                         new_y = (old_y + old_h) as i32 - MIN_H;
                     }
                 }
@@ -391,8 +407,14 @@ impl Compositor {
         }
 
         // T4: Adaptive FPS — skip frames when idle
+        let has_dirty_windows = self.windows.iter().any(|w| w.dirty);
         let eps = self.governor.epsilon();
-        if !theme_dirty && eps < 0.3 && self.frame_count % 4 != 0 {
+        if !theme_dirty
+            && !has_dirty_windows
+            && self.dirty_rects.is_empty()
+            && eps < 0.3
+            && self.frame_count % 4 != 0
+        {
             return; // 15fps when idle
         }
 
@@ -413,7 +435,12 @@ impl Compositor {
         let full_redraw = dirty_area > screen_area / 2;
 
         let clip = if self.dirty_rects.is_empty() || full_redraw {
-            Rect { x: 0, y: 0, w: fb.width, h: fb.height }
+            Rect {
+                x: 0,
+                y: 0,
+                w: fb.width,
+                h: fb.height,
+            }
         } else {
             let mut r = self.dirty_rects[0];
             for d in &self.dirty_rects[1..] {
@@ -429,7 +456,12 @@ impl Compositor {
             if win.state == WindowState::Closed || win.state == WindowState::Minimized {
                 continue;
             }
-            if !clip.intersects(&Rect { x: win.x, y: win.y, w: win.width, h: win.height }) {
+            if !clip.intersects(&Rect {
+                x: win.x,
+                y: win.y,
+                w: win.width,
+                h: win.height,
+            }) {
                 continue;
             }
             self.blit_window(fb, win, &clip);
@@ -488,7 +520,12 @@ impl Compositor {
             win.state = WindowState::Normal;
             win.focused = true;
             win.render_decorations();
-            Rect { x: win.x, y: win.y, w: win.width, h: win.height }
+            Rect {
+                x: win.x,
+                y: win.y,
+                w: win.width,
+                h: win.height,
+            }
         });
         if let Some(r) = dirty {
             self.mark_dirty(r.x, r.y, r.w, r.h);
@@ -626,7 +663,13 @@ impl Compositor {
             let text_x = x + 6;
             let text_y = y + 6;
             for (i, ch) in name.bytes().enumerate() {
-                font::draw_char(fb, text_x + (i as u32) * font::CHAR_WIDTH, text_y, ch, theme.fg);
+                font::draw_char(
+                    fb,
+                    text_x + (i as u32) * font::CHAR_WIDTH,
+                    text_y,
+                    ch,
+                    theme.fg,
+                );
             }
             x += BTN_W + 4;
         }

@@ -4,11 +4,11 @@
 //! TopCrypt — topological file encryption engine for Seal OS Lypnos Guard Edition.
 //! Files don't exist as bytes. They exist as geometry on S².
 
+use crate::fs::vfs::with_vfs;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
-use crate::fs::vfs::with_vfs;
 
 // ─── Global Lock Registry ────────────────────────────────────────────────────
 
@@ -51,7 +51,11 @@ fn crc32(data: &[u8]) -> u32 {
     for byte in data {
         crc ^= *byte as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB88320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB88320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -178,7 +182,10 @@ pub fn encode_bytes(data: &[u8], seed: u64) -> TopologicalFile {
         chunk[..end - start].copy_from_slice(&data[start..end]);
         let angles = bytes_to_angles(&chunk);
         let checksum = crc32(&chunk);
-        blocks.push(TopoBlock { embedding: angles, checksum });
+        blocks.push(TopoBlock {
+            embedding: angles,
+            checksum,
+        });
     }
     TopologicalFile {
         name_hash: [0u8; 32],
@@ -279,20 +286,17 @@ pub fn import_from_bytes(data: &[u8], _seed: u64) -> TopologicalFile {
     name_hash.copy_from_slice(&data[5..37]);
 
     let block_count = u64::from_le_bytes([
-        data[37], data[38], data[39], data[40],
-        data[41], data[42], data[43], data[44],
+        data[37], data[38], data[39], data[40], data[41], data[42], data[43], data[44],
     ]);
 
     let embedding_seed = u64::from_le_bytes([
-        data[45], data[46], data[47], data[48],
-        data[49], data[50], data[51], data[52],
+        data[45], data[46], data[47], data[48], data[49], data[50], data[51], data[52],
     ]);
 
     let locked = data[53] != 0;
 
     let lock_entropy = f64::from_le_bytes([
-        data[54], data[55], data[56], data[57],
-        data[58], data[59], data[60], data[61],
+        data[54], data[55], data[56], data[57], data[58], data[59], data[60], data[61],
     ]);
 
     let mut blocks = Vec::with_capacity(block_count as usize);
@@ -304,10 +308,16 @@ pub fn import_from_bytes(data: &[u8], _seed: u64) -> TopologicalFile {
             offset += 2;
         }
         let checksum = u32::from_le_bytes([
-            data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
         ]);
         offset += 4;
-        blocks.push(TopoBlock { embedding, checksum });
+        blocks.push(TopoBlock {
+            embedding,
+            checksum,
+        });
     }
 
     TopologicalFile {

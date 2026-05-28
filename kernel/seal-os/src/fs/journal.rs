@@ -18,10 +18,10 @@
 //! * **T5 (HCS / Hyperbolic Contraction Sequence)** — Transaction nesting depth is
 //!   interpreted as hyperbolic nesting depth.  Deeper nesting ⇒ longer commit horizon.
 
-use alloc::vec::Vec;
-use alloc::vec;
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
+use alloc::vec;
+use alloc::vec::Vec;
 
 use super::block_store::BlockStoreBackend;
 use crate::drivers::block::BlockError;
@@ -63,7 +63,10 @@ struct JournalEntryHeader {
 impl JournalHeader {
     fn as_bytes(&self) -> &[u8] {
         unsafe {
-            core::slice::from_raw_parts(self as *const Self as *const u8, core::mem::size_of::<Self>())
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                core::mem::size_of::<Self>(),
+            )
         }
     }
 }
@@ -71,7 +74,10 @@ impl JournalHeader {
 impl JournalEntryHeader {
     fn as_bytes(&self) -> &[u8] {
         unsafe {
-            core::slice::from_raw_parts(self as *const Self as *const u8, core::mem::size_of::<Self>())
+            core::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                core::mem::size_of::<Self>(),
+            )
         }
     }
 }
@@ -284,7 +290,8 @@ impl TopologicalJournal {
         let mut lba = journal_start + 1;
         for _ in 0..header.entry_count {
             backend.read_sector(lba, &mut buf)?;
-            let eh = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const JournalEntryHeader) };
+            let eh =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const JournalEntryHeader) };
             lba += 1;
 
             let before_sectors = ((eh.before_len as usize) + 511) / 512;

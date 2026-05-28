@@ -4,7 +4,7 @@
 //! Syscall ioctl dispatch.
 
 use crate::fs::vfs::{with_vfs, VfsError, VfsNodeType};
-use crate::syscall::table::{FILE_TABLE, SyscallResult};
+use crate::syscall::table::{SyscallResult, FILE_TABLE};
 
 pub fn dispatch_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     let table = FILE_TABLE.lock();

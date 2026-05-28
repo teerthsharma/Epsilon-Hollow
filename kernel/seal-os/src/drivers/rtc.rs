@@ -170,12 +170,36 @@ pub fn set_time(time: &RtcTime) -> bool {
         hour = binary_to_bcd(hour);
     }
 
-    let sec = if binary { time.sec } else { binary_to_bcd(time.sec) };
-    let min = if binary { time.min } else { binary_to_bcd(time.min) };
-    let day = if binary { time.day } else { binary_to_bcd(time.day) };
-    let month = if binary { time.month } else { binary_to_bcd(time.month) };
-    let year = if binary { time.year } else { binary_to_bcd(time.year) };
-    let century = if binary { time.century } else { binary_to_bcd(time.century) };
+    let sec = if binary {
+        time.sec
+    } else {
+        binary_to_bcd(time.sec)
+    };
+    let min = if binary {
+        time.min
+    } else {
+        binary_to_bcd(time.min)
+    };
+    let day = if binary {
+        time.day
+    } else {
+        binary_to_bcd(time.day)
+    };
+    let month = if binary {
+        time.month
+    } else {
+        binary_to_bcd(time.month)
+    };
+    let year = if binary {
+        time.year
+    } else {
+        binary_to_bcd(time.year)
+    };
+    let century = if binary {
+        time.century
+    } else {
+        binary_to_bcd(time.century)
+    };
 
     unsafe {
         write_cmos(0x00, sec);
@@ -193,10 +217,7 @@ pub fn set_time(time: &RtcTime) -> bool {
 fn seconds_since_epoch_from(time: &RtcTime) -> u64 {
     let full_year = time.century as u64 * 100 + time.year as u64;
     let days = days_since_epoch(full_year, time.month as u64, time.day as u64);
-    days * 86400
-        + time.hour as u64 * 3600
-        + time.min as u64 * 60
-        + time.sec as u64
+    days * 86400 + time.hour as u64 * 3600 + time.min as u64 * 60 + time.sec as u64
 }
 
 /// Return the number of seconds since the Unix epoch (1970-01-01 00:00:00).

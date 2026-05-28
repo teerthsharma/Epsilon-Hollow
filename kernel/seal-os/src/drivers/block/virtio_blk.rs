@@ -1,6 +1,6 @@
+use crate::drivers::pci::{get_devices, PciDevice};
 use alloc::alloc::{alloc_zeroed, Layout};
 use core::ptr;
-use crate::drivers::pci::{get_devices, PciDevice};
 use x86_64::instructions::port::Port;
 
 /// Represents a generic block device.
@@ -157,7 +157,7 @@ impl VirtioBlk {
             unsafe { Port::<u32>::new((self.base_addr + offset) as u16).read() }
         }
     }
-    
+
     /// Real PCI discovery and initialization for Virtio-blk
     /// Finds Vendor ID: 0x1AF4, Device ID: 0x1001 or 0x1045
     pub fn discover_and_init() -> Result<Self, &'static str> {
@@ -169,7 +169,7 @@ impl VirtioBlk {
                 break;
             }
         }
-        
+
         let dev = target_dev.ok_or("Virtio-blk device not found")?;
 
         let is_mmio = dev.bar0 & 1 == 0;
@@ -207,7 +207,8 @@ impl VirtioBlk {
         }
 
         // Allocate 3 contiguous pages (12KB) for split virtqueue components
-        let layout = Layout::from_size_align(12288, 4096).map_err(|_| "Failed to create virtqueue layout")?;
+        let layout = Layout::from_size_align(12288, 4096)
+            .map_err(|_| "Failed to create virtqueue layout")?;
         let ptr = unsafe { alloc_zeroed(layout) };
         if ptr.is_null() {
             return Err("Failed to allocate virtqueue memory");
@@ -230,7 +231,13 @@ impl VirtioBlk {
         Ok(())
     }
 
-    fn do_request(&mut self, lba: u64, buf: *mut u8, len: u32, is_write: bool) -> Result<(), &'static str> {
+    fn do_request(
+        &mut self,
+        lba: u64,
+        buf: *mut u8,
+        len: u32,
+        is_write: bool,
+    ) -> Result<(), &'static str> {
         let req_idx = self.queue.alloc_desc().ok_or("No desc available")?;
         let buf_idx = self.queue.alloc_desc().ok_or("No desc available")?;
         let stat_idx = self.queue.alloc_desc().ok_or("No desc available")?;
@@ -268,7 +275,7 @@ impl VirtioBlk {
             let avail = &mut *self.queue.avail;
             let avail_idx = avail.idx % self.queue.queue_size;
             avail.ring[avail_idx as usize] = req_idx;
-            
+
             core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
             avail.idx = avail.idx.wrapping_add(1);
             core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);

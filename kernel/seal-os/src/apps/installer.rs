@@ -9,10 +9,9 @@
 use crate::drivers::interrupts;
 use crate::graphics::font::{self, CHAR_HEIGHT, CHAR_WIDTH};
 use crate::graphics::framebuffer::Framebuffer;
-use alloc::format;
 use crate::serial_println;
 use crate::wm::event::InputEvent;
-
+use alloc::format;
 
 const BG: u32 = 0x00080a10;
 const FG: u32 = 0x00d0d0e0;
@@ -165,7 +164,14 @@ impl Installer {
             font::draw_string(fb, tx, ty, &line, FG);
         }
 
-        self.draw_button(fb, "Continue", fb.width / 2 - 60, start_y + DISK_NAMES.len() as u32 * row_h + 20, 120, 36);
+        self.draw_button(
+            fb,
+            "Continue",
+            fb.width / 2 - 60,
+            start_y + DISK_NAMES.len() as u32 * row_h + 20,
+            120,
+            36,
+        );
     }
 
     fn render_partition(&self, fb: &Framebuffer) {
@@ -200,21 +206,43 @@ impl Installer {
 
         // Username
         font::draw_string(fb, field_x, start_y - CHAR_HEIGHT - 6, "Username:", FG);
-        self.draw_field(fb, field_x, start_y, field_w, field_h, self.active_field == 0);
-        font::draw_string(fb, field_x + 8, start_y + (field_h - CHAR_HEIGHT) / 2,
-            core::str::from_utf8(&self.username[..self.username_len]).unwrap_or(""), FG);
+        self.draw_field(
+            fb,
+            field_x,
+            start_y,
+            field_w,
+            field_h,
+            self.active_field == 0,
+        );
+        font::draw_string(
+            fb,
+            field_x + 8,
+            start_y + (field_h - CHAR_HEIGHT) / 2,
+            core::str::from_utf8(&self.username[..self.username_len]).unwrap_or(""),
+            FG,
+        );
 
         // Password
         let py = start_y + field_h + 24;
         font::draw_string(fb, field_x, py - CHAR_HEIGHT - 6, "Password:", FG);
         self.draw_field(fb, field_x, py, field_w, field_h, self.active_field == 1);
-        self.draw_dots(fb, field_x + 8, py + (field_h - CHAR_HEIGHT) / 2, self.password_len);
+        self.draw_dots(
+            fb,
+            field_x + 8,
+            py + (field_h - CHAR_HEIGHT) / 2,
+            self.password_len,
+        );
 
         // Confirm
         let cy = py + field_h + 24;
         font::draw_string(fb, field_x, cy - CHAR_HEIGHT - 6, "Confirm Password:", FG);
         self.draw_field(fb, field_x, cy, field_w, field_h, self.active_field == 2);
-        self.draw_dots(fb, field_x + 8, cy + (field_h - CHAR_HEIGHT) / 2, self.confirm_len);
+        self.draw_dots(
+            fb,
+            field_x + 8,
+            cy + (field_h - CHAR_HEIGHT) / 2,
+            self.confirm_len,
+        );
 
         if let Some(err) = self.error_msg {
             let ey = cy + field_h + 16;
@@ -281,11 +309,13 @@ impl Installer {
             serial_println!("[INSTALLER] Would copy system files to ESP/EFI/BOOT/BOOTX64.EFI");
         }
         if sub_step == 5 && self.progress <= 90 {
-            serial_println!("[INSTALLER] Would install bootloader (GRUB2 stub)");
+            serial_println!("[INSTALLER] Would install EFI/BOOT/BOOTX64.EFI");
         }
         if sub_step == 6 && self.progress >= 100 {
-            serial_println!("[INSTALLER] Would create user '{}' with SHA-256 hash",
-                core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("seal"));
+            serial_println!(
+                "[INSTALLER] Would create user '{}' with SHA-256 hash",
+                core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("seal")
+            );
             serial_println!("[INSTALLER] Installation simulation complete");
             self.step = STEP_DONE;
         }
@@ -315,52 +345,48 @@ impl Installer {
                     let _ = self.advance_step();
                 }
             }
-            0x08 | 0x7F => {
-                match self.active_field {
-                    0 => {
-                        if self.username_len > 0 {
-                            self.username_len -= 1;
-                        }
+            0x08 | 0x7F => match self.active_field {
+                0 => {
+                    if self.username_len > 0 {
+                        self.username_len -= 1;
                     }
-                    1 => {
-                        if self.password_len > 0 {
-                            self.password_len -= 1;
-                        }
-                    }
-                    2 => {
-                        if self.confirm_len > 0 {
-                            self.confirm_len -= 1;
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                1 => {
+                    if self.password_len > 0 {
+                        self.password_len -= 1;
+                    }
+                }
+                2 => {
+                    if self.confirm_len > 0 {
+                        self.confirm_len -= 1;
+                    }
+                }
+                _ => {}
+            },
             0x09 => {
                 self.active_field = (self.active_field + 1) % 3;
             }
-            ch if ch >= 0x20 && ch < 0x7F => {
-                match self.active_field {
-                    0 => {
-                        if self.username_len < 32 {
-                            self.username[self.username_len] = ch;
-                            self.username_len += 1;
-                        }
+            ch if ch >= 0x20 && ch < 0x7F => match self.active_field {
+                0 => {
+                    if self.username_len < 32 {
+                        self.username[self.username_len] = ch;
+                        self.username_len += 1;
                     }
-                    1 => {
-                        if self.password_len < 32 {
-                            self.password[self.password_len] = ch;
-                            self.password_len += 1;
-                        }
-                    }
-                    2 => {
-                        if self.confirm_len < 32 {
-                            self.confirm_password[self.confirm_len] = ch;
-                            self.confirm_len += 1;
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                1 => {
+                    if self.password_len < 32 {
+                        self.password[self.password_len] = ch;
+                        self.password_len += 1;
+                    }
+                }
+                2 => {
+                    if self.confirm_len < 32 {
+                        self.confirm_password[self.confirm_len] = ch;
+                        self.confirm_len += 1;
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -389,12 +415,26 @@ impl Installer {
                     }
                 }
 
-                if self.hit_button(mx, my, self.fb_width / 2 - 60, start_y + DISK_NAMES.len() as u32 * row_h + 20, 120, 36) {
+                if self.hit_button(
+                    mx,
+                    my,
+                    self.fb_width / 2 - 60,
+                    start_y + DISK_NAMES.len() as u32 * row_h + 20,
+                    120,
+                    36,
+                ) {
                     self.step = STEP_PARTITION;
                 }
             }
             STEP_PARTITION => {
-                if self.hit_button(mx, my, self.fb_width / 2 - 60, self.fb_height - 120, 120, 36) {
+                if self.hit_button(
+                    mx,
+                    my,
+                    self.fb_width / 2 - 60,
+                    self.fb_height - 120,
+                    120,
+                    36,
+                ) {
                     self.step = STEP_USER;
                 }
             }
@@ -419,7 +459,14 @@ impl Installer {
                     return false;
                 }
 
-                if self.hit_button(mx, my, self.fb_width / 2 - 60, self.fb_height - 120, 120, 36) {
+                if self.hit_button(
+                    mx,
+                    my,
+                    self.fb_width / 2 - 60,
+                    self.fb_height - 120,
+                    120,
+                    36,
+                ) {
                     return self.advance_step();
                 }
             }
@@ -507,7 +554,13 @@ impl Installer {
         let dot_size = 6u32;
         let dot_gap = 10u32;
         for i in 0..count as u32 {
-            fb.fill_rect(x + i * dot_gap, y + (CHAR_HEIGHT - dot_size) / 2, dot_size, dot_size, FG);
+            fb.fill_rect(
+                x + i * dot_gap,
+                y + (CHAR_HEIGHT - dot_size) / 2,
+                dot_size,
+                dot_size,
+                FG,
+            );
         }
     }
 

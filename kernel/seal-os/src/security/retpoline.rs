@@ -26,166 +26,91 @@ pub fn init() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rax",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rax", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rbx() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rbx",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rbx", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rcx() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rcx",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rcx", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rdx() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rdx",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rdx", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rsi() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rsi",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rsi", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rdi() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rdi",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rdi", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rbp() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], rbp",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], rbp", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r8() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r8",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r8", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r9() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r9",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r9", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r10() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r10",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r10", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r11() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r11",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r11", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r12() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r12",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r12", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r13() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r13",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r13", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r14() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r14",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r14", "ret",);
 }
 
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r15() {
-    naked_asm!(
-        "call 2f",
-        "2:",
-        "mov [rsp], r15",
-        "ret",
-    );
+    naked_asm!("call 2f", "2:", "mov [rsp], r15", "ret",);
 }
 
 /// AMD-style retpoline barrier for indirect branches.
@@ -194,15 +119,14 @@ pub unsafe extern "C" fn indirect_branch_thunk_r15() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn lfence_jmp_rax() {
-    naked_asm!(
-        "lfence",
-        "jmp rax",
-    );
+    naked_asm!("lfence", "jmp rax",);
 }
 
 /// Inline LFENCE barrier for Spectre-v2 mitigation.
 pub fn lfence_barrier() {
-    unsafe { core::arch::x86_64::_mm_lfence(); }
+    unsafe {
+        core::arch::x86_64::_mm_lfence();
+    }
 }
 
 #[cfg(any(test, feature = "test-mode"))]

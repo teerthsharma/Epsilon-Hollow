@@ -5,9 +5,9 @@
 //!
 //! Trading data becomes geometry. Profit is green peaks. Loss is red valleys.
 
-use alloc::vec::Vec;
 use crate::graphics::topo_render::{BoundingBox, Camera, TopoMesh};
 use crate::wm::window::Window;
+use alloc::vec::Vec;
 
 /// A simple CPU-side tensor (f32 data + shape).
 pub struct Tensor {
@@ -246,7 +246,8 @@ pub fn point_cloud_to_mesh_grid(
     for (idx, v) in points.iter().enumerate() {
         let mut emb = [0u16; 32];
         for a in 0..32 {
-            emb[a] = ((idx.wrapping_mul(1103515245)
+            emb[a] = ((idx
+                .wrapping_mul(1103515245)
                 .wrapping_add(12345)
                 .wrapping_add(a.wrapping_mul(65537))
                 .wrapping_add((v[0].abs() * 1000.0) as usize)
