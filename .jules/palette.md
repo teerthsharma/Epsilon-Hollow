@@ -1,0 +1,3 @@
+## 2024-05-28 - Chat Interface Empty States & A11y
+**Learning:** For chat interfaces without initial messages, users need immediate visual feedback that the system is ready and waiting for input. Additionally, icon-only buttons need strict keyboard accessibility (`focus-visible`) and clear disabled states to communicate when input is invalid or missing.
+**Action:** When building chat interfaces, always implement a distinct empty state (`messages.length === 0`) and ensure send buttons use `focus-visible` ring styles and dynamic `title` tooltips for their disabled state.
