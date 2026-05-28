@@ -1546,7 +1546,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**Seal OS language surface**: Rust kernel, assembly boot/context edges where needed, and Aether-Lang DSL. Legacy Python research files are not part of the Seal OS GitHub language target and are quarantined by `.gitattributes` until removed or rewritten.
+**95974 lines of Rust** across 365 files · 0 lines of x86 assembly · 803 lines of Lean 4 proofs · 18495 lines of Python — **115272 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
