@@ -80,24 +80,31 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4 opacity-50">
+                            <Cpu size={48} className="animate-pulse text-green-500/30" />
+                            <p className="text-sm font-mono tracking-wider">AWAITING NEURAL INJECTION...</p>
                         </div>
-                    ))}
+                    ) : (
+                        messages.map((msg) => (
+                            <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+                                    ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                                    : msg.sender === 'user'
+                                        ? 'border-gray-700 bg-gray-800'
+                                        : 'border-blue-900/30 bg-blue-900/10'
+                                    }`}>
+                                    {msg.isPlasticityEvent && (
+                                        <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                                            <Zap size={12} fill="currentColor" />
+                                            <span>Weights Updated</span>
+                                        </div>
+                                    )}
+                                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                                </div>
+                            </div>
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
@@ -125,8 +132,8 @@ export default function ChatInterface() {
                             type="submit"
                             disabled={!input.trim()}
                             aria-label="Send message"
-                            title="Send message"
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
+                            title={!input.trim() ? "Enter a message to send" : "Send message"}
+                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:outline-none focus-visible:ring-offset-2 focus-visible:ring-offset-black"
                         >
                             <Send size={20} />
                         </button>
