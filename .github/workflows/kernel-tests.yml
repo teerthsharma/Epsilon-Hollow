@@ -16,6 +16,8 @@ jobs:
     # The test_kernel.sh script skips gracefully if QEMU/OVMF is missing.
     steps:
       - uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Install Rust nightly (kernel)
         uses: dtolnay/rust-toolchain@nightly
@@ -56,6 +58,8 @@ jobs:
 
       - name: Upload test log artifact
         uses: actions/upload-artifact@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         if: always()
         with:
           name: kernel-test-log
