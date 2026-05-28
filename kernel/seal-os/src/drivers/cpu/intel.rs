@@ -8,6 +8,7 @@
 
 use crate::serial_println;
 use core::arch::x86_64::__cpuid;
+use core::sync::atomic::{AtomicU8, Ordering};
 use x86_64::registers::model_specific::Msr;
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,7 @@ pub struct IntelCpuDriver {
 }
 
 static INTEL_DRIVER: spin::Mutex<Option<IntelCpuDriver>> = spin::Mutex::new(None);
+static TURBO_REQUEST: AtomicU8 = AtomicU8::new(0);
 
 impl IntelCpuDriver {
     /// Detect an Intel CPU and initialize the driver.
@@ -71,7 +73,9 @@ impl IntelCpuDriver {
         };
 
         // ----- Initial MSR reads -------------------------------------------
-        let max_p_state = read_msr(IA32_PERF_STATUS).map(|v| (v & 0xFFFF) as u16).unwrap_or(0);
+        let max_p_state = read_msr(IA32_PERF_STATUS)
+            .map(|v| (v & 0xFFFF) as u16)
+            .unwrap_or(0);
 
         let driver = IntelCpuDriver {
             family: display_family,
@@ -91,13 +95,21 @@ impl IntelCpuDriver {
             "[IntelCpu] Max P-state: {} ({} MHz), Turbo: {}",
             driver.max_p_state,
             driver.max_p_state * 100,
-            if driver.turbo_enabled() { "enabled" } else { "disabled" }
+            if driver.turbo_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
 
         if let Some(therm) = read_msr(IA32_THERM_STATUS) {
             let valid = (therm >> 31) & 1 != 0;
             let trip = therm & 1 != 0;
-            serial_println!("[IntelCpu] Thermal status: valid={}, thermal-trip={}", valid, trip);
+            serial_println!(
+                "[IntelCpu] Thermal status: valid={}, thermal-trip={}",
+                valid,
+                trip
+            );
         }
 
         Some(driver)
@@ -145,9 +157,14 @@ impl IntelCpuDriver {
 
     /// Enable or disable Turbo Boost by flipping IA32_MISC_ENABLE bit 38.
     pub fn set_turbo(&self, enabled: bool) {
+        let requested = if enabled { 2 } else { 1 };
+        if TURBO_REQUEST.load(Ordering::Relaxed) == requested {
+            return;
+        }
         if let Some(mut v) = read_msr(IA32_MISC_ENABLE) {
             let currently_enabled = (v >> 38) & 1 == 0;
             if currently_enabled == enabled {
+                TURBO_REQUEST.store(requested, Ordering::Relaxed);
                 return;
             }
             if enabled {
@@ -156,8 +173,12 @@ impl IntelCpuDriver {
                 v |= 1u64 << 38;
             }
             write_msr(IA32_MISC_ENABLE, v);
-            serial_println!("[IntelCpu] Turbo {}", if enabled { "enabled" } else { "disabled" });
+            serial_println!(
+                "[IntelCpu] Turbo {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
         }
+        TURBO_REQUEST.store(requested, Ordering::Relaxed);
     }
 }
 

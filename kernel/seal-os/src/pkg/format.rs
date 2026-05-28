@@ -80,7 +80,12 @@ pub fn parse_eph(data: &[u8]) -> Result<EphPackage, EphError> {
         }
         let path = String::from_utf8_lossy(&data[offset..offset + path_len]).into_owned();
         offset += path_len;
-        let file_len = u32::from_be_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+        let file_len = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
         offset += 4;
         if offset + file_len > data.len() {
             return Err(EphError::ShortRead);
@@ -92,18 +97,26 @@ pub fn parse_eph(data: &[u8]) -> Result<EphPackage, EphError> {
         hasher.update(&file_data);
         let hash: [u8; 32] = hasher.finalize().into();
 
-        files.push(EphFileEntry { path, data: file_data, hash });
+        files.push(EphFileEntry {
+            path,
+            data: file_data,
+            hash,
+        });
     }
 
     if offset != data.len() && (offset < 4 || data[offset - 4..offset] != *b"END\0") {
         return Err(EphError::BadTrailer);
     }
 
-    Ok(EphPackage { manifest, signature, files })
+    Ok(EphPackage {
+        manifest,
+        signature,
+        files,
+    })
 }
 
 pub fn verify_signature(pkg: &EphPackage, public_key: &[u8; 32]) -> Result<(), EphError> {
-    use ed25519_dalek::{VerifyingKey, Signature};
+    use ed25519_dalek::{Signature, VerifyingKey};
     let vk = VerifyingKey::from_bytes(public_key).map_err(|_| EphError::BadSignature)?;
     let sig = Signature::from_bytes(&pkg.signature);
     // Build signed data = manifest bytes concatenated with file hashes
@@ -114,7 +127,8 @@ pub fn verify_signature(pkg: &EphPackage, public_key: &[u8; 32]) -> Result<(), E
         signed.extend_from_slice(f.path.as_bytes());
         signed.extend_from_slice(&f.hash);
     }
-    vk.verify_strict(&signed, &sig).map_err(|_| EphError::BadSignature)
+    vk.verify_strict(&signed, &sig)
+        .map_err(|_| EphError::BadSignature)
 }
 
 fn parse_manifest(bytes: &[u8]) -> Result<PackageManifest, EphError> {
@@ -155,7 +169,7 @@ mod tests {
         data.extend_from_slice(&(manifest.len() as u32).to_be_bytes());
         data.extend_from_slice(manifest);
         data.extend_from_slice(&[0u8; 64]); // dummy signature
-        // file
+                                            // file
         data.extend_from_slice(&(5u16).to_be_bytes());
         data.extend_from_slice(b"hello");
         data.extend_from_slice(&(5u32).to_be_bytes());

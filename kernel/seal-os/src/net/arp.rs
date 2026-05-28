@@ -62,7 +62,13 @@ pub fn insert(ip: [u8; 4], mac: [u8; 6]) {
             return;
         }
     }
-    cache.push((ip, ArpEntry { mac, expires_at: ticks().wrapping_add(300_000) }));
+    cache.push((
+        ip,
+        ArpEntry {
+            mac,
+            expires_at: ticks().wrapping_add(300_000),
+        },
+    ));
 }
 
 fn send_arp_request(target_ip: [u8; 4]) -> Result<(), &'static str> {

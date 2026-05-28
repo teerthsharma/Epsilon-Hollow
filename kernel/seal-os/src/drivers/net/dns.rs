@@ -3,7 +3,6 @@
 
 //! DNS resolver wrapper -- delegates to net::dns.
 
-
 pub struct DnsResolver {
     server: [u8; 4],
 }

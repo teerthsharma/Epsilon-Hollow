@@ -62,7 +62,10 @@ impl FileSystem for SysFs {
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], _offset: u64) -> Result<usize, VfsError> {
         for dev in &self.devices {
-            let path = format!("bus/pci/devices/{:04x}:{:04x}", dev.vendor_id, dev.device_id);
+            let path = format!(
+                "bus/pci/devices/{:04x}:{:04x}",
+                dev.vendor_id, dev.device_id
+            );
             if Self::path_inode(&path) == handle.inode {
                 let content = format!(
                     "vendor: 0x{:04x}\ndevice: 0x{:04x}\nclass: 0x{:02x}\nsubclass: 0x{:02x}\nprog_if: 0x{:02x}\n",
@@ -146,7 +149,10 @@ impl FileSystem for SysFs {
             }
         }
         for dev in &self.devices {
-            let path = format!("bus/pci/devices/{:04x}:{:04x}", dev.vendor_id, dev.device_id);
+            let path = format!(
+                "bus/pci/devices/{:04x}:{:04x}",
+                dev.vendor_id, dev.device_id
+            );
             if Self::path_inode(&path) == handle.inode {
                 return Ok(VfsNode {
                     size: 0,

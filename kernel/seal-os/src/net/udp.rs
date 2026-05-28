@@ -86,7 +86,9 @@ impl UdpSocket {
                 pseudo.extend_from_slice(&src_ip);
                 pseudo.extend_from_slice(&dst_addr);
                 pseudo.extend_from_slice(&(length as u32).to_be_bytes());
-                pseudo.push(0); pseudo.push(0); pseudo.push(0);
+                pseudo.push(0);
+                pseudo.push(0);
+                pseudo.push(0);
                 pseudo.push(17);
                 let hdr_bytes = unsafe {
                     core::slice::from_raw_parts(

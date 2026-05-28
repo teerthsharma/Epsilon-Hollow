@@ -14,7 +14,8 @@ use x86_64::{PhysAddr, VirtAddr};
 // Assembly definitions
 // ---------------------------------------------------------------------------
 
-global_asm!(r#"
+global_asm!(
+    r#"
     .global setup_recursive_mapping
     .align 16
 setup_recursive_mapping:
@@ -130,7 +131,8 @@ kpti_swap_cr3:
     mov rax, rdi
     mov cr3, rax
     ret
-"#);
+"#
+);
 
 extern "C" {
     fn setup_recursive_mapping(pml4_phys: u64);
@@ -205,10 +207,7 @@ pub mod tests {
     fn test_walk_page_table_zero_is_unmapped() -> TestResult {
         // VA 0 with a dummy PML4 of all zeros should return 0
         let dummy_pml4 = [0u64; 512];
-        let phys = translate_phys(
-            PhysAddr::new(dummy_pml4.as_ptr() as u64),
-            VirtAddr::new(0),
-        );
+        let phys = translate_phys(PhysAddr::new(dummy_pml4.as_ptr() as u64), VirtAddr::new(0));
         if phys.is_some() {
             return TestResult::Fail("Expected None for zeroed PML4");
         }

@@ -312,10 +312,13 @@ pub fn thermal_governor_step() {
 
     // Print thermal map every ~1 second (10 × 100 ms steps)
     let accum = PRINT_ACCUM_TICKS.fetch_add(1, Ordering::Relaxed);
-    if accum % 10 == 0 {
+    if accum % 100 == 0 {
         crate::serial_println!(
             "[THERMAL] T1 cells: {}, ε={:.2}, P-state: P{}, predicted trip: CPU{}",
-            count, eps, pstate_idx, predicted_trip
+            count,
+            eps,
+            pstate_idx,
+            predicted_trip
         );
     }
 }
@@ -433,8 +436,8 @@ pub fn acpi_enter_sleep(state: u8) {
         sleep.rsi = buf[4];
         sleep.rdi = buf[5];
         sleep.rbp = buf[6];
-        sleep.r8  = buf[7];
-        sleep.r9  = buf[8];
+        sleep.r8 = buf[7];
+        sleep.r9 = buf[8];
         sleep.r10 = buf[9];
         sleep.r11 = buf[10];
         sleep.r12 = buf[11];
@@ -455,7 +458,11 @@ pub fn acpi_enter_sleep(state: u8) {
         let max_t = (0..count)
             .map(|i| zones[i].temp_c)
             .fold(0.0f64, |a, b| a.max(b));
-        let r = if count > 0 { zones[0].pstate_hyp.0 } else { 0.0 };
+        let r = if count > 0 {
+            zones[0].pstate_hyp.0
+        } else {
+            0.0
+        };
         sleep.hyperbolic_snapshot = (count, max_t, r);
     }
 
@@ -495,14 +502,16 @@ pub fn acpi_wake_handler() {
         let frame = x86_64::structures::paging::PhysFrame::containing_address(
             x86_64::PhysAddr::new(sleep.cr3),
         );
-        x86_64::registers::control::Cr3::write(frame, x86_64::registers::control::Cr3Flags::empty());
+        x86_64::registers::control::Cr3::write(
+            frame,
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
 
         // T5: Restore hyperbolic snapshot metadata.
         let mut zones = ZONES.lock();
         let (count, _max_t, r) = sleep.hyperbolic_snapshot;
         for i in 0..count.min(MAX_THERMAL_ZONES) {
-            let theta =
-                (i as f64) * 2.0 * core::f64::consts::PI / (count.max(1) as f64);
+            let theta = (i as f64) * 2.0 * core::f64::consts::PI / (count.max(1) as f64);
             zones[i].pstate_hyp = (r, theta);
         }
     }

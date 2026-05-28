@@ -39,10 +39,22 @@ impl PrefetchEngine {
     }
 
     pub fn new_model_training() -> Self {
-        Self::with_params(0.30, 0.15, [0.20, 0.30, 0.40], 0.10, PrefetchPreset::ModelTraining)
+        Self::with_params(
+            0.30,
+            0.15,
+            [0.20, 0.30, 0.40],
+            0.10,
+            PrefetchPreset::ModelTraining,
+        )
     }
 
-    fn with_params(epsilon: f32, phi: f32, lambda: [f32; 3], bias: f32, preset: PrefetchPreset) -> Self {
+    fn with_params(
+        epsilon: f32,
+        phi: f32,
+        lambda: [f32; 3],
+        bias: f32,
+        preset: PrefetchPreset,
+    ) -> Self {
         Self {
             epsilon,
             phi,
@@ -241,5 +253,4 @@ fn fast_sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + libm::expf(-x))
 }
 
-pub fn init() {
-}
+pub fn init() {}

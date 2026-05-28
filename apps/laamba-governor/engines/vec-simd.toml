@@ -1,0 +1,17 @@
+[engine]
+name = "Vec-SIMD"
+category = "Systems"
+icon = "cpu"
+color = "#00B0FF"
+description = "Hand-written AVX-512 SIMD math library"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py vec-simd"
+working_dir = "~/repos/vec-simd"
+
+[engine.inputs]
+benchmark = { type = "string", default = "dot" }
+
+[engine.outputs]
+results = { type = "timeseries" }

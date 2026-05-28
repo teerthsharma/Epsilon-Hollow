@@ -49,8 +49,8 @@ fn pipe_ioctl(request: u64, _arg: u64) -> i64 {
 
 /// Register basic built-in ioctls.
 pub fn init() {
-    register(5, 1, tty_ioctl);   // /dev/console
-    register(1, 3, pipe_ioctl);  // /dev/null
-    register(1, 5, pipe_ioctl);  // /dev/zero
-    register(1, 8, pipe_ioctl);  // /dev/random
+    register(5, 1, tty_ioctl); // /dev/console
+    register(1, 3, pipe_ioctl); // /dev/null
+    register(1, 5, pipe_ioctl); // /dev/zero
+    register(1, 8, pipe_ioctl); // /dev/random
 }

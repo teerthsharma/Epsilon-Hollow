@@ -12,7 +12,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{PageTable, PageTableFlags}, VirtAddr,
+    structures::paging::{PageTable, PageTableFlags},
+    VirtAddr,
 };
 
 /// A lazily-backed mmap region.
@@ -36,11 +37,7 @@ static USER_VIRT_BUMP: AtomicU64 = AtomicU64::new(0x10_0000);
 /// Reserve a contiguous virtual address range for the given page table.
 ///
 /// No physical frames are allocated — they are fetched on the first page fault.
-pub fn mmap_user(
-    pages: usize,
-    flags: PageTableFlags,
-    page_table: u64,
-) -> Option<VirtAddr> {
+pub fn mmap_user(pages: usize, flags: PageTableFlags, page_table: u64) -> Option<VirtAddr> {
     let size = pages as u64 * 4096;
     let addr = USER_VIRT_BUMP.fetch_add(size, Ordering::SeqCst);
 
@@ -65,7 +62,9 @@ pub fn mmap_user(
 /// Caller must ensure the range matches a previously-mapped region.
 pub unsafe fn munmap_user(start: VirtAddr, pages: usize) -> bool {
     let mut regions = REGIONS.lock();
-    let idx = regions.iter().position(|r| r.start == start && r.pages == pages);
+    let idx = regions
+        .iter()
+        .position(|r| r.start == start && r.pages == pages);
     let idx = match idx {
         Some(i) => i,
         None => return false,
@@ -121,12 +120,8 @@ pub fn handle_page_fault(fault_addr: VirtAddr) -> bool {
                 let pml4 = &mut *(current_pt as *mut PageTable);
                 // Ignore map errors — if the page table structure is broken
                 // the fault will recur and we'll return false next time.
-                let _ = crate::memory::virt::map_page_to_pml4(
-                    page_start,
-                    frame,
-                    region.flags,
-                    pml4,
-                );
+                let _ =
+                    crate::memory::virt::map_page_to_pml4(page_start, frame, region.flags, pml4);
             }
             return true;
         }

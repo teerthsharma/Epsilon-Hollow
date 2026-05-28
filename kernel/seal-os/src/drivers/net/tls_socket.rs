@@ -3,9 +3,9 @@
 
 //! TLS-over-TCP socket — wraps TcpSocket with TlsSession encryption.
 
-use alloc::vec::Vec;
 use crate::drivers::net::tcp::TcpSocket;
 use crate::drivers::net::tls::{TlsSession, TlsState};
+use alloc::vec::Vec;
 
 pub struct TlsSocket {
     tcp: TcpSocket,
@@ -52,7 +52,8 @@ impl TlsSocket {
             if n > 0 {
                 self.rx_encrypted.extend_from_slice(&buf[..n]);
                 if let Some(record) = Self::pop_record(&mut self.rx_encrypted) {
-                    self.tls.handle_server_hello(&record)
+                    self.tls
+                        .handle_server_hello(&record)
                         .map_err(|_| "TLS handshake failed")?;
                     break;
                 }
@@ -72,8 +73,7 @@ impl TlsSocket {
         if !self.connected {
             return Err("TLS socket not connected");
         }
-        let encrypted = self.tls.encrypt(data)
-            .map_err(|_| "TLS encrypt failed")?;
+        let encrypted = self.tls.encrypt(data).map_err(|_| "TLS encrypt failed")?;
         self.tcp.send(&encrypted);
         Ok(())
     }

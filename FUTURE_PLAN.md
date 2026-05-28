@@ -2,7 +2,9 @@
 
 ## Master Task Registry
 
-This document is the single source of truth for all remaining work. Every task has a checkbox. Agents tick `[ ] → [x]` as work completes. Each major area links to its design document, which contains the granular task breakdown.
+This document is the single source of truth for all remaining work. Every task has a checkbox. Agents tick `[ ] -> [x]` as work completes. Each major area links to its design document, which contains the granular task breakdown.
+
+Seal OS target is bare-metal Rust with Seal ABI, SealShell, and Aether-Lang. POSIX, Unix, Linux, libc, and GRUB compatibility goals are rejected unless explicitly labeled as legacy host interop.
 
 ---
 
@@ -19,8 +21,8 @@ This document is the single source of truth for all remaining work. Every task h
 - [ ] Stage 3: Bitmap allocator init (mark usable, free count correct)
 - [ ] Stage 3: Heap init (slab allocator online, Box::new succeeds)
 - [ ] Stage 4: Subsystem init order verified (12 inits complete in sequence)
-- [ ] Stage 5: Init process execs `/bin/init` or `/bin/sh`
-- [ ] GRUB ISO generation (multiboot2 compliant)
+- [ ] Stage 5: Init process enters SealShell or Aether-Lang app host
+- [ ] UEFI disk image generation
 - [ ] QEMU runner scripts automated
 
 ### 1.2 Interrupt & Exception Handling
@@ -41,9 +43,9 @@ This document is the single source of truth for all remaining work. Every task h
 - [ ] `syscall`/`sysret` ABI wired (STAR, LSTAR, SFMASK)
 - [ ] Assembly entry/exit with `swapgs` mitigation
 - [ ] `SyscallFrame` + dispatch table (512 entries)
-- [ ] Tier 1 syscalls: read, write, open, close, exit, brk, mmap, munmap, fork, execve, wait4, getpid, getppid, chdir, getcwd
-- [ ] Tier 2 syscalls: stat, fstat, lstat, lseek, ioctl, pipe, dup, dup2, fcntl, access, getdents64, mkdir, rmdir, unlink, rename, link, symlink, readlink, chmod, chown, umask
-- [ ] Tier 3 syscalls: signals + threads (sigaction, sigprocmask, kill, sigreturn, clone, exit_group, set_tid_address, gettid, nanosleep)
+- [ ] Tier 1 Seal ABI calls: read, write, open, close, exit, brk, mmap, fork, exec, wait, getpid, chdir, getcwd
+- [ ] Tier 2 Seal ABI calls: stat, lseek, ioctl, pipe, dup, mkdir, rmdir, unlink, rename, manifold_query, theorem_status, teleport
+- [ ] Tier 3 Seal ABI calls: signals, tasks, nanosleep, watchdog, package, WiFi/Bluetooth settings
 - [ ] VDSO: clock_gettime, gettimeofday, getcpu, time
 - [ ] MAC/audit integration on every syscall
 
@@ -51,7 +53,7 @@ This document is the single source of truth for all remaining work. Every task h
 **Design doc:** [`docs/design/VFS-DEVTMPFS.md`](docs/design/VFS-DEVTMPFS.md)
 
 - [ ] `Inode`, `Dentry`, `VfsMount` structs
-- [ ] `FileSystem` trait with full POSIX ops
+- [ ] `FileSystem` trait with Seal-native ops
 - [ ] Path resolution (absolute, relative, symlink following, mount crossing)
 - [ ] devtmpfs populated at boot (/dev/null, zero, full, random, urandom, tty, console, pts)
 - [ ] `CharDevice` trait + implementations
@@ -64,9 +66,9 @@ This document is the single source of truth for all remaining work. Every task h
 **Design doc:** [`docs/design/SHELL-USERLAND.md`](docs/design/SHELL-USERLAND.md)
 
 - [ ] Init system mounts essential FS, spawns getty
-- [ ] POSIX shell (pipes, redirects, background, variables, conditionals, loops)
-- [ ] P0 utilities: ls, cat, cp, mv, rm, mkdir, rmdir, touch, chmod, chown, ln, find, grep, sort, uniq, wc, head, tail, cut, tr, diff, ps, kill, df, du, mount, umount, free, uname, uptime, date, sleep, echo, test
-- [ ] libc minimal (malloc, free, fopen, fread, fwrite, printf, fork, execve, wait, pthread_create)
+- [ ] SealShell native verbs (look, create, write, move, search, open, tasks, seal)
+- [ ] P0 utilities mapped to Seal verbs and Aether-Lang modules
+- [ ] Seal runtime bindings for allocation, files, windows, tasks, and theorem status
 - [ ] ELF loader (PT_LOAD, BSS, stack, auxv)
 - [ ] crt0.o startup code
 
@@ -132,7 +134,7 @@ This document is the single source of truth for all remaining work. Every task h
 - [ ] Block allocation (bitmap scan, group selection)
 - [ ] Inode allocation
 - [ ] Mount integration (read-only + read-write)
-- [ ] Linux compatibility verified
+- [ ] Legacy ext2 image interop verified without adopting Linux ABI
 
 ---
 

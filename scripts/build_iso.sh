@@ -3,7 +3,7 @@
 # Creates a UEFI-bootable ISO that works in VirtualBox, QEMU, and real hardware.
 #
 # Uses El Torito UEFI boot with embedded FAT12 EFI image.
-# Requires: xorriso (recommended), grub-mkrescue, or mkisofs
+# Requires: xorriso (recommended), mkisofs, or genisoimage
 
 set -euo pipefail
 
@@ -70,31 +70,7 @@ if command -v xorriso &>/dev/null; then
     echo "[build_iso] xorriso failed, trying next method..."
 fi
 
-# ── Method 2: grub-mkrescue (fallback) ───────────────────────────────────────
-if command -v grub-mkrescue &>/dev/null; then
-    echo "[build_iso] Using grub-mkrescue..."
-    mkdir -p "$ISO_STAGING/boot/grub"
-    cat > "$ISO_STAGING/boot/grub/grub.cfg" <<'GRUB'
-set timeout=3
-set default=0
-menuentry "Seal OS" {
-    chainloader /seal-os.efi
-}
-GRUB
-    set +e
-    grub-mkrescue -o "$OUTPUT_ISO" "$ISO_STAGING" \
-        --modules="part_gpt fat iso9660 chainloader efi_uga efi_gop" 2>/dev/null
-    set -e
-
-    if [ -f "$OUTPUT_ISO" ]; then
-        echo "[build_iso] OK: $OUTPUT_ISO ($(du -h "$OUTPUT_ISO" | cut -f1))"
-        rm -rf "$ISO_STAGING"
-        exit 0
-    fi
-    echo "[build_iso] grub-mkrescue failed, trying next method..."
-fi
-
-# ── Method 3: mkisofs / genisoimage ──────────────────────────────────────────
+# Method 2: mkisofs / genisoimage
 MKISOFS=""
 if command -v mkisofs &>/dev/null; then
     MKISOFS="mkisofs"
@@ -127,6 +103,5 @@ rm -rf "$ISO_STAGING"
 echo "[build_iso] ERROR: No working ISO tool found."
 echo "[build_iso] Please install one of the following:"
 echo "  - xorriso        <-- RECOMMENDED for UEFI"
-echo "  - grub-mkrescue  (grub-common / grub2-tools)"
 echo "  - mkisofs / genisoimage"
 exit 1

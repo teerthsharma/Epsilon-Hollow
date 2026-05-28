@@ -1,0 +1,25 @@
+[engine]
+name = "Faraday"
+category = "Physics"
+icon = "zap"
+color = "#FF6B35"
+description = "God Tensor via Banach fixed-point E<->H coupling"
+
+[engine.entry]
+type = "python"
+command = "python engines/wrappers/faraday_wrapper.py"
+working_dir = "~/repos/faraday"
+
+[engine.inputs]
+geometry = { type = "mesh", desc = "Cavity geometry" }
+resolution = { type = "int", default = 64, range = [8, 512] }
+epochs = { type = "int", default = 50000 }
+
+[engine.outputs]
+god_tensor = { type = "tensor", shape = [16] }
+betti_curve = { type = "timeseries" }
+banach_loss = { type = "scalar" }
+
+[engine.metrics]
+convergence = { source = "stdout", pattern = "loss: ([0-9.e-]+)" }
+betti_0 = { source = "stdout", pattern = "B0=([0-9.]+)" }

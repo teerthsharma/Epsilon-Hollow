@@ -7,13 +7,13 @@
 pub mod arp;
 pub mod dhcp;
 pub mod dns;
+pub mod firewall;
 pub mod icmp;
 pub mod ipv4;
 pub mod ipv6;
 pub mod tcp;
-pub mod udp;
 pub mod topological;
-pub mod firewall;
+pub mod udp;
 
 use spin::Mutex;
 
@@ -60,12 +60,10 @@ impl IpAddr {
             }
             IpAddr::V6(addr) => {
                 let hi = u64::from_be_bytes([
-                    addr[0], addr[1], addr[2], addr[3],
-                    addr[4], addr[5], addr[6], addr[7],
+                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
                 ]) as f64;
                 let lo = u64::from_be_bytes([
-                    addr[8], addr[9], addr[10], addr[11],
-                    addr[12], addr[13], addr[14], addr[15],
+                    addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15],
                 ]) as f64;
                 let max = u64::MAX as f64;
                 let theta = (hi / max) * core::f64::consts::PI;

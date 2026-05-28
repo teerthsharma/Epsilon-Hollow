@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 
 use super::encoder::{ManifoldPayload, SpherePoint};
-use super::journal::{TopologicalJournal, compute_manifold_embedding};
+use super::journal::{compute_manifold_embedding, TopologicalJournal};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
 
@@ -149,9 +149,7 @@ impl Superblock {
 
     fn as_bytes(&self) -> &[u8] {
         // SAFETY: Superblock is repr(C) and exactly 512 bytes; any bit pattern is valid for byte slice.
-        unsafe {
-            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
-        }
+        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
     }
 
     fn from_bytes(buf: &[u8]) -> Option<Self> {
@@ -213,9 +211,7 @@ impl JournalEntry {
 
     fn as_bytes(&self) -> &[u8] {
         // SAFETY: JournalEntry is repr(C) and exactly 512 bytes.
-        unsafe {
-            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
-        }
+        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
     }
 
     fn from_bytes(buf: &[u8]) -> Option<Self> {
@@ -333,9 +329,7 @@ impl InodeRecord {
 
     fn as_bytes(&self) -> &[u8] {
         // SAFETY: InodeRecord is repr(C) and exactly 256 bytes.
-        unsafe {
-            core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>())
-        }
+        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
     }
 }
 
@@ -434,8 +428,6 @@ impl BlockStore {
         Ok(s)
     }
 
-
-
     pub fn format(&mut self, total_blocks: u64) -> Result<(), BlockError> {
         if total_blocks < JOURNAL_BLOCKS + 10 {
             return Err(BlockError::InvalidLba);
@@ -447,7 +439,11 @@ impl BlockStore {
         self.freelist.clear();
         self.dirty_inodes.clear();
 
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let bitmap_bytes = (sb.free_bitmap_blocks as usize) * SECTOR_SIZE;
         self.bitmap = vec![0u8; bitmap_bytes];
         self.mark_used(0, sb.data_start)?;
@@ -543,7 +539,11 @@ impl BlockStore {
     }
 
     fn read_bitmap(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let mut bitmap = Vec::with_capacity((sb.free_bitmap_blocks as usize) * SECTOR_SIZE);
         for i in 0..sb.free_bitmap_blocks {
@@ -556,7 +556,11 @@ impl BlockStore {
     }
 
     fn write_bitmap(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         for i in 0..sb.free_bitmap_blocks {
             let start = (i as usize) * SECTOR_SIZE;
@@ -570,7 +574,11 @@ impl BlockStore {
     }
 
     fn read_inode_table(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
 
@@ -593,7 +601,11 @@ impl BlockStore {
     }
 
     fn write_inode_table(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
 
@@ -619,7 +631,11 @@ impl BlockStore {
     }
 
     fn replay_journal(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let mut buf = [0u8; SECTOR_SIZE];
         let mut max_seq = 0u64;
 
@@ -633,13 +649,15 @@ impl BlockStore {
                     max_seq = entry.seq;
                     let payload = if entry.data_blocks > 0 && entry.data_lba != 0 {
                         match self.read_data_extent(entry.data_lba, entry.data_blocks as usize) {
-                            Ok(ref buf) => bytes_to_payload(buf).unwrap_or_else(|| ManifoldPayload {
-                                points: vec![SpherePoint::zero()],
-                                point_count: 1,
-                                betti_0: 1,
-                                original_size: entry.original_size,
-                                content_hash: entry.content_hash,
-                            }),
+                            Ok(ref buf) => {
+                                bytes_to_payload(buf).unwrap_or_else(|| ManifoldPayload {
+                                    points: vec![SpherePoint::zero()],
+                                    point_count: 1,
+                                    betti_0: 1,
+                                    original_size: entry.original_size,
+                                    content_hash: entry.content_hash,
+                                })
+                            }
                             Err(_) => ManifoldPayload {
                                 points: vec![SpherePoint::zero()],
                                 point_count: 1,
@@ -712,7 +730,11 @@ impl BlockStore {
     }
 
     fn write_journal_entry(&mut self, entry: &JournalEntry) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let lba = sb.journal_start + (self.journal_pos % sb.journal_blocks);
         backend.write_sector(lba, entry.as_bytes())?;
@@ -721,7 +743,11 @@ impl BlockStore {
     }
 
     fn commit_journal(&mut self) -> Result<(), BlockError> {
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let mut buf = [0u8; SECTOR_SIZE];
 
@@ -753,7 +779,12 @@ impl BlockStore {
         Ok(extent)
     }
 
-    fn write_data_extent(&mut self, lba: u64, blocks: usize, data: &[u8]) -> Result<(), BlockError> {
+    fn write_data_extent(
+        &mut self,
+        lba: u64,
+        blocks: usize,
+        data: &[u8],
+    ) -> Result<(), BlockError> {
         // Record topological journal entry for atomicity.
         // Avoid double-borrow of self by reading extent before touching journal.
         let before = if self.topo_journal.is_some() {
@@ -894,7 +925,11 @@ impl BlockStore {
                 self.write_data_extent(record.data_lba, record.data_blocks as usize, &extent)?;
             }
         }
-        let sb = self.superblock.as_ref().ok_or(BlockError::NoDevice)?.clone();
+        let sb = self
+            .superblock
+            .as_ref()
+            .ok_or(BlockError::NoDevice)?
+            .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
         let block = inode_id / (records_per_sector as u64);
@@ -1026,10 +1061,10 @@ fn bytes_to_payload(buf: &[u8]) -> Option<ManifoldPayload> {
 
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
-    use super::*;
-    use crate::{test_assert, test_assert_eq};
-    use crate::testing::TestResult;
     use super::super::encoder;
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn dummy_inode(id: u64, name: &str) -> Inode {
         Inode {

@@ -28,14 +28,16 @@ pub fn probe() -> Option<AhciController> {
 
     serial_println!(
         "[disk::ahci] Probing controller at {:02x}:{:02x}.{} — ABAR={:#x}",
-        device.bus, device.device, device.function, bar5
+        device.bus,
+        device.device,
+        device.function,
+        bar5
     );
 
     let mut ports: [Option<AhciPort>; 32] = [
-        None, None, None, None, None, None, None, None,
-        None, None, None, None, None, None, None, None,
-        None, None, None, None, None, None, None, None,
-        None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        None, None,
     ];
 
     unsafe {
@@ -47,7 +49,10 @@ pub fn probe() -> Option<AhciController> {
             let sig = read_volatile((bar5 + 0x100 + i * 0x80 + 0x24) as *const u32);
             serial_println!("[disk::ahci] Port {} signature: {:#x}", i, sig);
             if sig == SIG_SATA || sig == SIG_ATAPI || sig == SIG_SEMB {
-                ports[i] = Some(AhciPort { index: i, signature: sig });
+                ports[i] = Some(AhciPort {
+                    index: i,
+                    signature: sig,
+                });
                 let sig_name = match sig {
                     SIG_SATA => "SATA",
                     SIG_ATAPI => "ATAPI",

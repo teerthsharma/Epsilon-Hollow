@@ -58,10 +58,7 @@ fn test_apic_timer_fires() -> TestResult {
     unsafe {
         let apic_id = crate::drivers::apic::local_apic().id();
         let cpu_num = cpu::current_cpu_num();
-        test_assert!(
-            apic_id == cpu_num as u32,
-            "apic id matches cpu num"
-        );
+        test_assert!(apic_id == cpu_num as u32, "apic id matches cpu num");
     }
     TestResult::Pass
 }

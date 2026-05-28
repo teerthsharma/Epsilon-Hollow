@@ -60,10 +60,8 @@ impl ManifoldPkg {
         }
 
         // Register deps in resolver graph
-        self.resolver.register(
-            &pkg.manifest.name,
-            &pkg.manifest.dependencies,
-        );
+        self.resolver
+            .register(&pkg.manifest.name, &pkg.manifest.dependencies);
 
         // Resolve and install dependencies first
         let dep_order = self
@@ -99,11 +97,14 @@ impl ManifoldPkg {
         }
         let url = alloc::format!("{}{}.eph", self.registry_url, name);
         let client = crate::drivers::net::http::HttpClient::new();
-        let response = client.get(&url)
+        let response = client
+            .get(&url)
             .map_err(|e| alloc::format!("download failed: {}", e))?;
         if response.status != 200 {
             return Err(alloc::format!(
-                "package '{}' not found on registry (status {})", name, response.status
+                "package '{}' not found on registry (status {})",
+                name,
+                response.status
             ));
         }
         self.install_bytes(&response.body, None)
@@ -141,7 +142,8 @@ impl ManifoldPkg {
             }
             Err(VfsError::AlreadyExists) => {
                 // Overwrite
-                let handle = with_vfs(|vfs| vfs.lookup_follow(path)).map_err(VfsInstallError::Vfs)?;
+                let handle =
+                    with_vfs(|vfs| vfs.lookup_follow(path)).map_err(VfsInstallError::Vfs)?;
                 with_vfs(|vfs| vfs.write(handle, data, 0)).map_err(VfsInstallError::Vfs)?;
                 Ok(())
             }

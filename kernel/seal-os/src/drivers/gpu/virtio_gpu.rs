@@ -3,9 +3,9 @@
 
 //! VirtIO-GPU driver — 2D acceleration support.
 
+use crate::drivers::pci::{get_devices, PciDevice};
 use alloc::alloc::{alloc_zeroed, Layout};
 use core::ptr;
-use crate::drivers::pci::{get_devices, PciDevice};
 use x86_64::instructions::port::Port;
 
 // VirtIO-GPU Command Types
@@ -291,7 +291,11 @@ impl VirtioGpu {
         Ok(())
     }
 
-    fn init_queue_internal(&self, queue_idx: u16, vq: &mut SplitVirtqueue) -> Result<(), &'static str> {
+    fn init_queue_internal(
+        &self,
+        queue_idx: u16,
+        vq: &mut SplitVirtqueue,
+    ) -> Result<(), &'static str> {
         self.write_u16(0x0E, queue_idx);
         let q_size = self.read_u16(0x0C);
         if q_size == 0 {
@@ -318,7 +322,13 @@ impl VirtioGpu {
         Ok(())
     }
 
-    fn send_command(&mut self, cmd: *const u8, cmd_len: u32, resp: *mut u8, resp_len: u32) -> Result<(), &'static str> {
+    fn send_command(
+        &mut self,
+        cmd: *const u8,
+        cmd_len: u32,
+        resp: *mut u8,
+        resp_len: u32,
+    ) -> Result<(), &'static str> {
         let cmd_idx = self.control_queue.alloc_desc().ok_or("No desc")?;
         let resp_idx = self.control_queue.alloc_desc().ok_or("No desc")?;
 
@@ -352,10 +362,12 @@ impl VirtioGpu {
                     let used_idx = self.control_queue.last_used_idx % self.control_queue.queue_size;
                     let elem = &used.ring[used_idx as usize];
                     if elem.id == cmd_idx as u32 {
-                        self.control_queue.last_used_idx = self.control_queue.last_used_idx.wrapping_add(1);
+                        self.control_queue.last_used_idx =
+                            self.control_queue.last_used_idx.wrapping_add(1);
                         break;
                     }
-                    self.control_queue.last_used_idx = self.control_queue.last_used_idx.wrapping_add(1);
+                    self.control_queue.last_used_idx =
+                        self.control_queue.last_used_idx.wrapping_add(1);
                 }
             }
             core::hint::spin_loop();
@@ -385,27 +397,44 @@ impl VirtioGpu {
             height: self.height,
         };
 
-        let mut resp = VirtioGpuCtrlHdr { type_: 0, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 };
-        self.send_command(&create_2d as *const _ as *const u8, core::mem::size_of_val(&create_2d) as u32,
-                          &mut resp as *mut _ as *mut u8, core::mem::size_of_val(&resp) as u32)?;
+        let mut resp = VirtioGpuCtrlHdr {
+            type_: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+        self.send_command(
+            &create_2d as *const _ as *const u8,
+            core::mem::size_of_val(&create_2d) as u32,
+            &mut resp as *mut _ as *mut u8,
+            core::mem::size_of_val(&resp) as u32,
+        )?;
 
         // Attach backing
         let fb_size = self.width * self.height * 4;
-        let layout = Layout::from_size_align(fb_size as usize, 4096).map_err(|_| "FB layout fail")?;
+        let layout =
+            Layout::from_size_align(fb_size as usize, 4096).map_err(|_| "FB layout fail")?;
         let fb_ptr = unsafe { alloc_zeroed(layout) };
-        
+
         let attach = VirtioGpuResourceAttachBacking {
-            hdr: VirtioGpuCtrlHdr { type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
+            hdr: VirtioGpuCtrlHdr {
+                type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
             resource_id,
             nr_entries: 1,
         };
-        
+
         #[repr(C)]
         struct AttachBackingFull {
             attach: VirtioGpuResourceAttachBacking,
             entry: VirtioGpuMemEntry,
         }
-        
+
         let attach_full = AttachBackingFull {
             attach,
             entry: VirtioGpuMemEntry {
@@ -415,46 +444,113 @@ impl VirtioGpu {
             },
         };
 
-        self.send_command(&attach_full as *const _ as *const u8, core::mem::size_of_val(&attach_full) as u32,
-                          &mut resp as *mut _ as *mut u8, core::mem::size_of_val(&resp) as u32)?;
+        self.send_command(
+            &attach_full as *const _ as *const u8,
+            core::mem::size_of_val(&attach_full) as u32,
+            &mut resp as *mut _ as *mut u8,
+            core::mem::size_of_val(&resp) as u32,
+        )?;
 
         // Set scanout
         let set_scanout = VirtioGpuSetScanout {
-            hdr: VirtioGpuCtrlHdr { type_: VIRTIO_GPU_CMD_SET_SCANOUT, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
-            r: VirtioGpuRect { x: 0, y: 0, width: self.width, height: self.height },
+            hdr: VirtioGpuCtrlHdr {
+                type_: VIRTIO_GPU_CMD_SET_SCANOUT,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            r: VirtioGpuRect {
+                x: 0,
+                y: 0,
+                width: self.width,
+                height: self.height,
+            },
             scanout_id: 0,
             resource_id,
         };
 
-        self.send_command(&set_scanout as *const _ as *const u8, core::mem::size_of_val(&set_scanout) as u32,
-                          &mut resp as *mut _ as *mut u8, core::mem::size_of_val(&resp) as u32)?;
+        self.send_command(
+            &set_scanout as *const _ as *const u8,
+            core::mem::size_of_val(&set_scanout) as u32,
+            &mut resp as *mut _ as *mut u8,
+            core::mem::size_of_val(&resp) as u32,
+        )?;
 
         self.fb_resource_id = resource_id;
         Ok(())
     }
 
-    pub fn transfer_to_host_2d(&mut self, x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
+    pub fn transfer_to_host_2d(
+        &mut self,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) -> Result<(), &'static str> {
         let transfer = VirtioGpuTransferToHost2d {
-            hdr: VirtioGpuCtrlHdr { type_: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
-            r: VirtioGpuRect { x, y, width: w, height: h },
+            hdr: VirtioGpuCtrlHdr {
+                type_: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            r: VirtioGpuRect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
             offset: (y * self.width + x) as u64 * 4,
             resource_id: self.fb_resource_id,
             padding: 0,
         };
-        let mut resp = VirtioGpuCtrlHdr { type_: 0, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 };
-        self.send_command(&transfer as *const _ as *const u8, core::mem::size_of_val(&transfer) as u32,
-                          &mut resp as *mut _ as *mut u8, core::mem::size_of_val(&resp) as u32)
+        let mut resp = VirtioGpuCtrlHdr {
+            type_: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+        self.send_command(
+            &transfer as *const _ as *const u8,
+            core::mem::size_of_val(&transfer) as u32,
+            &mut resp as *mut _ as *mut u8,
+            core::mem::size_of_val(&resp) as u32,
+        )
     }
 
     pub fn flush(&mut self, x: u32, y: u32, w: u32, h: u32) -> Result<(), &'static str> {
         let flush = VirtioGpuResourceFlush {
-            hdr: VirtioGpuCtrlHdr { type_: VIRTIO_GPU_CMD_RESOURCE_FLUSH, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
-            r: VirtioGpuRect { x, y, width: w, height: h },
+            hdr: VirtioGpuCtrlHdr {
+                type_: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            r: VirtioGpuRect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
             resource_id: self.fb_resource_id,
             padding: 0,
         };
-        let mut resp = VirtioGpuCtrlHdr { type_: 0, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 };
-        self.send_command(&flush as *const _ as *const u8, core::mem::size_of_val(&flush) as u32,
-                          &mut resp as *mut _ as *mut u8, core::mem::size_of_val(&resp) as u32)
+        let mut resp = VirtioGpuCtrlHdr {
+            type_: 0,
+            flags: 0,
+            fence_id: 0,
+            ctx_id: 0,
+            padding: 0,
+        };
+        self.send_command(
+            &flush as *const _ as *const u8,
+            core::mem::size_of_val(&flush) as u32,
+            &mut resp as *mut _ as *mut u8,
+            core::mem::size_of_val(&resp) as u32,
+        )
     }
 }

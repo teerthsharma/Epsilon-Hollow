@@ -1,0 +1,17 @@
+[engine]
+name = "Epsilon-Hollow"
+category = "Systems"
+icon = "hard-drive"
+color = "#00B0FF"
+description = "Seal OS microkernel with topological scheduling"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py epsilon-hollow"
+working_dir = "~/repos/Epsilon-Hollow"
+
+[engine.inputs]
+build_target = { type = "string", default = "x86_64-unknown-uefi" }
+
+[engine.outputs]
+kernel = { type = "file" }

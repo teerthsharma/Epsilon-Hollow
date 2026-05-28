@@ -39,9 +39,8 @@ impl Rsdp {
             if len < mem::size_of::<Rsdp>() {
                 return false;
             }
-            let ext_bytes = unsafe {
-                core::slice::from_raw_parts(self as *const _ as *const u8, len)
-            };
+            let ext_bytes =
+                unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, len) };
             if ext_bytes.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) != 0 {
                 return false;
             }
@@ -113,9 +112,7 @@ impl SdtHeader {
     /// Validate checksum: sum of all bytes in the table must be 0 (mod 256).
     pub fn is_valid(&self) -> bool {
         let len = unsafe { core::ptr::addr_of!((*self).length).read_unaligned() } as usize;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, len)
-        };
+        let bytes = unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, len) };
         bytes.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) == 0
     }
 }
@@ -145,7 +142,9 @@ pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
     if header_len < header_size {
         crate::serial_println!(
             "[ACPI/RSDP] SDT at {:#X} claims length {} < header size {}",
-            root_phys, header_len, header_size
+            root_phys,
+            header_len,
+            header_size
         );
         return None;
     }

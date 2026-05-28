@@ -7,22 +7,25 @@ Seal OS is a research operating system that proves topology can drive every laye
 ## Boot Sequence
 
 ```
-BIOS/UEFI → GRUB2 → Multiboot2 header → boot.S (32-bit)
-  → set up identity-mapped page tables (PML4 → PDPT → PD, 2MB pages)
-  → enable PAE, set CR3, enable long mode (EFER.LME)
-  → load 64-bit GDT, far-jump to long_mode_entry
-  → load 64-bit segments, set up 64KB stack
-  → call _start(multiboot_info_addr) in Rust
+UEFI firmware -> EFI/BOOT/BOOTX64.EFI
+  -> src/boot/uefi_entry.rs
+  -> serial online
+  -> ACPI RSDP from UEFI config tables
+  -> GOP framebuffer or VBE fallback for VirtualBox
+  -> exit boot services with UEFI memory map
+  -> kernel_main(BootInfo)
 ```
+
+The first-class artifact is `target/x86_64-unknown-uefi/release/seal-os.img`, a GPT disk with a FAT EFI System Partition. Oracle VM VirtualBox uses a converted `seal-os.vdi`.
 
 ### _start() initialization order
 
 1. **Serial** — COM1 at 115200 baud for debug output
 2. **Heap** — 16MB static buffer with bump allocator
 3. **IDT + PIC** — 256-entry IDT, 8259A PIC remapped to IRQ 32+
-4. **Framebuffer** — Parse Multiboot2 info for RGB framebuffer tag
+4. **Framebuffer** - Use UEFI GOP framebuffer details from `BootInfo`
 5. **Boot splash** — ASCII seal art + progress bar
-6. **Theorems** — GeometricGovernor (T4) + SphericalVoronoiIndex (T1)
+6. **Theorems** - Boot-verify T1-T10 through `aether_verified`; activate T1-T5 runtime paths
 7. **ManifoldFS** — Initialize filesystem, demo O(1) teleport
 8. **Scheduler** — Spawn kernel/compositor/shell/idle tasks
 9. **Syscalls** — Dispatch table verification
@@ -33,13 +36,12 @@ BIOS/UEFI → GRUB2 → Multiboot2 header → boot.S (32-bit)
 
 ```
 Physical Memory Layout:
-0x00000000 - 0x000FFFFF  Reserved (BIOS, VGA, etc.)
-0x00100000 - 0x00100xxx  Kernel .text (loaded by GRUB at 1MB)
-0x00xxxxxx - ...         Kernel .rodata, .data
-0x00xxxxxx - ...         Kernel .bss (includes 16MB heap buffer)
-0xFD000000 - ...         Framebuffer (mapped by GRUB/VBE)
+0x00000000 - 0x000FFFFF  Reserved firmware/VGA area
+UEFI provided regions    Kernel image, boot services memory, runtime services memory
+Conventional RAM         Physical allocator after ExitBootServices
+Framebuffer              UEFI GOP address from BootInfo
 
-Virtual = Physical (identity mapped via 2MB pages in boot.S)
+Kernel page tables are built from the UEFI memory map and Seal OS allocator state.
 ```
 
 The 16MB heap uses a simple bump allocator. All `alloc` types (Vec, String, BTreeMap) allocate from this pool. No deallocation — acceptable for a demo OS, but a slab allocator is needed for production.
@@ -187,7 +189,7 @@ Procedurally rendered:
 - Center: Epsilon readout
 - Right: "Seal OS" branding
 
-## Syscall Interface
+## Seal ABI Interface
 
 | Number | Name | Arguments | Returns |
 |--------|------|-----------|---------|
@@ -210,7 +212,8 @@ Procedurally rendered:
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| `aether-core` | local | T1-T5 theorem implementations |
+| `aether-core` | local | Runtime theorem math for T1-T5 |
+| `aether_verified` | local | no_std boot checks for T1-T10 |
 | `x86_64` | 0.15 | IDT, port I/O, interrupts |
 | `spin` | 0.9 | Spinlock mutexes (no_std) |
 | `libm` | 0.2 | Math functions (sqrt, cos, sin, etc.) |

@@ -11,7 +11,9 @@ use x86_64::registers::model_specific::Msr;
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::tss::TaskStateSegment;
 
-use crate::process::context_switch::{TaskContext, KERNEL_STACK_SIZE, detect_xsave, xsave_area_size};
+use crate::process::context_switch::{
+    detect_xsave, xsave_area_size, TaskContext, KERNEL_STACK_SIZE,
+};
 use crate::process::scheduler::ManifoldScheduler;
 use crate::process::task::Task;
 
@@ -54,18 +56,44 @@ struct PerCpuArray(UnsafeCell<[PerCpuStorage; MAX_CPUS]>);
 unsafe impl Sync for PerCpuArray {}
 
 static PER_CPU_ARRAY: PerCpuArray = PerCpuArray(UnsafeCell::new(
-    [PerCpuStorage { bytes: [0; core::mem::size_of::<PerCpu>()] }; MAX_CPUS]
+    [PerCpuStorage {
+        bytes: [0; core::mem::size_of::<PerCpu>()],
+    }; MAX_CPUS],
 ));
 
 static PER_CPU_INITIALIZED: [AtomicBool; MAX_CPUS] = [
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
 ];
 
 pub static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -227,15 +255,18 @@ pub fn apic_id_for_cpu(cpu_num: u32) -> Option<u32> {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_smp_basic() -> TestResult {
         test_assert_eq!(MAX_CPUS, 32);
         test_assert_eq!(BSP_CPU_NUM.load(Ordering::SeqCst), 0);
         // CPU_COUNT may be 0 if init_bsp() has not been called in the test
         // environment, but it must never exceed MAX_CPUS.
-        test_assert!(CPU_COUNT.load(Ordering::SeqCst) <= MAX_CPUS, "cpu_count <= MAX_CPUS");
+        test_assert!(
+            CPU_COUNT.load(Ordering::SeqCst) <= MAX_CPUS,
+            "cpu_count <= MAX_CPUS"
+        );
         TestResult::Pass
     }
 

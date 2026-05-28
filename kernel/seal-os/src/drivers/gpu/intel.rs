@@ -50,7 +50,11 @@ impl IntelGpu {
             dev.device_id,
             dev.revision,
             render_ring_status,
-            if alive { "( responding )" } else { "( may be behind bridge )" }
+            if alive {
+                "( responding )"
+            } else {
+                "( may be behind bridge )"
+            }
         );
 
         Some(Self {
@@ -63,7 +67,7 @@ impl IntelGpu {
 }
 
 pub fn init() -> Option<IntelGpu> {
-    let devices = crate::drivers::pci::enumerate();
+    let devices = crate::drivers::pci::get_devices();
     for dev in &devices {
         if dev.class == 0x03 && dev.vendor_id == 0x8086 {
             return unsafe { IntelGpu::probe(dev) };

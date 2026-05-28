@@ -231,13 +231,26 @@ pub fn handle_dns_response(pkt: &[u8]) {
         }
         let rtype = u16::from_be_bytes([pkt[offset], pkt[offset + 1]]);
         offset += 4; // type + class
-        let ttl = u32::from_be_bytes([pkt[offset], pkt[offset + 1], pkt[offset + 2], pkt[offset + 3]]);
+        let ttl = u32::from_be_bytes([
+            pkt[offset],
+            pkt[offset + 1],
+            pkt[offset + 2],
+            pkt[offset + 3],
+        ]);
         offset += 4;
         let rdlen = u16::from_be_bytes([pkt[offset], pkt[offset + 1]]) as usize;
         offset += 2;
         if rtype == 1 && rdlen == 4 && offset + 4 <= pkt.len() {
-            let ip = [pkt[offset], pkt[offset + 1], pkt[offset + 2], pkt[offset + 3]];
-            let hostname = PENDING_QUERY.lock().take().unwrap_or_else(|| String::from("unknown"));
+            let ip = [
+                pkt[offset],
+                pkt[offset + 1],
+                pkt[offset + 2],
+                pkt[offset + 3],
+            ];
+            let hostname = PENDING_QUERY
+                .lock()
+                .take()
+                .unwrap_or_else(|| String::from("unknown"));
             let mut cache = CACHE.lock();
             if cache.len() >= 16 {
                 let first = cache.keys().next().cloned();
@@ -270,7 +283,7 @@ mod tests {
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // ancount
         pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // nscount
         pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // arcount
-        // question
+                                                         // question
         for label in hostname.split('.') {
             pkt.push(label.len() as u8);
             pkt.extend_from_slice(label.as_bytes());
@@ -278,7 +291,7 @@ mod tests {
         pkt.push(0);
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // type A
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // class IN
-        // answer
+                                                         // answer
         pkt.push(0xC0);
         pkt.push(0x0C); // pointer to question name
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // type A
@@ -295,7 +308,10 @@ mod tests {
         *PENDING_QUERY.lock() = Some(String::from("example.com"));
         handle_dns_response(&resp);
         let cache = CACHE.lock();
-        assert_eq!(cache.get("example.com").map(|e| e.ip), Some([93, 184, 216, 34]));
+        assert_eq!(
+            cache.get("example.com").map(|e| e.ip),
+            Some([93, 184, 216, 34])
+        );
     }
 
     #[test]

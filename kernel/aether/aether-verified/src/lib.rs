@@ -6,8 +6,9 @@
 //! Provenance: Lean 4 → C → Rust
 //! Source: HeytingLean.Bridge.Sharma.*
 //!
-//! Every theorem in this crate has a corresponding Lean 4 proof.
-//! No axiom is assumed without proof. No gap exists in the verification chain.
+//! Each runtime checker is tied to a Lean 4 artifact or a tracked bridge check.
+//! Some theorem artifacts are layered or placeholder-strength; `docs/THEOREMS.md`
+//! is the source of truth for proof strength and remaining verification gaps.
 //!
 //! Modules (Original 4 — Round 1):
 //!   - `aether_pruning`:   Cauchy-Schwarz block pruning bounds

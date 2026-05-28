@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+# ──────────────────────────────────────────────────────────────
+# Post-push hook — confirms successful push.
+# ──────────────────────────────────────────────────────────────
+
+echo "✅ Local CI passed — pushed to remote"

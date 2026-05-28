@@ -57,8 +57,10 @@ pub unsafe fn enter_userspace(context: &mut UserContext) -> ! {
     crate::process::signal::check_and_handle_signals(context);
 
     // Build the interrupt-return stack frame.
-    let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
-    let user_cs = ((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8 | (PrivilegeLevel::Ring3 as u16 as u64);
+    let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+        | (PrivilegeLevel::Ring3 as u16 as u64);
+    let user_cs = ((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+        | (PrivilegeLevel::Ring3 as u16 as u64);
 
     asm!(
         "push {user_ss}",
@@ -191,7 +193,7 @@ pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
 pub fn init_syscall_msrs() {
     unsafe {
         let star = (((gdt::USER_CODE32_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) << 48)
-                 | (((gdt::KERNEL_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) << 32);
+            | (((gdt::KERNEL_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) << 32);
 
         Msr::new(MSR_STAR).write(star);
         Msr::new(MSR_LSTAR).write(syscall_entry as *const () as u64);

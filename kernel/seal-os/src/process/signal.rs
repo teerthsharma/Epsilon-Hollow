@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! POSIX-style signal delivery and handling for Seal OS.
+//! Seal-native signal delivery and handling.
 //!
 //! Signals are represented as a 64-bit pending bitmap per task.  Delivery
 //! happens asynchronously: the sender sets a bit; the handler runs on the
@@ -13,35 +13,35 @@ use core::sync::atomic::Ordering;
 
 use crate::cpu::CPU_COUNT;
 use crate::drivers::interrupts::VECTOR_IPI_RESCHEDULE;
-use crate::process::task::TaskState;
 use crate::process::task::Task;
+use crate::process::task::TaskState;
 use crate::process::userspace::UserContext;
 
 // ---------------------------------------------------------------------------
 // Signal numbers
 // ---------------------------------------------------------------------------
 
-pub const SIGHUP:    u8 = 1;
-pub const SIGINT:    u8 = 2;   // Ctrl+C
-pub const SIGQUIT:   u8 = 3;
-pub const SIGILL:    u8 = 4;
-pub const SIGTRAP:   u8 = 5;
-pub const SIGABRT:   u8 = 6;
-pub const SIGBUS:    u8 = 7;
-pub const SIGFPE:    u8 = 8;
-pub const SIGKILL:   u8 = 9;   // unblockable
-pub const SIGUSR1:   u8 = 10;
-pub const SIGSEGV:   u8 = 11;  // segfault
-pub const SIGUSR2:   u8 = 12;
-pub const SIGPIPE:   u8 = 13;
-pub const SIGALRM:   u8 = 14;
-pub const SIGTERM:   u8 = 15;  // polite kill
-pub const SIGCHLD:   u8 = 17;
-pub const SIGCONT:   u8 = 18;
-pub const SIGSTOP:   u8 = 19;
-pub const SIGTSTP:   u8 = 20;
-pub const SIGTTIN:   u8 = 21;
-pub const SIGTTOU:   u8 = 22;
+pub const SIGHUP: u8 = 1;
+pub const SIGINT: u8 = 2; // Ctrl+C
+pub const SIGQUIT: u8 = 3;
+pub const SIGILL: u8 = 4;
+pub const SIGTRAP: u8 = 5;
+pub const SIGABRT: u8 = 6;
+pub const SIGBUS: u8 = 7;
+pub const SIGFPE: u8 = 8;
+pub const SIGKILL: u8 = 9; // unblockable
+pub const SIGUSR1: u8 = 10;
+pub const SIGSEGV: u8 = 11; // segfault
+pub const SIGUSR2: u8 = 12;
+pub const SIGPIPE: u8 = 13;
+pub const SIGALRM: u8 = 14;
+pub const SIGTERM: u8 = 15; // polite kill
+pub const SIGCHLD: u8 = 17;
+pub const SIGCONT: u8 = 18;
+pub const SIGSTOP: u8 = 19;
+pub const SIGTSTP: u8 = 20;
+pub const SIGTTIN: u8 = 21;
+pub const SIGTTOU: u8 = 22;
 
 // ---------------------------------------------------------------------------
 // Sigreturn trampoline
@@ -51,7 +51,7 @@ global_asm!(
     ".global sigreturn_trampoline",
     ".align 16",
     "sigreturn_trampoline:",
-    "mov rax, 27",  // SYS_SIGRETURN — must match syscall/signal.rs
+    "mov rax, 27", // SYS_SIGRETURN — must match syscall/signal.rs
     "syscall",
     "ud2",
 );
@@ -151,10 +151,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     let uc_size = core::mem::size_of::<UserContext>() as u64;
     rsp = rsp.saturating_sub(uc_size);
     let uc_bytes = unsafe {
-        core::slice::from_raw_parts(
-            ctx as *const UserContext as *const u8,
-            uc_size as usize,
-        )
+        core::slice::from_raw_parts(ctx as *const UserContext as *const u8, uc_size as usize)
     };
     unsafe {
         if crate::security::smap_smep::copy_to_user(rsp as *mut u8, uc_bytes).is_err() {
@@ -168,7 +165,8 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     rsp = rsp.saturating_sub(8);
     let sig_num = sig as u64;
     unsafe {
-        if crate::security::smap_smep::copy_to_user(rsp as *mut u8, &sig_num.to_le_bytes()).is_err() {
+        if crate::security::smap_smep::copy_to_user(rsp as *mut u8, &sig_num.to_le_bytes()).is_err()
+        {
             crate::serial_println!("[signal] failed to push signum for sig {}", sig);
             task.state = TaskState::Dead;
             return;
@@ -231,7 +229,9 @@ pub fn sys_sigaction(sig: u8, act_ptr: u64, oldact_ptr: u64) -> i64 {
     if act_ptr != 0 {
         let mut new_bytes = [0u8; 8];
         unsafe {
-            if crate::security::smap_smep::copy_from_user(&mut new_bytes, act_ptr as *const u8).is_err() {
+            if crate::security::smap_smep::copy_from_user(&mut new_bytes, act_ptr as *const u8)
+                .is_err()
+            {
                 return -14; // EFAULT
             }
         }

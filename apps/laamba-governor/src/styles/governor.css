@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    @apply h-full w-full overflow-hidden bg-gov-bg text-gov-text;
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0d0d0d; }
+  ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+}
+
+@layer components {
+  .panel-header {
+    @apply h-7 bg-gov-panel/80 border-b border-gov-border flex items-center px-3 text-[11px] uppercase tracking-wider text-gov-dim select-none;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .panel-body {
+    @apply flex-1 overflow-auto p-2;
+  }
+  .engine-tile {
+    @apply relative bg-gov-panel/60 border border-gov-border rounded p-2 cursor-pointer hover:border-gov-accent transition-all;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+  .engine-tile.active {
+    @apply border-gov-accent;
+    box-shadow: 0 0 12px rgba(0, 229, 255, 0.15);
+  }
+  .node-canvas {
+    @apply w-full h-full bg-gov-bg;
+  }
+  .glass-panel {
+    background: rgba(20, 20, 20, 0.7);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(42, 42, 42, 0.8);
+  }
+  .neon-border {
+    border: 1px solid rgba(0, 229, 255, 0.3);
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.08), inset 0 0 8px rgba(0, 229, 255, 0.04);
+  }
+  .neon-text {
+    color: #00e5ff;
+    text-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
+  }
+  .winner-glow {
+    animation: winnerPulse 1.5s ease-in-out infinite;
+  }
+  @keyframes winnerPulse {
+    0%, 100% { box-shadow: 0 0 12px #00ff00; }
+    50% { box-shadow: 0 0 24px #00ff00, 0 0 6px #fff; }
+  }
+  .running-pulse {
+    animation: runningPulse 0.8s ease-in-out infinite;
+  }
+  @keyframes runningPulse {
+    0%, 100% { border-color: rgba(255,255,255,0.4); box-shadow: 0 0 8px rgba(255,255,255,0.1); }
+    50% { border-color: rgba(255,255,255,0.9); box-shadow: 0 0 16px rgba(255,255,255,0.3); }
+  }
+}

@@ -58,6 +58,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether_verified"
+version = "0.1.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,6 +544,7 @@ dependencies = [
  "aes-gcm",
  "aether-core",
  "aether-lang",
+ "aether_verified",
  "ed25519-dalek",
  "libm",
  "proptest",

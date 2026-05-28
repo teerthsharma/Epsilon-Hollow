@@ -3,11 +3,11 @@
 
 //! xHCI (USB 3.x) host controller driver — MMIO register interface + enumeration + HID.
 
-use alloc::vec::Vec;
-use core::ptr::{read_volatile, write_volatile};
 use crate::drivers::pci::get_device_by_class;
 use crate::memory::phys::alloc_frame;
 use crate::serial_println;
+use alloc::vec::Vec;
+use core::ptr::{read_volatile, write_volatile};
 
 pub const XHCI_CLASS: u8 = 0x0C;
 pub const XHCI_SUBCLASS: u8 = 0x03;
@@ -256,7 +256,11 @@ impl XhciController {
             let hcsparams1 = self.read_cap_32(CAP_HCSPARAMS1);
             self.max_slots = (hcsparams1 & 0xFF) as u8;
             self.max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
-            serial_println!("[xHCI] Max Slots: {}, Max Ports: {}", self.max_slots, self.max_ports);
+            serial_println!(
+                "[xHCI] Max Slots: {}, Max Ports: {}",
+                self.max_slots,
+                self.max_ports
+            );
 
             let mut config = self.read_op_32(OP_CONFIG);
             config &= !0xFF;
@@ -275,7 +279,9 @@ impl XhciController {
             let cmd_frame = alloc_frame().ok_or("xHCI cmd ring alloc failed")?;
             self.cmd_ring = cmd_frame.as_u64();
             for i in 0..256 {
-                (self.cmd_ring as *mut Trb).add(i).write_volatile(Trb::zero());
+                (self.cmd_ring as *mut Trb)
+                    .add(i)
+                    .write_volatile(Trb::zero());
             }
             self.cmd_enqueue = 0;
             self.cmd_cycle = true;
@@ -285,7 +291,9 @@ impl XhciController {
             let evt_frame = alloc_frame().ok_or("xHCI event ring alloc failed")?;
             self.event_ring = evt_frame.as_u64();
             for i in 0..256 {
-                (self.event_ring as *mut Trb).add(i).write_volatile(Trb::zero());
+                (self.event_ring as *mut Trb)
+                    .add(i)
+                    .write_volatile(Trb::zero());
             }
             self.event_dequeue = 0;
             self.event_cycle = true;
@@ -335,11 +343,15 @@ impl XhciController {
     }
 
     fn ring_doorbell(&self, slot: u8) {
-        unsafe { self.write_db_32(slot, 0); }
+        unsafe {
+            self.write_db_32(slot, 0);
+        }
     }
 
     fn ring_doorbell_ep(&self, slot: u8, ep: u8) {
-        unsafe { self.write_db_32(slot, ep as u32); }
+        unsafe {
+            self.write_db_32(slot, ep as u32);
+        }
     }
 
     fn get_ep_ring(&mut self, slot_id: u8, ep_addr: u8) -> Option<&mut EndpointRing> {
@@ -352,7 +364,9 @@ impl XhciController {
     }
 
     fn push_ep_trb(&mut self, slot_id: u8, ep_addr: u8, mut trb: Trb) -> Result<(), &'static str> {
-        let ring = self.get_ep_ring(slot_id, ep_addr).ok_or("endpoint ring not found")?;
+        let ring = self
+            .get_ep_ring(slot_id, ep_addr)
+            .ok_or("endpoint ring not found")?;
         if ring.enqueue >= 255 {
             ring.enqueue = 0;
             ring.cycle = !ring.cycle;
@@ -377,7 +391,10 @@ impl XhciController {
                     self.event_cycle = !self.event_cycle;
                     // Update ERDP
                     let intr_base = self.rt_base + 0x20;
-                    write_volatile((intr_base + 0x18) as *mut u64, self.event_ring + self.event_dequeue as u64 * 16);
+                    write_volatile(
+                        (intr_base + 0x18) as *mut u64,
+                        self.event_ring + self.event_dequeue as u64 * 16,
+                    );
                 }
                 return Some(trb);
             }
@@ -389,7 +406,8 @@ impl XhciController {
         for _ in 0..1_000_000 {
             if let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
-                if ty == 33 { // Command Completion Event
+                if ty == 33 {
+                    // Command Completion Event
                     return Some(evt);
                 }
             }
@@ -419,20 +437,24 @@ impl XhciController {
         let ctx_phys = ctx_frame.as_u64();
         unsafe {
             core::ptr::write_bytes(ctx_phys as *mut u8, 0, 4096);
-            (self.dcbaap as *mut u64).add(slot_id as usize).write_volatile(ctx_phys);
+            (self.dcbaap as *mut u64)
+                .add(slot_id as usize)
+                .write_volatile(ctx_phys);
         }
         self.dev_ctx.push(ctx_phys);
 
         // Allocate input context
         let in_frame = alloc_frame().ok_or("xHCI input ctx alloc failed")?;
         let in_phys = in_frame.as_u64();
-        unsafe { core::ptr::write_bytes(in_phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(in_phys as *mut u8, 0, 4096);
+        }
 
         // Setup input context for control EP0
         let ic = in_phys as *mut u32;
         unsafe {
             *ic.add(0) = 0x03; // A0 + A1 (slot + ep0 valid)
-            // Slot context
+                               // Slot context
             *ic.add(8) = ((speed as u32) << 20) | ((port_id as u32) << 16) | 1;
             // EP0 context (offset 16 dwords = 64 bytes)
             let ep0 = ic.add(16);
@@ -455,7 +477,8 @@ impl XhciController {
         let mut trb = Trb::zero();
         trb.data[0] = in_phys as u32;
         trb.data[1] = (in_phys >> 32) as u32;
-        trb.data[3] = ((slot_id as u32) << 24) | (TRB_TYPE_ADDRESS_DEVICE << 10) | (self.cmd_cycle as u32);
+        trb.data[3] =
+            ((slot_id as u32) << 24) | (TRB_TYPE_ADDRESS_DEVICE << 10) | (self.cmd_cycle as u32);
         self.push_cmd(trb);
         self.ring_doorbell(0);
 
@@ -466,8 +489,18 @@ impl XhciController {
         Ok(())
     }
 
-    fn get_descriptor(&mut self, slot_id: u8, desc_type: u8, desc_index: u8, buf: &mut [u8]) -> Result<(), &'static str> {
-        let ctx_phys = unsafe { (self.dcbaap as *mut u64).add(slot_id as usize).read_volatile() };
+    fn get_descriptor(
+        &mut self,
+        slot_id: u8,
+        desc_type: u8,
+        desc_index: u8,
+        buf: &mut [u8],
+    ) -> Result<(), &'static str> {
+        let ctx_phys = unsafe {
+            (self.dcbaap as *mut u64)
+                .add(slot_id as usize)
+                .read_volatile()
+        };
         let ep0_ring = unsafe { ((ctx_phys + 64) as *mut u64).add(4).read_volatile() & !0x3F };
 
         // Setup Stage TRB
@@ -475,7 +508,11 @@ impl XhciController {
         let req = REQ_GET_DESCRIPTOR;
         let wvalue = ((desc_type as u16) << 8) | (desc_index as u16);
         let wlen = buf.len() as u16;
-        let setup_data = ((wlen as u64) << 48) | ((wvalue as u64) << 32) | ((req as u64) << 24) | ((req_type as u64) << 16) | 8;
+        let setup_data = ((wlen as u64) << 48)
+            | ((wvalue as u64) << 32)
+            | ((req as u64) << 24)
+            | ((req_type as u64) << 16)
+            | 8;
 
         let mut setup_trb = Trb::zero();
         setup_trb.data[0] = setup_data as u32;
@@ -507,9 +544,11 @@ impl XhciController {
         for _ in 0..1_000_000 {
             if let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
-                if ty == 32 { // Transfer Event
+                if ty == 32 {
+                    // Transfer Event
                     let code = evt.completion_code();
-                    if code == 1 || code == 13 { // Success or Short Packet
+                    if code == 1 || code == 13 {
+                        // Success or Short Packet
                         return Ok(());
                     } else {
                         return Err("GET_DESCRIPTOR transfer failed");
@@ -522,12 +561,17 @@ impl XhciController {
     }
 
     fn set_configuration(&mut self, slot_id: u8, config: u8) -> Result<(), &'static str> {
-        let ctx_phys = unsafe { (self.dcbaap as *mut u64).add(slot_id as usize).read_volatile() };
+        let ctx_phys = unsafe {
+            (self.dcbaap as *mut u64)
+                .add(slot_id as usize)
+                .read_volatile()
+        };
         let ep0_ring = unsafe { ((ctx_phys + 64) as *mut u64).add(4).read_volatile() & !0x3F };
 
         let req_type = 0x00;
         let req = REQ_SET_CONFIGURATION;
-        let setup_data = ((config as u64) << 32) | ((req as u64) << 24) | ((req_type as u64) << 16) | 0;
+        let setup_data =
+            ((config as u64) << 32) | ((req as u64) << 24) | ((req_type as u64) << 16) | 0;
 
         let mut setup_trb = Trb::zero();
         setup_trb.data[0] = setup_data as u32;
@@ -549,7 +593,11 @@ impl XhciController {
             if let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
                 if ty == 32 {
-                    return if evt.completion_code() == 1 { Ok(()) } else { Err("SET_CONFIGURATION failed") };
+                    return if evt.completion_code() == 1 {
+                        Ok(())
+                    } else {
+                        Err("SET_CONFIGURATION failed")
+                    };
                 }
             }
             core::hint::spin_loop();
@@ -557,7 +605,11 @@ impl XhciController {
         Err("SET_CONFIGURATION timeout")
     }
 
-    pub fn enumerate_port(&mut self, port: u8, hid_devices: &mut Vec<super::hid::HidDevice>) -> Option<super::UsbDevice> {
+    pub fn enumerate_port(
+        &mut self,
+        port: u8,
+        hid_devices: &mut Vec<super::hid::HidDevice>,
+    ) -> Option<super::UsbDevice> {
         serial_println!("[xHCI] Enumerating port {}", port);
 
         let slot_id = match self.enable_slot() {
@@ -588,8 +640,15 @@ impl XhciController {
         let subclass = dev_desc[5];
         let protocol = dev_desc[6];
 
-        serial_println!("[xHCI] Port {} device: {:04X}:{:04X} class={:02X}/{:02X}/{:02X}",
-            port, vid, pid, class, subclass, protocol);
+        serial_println!(
+            "[xHCI] Port {} device: {:04X}:{:04X} class={:02X}/{:02X}/{:02X}",
+            port,
+            vid,
+            pid,
+            class,
+            subclass,
+            protocol
+        );
 
         // Set configuration (first config)
         let _ = self.set_configuration(slot_id, 1);
@@ -600,8 +659,14 @@ impl XhciController {
                 if let Err(e) = self.setup_interrupt_endpoint(slot_id, ep_addr, max_packet) {
                     serial_println!("[xHCI] Interrupt endpoint setup failed: {}", e);
                 } else {
-                    serial_println!("[xHCI] HID interrupt endpoint {} ready (max_packet={})", ep_addr, max_packet);
-                    hid_devices.push(super::hid::HidDevice::new(protocol, slot_id, ep_addr, max_packet));
+                    serial_println!(
+                        "[xHCI] HID interrupt endpoint {} ready (max_packet={})",
+                        ep_addr,
+                        max_packet
+                    );
+                    hid_devices.push(super::hid::HidDevice::new(
+                        protocol, slot_id, ep_addr, max_packet,
+                    ));
                 }
             }
         }
@@ -611,7 +676,9 @@ impl XhciController {
             if let Some((bulk_in, bulk_out, max_packet)) = self.find_bulk_endpoints(slot_id) {
                 serial_println!(
                     "[xHCI] MSC detected: bulk_in={:02X}, bulk_out={:02X}, max_packet={}",
-                    bulk_in, bulk_out, max_packet
+                    bulk_in,
+                    bulk_out,
+                    max_packet
                 );
                 let mut ok = true;
                 if let Err(e) = self.setup_bulk_endpoint(slot_id, bulk_in, max_packet) {
@@ -651,7 +718,10 @@ impl XhciController {
     fn find_interrupt_endpoint(&mut self, slot_id: u8) -> Option<(u8, u16)> {
         // Read config descriptor (9 bytes first)
         let mut cfg_header = [0u8; 9];
-        if self.get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_header).is_err() {
+        if self
+            .get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_header)
+            .is_err()
+        {
             return None;
         }
         let total_len = u16::from_le_bytes([cfg_header[2], cfg_header[3]]) as usize;
@@ -659,7 +729,10 @@ impl XhciController {
             return None;
         }
         let mut cfg_buf = alloc::vec![0u8; total_len];
-        if self.get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_buf).is_err() {
+        if self
+            .get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_buf)
+            .is_err()
+        {
             return None;
         }
 
@@ -670,11 +743,13 @@ impl XhciController {
             if len == 0 || off + len > cfg_buf.len() {
                 break;
             }
-            if dtype == 0x05 && len >= 7 { // Endpoint descriptor
+            if dtype == 0x05 && len >= 7 {
+                // Endpoint descriptor
                 let ep_addr = cfg_buf[off + 2];
                 let attr = cfg_buf[off + 3];
                 let max_pkt = u16::from_le_bytes([cfg_buf[off + 4], cfg_buf[off + 5]]);
-                if (ep_addr & 0x80) != 0 && (attr & 0x03) == 0x03 { // Interrupt IN
+                if (ep_addr & 0x80) != 0 && (attr & 0x03) == 0x03 {
+                    // Interrupt IN
                     return Some((ep_addr, max_pkt));
                 }
             }
@@ -683,9 +758,18 @@ impl XhciController {
         None
     }
 
-    pub fn setup_bulk_endpoint(&mut self, slot_id: u8, ep_addr: u8, max_packet: u16) -> Result<(), &'static str> {
+    pub fn setup_bulk_endpoint(
+        &mut self,
+        slot_id: u8,
+        ep_addr: u8,
+        max_packet: u16,
+    ) -> Result<(), &'static str> {
         let ep_num = (ep_addr & 0x0F) as u64;
-        let ep_idx = if (ep_addr & 0x80) != 0 { ep_num * 2 + 1 } else { ep_num * 2 };
+        let ep_idx = if (ep_addr & 0x80) != 0 {
+            ep_num * 2 + 1
+        } else {
+            ep_num * 2
+        };
         let ep_type = if (ep_addr & 0x80) != 0 { 6u32 } else { 2u32 }; // Bulk IN / OUT
 
         let ring_frame = alloc_frame().ok_or("xHCI bulk ring alloc failed")?;
@@ -702,7 +786,9 @@ impl XhciController {
 
         let in_frame = alloc_frame().ok_or("xHCI input ctx alloc failed")?;
         let in_phys = in_frame.as_u64();
-        unsafe { core::ptr::write_bytes(in_phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(in_phys as *mut u8, 0, 4096);
+        }
 
         let ic = in_phys as *mut u32;
         unsafe {
@@ -717,29 +803,45 @@ impl XhciController {
         let mut trb = Trb::zero();
         trb.data[0] = in_phys as u32;
         trb.data[1] = (in_phys >> 32) as u32;
-        trb.data[3] = ((slot_id as u32) << 24) | (TRB_TYPE_CONFIGURE_EP << 10) | (self.cmd_cycle as u32);
+        trb.data[3] =
+            ((slot_id as u32) << 24) | (TRB_TYPE_CONFIGURE_EP << 10) | (self.cmd_cycle as u32);
         self.push_cmd(trb);
         self.ring_doorbell(0);
 
-        let evt = self.wait_cmd_complete().ok_or("Configure Endpoint timeout")?;
+        let evt = self
+            .wait_cmd_complete()
+            .ok_or("Configure Endpoint timeout")?;
         if evt.completion_code() != 1 {
             return Err("Configure Endpoint failed");
         }
 
-        self.endpoint_rings.push((slot_id, ep_addr, EndpointRing {
-            phys: ring_phys,
-            enqueue: 0,
-            cycle: true,
-        }));
+        self.endpoint_rings.push((
+            slot_id,
+            ep_addr,
+            EndpointRing {
+                phys: ring_phys,
+                enqueue: 0,
+                cycle: true,
+            },
+        ));
 
         Ok(())
     }
 
-    pub fn send_bulk_out(&mut self, slot_id: u8, ep_addr: u8, data: &[u8]) -> Result<(), &'static str> {
+    pub fn send_bulk_out(
+        &mut self,
+        slot_id: u8,
+        ep_addr: u8,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
         if data.is_empty() {
             return Ok(());
         }
-        let ep_idx = if (ep_addr & 0x80) != 0 { (ep_addr & 0x0F) as u64 * 2 + 1 } else { (ep_addr & 0x0F) as u64 * 2 };
+        let ep_idx = if (ep_addr & 0x80) != 0 {
+            (ep_addr & 0x0F) as u64 * 2 + 1
+        } else {
+            (ep_addr & 0x0F) as u64 * 2
+        };
 
         let mut trb = Trb::zero();
         trb.data[0] = data.as_ptr() as u32;
@@ -752,7 +854,8 @@ impl XhciController {
         for _ in 0..1_000_000 {
             if let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
-                if ty == 32 { // Transfer Event
+                if ty == 32 {
+                    // Transfer Event
                     let code = evt.completion_code();
                     if code == 1 || code == 13 {
                         return Ok(());
@@ -766,11 +869,20 @@ impl XhciController {
         Err("bulk OUT timeout")
     }
 
-    pub fn recv_bulk_in(&mut self, slot_id: u8, ep_addr: u8, buf: &mut [u8]) -> Result<(), &'static str> {
+    pub fn recv_bulk_in(
+        &mut self,
+        slot_id: u8,
+        ep_addr: u8,
+        buf: &mut [u8],
+    ) -> Result<(), &'static str> {
         if buf.is_empty() {
             return Ok(());
         }
-        let ep_idx = if (ep_addr & 0x80) != 0 { (ep_addr & 0x0F) as u64 * 2 + 1 } else { (ep_addr & 0x0F) as u64 * 2 };
+        let ep_idx = if (ep_addr & 0x80) != 0 {
+            (ep_addr & 0x0F) as u64 * 2 + 1
+        } else {
+            (ep_addr & 0x0F) as u64 * 2
+        };
 
         let mut trb = Trb::zero();
         trb.data[0] = buf.as_ptr() as u32;
@@ -783,7 +895,8 @@ impl XhciController {
         for _ in 0..1_000_000 {
             if let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
-                if ty == 32 { // Transfer Event
+                if ty == 32 {
+                    // Transfer Event
                     let code = evt.completion_code();
                     if code == 1 || code == 13 {
                         return Ok(());
@@ -799,7 +912,10 @@ impl XhciController {
 
     fn find_bulk_endpoints(&mut self, slot_id: u8) -> Option<(u8, u8, u16)> {
         let mut cfg_header = [0u8; 9];
-        if self.get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_header).is_err() {
+        if self
+            .get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_header)
+            .is_err()
+        {
             return None;
         }
         let total_len = u16::from_le_bytes([cfg_header[2], cfg_header[3]]) as usize;
@@ -807,7 +923,10 @@ impl XhciController {
             return None;
         }
         let mut cfg_buf = alloc::vec![0u8; total_len];
-        if self.get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_buf).is_err() {
+        if self
+            .get_descriptor(slot_id, DESC_CONFIGURATION, 0, &mut cfg_buf)
+            .is_err()
+        {
             return None;
         }
 
@@ -833,7 +952,8 @@ impl XhciController {
                     let ep_addr = cfg_buf[off + 2];
                     let attr = cfg_buf[off + 3];
                     let max_pkt = u16::from_le_bytes([cfg_buf[off + 4], cfg_buf[off + 5]]);
-                    if (attr & 0x03) == 0x02 { // Bulk
+                    if (attr & 0x03) == 0x02 {
+                        // Bulk
                         if (ep_addr & 0x80) != 0 {
                             bulk_in = Some((ep_addr, max_pkt));
                         } else {
@@ -854,20 +974,37 @@ impl XhciController {
         }
     }
 
-    fn setup_interrupt_endpoint(&mut self, slot_id: u8, ep_addr: u8, max_packet: u16) -> Result<(), &'static str> {
-        let _ctx_phys = unsafe { (self.dcbaap as *mut u64).add(slot_id as usize).read_volatile() };
+    fn setup_interrupt_endpoint(
+        &mut self,
+        slot_id: u8,
+        ep_addr: u8,
+        max_packet: u16,
+    ) -> Result<(), &'static str> {
+        let _ctx_phys = unsafe {
+            (self.dcbaap as *mut u64)
+                .add(slot_id as usize)
+                .read_volatile()
+        };
         let ep_num = (ep_addr & 0x0F) as u64;
-        let ep_idx = if (ep_addr & 0x80) != 0 { ep_num * 2 + 1 } else { ep_num * 2 };
+        let ep_idx = if (ep_addr & 0x80) != 0 {
+            ep_num * 2 + 1
+        } else {
+            ep_num * 2
+        };
 
         // Allocate transfer ring
         let ring_frame = alloc_frame().ok_or("xHCI int ring alloc failed")?;
         let ring_phys = ring_frame.as_u64();
-        unsafe { core::ptr::write_bytes(ring_phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(ring_phys as *mut u8, 0, 4096);
+        }
 
         // Build Input Context
         let in_frame = alloc_frame().ok_or("xHCI input ctx alloc failed")?;
         let in_phys = in_frame.as_u64();
-        unsafe { core::ptr::write_bytes(in_phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(in_phys as *mut u8, 0, 4096);
+        }
 
         let ic = in_phys as *mut u32;
         unsafe {
@@ -888,11 +1025,14 @@ impl XhciController {
         let mut trb = Trb::zero();
         trb.data[0] = in_phys as u32;
         trb.data[1] = (in_phys >> 32) as u32;
-        trb.data[3] = ((slot_id as u32) << 24) | (TRB_TYPE_CONFIGURE_EP << 10) | (self.cmd_cycle as u32);
+        trb.data[3] =
+            ((slot_id as u32) << 24) | (TRB_TYPE_CONFIGURE_EP << 10) | (self.cmd_cycle as u32);
         self.push_cmd(trb);
         self.ring_doorbell(0);
 
-        let evt = self.wait_cmd_complete().ok_or("Configure Endpoint timeout")?;
+        let evt = self
+            .wait_cmd_complete()
+            .ok_or("Configure Endpoint timeout")?;
         if evt.completion_code() != 1 {
             return Err("Configure Endpoint failed");
         }
@@ -900,7 +1040,9 @@ impl XhciController {
         // Queue a Normal TRB on the interrupt endpoint ring
         let buf_frame = alloc_frame().ok_or("xHCI int buf alloc failed")?;
         let buf_phys = buf_frame.as_u64();
-        unsafe { core::ptr::write_bytes(buf_phys as *mut u8, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(buf_phys as *mut u8, 0, 4096);
+        }
 
         let mut norm_trb = Trb::zero();
         norm_trb.data[0] = buf_phys as u32;
@@ -913,12 +1055,18 @@ impl XhciController {
             ring.add(0).write_volatile(norm_trb);
         }
         // Ring endpoint doorbell (ep = ep_idx)
-        unsafe { self.write_db_32(slot_id, ep_idx as u32); }
+        unsafe {
+            self.write_db_32(slot_id, ep_idx as u32);
+        }
 
         Ok(())
     }
 
-    pub fn poll_ports(&mut self, devices: &mut Vec<super::UsbDevice>, hid_devices: &mut Vec<super::hid::HidDevice>) {
+    pub fn poll_ports(
+        &mut self,
+        devices: &mut Vec<super::UsbDevice>,
+        hid_devices: &mut Vec<super::hid::HidDevice>,
+    ) {
         for port in 1..=self.max_ports {
             unsafe {
                 let portsc = self.read_portsc(port);
@@ -962,22 +1110,35 @@ impl XhciController {
             // For simplicity, drain all events and match by slot
             while let Some(evt) = self.poll_event() {
                 let ty = (evt.data[3] >> 10) & 0x3F;
-                if ty == 32 { // Transfer Event
+                if ty == 32 {
+                    // Transfer Event
                     let slot = ((evt.data[3] >> 24) & 0xFF) as u8;
                     if slot == hid.slot_id {
                         let code = evt.completion_code();
                         if code == 1 || code == 13 {
                             // Find the buffer for this endpoint
-                            let ctx_phys = unsafe { (self.dcbaap as *mut u64).add(slot as usize).read_volatile() };
+                            let ctx_phys = unsafe {
+                                (self.dcbaap as *mut u64).add(slot as usize).read_volatile()
+                            };
                             let ep_num = (hid.ep_addr & 0x0F) as u64;
-                            let ep_idx = if (hid.ep_addr & 0x80) != 0 { ep_num * 2 + 1 } else { ep_num * 2 };
+                            let ep_idx = if (hid.ep_addr & 0x80) != 0 {
+                                ep_num * 2 + 1
+                            } else {
+                                ep_num * 2
+                            };
                             let ep_ctx = (ctx_phys + 64 + ep_idx * 32) as *mut u32;
                             let tr_lo = unsafe { ep_ctx.add(4).read_volatile() } as u64;
                             let tr_hi = unsafe { ep_ctx.add(5).read_volatile() } as u64;
                             let ring_phys = (tr_lo & !0x3F) | (tr_hi << 32);
                             // First TRB in ring points to data buffer
-                            let buf_phys = unsafe { ((ring_phys as *mut u64).add(0).read_volatile()) & !0x3F };
-                            let report = unsafe { core::slice::from_raw_parts(buf_phys as *const u8, hid.max_packet.min(8) as usize) };
+                            let buf_phys =
+                                unsafe { ((ring_phys as *mut u64).add(0).read_volatile()) & !0x3F };
+                            let report = unsafe {
+                                core::slice::from_raw_parts(
+                                    buf_phys as *const u8,
+                                    hid.max_packet.min(8) as usize,
+                                )
+                            };
                             hid.process_report(report);
                             // Re-queue the TRB
                             let mut norm_trb = Trb::zero();
@@ -989,7 +1150,9 @@ impl XhciController {
                                 let ring = ring_phys as *mut Trb;
                                 ring.add(0).write_volatile(norm_trb);
                             }
-                            unsafe { self.write_db_32(slot, ep_idx as u32); }
+                            unsafe {
+                                self.write_db_32(slot, ep_idx as u32);
+                            }
                         }
                     }
                 }
@@ -1028,7 +1191,11 @@ impl XhciController {
         };
         serial_println!(
             "[xHCI] Found controller at {:02x}:{:02x}.{} — {:04X}:{:04X}",
-            dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
+            dev.bus,
+            dev.device,
+            dev.function,
+            dev.vendor_id,
+            dev.device_id
         );
         dev.enable_bus_mastering();
         Some(Self::new(dev.bar_address(0)))
@@ -1066,6 +1233,7 @@ where
     F: FnOnce(&mut XhciController) -> R,
 {
     unsafe {
-        XHCI_GLOBAL.as_mut().map(f)
+        let ptr = core::ptr::addr_of_mut!(XHCI_GLOBAL);
+        (*ptr).as_mut().map(f)
     }
 }

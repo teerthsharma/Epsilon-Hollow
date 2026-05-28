@@ -7,7 +7,7 @@ use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use x86_64::instructions::segmentation::{CS, Segment};
+use x86_64::instructions::segmentation::{Segment, CS};
 use x86_64::instructions::tables::{lgdt, load_tss as ltr_instruction};
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::tss::TaskStateSegment;
@@ -116,8 +116,8 @@ pub unsafe fn init_tss_for_cpu(per_cpu: &mut PerCpu) {
 
     // IST[0] for double-fault handler — dedicated stack so overflow on the
     // kernel stack does not corrupt it and cause a triple fault.
-    let df_stack_top = per_cpu.double_fault_stack.as_ptr() as u64
-        + per_cpu.double_fault_stack.len() as u64;
+    let df_stack_top =
+        per_cpu.double_fault_stack.as_ptr() as u64 + per_cpu.double_fault_stack.len() as u64;
     per_cpu.tss.interrupt_stack_table[0] = VirtAddr::new(df_stack_top);
 
     per_cpu.tss_selector = SegmentSelector((slot as u16) << 3);

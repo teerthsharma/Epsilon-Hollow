@@ -58,7 +58,7 @@ impl SealIde {
                 String::from("    let governor = GeometricGovernor::new();"),
                 String::from("    let voronoi = SphericalVoronoiIndex::<8>::new(centroids);"),
                 String::from(""),
-                String::from("    // T1-T5 all active in kernel"),
+                String::from("    // T1-T10 gate verified; T1-T5 active in kernel"),
                 String::from("    let cell = voronoi.locate((0.5, 0.5));"),
                 String::from("    let epsilon = governor.epsilon();"),
                 String::from(""),
@@ -92,9 +92,16 @@ impl SealIde {
 
         match ch {
             b'\n' => {
-                let line = file.lines.get(self.cursor_line).cloned().unwrap_or_default();
+                let line = file
+                    .lines
+                    .get(self.cursor_line)
+                    .cloned()
+                    .unwrap_or_default();
                 let (before, after) = if self.cursor_col <= line.len() {
-                    (String::from(&line[..self.cursor_col]), String::from(&line[self.cursor_col..]))
+                    (
+                        String::from(&line[..self.cursor_col]),
+                        String::from(&line[self.cursor_col..]),
+                    )
                 } else {
                     (line.clone(), String::new())
                 };
@@ -140,20 +147,32 @@ impl SealIde {
 
     pub fn handle_special_key(&mut self, key: crate::drivers::interrupts::SpecialKey) {
         use crate::drivers::interrupts::SpecialKey;
-        let line_count = self.files.get(self.active_file).map(|f| f.lines.len()).unwrap_or(0);
+        let line_count = self
+            .files
+            .get(self.active_file)
+            .map(|f| f.lines.len())
+            .unwrap_or(0);
 
         match key {
             SpecialKey::Up => {
                 if self.cursor_line > 0 {
                     self.cursor_line -= 1;
-                    let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                    let len = self
+                        .files
+                        .get(self.active_file)
+                        .map(|f| f.lines[self.cursor_line].len())
+                        .unwrap_or(0);
                     self.cursor_col = self.cursor_col.min(len);
                 }
             }
             SpecialKey::Down => {
                 if self.cursor_line + 1 < line_count {
                     self.cursor_line += 1;
-                    let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                    let len = self
+                        .files
+                        .get(self.active_file)
+                        .map(|f| f.lines[self.cursor_line].len())
+                        .unwrap_or(0);
                     self.cursor_col = self.cursor_col.min(len);
                 }
             }
@@ -163,14 +182,22 @@ impl SealIde {
                 }
             }
             SpecialKey::Right => {
-                let len = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                let len = self
+                    .files
+                    .get(self.active_file)
+                    .map(|f| f.lines[self.cursor_line].len())
+                    .unwrap_or(0);
                 if self.cursor_col < len {
                     self.cursor_col += 1;
                 }
             }
             SpecialKey::Home => self.cursor_col = 0,
             SpecialKey::End => {
-                self.cursor_col = self.files.get(self.active_file).map(|f| f.lines[self.cursor_line].len()).unwrap_or(0);
+                self.cursor_col = self
+                    .files
+                    .get(self.active_file)
+                    .map(|f| f.lines[self.cursor_line].len())
+                    .unwrap_or(0);
             }
             SpecialKey::Delete => {
                 if let Some(file) = self.files.get_mut(self.active_file) {
@@ -265,7 +292,7 @@ impl SealIde {
                 }
             }
             let status = format!(
-                " {} | Ln {}, Col {} | Rust | T1-T5 ACTIVE | Seal IDE",
+                " {} | Ln {}, Col {} | Rust | T1-T10 OK | Seal IDE",
                 file.name,
                 self.cursor_line + 1,
                 self.cursor_col + 1
@@ -284,8 +311,8 @@ impl SealIde {
         }
 
         let keywords = [
-            "fn", "let", "mut", "use", "pub", "mod", "struct", "enum", "impl", "for", "loop",
-            "if", "else", "match", "return", "const", "static", "unsafe", "extern", "crate",
+            "fn", "let", "mut", "use", "pub", "mod", "struct", "enum", "impl", "for", "loop", "if",
+            "else", "match", "return", "const", "static", "unsafe", "extern", "crate",
         ];
 
         let mut col = 0u32;
@@ -324,7 +351,10 @@ impl SealIde {
                         TEXT_FG
                     };
                     for wch in word.bytes() {
-                        let _wpx = x + (col - word.len() as u32 + word.bytes().position(|b| b == wch).unwrap_or(0) as u32) * font::CHAR_WIDTH;
+                        let _wpx = x
+                            + (col - word.len() as u32
+                                + word.bytes().position(|b| b == wch).unwrap_or(0) as u32)
+                                * font::CHAR_WIDTH;
                         // Simplified: just render the whole word
                     }
                     // Re-render word with color

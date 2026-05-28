@@ -152,7 +152,14 @@ impl SnakeGame {
                 let px = (gx * CELL_SIZE) as u32;
                 let py = (gy * CELL_SIZE) as u32 + offset_y;
                 if gx == 0 || gx == self.grid_w - 1 || gy == 0 || gy == self.grid_h - 1 {
-                    game_engine::fill_rect(win, px, py, CELL_SIZE as u32, CELL_SIZE as u32, BORDER_COLOR);
+                    game_engine::fill_rect(
+                        win,
+                        px,
+                        py,
+                        CELL_SIZE as u32,
+                        CELL_SIZE as u32,
+                        BORDER_COLOR,
+                    );
                 }
             }
         }

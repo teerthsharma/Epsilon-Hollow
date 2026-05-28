@@ -43,11 +43,16 @@ pub unsafe fn enable_smap_smep() {
 /// Validate that a pointer range lies entirely in user address space.
 fn is_user_ptr(ptr: *const u8, len: usize) -> bool {
     let addr = ptr as u64;
+    if len == 0 {
+        return addr < USER_SPACE_LIMIT;
+    }
     if addr == 0 || addr >= USER_SPACE_LIMIT {
         return false;
     }
-    let end = addr.saturating_add(len as u64);
-    end <= USER_SPACE_LIMIT
+    match addr.checked_add(len as u64) {
+        Some(end) => end <= USER_SPACE_LIMIT,
+        None => false,
+    }
 }
 
 /// Page-fault handler integration stub for SMAP/SMEP violations.
@@ -56,8 +61,7 @@ fn is_user_ptr(ptr: *const u8, len: usize) -> bool {
 /// call this when a supervisor access to a user page was attempted while
 /// EFLAGS.AC was clear.
 pub fn handle_user_access_fault() {
-    // TODO: integrate with IDT #PF handler.
-    // For now this is a placeholder.
+    // Full #PF recovery is tracked in docs/USER_COPY_SAFETY.md.
 }
 
 /// Safely copy `len` bytes from user space into `kernel_buf`.
@@ -74,12 +78,10 @@ pub unsafe fn copy_from_user(kernel_buf: &mut [u8], user_ptr: *const u8) -> Resu
     }
     unsafe {
         // stac — set AC flag, allowing supervisor access to user pages
+        // SAFETY: Range validation rejects null, overflow, and kernel-half
+        // pointers. Full mapped-page validation is tracked separately.
         core::arch::asm!(".byte 0x0f, 0x01, 0xcb", options(nomem, nostack));
-        core::ptr::copy_nonoverlapping(
-            user_ptr,
-            kernel_buf.as_mut_ptr(),
-            kernel_buf.len(),
-        );
+        core::ptr::copy_nonoverlapping(user_ptr, kernel_buf.as_mut_ptr(), kernel_buf.len());
         // clac — clear AC flag, re-enabling SMAP protection
         core::arch::asm!(".byte 0x0f, 0x01, 0xca", options(nomem, nostack));
     }
@@ -97,12 +99,10 @@ pub unsafe fn copy_to_user(user_ptr: *mut u8, kernel_buf: &[u8]) -> Result<(), (
         return Err(());
     }
     unsafe {
+        // SAFETY: Range validation rejects null, overflow, and kernel-half
+        // pointers. Full mapped/writable-page validation is tracked separately.
         core::arch::asm!(".byte 0x0f, 0x01, 0xcb", options(nomem, nostack));
-        core::ptr::copy_nonoverlapping(
-            kernel_buf.as_ptr(),
-            user_ptr,
-            kernel_buf.len(),
-        );
+        core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), user_ptr, kernel_buf.len());
         core::arch::asm!(".byte 0x0f, 0x01, 0xca", options(nomem, nostack));
     }
     Ok(())
@@ -111,14 +111,16 @@ pub unsafe fn copy_to_user(user_ptr: *mut u8, kernel_buf: &[u8]) -> Result<(), (
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::testing::TestResult;
     use crate::test_assert;
+    use crate::testing::TestResult;
 
     fn test_user_ptr_validation() -> TestResult {
         test_assert!(!is_user_ptr(core::ptr::null(), 1));
+        test_assert!(is_user_ptr(core::ptr::null(), 0));
         test_assert!(!is_user_ptr(0x0000_8000_0000_0000 as *const u8, 1));
         test_assert!(is_user_ptr(0x1000 as *const u8, 1));
         test_assert!(!is_user_ptr(0x7fff_ffff_ffff as *const u8, 2)); // crosses boundary
+        test_assert!(!is_user_ptr(0x7fff_ffff_fffe as *const u8, usize::MAX));
         TestResult::Pass
     }
 

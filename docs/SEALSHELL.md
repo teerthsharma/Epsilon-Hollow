@@ -40,9 +40,9 @@ SealShell is Seal OS's native shell. Commands are plain English — no cryptic f
 | `prefetch` | Show aether-link prefetch stats |
 | `snake` / `breakout` / `warp` | Launch built-in games |
 
-## Unix Compatibility
+## Seal-Native Commands
 
-Standard Unix commands (`ls`, `cd`, `cat`, `mkdir`, `rm`, `mv`, `cp`, `pwd`, `ps`, `grep`, `find`, `stat`) are silently mapped to their SealShell equivalents. They work but are not documented in `help` — SealShell is English-first.
+SealShell intentionally uses Seal-native verbs (`look`, `open`, `peek`, `move`, `search`, `tasks`, `seal`). It does not emulate a Unix shell; the command surface is shaped around ManifoldFS and theorem status.
 
 ## File Operations
 

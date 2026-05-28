@@ -15,10 +15,10 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{
-    PhysAddr, VirtAddr,
     registers::control::{Cr3, Cr3Flags},
-    structures::paging::{PageTable, PageTableFlags},
     structures::paging::page_table::PageTableEntry,
+    structures::paging::{PageTable, PageTableFlags},
+    PhysAddr, VirtAddr,
 };
 
 const KERNEL_HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
@@ -73,12 +73,7 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) -> Result<(), MapErr
     // Identity-map first 16 GiB with 2 MiB huge pages.
     let id_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     for phys in (0..IDENTITY_MAP_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
-        map_huge_page_2m(
-            VirtAddr::new(phys),
-            PhysAddr::new(phys),
-            id_flags,
-            pml4,
-        )?;
+        map_huge_page_2m(VirtAddr::new(phys), PhysAddr::new(phys), id_flags, pml4)?;
     }
 
     // Map kernel to higher half with 4 KiB pages.
@@ -116,7 +111,12 @@ unsafe fn map_huge_page_2m(
 }
 
 /// Internal `map_page` that works on an arbitrary PML4.
-unsafe fn map_page_inner(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) -> Result<(), MapError> {
+unsafe fn map_page_inner(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    flags: PageTableFlags,
+    pml4: &mut PageTable,
+) -> Result<(), MapError> {
     let pml4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
     let pdpt_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
     let pd_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
@@ -138,7 +138,12 @@ pub fn current_pml4_virt() -> VirtAddr {
 ///
 /// # Safety
 /// `pml4` must point to a valid, active or soon-to-be-active page table.
-pub unsafe fn map_page_to_pml4(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags, pml4: &mut PageTable) -> Result<(), MapError> {
+pub unsafe fn map_page_to_pml4(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    flags: PageTableFlags,
+    pml4: &mut PageTable,
+) -> Result<(), MapError> {
     map_page_inner(virt, phys, flags, pml4)
 }
 
@@ -146,7 +151,11 @@ pub unsafe fn map_page_to_pml4(virt: VirtAddr, phys: PhysAddr, flags: PageTableF
 ///
 /// # Safety
 /// Caller must ensure the mapping does not violate invariants.
-pub unsafe fn map_page(virt: VirtAddr, phys: PhysAddr, flags: PageTableFlags) -> Result<(), MapError> {
+pub unsafe fn map_page(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    flags: PageTableFlags,
+) -> Result<(), MapError> {
     let ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };
     map_page_inner(virt, phys, flags, pml4)
@@ -326,10 +335,7 @@ fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTa
         let frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
         let table = unsafe { &mut *(frame.as_u64() as *mut PageTable) };
         table.zero();
-        entry.set_addr(
-            frame,
-            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-        );
+        entry.set_addr(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
         Ok(table)
     } else {
         let addr = entry.addr();

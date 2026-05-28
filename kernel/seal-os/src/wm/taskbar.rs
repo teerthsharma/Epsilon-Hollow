@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 
 use crate::graphics::font;
 use crate::graphics::framebuffer::Framebuffer;
-use crate::{GOVERNOR_EPSILON, THEOREM_STATES};
+use crate::{GOVERNOR_EPSILON, THEOREM_COUNT, THEOREM_STATES};
 
 const TASKBAR_HEIGHT: u32 = 28;
 
@@ -28,27 +28,39 @@ pub fn draw_taskbar(fb: &Framebuffer) {
     let start_w = start_label.len() as u32 * font::CHAR_WIDTH;
     let start_x = 4 + (72 - start_w) / 2;
     for (i, ch) in start_label.bytes().enumerate() {
-        font::draw_char(fb, start_x + i as u32 * font::CHAR_WIDTH, y + 6, ch, 0xFFFFFF);
+        font::draw_char(
+            fb,
+            start_x + i as u32 * font::CHAR_WIDTH,
+            y + 6,
+            ch,
+            0xFFFFFF,
+        );
     }
 
     // Theorem indicators (small colored squares)
-    for (i, _name) in ["T1", "T2", "T3", "T4", "T5"].iter().enumerate() {
+    for i in 0..THEOREM_COUNT {
         let active = THEOREM_STATES[i].load(Ordering::Relaxed);
-        let x = 90 + i as u32 * 50;
+        let x = 90 + i as u32 * 18;
         let color = if active { theme.accent } else { 0x00404040 };
         fb.fill_rect(x, y + 8, 10, 10, color);
     }
 
     // Epsilon value area
     let _epsilon = f64::from_bits(GOVERNOR_EPSILON.load(Ordering::Relaxed));
-    fb.fill_rect(270, y + 6, 80, 14, theme.bg);
+    fb.fill_rect(292, y + 6, 80, 14, theme.bg);
 
     // Clock (center)
     let time_str = format_time();
     let clock_w = time_str.len() as u32 * font::CHAR_WIDTH;
     let clock_x = fb.width / 2 - clock_w / 2;
     for (i, ch) in time_str.bytes().enumerate() {
-        font::draw_char(fb, clock_x + i as u32 * font::CHAR_WIDTH, y + 6, ch, theme.fg);
+        font::draw_char(
+            fb,
+            clock_x + i as u32 * font::CHAR_WIDTH,
+            y + 6,
+            ch,
+            theme.fg,
+        );
     }
 
     // Power button (right)

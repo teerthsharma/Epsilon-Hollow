@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 #![no_std]
-#![allow(dead_code, unused_unsafe, improper_ctypes_definitions, unused_imports, unused_features)]
+#![allow(
+    dead_code,
+    unused_unsafe,
+    improper_ctypes_definitions,
+    unused_imports,
+    unused_features
+)]
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
@@ -60,13 +66,7 @@ fn panic(info: &PanicInfo) -> ! {
         let px = (fb.width.saturating_sub(text_width)) / 2;
         let py = fb.height / 2 - 60;
         for (i, &ch) in panic_text.iter().enumerate() {
-            seal_os::graphics::font::draw_char(
-                fb,
-                px + (i as u32) * char_w,
-                py,
-                ch,
-                white,
-            );
+            seal_os::graphics::font::draw_char(fb, px + (i as u32) * char_w, py, ch, white);
         }
 
         // Capture panic message to a stack buffer and render it

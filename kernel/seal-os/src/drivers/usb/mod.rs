@@ -3,20 +3,20 @@
 
 //! USB subsystem — xHCI host controller, HID, mass storage.
 
-pub mod xhci;
 pub mod descriptor;
 pub mod hid;
 pub mod mass_storage;
+pub mod xhci;
 
 use alloc::vec::Vec;
 use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UsbSpeed {
-    Low,      // 1.5 Mbps
-    Full,     // 12 Mbps
-    High,     // 480 Mbps
-    Super,    // 5 Gbps
+    Low,       // 1.5 Mbps
+    Full,      // 12 Mbps
+    High,      // 480 Mbps
+    Super,     // 5 Gbps
     SuperPlus, // 10 Gbps
 }
 

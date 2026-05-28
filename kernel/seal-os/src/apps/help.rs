@@ -117,7 +117,7 @@ pub fn help_for(cmd: &str) -> String {
             "info <file>\n  Show detailed file information:\n  size, payload points, Voronoi cell, cluster ID, permissions.",
         ),
         "seal" => String::from(
-            "seal\n  Show Seal OS system information:\n  version, architecture, theorem status (T1-T5),\n  governor epsilon, entropy, hyperbolic ratio.",
+            "seal\n  Show Seal OS system information:\n  version, architecture, theorem status (T1-T10),\n  governor epsilon, entropy, hyperbolic ratio.",
         ),
         "tasks" => String::from(
             "tasks\n  Show running processes from the ManifoldScheduler.\n  Displays PID, state, name, priority, and Voronoi cell.",

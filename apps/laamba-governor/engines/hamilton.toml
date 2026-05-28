@@ -1,0 +1,22 @@
+[engine]
+name = "Hamilton"
+category = "Physics"
+icon = "atom"
+color = "#FF6B35"
+description = "N-body EM coupling via tensor product Hilbert space"
+
+[engine.entry]
+type = "python"
+command = "python engines/wrappers/hamliton_wrapper.py"
+working_dir = "~/repos/hamilton"
+
+[engine.inputs]
+n_bodies = { type = "int", default = 4, range = [2, 10] }
+dim = { type = "int", default = 16, range = [4, 64] }
+
+[engine.outputs]
+coupling_tensor = { type = "tensor", shape = [16, 16, 16, 16] }
+hamilton_score = { type = "scalar" }
+
+[engine.metrics]
+hamilton_score = { source = "stdout", pattern = "score=([0-9.]+)" }

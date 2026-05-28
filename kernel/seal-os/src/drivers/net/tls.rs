@@ -4,10 +4,10 @@
 //! Minimal TLS 1.3 client — PSK mode with AES-128-GCM + HKDF-SHA256.
 //! Real cryptography. Not a stub. No X.509 (uses pre-shared keys).
 
+use aes_gcm::{AeadInPlace, Aes128Gcm, KeyInit};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use aes_gcm::{Aes128Gcm, AeadInPlace, KeyInit};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,7 +129,8 @@ impl TlsSession {
 
         let mut off = 4; // skip handshake header
         off += 2; // version
-        self.server_random.copy_from_slice(&rec.payload[off..off + 32]);
+        self.server_random
+            .copy_from_slice(&rec.payload[off..off + 32]);
         off += 32;
         let sid_len = rec.payload[off] as usize;
         let _ext_start = off + 1 + sid_len + 4; // extensions start here if needed
@@ -155,8 +156,8 @@ impl TlsSession {
             return Err(String::from("handshake not complete"));
         }
         let nonce = self.make_nonce(true);
-        let cipher = Aes128Gcm::new_from_slice(&self.write_key)
-            .map_err(|_| String::from("bad key"))?;
+        let cipher =
+            Aes128Gcm::new_from_slice(&self.write_key).map_err(|_| String::from("bad key"))?;
         let mut ciphertext = plaintext.to_vec();
         let tag = cipher
             .encrypt_in_place_detached((&nonce[..]).into(), &[], &mut ciphertext)
@@ -180,8 +181,8 @@ impl TlsSession {
         }
         let (ct, tag) = rec.payload.split_at(rec.payload.len() - 16);
         let nonce = self.make_nonce(false);
-        let cipher = Aes128Gcm::new_from_slice(&self.read_key)
-            .map_err(|_| String::from("bad key"))?;
+        let cipher =
+            Aes128Gcm::new_from_slice(&self.read_key).map_err(|_| String::from("bad key"))?;
         let mut pt = ct.to_vec();
         cipher
             .decrypt_in_place_detached((&nonce[..]).into(), &[], &mut pt, (&tag[..]).into())

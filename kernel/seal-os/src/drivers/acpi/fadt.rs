@@ -8,7 +8,7 @@
 
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
-use super::rsdp::{SdtHeader, walk_sdt};
+use super::rsdp::{walk_sdt, SdtHeader};
 
 /// ACPI Generic Address Structure (12 bytes).
 #[repr(C, packed)]

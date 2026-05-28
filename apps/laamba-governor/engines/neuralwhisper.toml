@@ -1,0 +1,18 @@
+[engine]
+name = "NeuralWhisper"
+category = "Audio"
+icon = "audio-waveform"
+color = "#FF4081"
+description = "82M-param neural TTS running 100% in browser"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py neuralwhisper"
+working_dir = "~/repos/neuralwhisper"
+
+[engine.inputs]
+text = { type = "string" }
+voice = { type = "string", default = "default" }
+
+[engine.outputs]
+audio = { type = "file" }

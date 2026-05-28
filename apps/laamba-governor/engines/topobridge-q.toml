@@ -1,0 +1,22 @@
+[engine]
+name = "TopoBridge-Q"
+category = "Quantum"
+icon = "atom"
+color = "#FFD600"
+description = "IBM Quantum homology transfer with verified certificates"
+
+[engine.entry]
+type = "cli"
+command = "python engines/wrappers/builtin_wrapper.py topobridge-q"
+working_dir = "~/repos/topobridge-q"
+
+[engine.inputs]
+backend = { type = "string", default = "ibm_marrakesh" }
+shots = { type = "int", default = 4096 }
+
+[engine.outputs]
+certificate = { type = "file" }
+recovery = { type = "scalar" }
+
+[engine.metrics]
+recovery = { source = "stdout", pattern = "recovery: ([0-9.]+)" }

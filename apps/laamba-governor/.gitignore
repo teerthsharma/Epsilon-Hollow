@@ -1,0 +1,14 @@
+# LAAMBA Governor — Native Seal OS Edition
+*.exe
+*.msi
+*.dmg
+node_modules/
+dist/
+target/
+.tauri/
+logs/*.log
+phi_mem_data/*
+data/*.csv
+src-tauri/target/
+src-tauri/*.pdb
+src-tauri/*.exe

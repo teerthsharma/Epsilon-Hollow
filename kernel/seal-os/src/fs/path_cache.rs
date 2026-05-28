@@ -161,8 +161,8 @@ impl PathCache {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_hit_miss() -> TestResult {
         let mut pc = PathCache::with_capacity(4);
@@ -188,9 +188,15 @@ pub mod tests {
         pc.insert("/b", 2);
         pc.insert("/c", 3);
         let mut found = 0;
-        if pc.get("/a").is_some() { found += 1; }
-        if pc.get("/b").is_some() { found += 1; }
-        if pc.get("/c").is_some() { found += 1; }
+        if pc.get("/a").is_some() {
+            found += 1;
+        }
+        if pc.get("/b").is_some() {
+            found += 1;
+        }
+        if pc.get("/c").is_some() {
+            found += 1;
+        }
         test_assert!(found >= 2, "eviction lost too many entries");
         TestResult::Pass
     }

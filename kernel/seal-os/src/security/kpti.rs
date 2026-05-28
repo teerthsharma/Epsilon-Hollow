@@ -82,7 +82,9 @@ pub fn init_trampoline_pt() {
     let pml4 = frame.as_u64() as *mut u64;
 
     // Zero it
-    unsafe { core::ptr::write_bytes(pml4, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(pml4, 0, 4096);
+    }
 
     // Copy kernel PML4 entries (upper half) — entry 256+ map kernel
     let (kernel_frame, _) = Cr3::read();
@@ -96,8 +98,13 @@ pub fn init_trampoline_pt() {
     }
 
     // Set as user CR3
-    unsafe { set_user_cr3(frame.as_u64()); }
-    crate::serial_println!("[KPTI] Trampoline page table installed @ {:#x}", frame.as_u64());
+    unsafe {
+        set_user_cr3(frame.as_u64());
+    }
+    crate::serial_println!(
+        "[KPTI] Trampoline page table installed @ {:#x}",
+        frame.as_u64()
+    );
 }
 
 /// Return true if both kernel and user CR3 values have been initialized.

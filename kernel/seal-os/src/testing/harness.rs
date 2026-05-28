@@ -3,9 +3,9 @@
 
 //! Test harness for different execution environments.
 
-use alloc::vec::Vec;
-use super::{TestResult, TestSuite, SuiteResult, TEST_REGISTRY};
+use super::{SuiteResult, TestResult, TestSuite, TEST_REGISTRY};
 use crate::serial_println;
+use alloc::vec::Vec;
 
 /// Run every test that was registered via `seal_test!` or `register_test`.
 pub fn run_all_tests() -> bool {
@@ -76,7 +76,11 @@ pub fn run_suite(suite: &TestSuite) -> bool {
     let total = suite.cases.len();
     serial_println!(
         "[TEST] Suite {}: {}/{} passed, {} failed, {} panicked",
-        suite.name, passed, total, failed, panicked
+        suite.name,
+        passed,
+        total,
+        failed,
+        panicked
     );
 
     failed == 0 && panicked == 0

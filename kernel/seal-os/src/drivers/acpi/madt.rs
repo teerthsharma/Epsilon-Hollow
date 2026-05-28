@@ -113,7 +113,9 @@ pub unsafe fn parse_madt(madt_phys: u64) {
                     let entry = offset as *const LocalApicEntry;
                     let flags = unsafe { core::ptr::addr_of!((*entry).flags).read_unaligned() }; // copy out of packed struct
                     if (flags & 1) != 0 && count < MAX_CPUS {
-                        let apic_id = unsafe { core::ptr::addr_of!((*entry).apic_id).read_unaligned() as u32 };
+                        let apic_id = unsafe {
+                            core::ptr::addr_of!((*entry).apic_id).read_unaligned() as u32
+                        };
                         ids[count] = apic_id;
                         count += 1;
                         if apic_id == this_lapic {
@@ -130,7 +132,8 @@ pub unsafe fn parse_madt(madt_phys: u64) {
             1 => {
                 if offset + core::mem::size_of::<IoApicEntry>() as u64 <= entries_end {
                     let entry = offset as *const IoApicEntry;
-                    let ioapic_addr = unsafe { core::ptr::addr_of!((*entry).ioapic_addr).read_unaligned() };
+                    let ioapic_addr =
+                        unsafe { core::ptr::addr_of!((*entry).ioapic_addr).read_unaligned() };
                     IOAPIC_BASE.store(ioapic_addr as u64, Ordering::SeqCst);
                 } else {
                     crate::serial_println!(

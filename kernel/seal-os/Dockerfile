@@ -22,6 +22,7 @@ COPY Cargo.toml Cargo.lock ./
 # Copy dependencies (must match paths in kernel/seal-os/Cargo.toml)
 COPY kernel/epsilon/epsilon/crates/aether-core /build/kernel/epsilon/epsilon/crates/aether-core
 COPY kernel/aether/Aether-Lang/crates/aether-lang /build/kernel/aether/Aether-Lang/crates/aether-lang
+COPY kernel/aether/aether-verified /build/kernel/aether/aether-verified
 
 # Copy seal-os kernel
 COPY kernel/seal-os /build/kernel/seal-os

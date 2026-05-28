@@ -74,7 +74,13 @@ pub fn handle_icmp_packet(src: [u8; 4], pkt: &[u8]) {
         0 => {
             // Echo reply
             ECHO_REPLY_RECEIVED.store(true, Ordering::SeqCst);
-            crate::serial_println!("[ICMP] Echo reply from {}.{}.{}.{}", src[0], src[1], src[2], src[3]);
+            crate::serial_println!(
+                "[ICMP] Echo reply from {}.{}.{}.{}",
+                src[0],
+                src[1],
+                src[2],
+                src[3]
+            );
         }
         _ => {}
     }

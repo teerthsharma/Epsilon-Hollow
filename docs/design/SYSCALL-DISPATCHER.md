@@ -4,13 +4,13 @@
 > **Priority**: HIGH (required for any userspace)
 > **Estimated Effort**: 2 weeks
 > **Blocked by**: IDT/IRQ, interrupt-safe locks
-> **Blocks**: Shell, libc, userspace binaries, IPC
+> **Blocks**: SealShell, Aether runtime, userspace binaries, IPC
 
 ---
 
 ## Overview
 
-Current kernel has `syscall::init_syscall_msrs()` which sets `STAR`, `LSTAR`, `SFMASK`, and `EFER.SCE`. There is no actual dispatch table. This design covers the full syscall path: entry/exit ABI, argument marshalling, dispatcher table, and per-syscall security hooks.
+Current kernel has `syscall::init_syscall_msrs()` which sets `STAR`, `LSTAR`, `SFMASK`, and `EFER.SCE`. This design covers the Seal ABI syscall path: entry/exit ABI, argument marshalling, dispatcher table, theorem extensions, and per-syscall security hooks.
 
 ---
 
@@ -158,7 +158,7 @@ fn syscall_dispatch_rust(frame: &mut SyscallFrame) {
 - [x] `sys_chdir(path)`
 - [x] `sys_getcwd(buf, size)`
 
-#### Tier 2 — POSIX compatibility
+#### Tier 2 - Seal file/process extensions
 - [x] `sys_stat(pathname, statbuf)`
 - [x] `sys_fstat(fd, statbuf)`
 - [x] `sys_lstat(pathname, statbuf)`

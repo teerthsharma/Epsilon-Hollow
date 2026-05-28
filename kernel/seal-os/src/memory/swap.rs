@@ -35,7 +35,10 @@ impl TopoSwapEntry {
     /// Encode a 4 KiB page into a topological swap entry.
     pub fn encode_page(data: &[u8; 4096], seed: u64) -> Self {
         let file = crate::fs::topcrypt::encode_bytes(data, seed);
-        let mut blocks = [TopoBlock { embedding: [0; 32], checksum: 0 }; BLOCKS_PER_PAGE];
+        let mut blocks = [TopoBlock {
+            embedding: [0; 32],
+            checksum: 0,
+        }; BLOCKS_PER_PAGE];
         for (i, block) in file.blocks.iter().take(BLOCKS_PER_PAGE).enumerate() {
             blocks[i] = *block;
         }
@@ -76,7 +79,10 @@ impl TopoSwapEntry {
         if data.len() < SWAP_ENTRY_SIZE {
             return None;
         }
-        let mut blocks = [TopoBlock { embedding: [0; 32], checksum: 0 }; BLOCKS_PER_PAGE];
+        let mut blocks = [TopoBlock {
+            embedding: [0; 32],
+            checksum: 0,
+        }; BLOCKS_PER_PAGE];
         let mut offset = 0;
         for block in &mut blocks {
             for i in 0..32 {
@@ -84,7 +90,10 @@ impl TopoSwapEntry {
                 offset += 2;
             }
             block.checksum = u32::from_le_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]);
             offset += 4;
         }
@@ -125,7 +134,8 @@ fn voronoi_cell_of_virt(virt: VirtAddr) -> u16 {
     let mut emb = [0u16; 32];
     let addr = virt.as_u64();
     for a in 0..32 {
-        emb[a] = ((addr.wrapping_mul(1103515245)
+        emb[a] = ((addr
+            .wrapping_mul(1103515245)
             .wrapping_add(12345)
             .wrapping_add(a.wrapping_mul(65537) as u64))
             % 65536) as u16;
@@ -134,8 +144,8 @@ fn voronoi_cell_of_virt(virt: VirtAddr) -> u16 {
     let mut seeds = [[0u16; 32]; 8];
     for s in 0..8 {
         for a in 0..32 {
-            seeds[s][a] = ((s.wrapping_mul(7919).wrapping_add(a.wrapping_mul(104729)))
-                % 65536) as u16;
+            seeds[s][a] =
+                ((s.wrapping_mul(7919).wrapping_add(a.wrapping_mul(104729))) % 65536) as u16;
         }
     }
 
@@ -210,8 +220,14 @@ pub fn init() {
         slots: Vec::new(),
         index: BTreeMap::new(),
         cell_index: [
-            Vec::new(), Vec::new(), Vec::new(), Vec::new(),
-            Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
         ],
         free_list: Vec::new(),
         swap_tick: 0,
@@ -431,7 +447,10 @@ pub fn compact() {
     for (old_idx, slot) in state.slots.iter().enumerate() {
         if let Some(s) = slot {
             let new_idx = new_slots.len();
-            new_slots.push(Some(SwapSlot { virt: s.virt, cell: s.cell }));
+            new_slots.push(Some(SwapSlot {
+                virt: s.virt,
+                cell: s.cell,
+            }));
             new_index.insert(s.virt, new_idx);
 
             if new_idx != old_idx {
@@ -439,7 +458,8 @@ pub fn compact() {
                 let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
                 let mut buf = Vec::with_capacity(SWAP_ENTRY_SIZE);
                 buf.resize(SWAP_ENTRY_SIZE, 0);
-                let read = with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
+                let read =
+                    with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
                 if read == SWAP_ENTRY_SIZE {
                     let _ = with_vfs(|vfs| vfs.write(state.handle, &buf, new_offset));
                 }
@@ -462,7 +482,11 @@ pub fn compact() {
         }
     }
 
-    crate::serial_println!("[SWAP/T3] Compacted {} pages, entropy={:.2}", moved, entropy);
+    crate::serial_println!(
+        "[SWAP/T3] Compacted {} pages, entropy={:.2}",
+        moved,
+        entropy
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +526,8 @@ pub fn swap_out_daemon() {
     // T5: hyperbolic lifetime — short-lived pages (high bit density) swap first.
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
     for (v, _density) in candidates.iter().take(aggressiveness) {
-        unsafe { swap_out_page(*v); }
+        unsafe {
+            swap_out_page(*v);
+        }
     }
 }

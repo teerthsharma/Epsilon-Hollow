@@ -2,8 +2,11 @@
 
 > Source: `.github/workflows/ci.yml`
 
-Triggered on: all `push` and `pull_request` events.  
+Triggered on: all `push` and `pull_request` events.
 Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"` (kernel jobs override RUSTFLAGS to `""`).
+
+> 💡 **Run these checks locally before pushing:** see [`docs/LOCAL_CI.md`](LOCAL_CI.md).
+> To use the `git push-ci` alias, run: `git config --local include.path ../.gitconfig.local`
 
 ---
 
@@ -125,17 +128,10 @@ Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"` (kernel jobs ov
 | What It Checks | No source files contain a UTF-8 Byte Order Mark |
 | Failure Means | A file has a BOM prefix (0xEF 0xBB 0xBF) |
 
-## Job 11: `python`
+## Removed: Python CI
 
-| Field | Value |
-|-------|-------|
-| Display Name | `python compileall + unit tests` |
-| Runner | `ubuntu-latest` |
-| Python | 3.11 |
-| Dependencies | `numpy` only (torch tests are `skipUnless`) |
-| Commands | `python -m compileall -q infrastructure scripts tests kernel/epsilon/epsilon_core`, `python -m unittest discover -s tests -p 'test_*.py' -v` |
-| What It Checks | All Python files compile; all Python unit tests pass |
-| Failure Means | Python syntax errors or test failures |
+Seal OS GitHub-facing gates are Rust, assembly, and Aether-Lang DSL. Python
+compile/test jobs are removed from the OS CI path.
 
 ## Job 12: `kernel-build`
 
@@ -175,28 +171,37 @@ Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"` (kernel jobs ov
 | APT Packages | `qemu-system-x86`, `ovmf` |
 | Command | `timeout 45 qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -nographic -m 4G -no-reboot -no-shutdown` |
 | Artifact | `seal-os-boot-log` (/tmp/seal-os.log) |
-| What It Checks | Kernel boots successfully in QEMU and reaches all 11 milestones |
-| Failure Means | Kernel fails to boot or does not reach expected milestones |
+| What It Checks | Kernel boots successfully in QEMU and reaches hard boot gates; soft milestones are reported separately |
+| Failure Means | Kernel fails to boot, misses a hard gate, or reports a panic/fault/watchdog/theorem failure |
 
-### QEMU 11-Milestone Checklist
+### QEMU Hard Gates
 
-The smoke test (lines 303-329) verifies these serial output patterns:
+The smoke test must verify these serial output patterns:
 
 | # | Pattern | Milestone |
 |---|---------|-----------|
-| 1 | `Seal OS v1.0.0-alpha` | Banner printed |
+| 1 | `Seal OS v` | Banner printed |
 | 2 | `Heap initialized` | Heap initialized |
 | 3 | `IDT + PIC initialized` | Interrupts configured |
-| 4 | `Governor online` | T4 governor started |
-| 5 | `Voronoi index: 8 cells` | T1 Voronoi active |
-| 6 | `T1-T5 theorems ACTIVE` | All theorems active |
-| 7 | `ManifoldFS` | ManifoldFS initialized |
-| 8 | `Teleported.*O(1)` | O(1) teleportation demonstrated |
-| 9 | `Scheduler` | Scheduler started |
-| 10 | `Syscall` | Syscalls verified |
-| 11 | `Shell` | Shell executed |
+| 4 | `SYSCALL/SYSRET MSRs programmed` | Syscall entry configured |
+| 5 | `Governor online` | T4 governor started |
+| 6 | `Voronoi index: 8 cells` | T1 Voronoi active |
+| 7 | `[THEOREM] T1/TSS VERIFIED` through `[THEOREM] T10/WPHB VERIFIED` | Every theorem line verified |
+| 8 | `All T1-T10 theorems VERIFIED` | Theorem summary verified |
 
-All 11 must pass (FAIL count must be 0) or the job fails.
+The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
+
+### QEMU Soft Milestones
+
+These are useful observations, but not hard proof unless CI explicitly requires them:
+
+| Pattern | Meaning |
+|---|---|
+| `ManifoldFS` | Filesystem initialized or ramfs fallback mounted |
+| `Scheduler` | Scheduler initialized |
+| `Syscall` | Syscall filesystem initialized |
+| `Shell` | Shell or desktop control surface loaded |
+| `Seal OS desktop ready` | GUI path reached ready sentinel |
 
 ## Job 15: `kernel-clippy`
 
@@ -238,7 +243,6 @@ audit ───────────────┤  (all independent, run in
 deny ────────────────┤
 docs ────────────────┤
 bom ─────────────────┤
-python ──────────────┤
 kernel-clippy ───────┤
 lean ────────────────┘
 

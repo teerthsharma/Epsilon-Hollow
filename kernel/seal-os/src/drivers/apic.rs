@@ -116,13 +116,16 @@ impl LocalApic {
         self.write_reg(TIMER_LVT, 0xFE);
         self.write_reg(TIMER_INITCNT, 0xFFFFFFFF);
 
-        // Wait for PIT to reach terminal count
-        loop {
+        // Wait for PIT to reach terminal count. Some VMs never expose an
+        // exact zero latch, so keep calibration bounded and fall back.
+        let mut timed_out = true;
+        for _ in 0..2_000_000 {
             cmd.write(0x00); // latch channel 0
             let lo = ch0.read();
             let hi = ch0.read();
             let count = ((hi as u32) << 8) | (lo as u32);
-            if count == 0 {
+            if count <= 1 {
+                timed_out = false;
                 break;
             }
         }
@@ -135,7 +138,15 @@ impl LocalApic {
         self.write_reg(TIMER_DIV, old_div);
 
         // initial_count for ~1000 Hz (1 ms period = 50 ms / 50)
-        elapsed / 50
+        let initial_count = elapsed / 50;
+        if timed_out || initial_count == 0 {
+            crate::serial_println!(
+                "[APIC] PIT calibration timeout; using fallback LAPIC timer count"
+            );
+            60_000
+        } else {
+            initial_count
+        }
     }
 }
 
@@ -157,12 +168,18 @@ impl IoApic {
     }
 
     unsafe fn read_reg(&self, reg: u8) -> u32 {
-        write_volatile((self.base + IOAPIC_IOREGSEL as usize) as *mut u32, reg as u32);
+        write_volatile(
+            (self.base + IOAPIC_IOREGSEL as usize) as *mut u32,
+            reg as u32,
+        );
         read_volatile((self.base + IOAPIC_IOWIN as usize) as *const u32)
     }
 
     unsafe fn write_reg(&self, reg: u8, val: u32) {
-        write_volatile((self.base + IOAPIC_IOREGSEL as usize) as *mut u32, reg as u32);
+        write_volatile(
+            (self.base + IOAPIC_IOREGSEL as usize) as *mut u32,
+            reg as u32,
+        );
         write_volatile((self.base + IOAPIC_IOWIN as usize) as *mut u32, val);
     }
 
@@ -255,17 +272,17 @@ pub unsafe fn init() {
     }
     let id = LOCAL_APIC.id();
     BSP_APIC_ID.store(id, Ordering::SeqCst);
-    crate::serial_println!(
-        "[APIC] Local APIC ID={}, IO APIC ready",
-        id
-    );
+    crate::serial_println!("[APIC] Local APIC ID={}, IO APIC ready", id);
 }
 
 /// Calibrate and start the Local APIC timer on the BSP.
 pub unsafe fn init_local_apic_timer_for_bsp() {
     let initial_count = LOCAL_APIC.calibrate_timer(PIT_50MS_TICKS);
     LOCAL_APIC.init_timer(3, initial_count, 48);
-    crate::serial_println!("[APIC] BSP timer calibrated, initial_count={}", initial_count);
+    crate::serial_println!(
+        "[APIC] BSP timer calibrated, initial_count={}",
+        initial_count
+    );
 }
 
 /// Calibrate and start the Local APIC timer on an AP.
@@ -284,7 +301,9 @@ pub(crate) static TEST_IPI_FIRED: AtomicBool = AtomicBool::new(false);
 #[cfg(all(not(test), feature = "test-mode"))]
 pub(crate) extern "x86-interrupt" fn apic_test_handler(_frame: InterruptStackFrame) {
     TEST_IPI_FIRED.store(true, Ordering::SeqCst);
-    unsafe { LOCAL_APIC.eoi(); }
+    unsafe {
+        LOCAL_APIC.eoi();
+    }
 }
 
 #[cfg(any(test, feature = "test-mode"))]

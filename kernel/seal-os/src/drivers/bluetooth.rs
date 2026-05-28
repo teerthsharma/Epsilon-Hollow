@@ -65,7 +65,7 @@ impl BluetoothDriver {
     }
 
     pub fn probe_pci(&mut self) {
-        let devices = crate::drivers::pci::enumerate();
+        let devices = crate::drivers::pci::get_devices();
         for dev in &devices {
             if dev.class == 0x02 && dev.subclass == 0x80 {
                 self.detected = true;
@@ -80,7 +80,9 @@ impl BluetoothDriver {
         match self.state {
             BtState::NoHardware => String::from("Bluetooth: no adapter detected"),
             BtState::Disabled => String::from("Bluetooth: disabled"),
-            BtState::Enabled => alloc::format!("Bluetooth: enabled ({} paired)", self.paired_devices.len()),
+            BtState::Enabled => {
+                alloc::format!("Bluetooth: enabled ({} paired)", self.paired_devices.len())
+            }
             BtState::Scanning => String::from("Bluetooth: scanning..."),
             BtState::Pairing => String::from("Bluetooth: pairing..."),
         }

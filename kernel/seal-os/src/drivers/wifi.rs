@@ -88,7 +88,7 @@ impl WifiDriver {
     }
 
     pub fn probe_pci(&mut self) {
-        let devices = crate::drivers::pci::enumerate();
+        let devices = crate::drivers::pci::get_devices();
         for dev in &devices {
             if dev.class == PCI_CLASS_NETWORK && dev.subclass == PCI_SUBCLASS_WIRELESS {
                 self.vendor_id = dev.vendor_id;
@@ -115,12 +115,25 @@ impl WifiDriver {
             WifiState::NoHardware => String::from("WiFi: no wireless hardware detected"),
             WifiState::Disabled => String::from("WiFi: disabled"),
             WifiState::Disconnected => match self.chipset_name {
-                Some(name) => alloc::format!("WiFi: {} ({:04X}:{:04X}) disconnected", name, self.vendor_id, self.device_id),
-                None => alloc::format!("WiFi: unknown wireless controller {:04X}:{:04X} disconnected", self.vendor_id, self.device_id),
+                Some(name) => alloc::format!(
+                    "WiFi: {} ({:04X}:{:04X}) disconnected",
+                    name,
+                    self.vendor_id,
+                    self.device_id
+                ),
+                None => alloc::format!(
+                    "WiFi: unknown wireless controller {:04X}:{:04X} disconnected",
+                    self.vendor_id,
+                    self.device_id
+                ),
             },
             WifiState::Scanning => String::from("WiFi: scanning..."),
-            WifiState::Connecting => alloc::format!("WiFi: connecting to {}...", self.connected_ssid.as_deref().unwrap_or("?")),
-            WifiState::Connected => alloc::format!("WiFi: connected to {} (IP {}.{}.{}.{})",
+            WifiState::Connecting => alloc::format!(
+                "WiFi: connecting to {}...",
+                self.connected_ssid.as_deref().unwrap_or("?")
+            ),
+            WifiState::Connected => alloc::format!(
+                "WiFi: connected to {} (IP {}.{}.{}.{})",
                 self.connected_ssid.as_deref().unwrap_or("?"),
                 self.ip_addr.map_or(0, |a| a[0]),
                 self.ip_addr.map_or(0, |a| a[1]),
@@ -139,12 +152,25 @@ impl WifiDriver {
         let prev = self.state;
         self.state = WifiState::Scanning;
 
-        let seed = (self.vendor_id as u64).wrapping_mul(0x9E3779B97F4A7C15)
+        let seed = (self.vendor_id as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15)
             .wrapping_add(self.device_id as u64);
         let mut networks = Vec::new();
 
-        let ssids = ["AlphaNet", "BetaWave", "GammaLink", "DeltaCore", "EpsilonMesh"];
-        let securities = [WifiSecurity::Wpa3, WifiSecurity::Wpa2, WifiSecurity::Wpa2, WifiSecurity::Open, WifiSecurity::Wpa3];
+        let ssids = [
+            "AlphaNet",
+            "BetaWave",
+            "GammaLink",
+            "DeltaCore",
+            "EpsilonMesh",
+        ];
+        let securities = [
+            WifiSecurity::Wpa3,
+            WifiSecurity::Wpa2,
+            WifiSecurity::Wpa2,
+            WifiSecurity::Open,
+            WifiSecurity::Wpa3,
+        ];
 
         for i in 0..ssids.len() {
             let s = seed.wrapping_add(i as u64);

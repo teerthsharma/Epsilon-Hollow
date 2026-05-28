@@ -6,9 +6,9 @@
 
 #[cfg(not(test))]
 use spin::Lazy;
+use x86_64::registers::control::Cr2;
 #[cfg(not(test))]
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
-use x86_64::registers::control::Cr2;
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -21,25 +21,67 @@ use crate::wm::event::InputEvent;
 /// Index = scancode without bit 7. 0 = no ASCII mapping.
 static SCANCODE_MAP: [u8; 128] = {
     let mut m = [0u8; 128];
-    m[0x02] = b'1'; m[0x03] = b'2'; m[0x04] = b'3'; m[0x05] = b'4';
-    m[0x06] = b'5'; m[0x07] = b'6'; m[0x08] = b'7'; m[0x09] = b'8';
-    m[0x0A] = b'9'; m[0x0B] = b'0'; m[0x0C] = b'-'; m[0x0D] = b'=';
+    m[0x02] = b'1';
+    m[0x03] = b'2';
+    m[0x04] = b'3';
+    m[0x05] = b'4';
+    m[0x06] = b'5';
+    m[0x07] = b'6';
+    m[0x08] = b'7';
+    m[0x09] = b'8';
+    m[0x0A] = b'9';
+    m[0x0B] = b'0';
+    m[0x0C] = b'-';
+    m[0x0D] = b'=';
     m[0x0E] = b'\x08'; // Backspace
-    m[0x0F] = b'\t';   // Tab
-    m[0x10] = b'q'; m[0x11] = b'w'; m[0x12] = b'e'; m[0x13] = b'r';
-    m[0x14] = b't'; m[0x15] = b'y'; m[0x16] = b'u'; m[0x17] = b'i';
-    m[0x18] = b'o'; m[0x19] = b'p'; m[0x1A] = b'['; m[0x1B] = b']';
-    m[0x1C] = b'\n';   // Enter
-    m[0x1E] = b'a'; m[0x1F] = b's'; m[0x20] = b'd'; m[0x21] = b'f';
-    m[0x22] = b'g'; m[0x23] = b'h'; m[0x24] = b'j'; m[0x25] = b'k';
-    m[0x26] = b'l'; m[0x27] = b';'; m[0x28] = b'\''; m[0x29] = b'`';
+    m[0x0F] = b'\t'; // Tab
+    m[0x10] = b'q';
+    m[0x11] = b'w';
+    m[0x12] = b'e';
+    m[0x13] = b'r';
+    m[0x14] = b't';
+    m[0x15] = b'y';
+    m[0x16] = b'u';
+    m[0x17] = b'i';
+    m[0x18] = b'o';
+    m[0x19] = b'p';
+    m[0x1A] = b'[';
+    m[0x1B] = b']';
+    m[0x1C] = b'\n'; // Enter
+    m[0x1E] = b'a';
+    m[0x1F] = b's';
+    m[0x20] = b'd';
+    m[0x21] = b'f';
+    m[0x22] = b'g';
+    m[0x23] = b'h';
+    m[0x24] = b'j';
+    m[0x25] = b'k';
+    m[0x26] = b'l';
+    m[0x27] = b';';
+    m[0x28] = b'\'';
+    m[0x29] = b'`';
     m[0x2B] = b'\\';
-    m[0x2C] = b'z'; m[0x2D] = b'x'; m[0x2E] = b'c'; m[0x2F] = b'v';
-    m[0x30] = b'b'; m[0x31] = b'n'; m[0x32] = b'm'; m[0x33] = b',';
-    m[0x34] = b'.'; m[0x35] = b'/'; m[0x39] = b' ';
-    m[0x47] = b'7'; m[0x48] = b'8'; m[0x49] = b'9';
-    m[0x4B] = b'4'; m[0x4C] = b'5'; m[0x4D] = b'6';
-    m[0x4F] = b'1'; m[0x50] = b'2'; m[0x51] = b'3'; m[0x52] = b'0';
+    m[0x2C] = b'z';
+    m[0x2D] = b'x';
+    m[0x2E] = b'c';
+    m[0x2F] = b'v';
+    m[0x30] = b'b';
+    m[0x31] = b'n';
+    m[0x32] = b'm';
+    m[0x33] = b',';
+    m[0x34] = b'.';
+    m[0x35] = b'/';
+    m[0x39] = b' ';
+    m[0x47] = b'7';
+    m[0x48] = b'8';
+    m[0x49] = b'9';
+    m[0x4B] = b'4';
+    m[0x4C] = b'5';
+    m[0x4D] = b'6';
+    m[0x4F] = b'1';
+    m[0x50] = b'2';
+    m[0x51] = b'3';
+    m[0x52] = b'0';
     m
 };
 
@@ -68,9 +110,12 @@ pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
     }
     idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
-    idt.segment_not_present.set_handler_fn(segment_not_present_handler);
-    idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
-    idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+    idt.segment_not_present
+        .set_handler_fn(segment_not_present_handler);
+    idt.stack_segment_fault
+        .set_handler_fn(stack_segment_fault_handler);
+    idt.general_protection_fault
+        .set_handler_fn(general_protection_fault_handler);
     idt.page_fault.set_handler_fn(page_fault_handler);
     idt[VECTOR_TIMER_APIC].set_handler_fn(timer_handler_apic);
     idt[VECTOR_POWER_BUTTON].set_handler_fn(power_button_handler);
@@ -175,8 +220,12 @@ impl MousePacketState {
                 let mut dy = self.bytes[2] as i32;
 
                 // Sign extension
-                if flags & 0x10 != 0 { dx -= 256; }
-                if flags & 0x20 != 0 { dy -= 256; }
+                if flags & 0x10 != 0 {
+                    dx -= 256;
+                }
+                if flags & 0x20 != 0 {
+                    dy -= 256;
+                }
 
                 // PS/2 mouse Y is inverted
                 dy = -dy;
@@ -256,7 +305,9 @@ unsafe fn wait_write() {
     use x86_64::instructions::port::Port;
     let mut status = Port::<u8>::new(0x64);
     for _ in 0..10000 {
-        if status.read() & 0x02 == 0 { return; }
+        if status.read() & 0x02 == 0 {
+            return;
+        }
     }
 }
 
@@ -265,7 +316,9 @@ unsafe fn wait_read() {
     use x86_64::instructions::port::Port;
     let mut status = Port::<u8>::new(0x64);
     for _ in 0..10000 {
-        if status.read() & 0x01 != 0 { return; }
+        if status.read() & 0x01 != 0 {
+            return;
+        }
     }
 }
 
@@ -442,7 +495,10 @@ extern "x86-interrupt" fn breakpoint_handler(frame: InterruptStackFrame) {
 }
 
 #[cfg(not(test))]
-extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
+extern "x86-interrupt" fn page_fault_handler(
+    frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
     let addr = Cr2::read_raw();
 
     // Attempt demand paging for known mmap regions.
@@ -488,38 +544,69 @@ extern "x86-interrupt" fn page_fault_handler(frame: InterruptStackFrame, error_c
         }
     }
 
-    serial_println!("[FAULT] Page fault at {:#x}, error code: {:?}", addr, error_code);
+    serial_println!(
+        "[FAULT] Page fault at {:#x}, error code: {:?}",
+        addr,
+        error_code
+    );
     serial_println!("{:#?}", frame);
-    loop { x86_64::instructions::hlt(); }
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 extern "x86-interrupt" fn double_fault_handler(frame: InterruptStackFrame, _code: u64) -> ! {
     serial_println!("[FATAL] DOUBLE FAULT\n{:#?}", frame);
-    loop { x86_64::instructions::hlt(); }
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn invalid_opcode_handler(frame: InterruptStackFrame) {
     serial_println!("[FAULT] Invalid Opcode (#UD)\n{:#?}", frame);
-    loop { x86_64::instructions::hlt(); }
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn segment_not_present_handler(frame: InterruptStackFrame, error_code: u64) {
-    serial_println!("[FAULT] Segment Not Present (#NP), error code: {:#x}\n{:#?}", error_code, frame);
-    loop { x86_64::instructions::hlt(); }
+    serial_println!(
+        "[FAULT] Segment Not Present (#NP), error code: {:#x}\n{:#?}",
+        error_code,
+        frame
+    );
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[cfg(not(test))]
 extern "x86-interrupt" fn stack_segment_fault_handler(frame: InterruptStackFrame, error_code: u64) {
-    serial_println!("[FAULT] Stack Segment Fault (#SS), error code: {:#x}\n{:#?}", error_code, frame);
-    loop { x86_64::instructions::hlt(); }
+    serial_println!(
+        "[FAULT] Stack Segment Fault (#SS), error code: {:#x}\n{:#?}",
+        error_code,
+        frame
+    );
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[cfg(not(test))]
-extern "x86-interrupt" fn general_protection_fault_handler(frame: InterruptStackFrame, error_code: u64) {
-    serial_println!("[FAULT] General Protection Fault (#GP), error code: {:#x}\n{:#?}", error_code, frame);
-    loop { x86_64::instructions::hlt(); }
+extern "x86-interrupt" fn general_protection_fault_handler(
+    frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    serial_println!(
+        "[FAULT] General Protection Fault (#GP), error code: {:#x}\n{:#?}",
+        error_code,
+        frame
+    );
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 /// Trigger a system reboot via the keyboard controller.
@@ -532,8 +619,13 @@ pub fn reboot() {
 }
 
 pub fn scancode_to_char(code: u8) -> u8 {
-    const MAP: &[u8; 59] = b"\0\x1b1234567890-==\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
-    if (code as usize) < MAP.len() { MAP[code as usize] } else { 0 }
+    const MAP: &[u8; 59] =
+        b"\0\x1b1234567890-==\x08\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
+    if (code as usize) < MAP.len() {
+        MAP[code as usize]
+    } else {
+        0
+    }
 }
 
 pub fn scancode_to_special(code: u8) -> Option<SpecialKey> {
@@ -557,8 +649,17 @@ pub fn scancode_to_special(code: u8) -> Option<SpecialKey> {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SpecialKey {
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
-    Delete, Escape,
-    F1, F2, F3,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Delete,
+    Escape,
+    F1,
+    F2,
+    F3,
 }

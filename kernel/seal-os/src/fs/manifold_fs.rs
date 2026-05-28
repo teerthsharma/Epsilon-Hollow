@@ -120,8 +120,7 @@ impl ManifoldFS {
     }
 
     pub fn try_mount_disk() -> Result<Self, ManifoldError> {
-        crate::drivers::disk::ahci::first_disk()
-            .map_err(|_| ManifoldError::NoDisk)?;
+        crate::drivers::disk::ahci::first_disk().map_err(|_| ManifoldError::NoDisk)?;
 
         let store = BlockStore::try_mount_ahci().map_err(|e| match e {
             MountError::NoDevice => ManifoldError::NoDisk,
@@ -223,7 +222,11 @@ impl ManifoldFS {
             for i in 0..child_ids.len() {
                 let curr = child_ids[i];
                 let next = child_ids.get(i + 1).copied();
-                let prev = if i > 0 { child_ids.get(i - 1).copied() } else { None };
+                let prev = if i > 0 {
+                    child_ids.get(i - 1).copied()
+                } else {
+                    None
+                };
                 if let Some(ino) = slab.get_mut(curr) {
                     ino.sibling_next = next;
                     ino.sibling_prev = prev;
@@ -478,12 +481,7 @@ impl ManifoldFS {
         Ok(results)
     }
 
-    pub fn store_large(
-        &mut self,
-        name: &str,
-        data: &[u8],
-        parent_id: u64,
-    ) -> Result<u64, FsError> {
+    pub fn store_large(&mut self, name: &str, data: &[u8], parent_id: u64) -> Result<u64, FsError> {
         self.store(name, data, parent_id)
     }
 
@@ -639,7 +637,9 @@ impl ManifoldFS {
             original_size: 0,
             content_hash: 0,
         });
-        let bucket = self.voronoi.files_in_bucket(predicted_cell.0, predicted_cell.1);
+        let bucket = self
+            .voronoi
+            .files_in_bucket(predicted_cell.0, predicted_cell.1);
         self.last_prefetch_prediction = bucket.last().copied();
     }
 
@@ -800,7 +800,10 @@ impl ManifoldFS {
              Permissions:    {:o}\n\
              Inode:          {}",
             inode.name,
-            match inode.kind { InodeKind::File => "file", InodeKind::Directory => "directory" },
+            match inode.kind {
+                InodeKind::File => "file",
+                InodeKind::Directory => "directory",
+            },
             inode.metadata.original_size,
             inode.payload.point_count,
             inode.voronoi_cell,
@@ -896,7 +899,10 @@ impl ManifoldFS {
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
         self.path_cache.bump_generation();
-        self.log_event("T1/TSS", format!("duplicated '{}' -> dir {}", name, dst_dir));
+        self.log_event(
+            "T1/TSS",
+            format!("duplicated '{}' -> dir {}", name, dst_dir),
+        );
         Ok(id)
     }
 
@@ -917,13 +923,18 @@ impl ManifoldFS {
         Ok(current)
     }
 
-    pub fn theorem_status(&self) -> [(&'static str, &'static str); 5] {
+    pub fn theorem_status(&self) -> [(&'static str, &'static str); 10] {
         [
-            ("T1/TSS", "ACTIVE"),
-            ("T2/SCM", "ACTIVE"),
-            ("T3/GMC", "ACTIVE"),
-            ("T4/AGCR", "ACTIVE"),
-            ("T5/HCS", "ACTIVE"),
+            (crate::THEOREM_NAMES[0], theorem_status_text(0)),
+            (crate::THEOREM_NAMES[1], theorem_status_text(1)),
+            (crate::THEOREM_NAMES[2], theorem_status_text(2)),
+            (crate::THEOREM_NAMES[3], theorem_status_text(3)),
+            (crate::THEOREM_NAMES[4], theorem_status_text(4)),
+            (crate::THEOREM_NAMES[5], theorem_status_text(5)),
+            (crate::THEOREM_NAMES[6], theorem_status_text(6)),
+            (crate::THEOREM_NAMES[7], theorem_status_text(7)),
+            (crate::THEOREM_NAMES[8], theorem_status_text(8)),
+            (crate::THEOREM_NAMES[9], theorem_status_text(9)),
         ]
     }
 
@@ -1003,7 +1014,10 @@ fn split_path(path: &str) -> Result<(&str, &str), VfsError> {
 impl FileSystem for ManifoldFS {
     fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {
         let id = self.resolve_path(path).map_err(map_err)?;
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
@@ -1018,7 +1032,10 @@ impl FileSystem for ManifoldFS {
     }
 
     fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
-        let inode = self.inodes.get_mut(handle.inode).ok_or(VfsError::NotFound)?;
+        let inode = self
+            .inodes
+            .get_mut(handle.inode)
+            .ok_or(VfsError::NotFound)?;
         if !matches!(inode.kind, InodeKind::File) {
             return Err(VfsError::InvalidOperation);
         }
@@ -1036,14 +1053,20 @@ impl FileSystem for ManifoldFS {
         let (dir_path, name) = split_path(path)?;
         let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
         let id = self.store(name, b"", dir_id).map_err(map_err)?;
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
         let (dir_path, name) = split_path(path)?;
         let dir_id = self.resolve_path(dir_path).map_err(map_err)?;
         let id = self.mkdir(name, dir_id).map_err(map_err)?;
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), VfsError> {
@@ -1070,7 +1093,10 @@ impl FileSystem for ManifoldFS {
         if old_dir_id == new_dir_id {
             self.rename(old_name, new_name, old_dir_id).map_err(map_err)
         } else {
-            let inode_id = self.dirs.lookup(old_dir_id, old_name).ok_or(VfsError::NotFound)?;
+            let inode_id = self
+                .dirs
+                .lookup(old_dir_id, old_name)
+                .ok_or(VfsError::NotFound)?;
             if self.dirs.lookup(new_dir_id, new_name).is_some() {
                 return Err(VfsError::AlreadyExists);
             }
@@ -1089,7 +1115,10 @@ impl FileSystem for ManifoldFS {
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
-        let inode = self.inodes.get(handle.inode).ok_or(VfsError::NotADirectory)?;
+        let inode = self
+            .inodes
+            .get(handle.inode)
+            .ok_or(VfsError::NotADirectory)?;
         if !matches!(inode.kind, InodeKind::Directory) {
             return Err(VfsError::NotADirectory);
         }
@@ -1185,8 +1214,14 @@ impl FileSystem for ManifoldFS {
         self.link_child(dir_id, id);
         self.cluster_sizes[cell] += 1;
         self.update_entropy();
-        self.log_event("T1/TSS", format!("mknod '{}' major={} minor={}", name, major, minor));
-        Ok(VfsHandle { fs_idx: 0, inode: id })
+        self.log_event(
+            "T1/TSS",
+            format!("mknod '{}' major={} minor={}", name, major, minor),
+        );
+        Ok(VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        })
     }
 
     fn sync(&mut self) -> Result<(), VfsError> {
@@ -1218,6 +1253,19 @@ fn payload_similarity_full(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
         sum += pa[0] * pb[0] + pa[1] * pb[1] + pa[2] * pb[2];
     }
     sum / min_pts as f64
+}
+
+fn theorem_status_text(idx: usize) -> &'static str {
+    let ok = crate::THEOREM_STATES[idx].load(core::sync::atomic::Ordering::Relaxed);
+    if ok {
+        if idx < 5 {
+            "ACTIVE"
+        } else {
+            "VERIFIED"
+        }
+    } else {
+        "FAILED"
+    }
 }
 
 fn now_ms() -> u64 {
@@ -1290,8 +1338,8 @@ impl core::fmt::Display for FsError {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::{test_assert, test_assert_eq};
     use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
     fn test_store_and_ls() -> TestResult {
         let mut fs = ManifoldFS::new();
@@ -1322,7 +1370,10 @@ pub mod tests {
         fs.store_text("file.txt", "content", docs).unwrap();
 
         let result = fs.teleport("file.txt", docs, vol).unwrap();
-        test_assert!(result.elapsed_ticks <= 5, "teleport took too many ticks (not O(1))");
+        test_assert!(
+            result.elapsed_ticks <= 5,
+            "teleport took too many ticks (not O(1))"
+        );
         test_assert_eq!(fs.exists("file.txt", docs), false);
         test_assert_eq!(fs.exists("file.txt", vol), true);
         TestResult::Pass
@@ -1392,10 +1443,19 @@ pub mod tests {
 
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
-        crate::testing::register_test("filesystem::mkdir_and_resolve_path", test_mkdir_and_resolve_path);
+        crate::testing::register_test(
+            "filesystem::mkdir_and_resolve_path",
+            test_mkdir_and_resolve_path,
+        );
         crate::testing::register_test("filesystem::teleport_is_o1", test_teleport_is_o1);
-        crate::testing::register_test("filesystem::find_returns_results", test_find_returns_results);
-        crate::testing::register_test("filesystem::resolve_path_from_relative", test_resolve_path_from_relative);
+        crate::testing::register_test(
+            "filesystem::find_returns_results",
+            test_find_returns_results,
+        );
+        crate::testing::register_test(
+            "filesystem::resolve_path_from_relative",
+            test_resolve_path_from_relative,
+        );
         crate::testing::register_test("filesystem::delete_and_rename", test_delete_and_rename);
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
@@ -1515,7 +1575,13 @@ mod host_tests {
             } else {
                 r.elapsed_ticks / base.elapsed_ticks.max(1)
             };
-            assert!(ratio <= 2, "teleport not O(1) at N={}: {} vs {}", n, r.elapsed_ticks, base.elapsed_ticks);
+            assert!(
+                ratio <= 2,
+                "teleport not O(1) at N={}: {} vs {}",
+                n,
+                r.elapsed_ticks,
+                base.elapsed_ticks
+            );
         }
     }
 
@@ -1524,7 +1590,12 @@ mod host_tests {
         let mut fs = ManifoldFS::new();
         let root = 0u64;
         for i in 0..500u64 {
-            fs.store_text(&alloc::format!("file{}", i), &alloc::format!("content{}", i), root).unwrap();
+            fs.store_text(
+                &alloc::format!("file{}", i),
+                &alloc::format!("content{}", i),
+                root,
+            )
+            .unwrap();
         }
         let results = fs.find("file0");
         assert!(!results.is_empty());

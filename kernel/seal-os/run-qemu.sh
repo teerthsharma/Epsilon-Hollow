@@ -6,6 +6,7 @@ IMG="target/x86_64-unknown-uefi/release/seal-os.img"
 
 if [ ! -f "$IMG" ]; then
     echo "No disk image found. Building..."
+    cargo +nightly build --release
     (cd ../seal-mkimage && cargo +stable run --release)
 fi
 

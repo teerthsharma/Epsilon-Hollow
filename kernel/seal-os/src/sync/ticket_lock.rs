@@ -45,7 +45,9 @@ pub struct TicketLockGuard<'a> {
 
 impl<'a> Drop for TicketLockGuard<'a> {
     fn drop(&mut self) {
-        unsafe { self.lock.unlock(); }
+        unsafe {
+            self.lock.unlock();
+        }
     }
 }
 

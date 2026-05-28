@@ -15,14 +15,20 @@ pub struct Settings {
 
 impl Settings {
     pub const fn new() -> Self {
-        Self { store: BTreeMap::new() }
+        Self {
+            store: BTreeMap::new(),
+        }
     }
 
     pub fn init_defaults(&mut self) {
-        self.store.insert(String::from("theme"), String::from("dark"));
-        self.store.insert(String::from("font-size"), String::from("14"));
-        self.store.insert(String::from("wallpaper"), String::from("default"));
-        self.store.insert(String::from("shell-prompt"), String::from("seal"));
+        self.store
+            .insert(String::from("theme"), String::from("dark"));
+        self.store
+            .insert(String::from("font-size"), String::from("14"));
+        self.store
+            .insert(String::from("wallpaper"), String::from("default"));
+        self.store
+            .insert(String::from("shell-prompt"), String::from("seal"));
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {

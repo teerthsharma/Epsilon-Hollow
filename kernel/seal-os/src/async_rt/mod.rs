@@ -4,17 +4,17 @@
 //! Minimal async runtime — waker-based executor.
 //! Supports polling tasks only when woken.
 
-pub mod task;
-pub mod timer;
 pub mod channel;
 pub mod io;
+pub mod task;
+pub mod timer;
 
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
+use alloc::task::Wake;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use alloc::task::Wake;
 use spin::Mutex;
 
 use self::task::{Task, TaskId};
@@ -28,7 +28,10 @@ struct TaskWaker {
 
 impl TaskWaker {
     fn new(task_id: TaskId, ready_queue: ReadyQueue) -> Self {
-        Self { task_id, ready_queue }
+        Self {
+            task_id,
+            ready_queue,
+        }
     }
 }
 
@@ -72,7 +75,8 @@ impl Executor {
         let task_id = self.ready_queue.lock().pop_front();
         if let Some(task_id) = task_id {
             if let Some(task) = self.tasks.get_mut(&task_id) {
-                let waker = Waker::from(Arc::new(TaskWaker::new(task_id, self.ready_queue.clone())));
+                let waker =
+                    Waker::from(Arc::new(TaskWaker::new(task_id, self.ready_queue.clone())));
                 let mut cx = Context::from_waker(&waker);
 
                 match Pin::new(&mut task.future).poll(&mut cx) {
@@ -101,5 +105,4 @@ impl Executor {
     }
 }
 
-pub fn init() {
-}
+pub fn init() {}

@@ -15,7 +15,10 @@ struct Timeval {
 pub fn dispatch_gettimeofday(buf_ptr: u64) -> SyscallResult {
     let sec = crate::drivers::rtc::seconds_since_epoch();
     let usec = (crate::drivers::interrupts::ticks() % 1000) * 1000;
-    let tv = Timeval { tv_sec: sec, tv_usec: usec };
+    let tv = Timeval {
+        tv_sec: sec,
+        tv_usec: usec,
+    };
 
     let user_ptr = buf_ptr as *mut u8;
     let bytes = unsafe {
