@@ -112,3 +112,4 @@ bench.txt
 *.bbl
 *.blg
 *.synctex.gz
+kernel/aether/aether-verified/lean/.lake/

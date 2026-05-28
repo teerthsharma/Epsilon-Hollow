@@ -5,6 +5,35 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useApeiron } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
 
+type Message = {
+    id: string;
+    sender: 'user' | 'apeiron';
+    text: string;
+    isPlasticityEvent: boolean;
+};
+
+// ⚡ Bolt: Extracted ChatMessage component and wrapped it in React.memo to prevent O(N^2)
+// re-rendering bottleneck when streaming chunks update the state array, making rendering significantly faster.
+const ChatMessage = React.memo(({ msg }: { msg: Message }) => (
+    <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+        <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+            ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+            : msg.sender === 'user'
+                ? 'border-gray-700 bg-gray-800'
+                : 'border-blue-900/30 bg-blue-900/10'
+            }`}>
+            {msg.isPlasticityEvent && (
+                <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                    <Zap size={12} fill="currentColor" />
+                    <span>Weights Updated</span>
+                </div>
+            )}
+            <p className="whitespace-pre-wrap">{msg.text}</p>
+        </div>
+    </div>
+));
+ChatMessage.displayName = 'ChatMessage';
+
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts } = useApeiron();
     const [input, setInput] = useState('');
@@ -81,22 +110,7 @@ export default function ChatInterface() {
                     aria-label="Chat history"
                 >
                     {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
-                        </div>
+                        <ChatMessage key={msg.id} msg={msg} />
                     ))}
                     <div ref={scrollRef} />
                 </div>
