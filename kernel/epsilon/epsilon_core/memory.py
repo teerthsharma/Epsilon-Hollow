@@ -24,13 +24,38 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-try:
-    from kernel.epsilon.epsilon_core.topological_state_sync import SphericalGridHash
-except ModuleNotFoundError:
-    try:
-        from epsilon_core.topological_state_sync import SphericalGridHash
-    except ModuleNotFoundError:
-        from topological_state_sync import SphericalGridHash  # type: ignore
+class SphericalGridHash:
+    """Legacy host shim; Rust aether-core owns the production TSS index."""
+
+    def __init__(self):
+        self._points: List[Tuple[float, float]] = []
+
+    @classmethod
+    def auto_sized(cls, _count: int) -> "SphericalGridHash":
+        return cls()
+
+    def build(self, points: List[Tuple[float, float]]) -> None:
+        self._points = list(points)
+
+    def locate(self, theta: float, phi: float) -> int:
+        if not self._points:
+            return -1
+        best_idx = 0
+        best_dist = float("inf")
+        for idx, (c_theta, c_phi) in enumerate(self._points):
+            cos_d = (
+                math.sin(c_theta) * math.sin(theta)
+                + math.cos(c_theta) * math.cos(theta) * math.cos(c_phi - phi)
+            )
+            cos_d = max(-1.0, min(1.0, cos_d))
+            dist = math.acos(cos_d)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        return best_idx
+
+    def stats(self) -> Dict[str, int]:
+        return {"points": len(self._points), "backend": 0}
 
 
 # ─────────────────────────────────────────────────────────────────────

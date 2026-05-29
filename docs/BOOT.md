@@ -74,8 +74,12 @@ Automated smoke test:
 
 ```powershell
 cd kernel\seal-os
-powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240
+powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240 -VBoxCommandTimeoutSeconds 30
 ```
+
+The smoke helper uses an isolated VirtualBox home and a unique temporary VM name.
+If `VBoxManage createvm` times out before the VM starts, repair the host
+VirtualBox service first; that is not a Seal OS boot failure.
 
 Manual conversion:
 
@@ -106,3 +110,15 @@ During `init_theorems()`, Seal OS runs cheap no_std checks from `aether_verified
 | T6-T10 | Verified at boot | HFT/ML world-model bounds exposed through theorem status |
 
 If any theorem check fails, the kernel panics instead of booting a false theorem state.
+
+## Aether Runtime Gate
+
+After the desktop app host is created, Seal OS runs a tiny Aether boot probe
+through the kernel runtime. A passing VM proof must contain:
+
+```text
+[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
+```
+
+`seal-mkimage --check-aether-runtime <serial.log>` is the audit gate for this
+marker.

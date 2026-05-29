@@ -2899,6 +2899,54 @@ impl Interpreter {
                 ("Seal", "pci_read_bar5") => {
                     self.execute_native_fn(NativeFunction::PciReadBar5, args)
                 }
+                ("graphics", "clear") => self.execute_native_fn(NativeFunction::GfxClear, args),
+                ("graphics", "fill_rect") => {
+                    self.execute_native_fn(NativeFunction::GfxFillRect, args)
+                }
+                ("graphics", "fill_rounded_rect") => {
+                    self.execute_native_fn(NativeFunction::GfxFillRoundedRect, args)
+                }
+                ("graphics", "draw_text") => {
+                    self.execute_native_fn(NativeFunction::GfxDrawText, args)
+                }
+                ("graphics", "draw_line") => {
+                    self.execute_native_fn(NativeFunction::GfxDrawLine, args)
+                }
+                ("graphics", "draw_circle") => {
+                    self.execute_native_fn(NativeFunction::GfxDrawCircle, args)
+                }
+                ("graphics", "set_pixel") => {
+                    self.execute_native_fn(NativeFunction::GfxSetPixel, args)
+                }
+                ("graphics", "gradient_v") => {
+                    self.execute_native_fn(NativeFunction::GfxGradientV, args)
+                }
+                ("graphics", "glow_rect") => {
+                    self.execute_native_fn(NativeFunction::GfxGlowRect, args)
+                }
+                ("window", "create") => self.execute_native_fn(NativeFunction::WinCreate, args),
+                ("window", "close") => self.execute_native_fn(NativeFunction::WinClose, args),
+                ("window", "set_title") => {
+                    self.execute_native_fn(NativeFunction::WinSetTitle, args)
+                }
+                ("window", "focus") => self.execute_native_fn(NativeFunction::WinFocus, args),
+                ("window", "width") => self.execute_native_fn(NativeFunction::WinWidth, args),
+                ("window", "height") => self.execute_native_fn(NativeFunction::WinHeight, args),
+                ("window", "set_dirty") => {
+                    self.execute_native_fn(NativeFunction::WinSetDirty, args)
+                }
+                ("input", "mouse_x") => self.execute_native_fn(NativeFunction::InMouseX, args),
+                ("input", "mouse_y") => self.execute_native_fn(NativeFunction::InMouseY, args),
+                ("input", "mouse_pressed") => {
+                    self.execute_native_fn(NativeFunction::InMousePressed, args)
+                }
+                ("input", "key_pressed") => {
+                    self.execute_native_fn(NativeFunction::InKeyPressed, args)
+                }
+                ("ui", "button") => self.execute_native_fn(NativeFunction::UiButton, args),
+                ("ui", "panel") => self.execute_native_fn(NativeFunction::UiPanel, args),
+                ("ui", "label") => self.execute_native_fn(NativeFunction::UiLabel, args),
+                ("ui", "slider") => self.execute_native_fn(NativeFunction::UiSlider, args),
                 _ => Err(format!("Method '{}' not found in module '{}'", method, mod_name).into()),
             },
             _ => Ok(Value::Unit),
@@ -3652,5 +3700,31 @@ mod tests {
         } else {
             panic!("Expected list from Betti");
         }
+    }
+
+    #[test]
+    fn test_windowed_module_methods_execute_without_callbacks() {
+        let source = r#"
+import graphics~
+import window~
+import ui~
+import input~
+
+let win = window.create("Aether App", 640, 480)~
+window.focus(win)~
+
+fn render() {
+    graphics.clear(0x001E1E2E)~
+    ui.panel(10, 10, 200, 120, "Controls", 0x002A2A48)~
+    ui.label(20, 40, "Aether-Lang App Host", 0x00FFFFFF)~
+    input.mouse_x()~
+    window.set_dirty(win)~
+}
+"#;
+        let mut parser = crate::parser::Parser::new(source);
+        let program = parser.parse().unwrap();
+        let mut interp = Interpreter::new();
+        interp.execute(&program).unwrap();
+        interp.call_function("render").unwrap();
     }
 }

@@ -338,7 +338,7 @@ impl Shell {
             "Seal OS v{} (x86_64)\n\
              The Geometrical Operating System\n\
              All data = geometry on S²\n\
-             File moves = O(1) topological surgery\n\
+             File moves = metadata topology; persistent bytes still scale\n\
              ═══════════════════════════════════\n",
             crate::VERSION
         );
@@ -572,7 +572,7 @@ impl Shell {
         let _ = fs.duplicate("race_file", src_dir, dst_dir);
         let dup_ticks = crate::drivers::interrupts::ticks().saturating_sub(dup_start);
 
-        // Benchmark teleport (O(1) move)
+        // Benchmark metadata teleport separately from byte persistence.
         let tel_start = crate::drivers::interrupts::ticks();
         let _ = fs.teleport("race_file", dst_dir, src_dir);
         let tel_ticks = crate::drivers::interrupts::ticks().saturating_sub(tel_start);
@@ -587,7 +587,7 @@ impl Shell {
             "Race: {} payload\n\
              ════════════════════════\n\
              Traditional duplicate:  {} ticks\n\
-             Manifold teleport:      {} ticks (O(1) topological surgery)\n\
+             Manifold metadata move: {} ticks (topological surgery)\n\
              Speedup:                {:.1}x\n\
              \n\
              The teleport rewrites one BTreeMap entry.\n\

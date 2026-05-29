@@ -10,7 +10,11 @@
 
 ## Overview
 
-Current testing is unit tests inside kernel modules plus a simple `test_main()` runner. This design expands to: host-side fast tests, QEMU integration tests, property-based tests, benchmark regression tests, and full CI pipeline stages.
+Current testing is a mix of root-workspace host tests, `aether-core` `no_std`
+checks, a UEFI kernel release build, a UEFI `test-mode` build, and QEMU proof
+gates. This design expands that into host-side fast tests, QEMU integration
+tests, property-based tests, benchmark regression tests, and full CI pipeline
+stages.
 
 ---
 
@@ -20,8 +24,8 @@ Current testing is unit tests inside kernel modules plus a simple `test_main()` 
 
 | Category | Runtime | Purpose | Location |
 |---|---|---|---|
-| Unit tests | Host (`cargo test`) | Single function, no hardware | `src/*/tests/` |
-| Host integration | Host (`cargo test`) | Multiple modules, mock hardware | `tests/host_*.rs` |
+| Unit tests | Root workspace host tests or UEFI `test-mode` build | Single function, no hardware | host-testable crates and `src/*/tests/` |
+| Host integration | Root workspace host tests | Multiple modules, mock hardware | `tests/host_*.rs` |
 | QEMU smoke | QEMU (~5s) | Boot + basic sanity | `.github/workflows/ci.yml` |
 | QEMU integration | QEMU (~30s) | Full feature tests in VM | `tests/qemu_*.rs` |
 | Property tests | Host (proptest) | Randomized invariant checking | `tests/prop_*.rs` |
@@ -46,8 +50,8 @@ mod tests {
 }
 ```
 
-- [x] Standard `cargo test` works for all host-testable modules
-- [x] `#[test]` attribute recognized in kernel code (custom macro for no_std)
+- [ ] Raw `cargo test --lib` for `kernel/seal-os` needs a dedicated host target harness; current crate config is UEFI plus `build-std`
+- [x] UEFI `test-mode` build compiles the in-kernel test runner
 - [x] Mock `alloc`/`free` for tests that need heap
 - [x] Mock block device for filesystem tests
 - [x] Mock timer for scheduler tests
@@ -234,14 +238,16 @@ jobs:
   
   host_tests:
     steps:
-      - cargo test --lib
-      - cargo test --test integration
-      - cargo test --test property
+      - cargo test --workspace
+      - cargo +stable check --no-default-features --features no_std
+        working-directory: kernel/epsilon/epsilon/crates/aether-core
   
   build:
     steps:
-      - cargo build --release --target x86_64-unknown-uefi
-      - cargo build --release --target x86_64-seal-os
+      - cargo +nightly build --release --features test-mode
+        working-directory: kernel/seal-os
+      - cargo +nightly build --release
+        working-directory: kernel/seal-os
   
   qemu_smoke:
     steps:
@@ -272,14 +278,14 @@ jobs:
 
 - [x] Stage 1: `cargo fmt --check` — no unformatted code
 - [x] Stage 2: `cargo clippy` — zero warnings (with explicit allow list)
-- [x] Stage 3: `cargo test --lib` — host unit tests pass
-- [x] Stage 4: `cargo test --test integration` — host integration tests pass
-- [x] Stage 5: `cargo test --test property` — property tests pass (10k iterations)
-- [x] Stage 6: `cargo build --release` — kernel compiles
-- [x] Stage 7: QEMU smoke test — boots, basic tests pass
-- [x] Stage 8: QEMU full test suite — all integration tests pass
-- [x] Stage 9: Benchmark comparison — no > 10% regression
-- [x] Stage 10: Security audit — `cargo audit` clean
+- [x] Stage 3: `cargo test --workspace` - root host-testable crates pass
+- [x] Stage 4: `aether-core` `no_std` check passes
+- [x] Stage 5: kernel release build compiles
+- [x] Stage 6: kernel UEFI `test-mode` build compiles
+- [x] Stage 7: QEMU smoke proof boots to theorem, desktop, event loop, and screen gate
+- [ ] Stage 8: QEMU full in-kernel test suite needs a runner gate
+- [ ] Stage 9: Benchmark comparison needs recorded Seal OS and Ubuntu numbers
+- [ ] Stage 10: Security audit needs enforced unsafe thresholds
 - [x] Stage 11: Documentation — `cargo doc` generates without errors
 - [x] Parallel execution where possible (host tests + build in parallel)
 - [x] Total CI time target: < 10 minutes

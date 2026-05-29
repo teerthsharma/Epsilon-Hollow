@@ -15,7 +15,7 @@ SealShell is Seal OS's native shell. Commands are plain English — no cryptic f
 | `write <file> <content>` | Create or overwrite a file |
 | `copy <file>` | Copy a file to clipboard |
 | `paste` | Paste copied file into current folder |
-| `move <file> <dest>` | O(1) teleport a file to another folder |
+| `move <file> <dest>` | Teleport file metadata to another folder; current disk persistence still rewrites file bytes |
 | `rename <old> <new>` | Rename a file or folder |
 | `delete <file>` | Remove a file |
 | `search <query>` | Content-addressable search |
@@ -46,4 +46,4 @@ SealShell intentionally uses Seal-native verbs (`look`, `open`, `peek`, `move`, 
 
 ## File Operations
 
-All file operations go through ManifoldFS. Files are 64-point clouds on S^2. Moving a file between folders is an O(1) topological surgery (pointer reassignment), not a byte copy.
+All file operations go through ManifoldFS. Files are 64-point clouds on S^2. Moving a file between folders has a bounded metadata-rewiring core. The current persistent path still rewrites raw bytes, so end-to-end disk movement scales with file size until metadata-only persistence lands.

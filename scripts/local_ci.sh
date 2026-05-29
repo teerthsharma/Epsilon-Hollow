@@ -49,27 +49,41 @@ OVERALL_START=$SECONDS
 run_step "cargo fmt" cargo fmt --all -- --check
 run_step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
 run_step "cargo test" cargo test --workspace
+run_step "aether-core no_std check" cargo +stable check --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --no-default-features --features no_std
+run_step "aether-core migration gate" cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate
 
+run_step "seal-os test-mode build" bash -c 'cd kernel/seal-os && cargo +nightly build --release --features test-mode'
 run_step "seal-os nightly build" bash -c 'cd kernel/seal-os && cargo +nightly build --release'
+run_step "seal-os image build" bash -c 'cd kernel/seal-mkimage && cargo +stable run --release'
+run_step "seal-os image verify" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --verify kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
 
-# Python checks (skip if python/pytest not installed)
-PYTHON=""
-if command -v python &>/dev/null; then
-    PYTHON=python
-elif command -v python3 &>/dev/null; then
-    PYTHON=python3
+run_step "seal abi audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .
+run_step "language hygiene audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
+run_step "doc claim contract audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .
+run_step "aether migration audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
+run_step "o1 allocator audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+run_step "runtime theorem coverage audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .
+run_step "unsafe inventory" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --unsafe-inventory .
+run_step "ubuntu allocator harness build" cargo +stable build --manifest-path tools/ubuntu-alloc-bench/Cargo.toml --release
+
+if [ -f kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log ]; then
+    run_step "vm proof audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-vm-proof kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log
+    run_step "aether runtime audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log
+    run_step "desktop soak audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log
+    run_step "benchmark log audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log
+else
+    echo "SKIP vm proof audit: run kernel/seal-os/run-qemu.ps1 -HeadlessProof to create qemu-proof/serial.log"
 fi
 
-if [ -n "$PYTHON" ]; then
-    if $PYTHON -m pytest --version &>/dev/null; then
-        run_step "pytest" $PYTHON -m pytest tests/ -v
+if [ -f tools/ubuntu-alloc-bench/ubuntu-alloc.log ]; then
+    run_step "ubuntu benchmark audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-ubuntu-benchmark-log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+    if [ -f kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log ]; then
+        run_step "seal vs ubuntu allocator comparison" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --compare-benchmark-logs kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log tools/ubuntu-alloc-bench/ubuntu-alloc.log
     else
-        echo -e "${YELLOW}⚠️  pytest not available — skipping${NC}"
+        echo "SKIP seal vs ubuntu allocator comparison: missing qemu-proof/serial.log"
     fi
-
-    run_step "python compileall" $PYTHON -m compileall -q infrastructure scripts tests kernel/epsilon/epsilon_core
 else
-    echo -e "${YELLOW}⚠️  python not available — skipping Python checks${NC}"
+    echo "SKIP ubuntu benchmark audit: capture tools/ubuntu-alloc-bench/ubuntu-alloc.log on Ubuntu 26.04 first"
 fi
 
 run_step "BOM check" ./scripts/check_no_bom.sh

@@ -419,8 +419,7 @@ fn draw_ellipse_outline(fb: &Framebuffer, cx: u32, cy: u32, rx: u32, ry: u32, co
 
 fn render_equations_text(fb: &Framebuffer) {
     let theme = crate::wm::themes::current_theme();
-    const TEXT_X: u32 = 20;
-    const TEXT_Y: u32 = 20;
+    const TEXT_X: u32 = 24;
     const LINE_HEIGHT: u32 = 18;
     const PAD: u32 = 8;
     const BG_ALPHA: u8 = 180;
@@ -450,9 +449,11 @@ fn render_equations_text(fb: &Framebuffer) {
     let total_h = lines.len() as u32 * LINE_HEIGHT;
 
     let bg_x = TEXT_X.saturating_sub(PAD);
-    let bg_y = TEXT_Y.saturating_sub(PAD);
     let bg_w = max_w + PAD * 2;
     let bg_h = total_h + PAD * 2;
+    let content_bottom = fb.height.saturating_sub(taskbar::taskbar_height());
+    let text_y = content_bottom.saturating_sub(bg_h + 28) + PAD;
+    let bg_y = text_y.saturating_sub(PAD);
 
     // Draw semi-transparent dark background
     for row in bg_y..(bg_y + bg_h).min(fb.height) {
@@ -465,7 +466,7 @@ fn render_equations_text(fb: &Framebuffer) {
 
     // Draw each line of text
     for (i, &(color, text)) in lines.iter().enumerate() {
-        let y = TEXT_Y + i as u32 * LINE_HEIGHT;
+        let y = text_y + i as u32 * LINE_HEIGHT;
         draw_text(fb, TEXT_X, y, text, color);
     }
 }

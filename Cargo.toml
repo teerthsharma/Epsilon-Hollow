@@ -11,6 +11,7 @@ members = [
     "kernel/aether/Aether-Lang/crates/aegis-core",
     "kernel/aether/Aether-Lang/crates/aegis-cli",
     "kernel/aether/Aether-Lang/crates/repl-core",
+    "tools/ubuntu-alloc-bench",
 ]
 exclude = [
     "kernel/aether/Aether-Lang/crates/aether-kernel",

@@ -4,7 +4,8 @@
   All 10 original theorems by Teerth Sharma.
   Provenance: Python reference → Lean 4 formal statement → Rust verified kernel.
 
-  Status: Every theorem has a real proof. No `sorry`, no `admit`, no `axiom`.
+  Status: no `sorry`, no `admit`, no `axiom`. Statement-level placeholders
+  are explicitly marked and tracked as proof-strength gaps.
   The three theorems whose original "as-stated" form required heavy
   measure-theoretic infrastructure (TSS packing, HCS separation, WPHB
   advantage) are stated in the strongest algebraic form provable from the
@@ -70,6 +71,7 @@ theorem tss_separation_guarantee
     (h_ε_pos : 0 < ε_adaptive)
     (h_ε_lt_2 : ε_adaptive < 2)
     (h_distinct : ∀ i j, i ≠ j → centroids i ≠ centroids j) :
+    -- Statement-level placeholder until S^2 great-circle distance is imported.
     True := trivial
 
 -- ═══════════════════════════════════════════════════════════════════
@@ -107,6 +109,7 @@ noncomputable def shannon_entropy {n : ℕ} (p : Fin n → ℝ)
 theorem gmc_entropy_nonincreasing
     (a b N : ℕ)
     (h_a_pos : 0 < a) (h_b_pos : 0 < b) (h_N : a + b ≤ N) :
+    -- Statement-level placeholder until the entropy comparison model is imported.
     True := trivial
 
 theorem gmc_bounded_termination (P₀ : ℕ) (h_P : 1 ≤ P₀) :
@@ -225,6 +228,7 @@ def topological_locality (tiers_per_cluster : List ℕ) : ℕ :=
 theorem phkp_perfect_locality
     (clusters : List ℕ)
     (h_nonempty : clusters ≠ []) :
+    -- Statement-level placeholder until cache-tier locality is modeled in Lean.
     True := trivial
 
 -- ═══════════════════════════════════════════════════════════════════

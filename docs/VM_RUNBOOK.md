@@ -1,15 +1,24 @@
 # Seal OS VM Runbook
 
 This is the clean path from checkout to VM boot proof. It covers QEMU and Oracle
-VM VirtualBox. The proof target is serial output, not vibes.
+VM VirtualBox. The proof target is serial output plus a machine-checked
+`screen.ppm` pixel gate for GUI proof, not vibes.
 
 ## Boot Proof Rule
 
 A VM run passes only when the serial log reaches:
 
 ```text
+[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
+[BOOT] Desktop proof frame blit done
+[GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
+[EVENT] Entering real event loop
 ```
+
+For QEMU GUI proof, `seal-mkimage --check-proof-screen` must also pass against
+the captured `qemu-proof\screen.ppm`. The script also writes `screen.png`; the
+checker accepts that path when the sibling PPM proof capture is present.
 
 A VM run fails on:
 
@@ -35,6 +44,12 @@ Seal OS - UEFI boot complete, boot services exited
 [BOOT] SYSCALL/SYSRET MSRs programmed
 [T4/AGCR] Governor online
 [T1/TSS]  Voronoi index: 8 cells
+[ALLOC] O(1) proof: topo_cells=8, l3_word_probes_per_cell=2, single_word_probes_per_cell=8192, contiguous_candidate_probes=128, contiguous_max_run_pages=64, marking=bounded_by_contiguous_max_run_pages
+[ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
+[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
+[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=<n>
+[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
@@ -47,7 +62,11 @@ Seal OS - UEFI boot complete, boot services exited
 [THEOREM] T10/WPHB VERIFIED
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [BOOT] All layers initialized.
+[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
+[BOOT] Desktop proof frame blit done
+[GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
+[EVENT] Entering real event loop
 ```
 
 ## Windows Build
@@ -55,8 +74,11 @@ Seal OS - UEFI boot complete, boot services exited
 From repo root:
 
 ```powershell
-cargo +nightly build --manifest-path kernel\seal-os\Cargo.toml --release
-cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release
+cd kernel\seal-os
+cargo +nightly build --release
+cd ..\seal-mkimage
+cargo +stable run --release
+cd ..\..
 ```
 
 Expected artifacts:
@@ -66,6 +88,10 @@ kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.efi
 kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.img
 kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os-efi.img
 ```
+
+`seal-os.img` is a raw GPT disk. Partition 1 is the FAT EFI System Partition.
+Partition 2 is `ManifoldFS` and starts at LBA 133120; it contains the `MNFD`
+superblock used by the persistent root filesystem.
 
 Verify the raw image:
 
@@ -78,6 +104,55 @@ Expected:
 ```text
 [mkimage] VERIFY OK
 ```
+
+Verify the full VM serial proof after QEMU:
+
+```powershell
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-vm-proof kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-runtime kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-desktop-soak kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
+```
+
+Verify the full Oracle/VirtualBox serial proof after `smoke-vbox.ps1`:
+
+```powershell
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-vbox-proof kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-runtime kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-desktop-soak kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+```
+
+The benchmark log gate requires all four current markers:
+`[BENCH] toporam-alloc`, `[BENCH] alloc-frame`,
+`[BENCH] manifold-teleport`, and `[BENCH] scheduler-select-next`.
+The Aether runtime gate requires the parser/interpreter/app-host boot marker.
+
+Expected:
+
+```text
+[seal-audit] VM PROOF OK
+```
+
+## Ubuntu Allocation Comparison Gate
+
+Seal OS allocator logs prove the bare-metal hot path shape. A claim that Seal
+beats Ubuntu additionally requires a same-machine Ubuntu 26.04 LTS artifact:
+
+```bash
+# Run these inside native Ubuntu 26.04 VM/bare metal or a self-hosted Ubuntu 26.04 runner.
+# WSL output is rejected by the audit gate.
+grep -E '^(ID|VERSION_ID)=' /etc/os-release
+uname -r
+cargo +stable run --manifest-path tools/ubuntu-alloc-bench/Cargo.toml --release -- 64 > tools/ubuntu-alloc-bench/ubuntu-alloc.log
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-ubuntu-benchmark-log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --compare-benchmark-logs kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+```
+
+`--check-ubuntu-benchmark-log` rejects artifacts that do not report
+`os=ubuntu version_id=26.04 kernel=<native-kernel>` and rejects kernels
+containing `microsoft` or `wsl`. That keeps Windows, WSL, older Ubuntu, or
+non-Ubuntu smoke output from becoming fake current-Ubuntu evidence.
 
 ## QEMU
 
@@ -98,6 +173,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\run-qemu.ps1
 QEMU needs OVMF/EDK2 firmware. The helper scripts search common OVMF paths and
 boot the raw GPT disk image.
 
+Current QEMU storage proof must include:
+
+```text
+[AHCI] Device model: QEMU HARDDISK
+[AHCI] Registered as block device 0x800
+[disk::ahci] First disk readable (sector 0 OK)
+[VFS] ManifoldFS mounted from disk
+```
+
+The Rust gate `--check-vm-proof` requires those QEMU storage lines, the T1-T10
+theorem gate, allocator benchmark marker, ManifoldFS teleport benchmark marker, desktop proof-frame blit, desktop soak marker, desktop-ready
+sentinel, event-loop entry, and absence of fatal boot markers. For
+Oracle/VirtualBox, `--check-vbox-proof`
+applies the same proof contract but requires `VBOX HARDDISK` instead of
+`QEMU HARDDISK`. Both gates reject ramfs fallback and missing-AHCI sentinels.
+
 ## Oracle VM VirtualBox: Automated Smoke
 
 From `kernel\seal-os`:
@@ -106,22 +197,39 @@ From `kernel\seal-os`:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240
 ```
 
+Use `-SkipBuild` only after `seal-os.vdi` was regenerated from the current
+`seal-os.img`. A stale VDI can boot an old kernel and fail the current allocator
+proof gate.
+
 The script:
 
 - builds `seal-os.vdi` if needed
 - copies it to `target\x86_64-unknown-uefi\release\vbox-smoke\seal-os-smoke.vdi`
-- creates a temporary VM named `SealOS-Codex-Smoke`
+- uses an isolated `VBOX_USER_HOME` by default so stale user VM registry state
+  does not poison the smoke run
+- creates a uniquely named temporary VM such as `SealOS-Codex-Smoke-20260529-091745`
 - enables EFI
 - attaches the copied disk through SATA/AHCI
 - writes COM1 serial output to `vbox-smoke\serial.log`
-- captures `vbox-smoke\screenshot.png`
+- captures `vbox-smoke\screenshot.png` as a smoke artifact
 - removes the temporary VM on exit
+- applies `-VBoxCommandTimeoutSeconds` to each `VBoxManage` command so a broken
+  host VirtualBox service produces a clear failure instead of an endless hang
 
 PASS requires:
 
 ```text
-Smoke verdict: PASS - success sentinel matched: \[BOOT\] Seal OS desktop ready\.
+Smoke verdict: PASS - all success sentinels matched
 ```
+
+The required success sentinels are the allocator O(1) proof marker, every
+`[THEOREM] T1` through `T10` verified line, `VBOX HARDDISK`, block device
+`0x800`, readable sector 0, persistent ManifoldFS, the desktop proof-frame blit,
+desktop ready, and event-loop entry. The script runs
+`seal-mkimage --check-vbox-proof` before returning success.
+
+VirtualBox smoke currently captures PNG only. It is visual evidence, not the same
+machine-checked PPM gate used by QEMU.
 
 ## Oracle VM VirtualBox: Manual GUI Run
 
@@ -169,6 +277,10 @@ VBoxManage modifyvm SealOS --uart1 0x3F8 4 --uartmode1 file C:\tmp\seal-os-seria
 - If VBoxManage reports a COM registry error, close VirtualBox GUI and retry the
   smoke script. If it repeats, rebooting the host VirtualBox service may be
   required.
+- If `VBoxManage showvminfo` or `VBoxManage createvm` times out before the VM is
+  created, the OS has not failed yet. The host VirtualBox service/COM layer is
+  stuck. Check `Get-Service VBoxSDS`, stop stale `VBoxSVC`, start `VBoxSDS`, or
+  reboot the host service before retrying.
 - Always use a copied VDI for smoke tests. Do not boot the source build artifact
   directly when the script can copy it.
 
@@ -178,10 +290,12 @@ VBoxManage modifyvm SealOS --uart1 0x3F8 4 --uartmode1 file C:\tmp\seal-os-seria
 | --- | --- | --- |
 | No serial log | UART not configured | Use `smoke-vbox.ps1` or add `--uart1 0x3F8 4 --uartmode1 file <log>` |
 | UEFI shell opens | EFI path missing | Rebuild image and verify `EFI/BOOT/BOOTX64.EFI` with `seal-mkimage --verify` |
+| `VBoxManage createvm` times out | Host VirtualBox service or COM registry stuck | restart `VBoxSDS`/`VBoxSVC`; retry with isolated default `VBOX_USER_HOME` |
 | Panic before theorem gate | memory/UEFI/relocation bug | inspect first `[FAULT]` or panic line |
 | Theorem failure | theorem gate input drift | inspect `[THEOREM] ... FAILED` line and Rust verifier |
 | Timeout after desktop render | GUI path too slow or stuck | inspect last serial lines around `[Desktop]` |
 | Guru meditation | VirtualBox CPU fault | inspect `serial.log`, VM log, and last boot milestone |
+| `No persistent disk found` | AHCI or `MNFD` partition mount failed | check `[AHCI]`, `[disk::ahci]`, and `[VFS]` lines; rebuild image with `seal-mkimage` |
 
 ## What Counts As Evidence
 
@@ -198,4 +312,3 @@ Weak evidence:
 - manual screenshot without image hash
 - "it booted once" without sentinels
 - QEMU proof used to claim VirtualBox proof
-

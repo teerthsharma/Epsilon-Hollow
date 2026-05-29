@@ -29,4 +29,4 @@ echo '/theorems' | docker run --rm -i epsilon-hollow:0.5
 echo ""
 
 echo "=== Demo Complete ==="
-echo "All data = geometry on S². File moves = O(1) topological surgery."
+echo "OS state = topology on S^2. File moves = O(1) topological surgery."

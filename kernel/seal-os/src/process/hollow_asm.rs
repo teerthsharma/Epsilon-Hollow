@@ -17,7 +17,7 @@ use core::arch::global_asm;
 global_asm!(
     r#"
     .global switch_stack_asm
-    .align 16
+    .p2align 4
 switch_stack_asm:
     // rdi = old_sp (pointer to u64), rsi = new_sp
     // Symmetric stack switch: save callee-saved regs on old stack,
@@ -41,7 +41,7 @@ switch_stack_asm:
     ret
 
     .global extract_telemetry_asm
-    .align 16
+    .p2align 4
 extract_telemetry_asm:
     // rdi = io_ring (pointer to IOToken array)
     // esi = depth (number of tokens)
@@ -93,7 +93,7 @@ extract_telemetry_asm:
     ret
 
     .global read_tsc
-    .align 16
+    .p2align 4
 read_tsc:
     rdtsc
     shl rdx, 32

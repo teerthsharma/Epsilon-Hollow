@@ -62,7 +62,8 @@ Current: Only 4 KiB pages. Large allocations (DMA buffers, framebuffer) waste TL
 
 ### 1.4 Page Reclaim / Swap
 
-Current: No swap. OOM kills the allocator.
+Current: Topological swap is implemented for mmap-backed pages through `/swap.topo`.
+Remaining performance work is stress verification under sustained memory pressure.
 
 - [x] Implement page reclamation daemon (kreclaimd)
 - [x] Track page age (LRU: active / inactive lists)

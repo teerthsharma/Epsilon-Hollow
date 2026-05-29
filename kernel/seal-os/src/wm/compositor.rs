@@ -129,6 +129,8 @@ impl Compositor {
     }
 
     pub fn mouse_move(&mut self, dx: i32, dy: i32, screen_w: i32, screen_h: i32) {
+        let screen_w = screen_w.max(1);
+        let screen_h = screen_h.max(1);
         self.mouse.apply_move(dx, dy, screen_w, screen_h);
         self.screen_w = screen_w as u32;
         self.screen_h = screen_h as u32;
@@ -263,18 +265,11 @@ impl Compositor {
             return;
         }
 
-        // T1: O(1) hit-test via screen-space Voronoi
-        // (simplified: linear scan since window count is small)
-        let mut hit = None;
-        for (i, win) in self.windows.iter().enumerate().rev() {
-            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
-                continue;
-            }
-            if win.contains(mx, my) {
-                hit = Some(i);
-                break;
-            }
-        }
+        // T1: screen-space Voronoi chooses the first hit-test cell.
+        let click_cell = self.screen_point_cell(mx, my);
+        let hit = self
+            .window_hit_in_cell(mx, my, click_cell)
+            .or_else(|| self.window_hit_any(mx, my));
 
         if let Some(idx) = hit {
             // Focus this window
@@ -338,7 +333,7 @@ impl Compositor {
                     self.windows[idx].x = 0;
                     self.windows[idx].y = 0;
                     self.windows[idx].width = self.screen_w;
-                    self.windows[idx].height = self.screen_h - taskbar_h;
+                    self.windows[idx].height = self.screen_h.saturating_sub(taskbar_h);
                     let needed = (self.windows[idx].width * self.windows[idx].height) as usize;
                     if self.windows[idx].buffer.len() != needed {
                         let theme = themes::current_theme();
@@ -346,7 +341,7 @@ impl Compositor {
                     }
                     self.windows[idx].render_decorations();
                     self.mark_dirty(prev_x, prev_y, prev_w, prev_h);
-                    self.mark_dirty(0, 0, self.screen_w, self.screen_h - taskbar_h);
+                    self.mark_dirty(0, 0, self.screen_w, self.screen_h.saturating_sub(taskbar_h));
                 }
             } else if in_title {
                 self.dragging = Some((
@@ -479,6 +474,34 @@ impl Compositor {
         self.governor.adapt(1.0, 0.01);
     }
 
+    pub fn compose_full(&mut self, fb: &Framebuffer) {
+        self.frame_count += 1;
+        self.windows.sort_by_key(|w| w.z_order);
+
+        let clip = Rect {
+            x: 0,
+            y: 0,
+            w: fb.width,
+            h: fb.height,
+        };
+
+        for win in &mut self.windows {
+            win.dirty = false;
+        }
+        for win in &self.windows {
+            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
+                continue;
+            }
+            self.blit_window(fb, win, &clip);
+        }
+
+        self.update_cursor_shape();
+        cursor::draw_cursor(fb, self.mouse.x, self.mouse.y);
+        self.draw_taskbar_indicators(fb);
+        self.dirty_rects.clear();
+        self.governor.adapt(1.0, 0.01);
+    }
+
     fn blit_window(&self, fb: &Framebuffer, win: &Window, clip: &Rect) {
         let start_y = win.y.max(clip.y);
         let end_y = (win.y + win.height).min(clip.y + clip.h).min(fb.height);
@@ -501,15 +524,49 @@ impl Compositor {
     }
 
     pub fn window_at(&self, mx: u32, my: u32) -> Option<u32> {
-        for win in self.windows.iter().rev() {
-            if win.state == WindowState::Closed || win.state == WindowState::Minimized {
-                continue;
-            }
-            if win.contains(mx, my) {
-                return Some(win.id);
-            }
-        }
-        None
+        let cell = self.screen_point_cell(mx, my);
+        self.window_hit_in_cell(mx, my, cell)
+            .or_else(|| self.window_hit_any(mx, my))
+            .map(|idx| self.windows[idx].id)
+    }
+
+    fn screen_point_cell(&self, x: u32, y: u32) -> usize {
+        let w = self.screen_w.max(1) as f64;
+        let h = self.screen_h.max(1) as f64;
+        let theta = core::f64::consts::PI * (y as f64 / h);
+        let phi = core::f64::consts::TAU * (x as f64 / w);
+        self.voronoi.locate((theta, phi))
+    }
+
+    fn window_primary_cell(&self, win: &Window) -> usize {
+        self.screen_point_cell(win.x + win.width / 2, win.y + win.height / 2)
+    }
+
+    fn window_hit_in_cell(&self, mx: u32, my: u32, cell: usize) -> Option<usize> {
+        self.windows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, win)| {
+                win.state != WindowState::Closed
+                    && win.state != WindowState::Minimized
+                    && self.window_primary_cell(win) == cell
+                    && win.contains(mx, my)
+            })
+            .map(|(idx, _)| idx)
+    }
+
+    fn window_hit_any(&self, mx: u32, my: u32) -> Option<usize> {
+        self.windows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, win)| {
+                win.state != WindowState::Closed
+                    && win.state != WindowState::Minimized
+                    && win.contains(mx, my)
+            })
+            .map(|(idx, _)| idx)
     }
 
     pub fn focus_window(&mut self, id: u32) {
@@ -596,7 +653,7 @@ impl Compositor {
 
     fn handle_taskbar_click(&mut self, mx: u32, my: u32) {
         let taskbar_h = taskbar::taskbar_height();
-        let y = self.screen_h - taskbar_h;
+        let y = self.screen_h.saturating_sub(taskbar_h);
         if my < y + 4 || my >= y + 24 {
             return;
         }
@@ -649,14 +706,22 @@ impl Compositor {
 
         let mut x = 350u32;
         const BTN_W: u32 = 80;
+        let end_x = fb.width.saturating_sub(132);
         for win in minimized {
+            if x + BTN_W > end_x {
+                break;
+            }
             // Button background
             fb.fill_rect(x, y + 4, BTN_W, 20, theme.bg);
+            fb.fill_rect(x, y + 4, BTN_W, 1, theme.border);
+            fb.fill_rect(x, y + 23, BTN_W, 1, 0);
+            fb.fill_rect(x, y + 4, 1, 20, theme.border);
+            fb.fill_rect(x + BTN_W - 1, y + 4, 1, 20, 0);
             // Accent strip on left
             fb.fill_rect(x, y + 4, 3, 20, theme.accent);
             // Draw truncated title
-            let name = if win.title.len() > 8 {
-                &win.title[..8]
+            let name = if win.title.len() > 7 {
+                &win.title[..7]
             } else {
                 &win.title
             };

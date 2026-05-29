@@ -16,8 +16,15 @@ pub const FXSAVE_SIZE: usize = 512;
 /// extensions. The actual used size is queried via CPUID at boot.
 pub const XSAVE_MAX_SIZE: usize = 4096;
 
-/// Size of each kernel stack (64 KiB).
-pub const KERNEL_STACK_SIZE: usize = 65536;
+/// Size of each kernel stack (256 KiB).
+pub const KERNEL_STACK_SIZE: usize = 256 * 1024;
+
+#[derive(Clone, Copy)]
+#[repr(align(64))]
+struct AlignedXsaveArea([u8; XSAVE_MAX_SIZE + 64]);
+
+static mut EMERGENCY_XSAVE_AREAS: [AlignedXsaveArea; 2] =
+    [AlignedXsaveArea([0; XSAVE_MAX_SIZE + 64]); 2];
 
 static XSAVE_SUPPORTED: AtomicBool = AtomicBool::new(false);
 static XSAVE_AREA_SIZE: AtomicUsize = AtomicUsize::new(FXSAVE_SIZE);
@@ -132,11 +139,33 @@ impl TaskContext {
 /// - Interrupts must be disabled by the caller.
 /// - This function returns into the `new` context's execution flow.
 pub unsafe fn switch_context(old: *mut TaskContext, new: *const TaskContext) {
+    sanitize_xsave_ptr(old, 0);
+    sanitize_xsave_ptr(new as *mut TaskContext, 1);
     if XSAVE_SUPPORTED.load(Ordering::Relaxed) {
         switch_context_xsave(old, new);
     } else {
         switch_context_fxsave(old, new);
     }
+}
+
+unsafe fn sanitize_xsave_ptr(ctx: *mut TaskContext, slot: usize) {
+    if ctx.is_null() {
+        return;
+    }
+
+    let ptr = (*ctx).xsave_ptr as usize;
+    if ptr != 0 && ptr & 63 == 0 {
+        return;
+    }
+
+    let fallback = core::ptr::addr_of_mut!(EMERGENCY_XSAVE_AREAS[slot].0).cast::<u8>();
+    (*ctx).xsave_ptr = fallback;
+    crate::serial_println!(
+        "[scheduler] repaired invalid xsave_ptr: slot={} old_ptr={:#x} new_ptr={:#x}",
+        slot,
+        ptr,
+        fallback as usize
+    );
 }
 
 unsafe fn switch_context_xsave(old: *mut TaskContext, new: *const TaskContext) {
@@ -223,6 +252,8 @@ unsafe fn switch_context_xsave(old: *mut TaskContext, new: *const TaskContext) {
         new = in(reg) new,
         in("eax") mask_low,
         in("edx") mask_high,
+        out("r11") _,
+        out("r15") _,
         clobber_abi("system"),
     );
 }
@@ -307,6 +338,8 @@ unsafe fn switch_context_fxsave(old: *mut TaskContext, new: *const TaskContext) 
         "ret",
         old = in(reg) old,
         new = in(reg) new,
+        out("r11") _,
+        out("r15") _,
         clobber_abi("system"),
     );
 }

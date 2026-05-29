@@ -25,7 +25,7 @@
 /// The Lipschitz constant of `T(·, S_pred)` (with `S_pred` fixed) is
 /// `1 − α`, which is strictly less than 1 for any `α ∈ (0, 1]`.
 /// This is what makes `T` a Banach contraction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpectralContractionOperator<const D: usize> {
     /// Assimilation rate. Must lie in `[0, 1]`.
     pub alpha: f64,
@@ -76,6 +76,214 @@ impl<const D: usize> SpectralContractionOperator<D> {
             k += 1;
         }
         s
+    }
+}
+
+/// Adaptive telemetry prediction-correction operator from the Python SCM slice.
+///
+/// For fixed prediction `S_pred`, this computes
+/// `T(S) = (1 - alpha_n) * S + alpha_n * S_pred`, where `alpha_n` is derived
+/// from the current governor epsilon.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TelemetryOperator<const D: usize> {
+    /// Minimum adaptive gain.
+    pub alpha_min: f64,
+    /// Maximum adaptive gain.
+    pub alpha_max: f64,
+    /// Minimum epsilon used by the controlling governor.
+    pub epsilon_min: f64,
+    /// Maximum epsilon used to normalize adaptive gain.
+    pub epsilon_max: f64,
+}
+
+impl<const D: usize> TelemetryOperator<D> {
+    /// Construct a telemetry operator with explicit gain and epsilon bounds.
+    #[inline]
+    pub fn new(alpha_min: f64, alpha_max: f64, epsilon_min: f64, epsilon_max: f64) -> Self {
+        Self {
+            alpha_min,
+            alpha_max,
+            epsilon_min,
+            epsilon_max,
+        }
+    }
+
+    /// Compute `alpha_min + (epsilon_t / epsilon_max) * (alpha_max - alpha_min)`.
+    #[inline]
+    pub fn adaptive_gain(&self, epsilon_t: f64) -> f64 {
+        if self.epsilon_max <= 0.0 {
+            return self.alpha_min;
+        }
+        let epsilon_t = epsilon_t.clamp(self.epsilon_min, self.epsilon_max);
+        self.alpha_min + (epsilon_t / self.epsilon_max) * (self.alpha_max - self.alpha_min)
+    }
+
+    /// Apply the adaptive telemetry operator once.
+    #[inline]
+    pub fn apply(&self, state: &[f64; D], pred: &[f64; D], epsilon_t: f64) -> [f64; D] {
+        let alpha = self.adaptive_gain(epsilon_t);
+        let mut out = [0.0; D];
+        let mut i = 0;
+        while i < D {
+            out[i] = (1.0 - alpha) * state[i] + alpha * pred[i];
+            i += 1;
+        }
+        out
+    }
+
+    /// Conservative Lipschitz constant `1 - alpha_min`.
+    #[inline]
+    pub fn lipschitz_constant(&self) -> f64 {
+        1.0 - self.alpha_min
+    }
+
+    /// Iterations needed to halve the error under the conservative rate.
+    #[inline]
+    pub fn convergence_half_life(&self) -> f64 {
+        let lip = self.lipschitz_constant();
+        if lip <= 0.0 || lip >= 1.0 {
+            f64::INFINITY
+        } else {
+            libm::log(2.0) / libm::fabs(libm::log(lip))
+        }
+    }
+}
+
+/// Result of checking whether an SCM operator is a Banach contraction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContractionVerification {
+    /// Lipschitz constant used by the theorem.
+    pub lipschitz_constant: f64,
+    /// Whether the constant is finite and strictly below one.
+    pub contraction_holds: bool,
+}
+
+/// Result of checking convergence against the theorem error bound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConvergenceVerification {
+    /// Initial L2 error between state and prediction.
+    pub initial_error: f64,
+    /// Final L2 error after the requested iterations.
+    pub final_error: f64,
+    /// Theoretical upper bound `(1-alpha)^steps * initial_error`.
+    pub theoretical_error_bound: f64,
+    /// Number of iterations simulated.
+    pub steps: usize,
+    /// Whether the final error is within tolerance and theorem bound.
+    pub converged: bool,
+}
+
+/// Aggregate SCM theorem verification report.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralContractionReport {
+    /// Contraction check output.
+    pub contraction: ContractionVerification,
+    /// Convergence check output.
+    pub convergence: ConvergenceVerification,
+    /// True only when the contraction and convergence checks both pass.
+    pub theorem_holds: bool,
+}
+
+/// Public verifier for the legacy spectral-contraction theorem API.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpectralContractionVerifier<const D: usize> {
+    operator: SpectralContractionOperator<D>,
+}
+
+impl<const D: usize> SpectralContractionVerifier<D> {
+    /// Construct a verifier with the supplied assimilation rate.
+    #[inline]
+    pub fn new(alpha: f64) -> Self {
+        Self {
+            operator: SpectralContractionOperator::new(alpha),
+        }
+    }
+
+    /// Verify that the operator is a strict contraction.
+    #[inline]
+    pub fn verify_contraction(&self) -> ContractionVerification {
+        let lipschitz_constant = self.operator.lipschitz_constant();
+        ContractionVerification {
+            lipschitz_constant,
+            contraction_holds: lipschitz_constant.is_finite()
+                && (0.0..1.0).contains(&lipschitz_constant),
+        }
+    }
+
+    /// Verify convergence from `start` toward `pred` within `steps`.
+    pub fn verify_convergence(
+        &self,
+        start: [f64; D],
+        pred: [f64; D],
+        steps: usize,
+        tolerance: f64,
+    ) -> ConvergenceVerification {
+        let initial_error = l2_diff(&start, &pred);
+        let final_state = self.operator.iterate(start, pred, steps);
+        let final_error = l2_diff(&final_state, &pred);
+        let rate = self.operator.lipschitz_constant().clamp(0.0, 1.0);
+        let theoretical_error_bound = libm::pow(rate, steps as f64) * initial_error;
+        let bound_slack = theoretical_error_bound.max(tolerance) + 1e-9;
+
+        ConvergenceVerification {
+            initial_error,
+            final_error,
+            theoretical_error_bound,
+            steps,
+            converged: final_error <= tolerance || final_error <= bound_slack,
+        }
+    }
+
+    /// Run contraction and convergence checks as one theorem report.
+    pub fn full_verification(
+        &self,
+        start: [f64; D],
+        pred: [f64; D],
+        steps: usize,
+        tolerance: f64,
+    ) -> SpectralContractionReport {
+        let contraction = self.verify_contraction();
+        let convergence = self.verify_convergence(start, pred, steps, tolerance);
+        SpectralContractionReport {
+            contraction,
+            convergence,
+            theorem_holds: contraction.contraction_holds && convergence.converged,
+        }
+    }
+}
+
+#[inline]
+fn l2_diff<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
+    let mut s = 0.0_f64;
+    let mut i = 0;
+    while i < D {
+        let d = a[i] - b[i];
+        s += d * d;
+        i += 1;
+    }
+    libm::sqrt(s)
+}
+
+#[cfg(test)]
+mod telemetry_port_tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_operator_uses_adaptive_gain_and_half_life() {
+        let op = TelemetryOperator::<3>::new(0.01, 0.1, 0.1, 0.9);
+        let alpha = op.adaptive_gain(0.45);
+        assert!((alpha - 0.055).abs() < 1e-12);
+
+        let state = [10.0, -10.0, 2.0];
+        let pred = [0.0, 0.0, 2.0];
+        let out = op.apply(&state, &pred, 0.45);
+        assert!((out[0] - 9.45).abs() < 1e-12);
+        assert!((out[1] + 9.45).abs() < 1e-12);
+        assert_eq!(out[2], 2.0);
+
+        assert!((op.lipschitz_constant() - 0.99).abs() < 1e-12);
+        assert!(op.convergence_half_life() > 68.0);
+        assert!(op.convergence_half_life() < 70.0);
     }
 }
 
@@ -140,17 +348,6 @@ impl<const D: usize, const A: usize> LatentPredictor<D, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn l2_diff<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
-        let mut s = 0.0_f64;
-        let mut i = 0;
-        while i < D {
-            let d = a[i] - b[i];
-            s += d * d;
-            i += 1;
-        }
-        libm::sqrt(s)
-    }
 
     #[test]
     fn apply_is_componentwise_convex_combination() {
@@ -253,5 +450,14 @@ mod tests {
             k,
             budget
         );
+    }
+
+    #[test]
+    fn spectral_contraction_verifier_reports_full_theorem_status() {
+        let verifier = SpectralContractionVerifier::<2>::new(0.25);
+        let report = verifier.full_verification([10.0, -10.0], [0.0, 0.0], 200, 1e-6);
+        assert!(report.contraction.contraction_holds);
+        assert!(report.convergence.final_error < report.convergence.initial_error);
+        assert!(report.theorem_holds);
     }
 }

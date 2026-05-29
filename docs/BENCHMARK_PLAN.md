@@ -20,7 +20,9 @@ Every comparison must record:
 
 ## Initial Ubuntu Baseline
 
-Use Ubuntu 24.04 LTS unless a newer baseline is explicitly selected. Record:
+Use Ubuntu 26.04 LTS as the current baseline. On 2026-05-29 the official
+Ubuntu release list names Ubuntu 26.04 LTS as the latest LTS release; Ubuntu
+24.04 LTS remains a legacy comparison row only. Record:
 
 ```bash
 lsb_release -a
@@ -29,6 +31,29 @@ lscpu
 free -h
 lsblk
 ```
+
+Capture the first allocator baseline with the Rust-only Ubuntu harness on the
+same machine. Use a native Ubuntu 26.04 VM, bare-metal Ubuntu 26.04 install, or
+self-hosted Ubuntu 26.04 CI runner. WSL is rejected for benchmark evidence
+because its kernel and hypervisor path are not the Ubuntu VM/bare-metal baseline:
+
+```bash
+grep -E '^(ID|VERSION_ID)=' /etc/os-release
+uname -r
+command -v cargo && cargo --version
+cargo +stable run --manifest-path tools/ubuntu-alloc-bench/Cargo.toml --release -- 64 > tools/ubuntu-alloc-bench/ubuntu-alloc.log
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-ubuntu-benchmark-log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+```
+
+The audit tool accepts this artifact only when the log says `os=ubuntu`, the
+current-baseline gate says `version_id=26.04`, and `kernel=` does not contain
+`microsoft` or `wsl`. Windows, macOS, WSL, WSL-missing, or unknown-host output is
+useful for smoke testing the tool, but it is not Ubuntu evidence.
+
+CI has a manual `ubuntu-alloc-baseline` lane for this proof. It only runs from
+`workflow_dispatch` on a self-hosted runner labeled `ubuntu-26.04`, boots the
+Seal image on that runner, captures the Ubuntu allocator artifact, compares both
+logs, and uploads the manifest bundle.
 
 ## Guest Configuration
 
@@ -70,6 +95,7 @@ Output:
 Seal OS endpoint:
 
 ```text
+[BOOT] Desktop proof frame blit done
 [BOOT] Seal OS desktop ready.
 ```
 
@@ -82,7 +108,8 @@ display manager or graphical.target ready
 Output:
 
 - milliseconds from VM start to endpoint
-- screenshot if GUI is enabled
+- screenshot proof from `qemu-proof/screen.ppm`
+- `seal-mkimage --check-proof-screen qemu-proof/screen.ppm` output
 - serial or journal evidence
 
 ### 3. Seal ABI Syscall Latency
@@ -115,6 +142,16 @@ Seal OS target:
 - timer tick to runnable task selection
 - scheduler yield return time
 - T4 governor epsilon at selection
+- current boot marker:
+
+```text
+[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=<n> ready_after=<n> cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
+```
+
+The current marker proves the bounded selector shape on the live scheduler
+without switching context. End-to-end wake latency is still pending because it
+must include timer interrupt delivery, runnable transition, and return to the
+selected task.
 
 Ubuntu target:
 
@@ -132,6 +169,15 @@ Seal OS:
 
 - same-filesystem `teleport`
 - move 1 KB, 1 MB, 100 MB, 1 GB logical files where image size allows
+- current boot marker:
+
+```text
+[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=<n>
+```
+
+- this marker proves bounded metadata surgery and same-inode movement, but it
+  explicitly labels current persistence as write-through; metadata-only disk
+  persistence remains a future gate
 
 Ubuntu:
 
@@ -163,7 +209,30 @@ Output:
 - p99 latency
 - controller type
 
-### 7. Network Stack
+### 7. ManifoldVRAM Data Movement
+
+Run only when the VM or bare-metal host exposes a usable GPU path. This row is
+optional for VirtualBox/Oracle smoke runs and required for GPU-native claims.
+
+Seal OS:
+
+- ManifoldFS descriptor teleport with VRAM-hot ManifoldPayload
+- tensor batch load into ManifoldVRAM cache
+- NVMe or NIC peer-DMA path where hardware supports it
+
+Ubuntu:
+
+- comparable GPU upload through the normal userspace stack
+- CPU memory copy plus GPU upload baseline
+
+Output:
+
+- descriptor update latency
+- bytes copied by CPU
+- GPU buffer residency proof
+- p50, p99, p999 transfer latency
+
+### 8. Network Stack
 
 Run only when a real or emulated NIC is active.
 
@@ -186,7 +255,7 @@ Output:
 - packet loss
 - adapter model
 
-### 8. Aether-Lang Startup and Command Latency
+### 9. Aether-Lang Startup and Command Latency
 
 Seal OS:
 
@@ -245,6 +314,48 @@ Output:
 - cache miss proxy
 - allocation layout notes
 
+### 11. Topological Allocator Hot Path
+
+Seal OS:
+
+- single-frame `alloc_frame()` via eight-cell topological free index
+- hint-biased TopoRAM `alloc_frames(1, ZoneHint::Low, Some(seed))` via target
+  Voronoi cell
+- multi-page `alloc_frames_contiguous_in_range()` via 128 bounded candidate probes
+- boot markers:
+
+```text
+[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
+[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
+```
+
+- report allocation cycles, failed-probe count, free-frame conservation, and
+  request size
+
+Ubuntu:
+
+- `mmap`/page fault path for equivalent page counts
+- optional hugepage path as separate row, not mixed with normal allocation
+- first same-machine artifact:
+
+```text
+[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=<native-kernel> iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
+```
+
+- comparison gate:
+
+```bash
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --compare-benchmark-logs kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+```
+
+Output:
+
+- p50/p99 allocation latency by page count
+- maximum probe count observed
+- proof that latency does not scale with installed RAM size
+- notes where chunked/scatter-gather I/O is required beyond the 64-page
+  contiguous-run cap
+
 ## Result Table Format
 
 | Workload | Seal OS result | Ubuntu result | Winner | Evidence |
@@ -252,6 +363,15 @@ Output:
 | Boot to theorem gate | measured value | measured value | Seal/Ubuntu/Tie | log path |
 | Boot to desktop | measured value | measured value | Seal/Ubuntu/Tie | log path |
 | Syscall latency | measured value | measured value | Seal/Ubuntu/Tie | report path |
+
+## Current Benchmark Status
+
+Seal OS now has local VM proof for theorem-gated boot, desktop-ready serial
+markers, allocator O(1) proof markers, a Seal-side single-frame allocation
+benchmark marker, a ManifoldFS same-inode teleport marker, a desktop compositor
+soak marker, first-frame screenshot pixels, and a Rust-only Ubuntu allocator
+baseline harness with a comparison gate.
+Ubuntu comparison numbers are still pending, so no global Ubuntu win is claimed.
 
 ## Claim Policy
 
@@ -274,7 +394,17 @@ The first benchmark milestone is modest and measurable:
 1. Build Seal OS image.
 2. Verify image with `seal-mkimage --verify`.
 3. Boot Seal OS in QEMU or VirtualBox.
-4. Capture serial log to theorem gate and desktop-ready sentinel.
-5. Boot Ubuntu 24.04 with same vCPU/RAM/disk class.
-6. Capture boot-to-target timings.
-7. Publish raw logs and summary table.
+4. Capture serial log to theorem gate, desktop proof frame, desktop-ready
+   sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
+   `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, and
+   `[GFX] desktop-soak` markers.
+5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
+6. Run `seal-mkimage --check-benchmark-log` and
+   `seal-mkimage --check-desktop-soak` against the serial log.
+7. Boot Ubuntu 26.04 LTS with same vCPU/RAM/disk class.
+8. Run `tools/ubuntu-alloc-bench` on Ubuntu and validate it with
+   `seal-mkimage --check-ubuntu-benchmark-log`.
+9. Run `seal-mkimage --compare-benchmark-logs` against the Seal OS serial log
+   and Ubuntu allocator log.
+10. Capture boot-to-target timings and the remaining comparable microbenchmarks.
+11. Publish raw logs and summary table.

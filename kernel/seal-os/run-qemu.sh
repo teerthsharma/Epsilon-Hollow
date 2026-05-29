@@ -28,7 +28,10 @@ done
 if [ -z "$OVMF_CODE" ]; then
     echo "WARNING: OVMF firmware not found. Trying without pflash (may fail for UEFI .efi)."
     qemu-system-x86_64 \
-        -drive file="$IMG",format=raw \
+        -machine q35 \
+        -device ahci,id=seal_sata \
+        -drive if=none,id=seal_disk,file="$IMG",format=raw,media=disk \
+        -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
         -serial stdio \
         -m 4G \
         -vga std \
@@ -38,7 +41,9 @@ else
     qemu-system-x86_64 \
         -machine q35 \
         -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-        -drive file="$IMG",format=raw \
+        -device ahci,id=seal_sata \
+        -drive if=none,id=seal_disk,file="$IMG",format=raw,media=disk \
+        -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
         -serial stdio \
         -m 4G \
         -vga std \

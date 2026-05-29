@@ -22,6 +22,7 @@ const MAGIC: [u8; 4] = *b"MNFD";
 const VERSION: u32 = 1;
 const JOURNAL_BLOCKS: u64 = 1024;
 const NONE_ID: u64 = u64::MAX;
+const AHCI_MANIFOLD_START_LBA: u64 = 2048 + ((64 * 1024 * 1024) / SECTOR_SIZE as u64);
 
 /// Trait abstracting over real AHCI and mock block devices.
 pub trait BlockStoreBackend: Send + Sync {
@@ -34,10 +35,10 @@ pub struct AhciBackend;
 
 impl BlockStoreBackend for AhciBackend {
     fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        read_block(0x800, lba, buf)
+        read_block(0x800, AHCI_MANIFOLD_START_LBA + lba, buf)
     }
     fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-        write_block(0x800, lba, buf)
+        write_block(0x800, AHCI_MANIFOLD_START_LBA + lba, buf)
     }
 }
 
@@ -335,7 +336,7 @@ impl InodeRecord {
 
 // ── BlockStore ──────────────────────────────────────────────────────────────
 
-/// O(1) persistence layer with bitmap allocator and WAL.
+/// Persistence layer with bitmap allocation and WAL; allocation and I/O scale with blocks touched.
 pub struct BlockStore {
     backend: Option<Box<dyn BlockStoreBackend>>,
     superblock: Option<Superblock>,

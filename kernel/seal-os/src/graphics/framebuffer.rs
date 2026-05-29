@@ -157,7 +157,7 @@ impl Framebuffer {
         }
     }
 
-    /// Copy the back buffer to VRAM using `copy_nonoverlapping`.
+    /// Copy the back buffer to VRAM.
     /// Accounts for `pitch` vs `width * bpp/8`.
     pub fn blit(&self) {
         let bb = self.back_buffer.load(Ordering::Relaxed);
@@ -171,7 +171,10 @@ impl Framebuffer {
                 for y in 0..self.height as usize {
                     let src = bb.add(y * row_pixels);
                     let dst = self.buffer.add(y * self.pitch as usize) as *mut u32;
-                    core::ptr::copy_nonoverlapping(src, dst, row_pixels);
+                    for x in 0..row_pixels {
+                        let color = ptr::read_volatile(src.add(x));
+                        ptr::write_volatile(dst.add(x), color);
+                    }
                 }
             }
         } else {

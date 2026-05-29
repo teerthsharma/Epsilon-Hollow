@@ -40,6 +40,10 @@ const PORT_SSTS: u64 = 0x28;
 const PORT_SACT: u64 = 0x34;
 const PORT_SERR: u64 = 0x30;
 const PORT_CI: u64 = 0x38;
+const SSTS_DET_MASK: u32 = 0x0F;
+const SSTS_DET_PRESENT: u32 = 0x03;
+const SSTS_IPM_MASK: u32 = 0x0F00;
+const SSTS_IPM_ACTIVE: u32 = 0x0100;
 
 const CMD_ST: u32 = 1 << 0;
 const CMD_FRE: u32 = 1 << 4;
@@ -588,6 +592,7 @@ pub fn init() -> Option<()> {
         device.device,
         device.function
     );
+    device.enable_bus_mastering();
 
     let bar5 = device.bar_address(5);
     serial_println!("[AHCI] ABAR = {:#x}", bar5);
@@ -612,15 +617,54 @@ pub fn init() -> Option<()> {
         let pi = read_volatile((base + HBA_PI) as *const u32);
         serial_println!("[AHCI] Ports implemented: {:#x}", pi);
 
-        // Find first implemented port with SATA signature
+        // Find first implemented port with an active SATA link. PxSIG is only
+        // trustworthy after PxSSTS says device-present/link-active; QEMU can
+        // return 0xffff_ffff while the link is still settling after HBA reset.
         let mut port_idx = None;
         for i in 0..32 {
             if pi & (1 << i) == 0 {
                 continue;
             }
-            let sig = read_volatile((base + 0x100 + i as u64 * 0x80 + PORT_SIG) as *const u32);
-            serial_println!("[AHCI] Port {} signature: {:#x}", i, sig);
-            if sig == SIG_SATA {
+
+            let port_base = base + 0x100 + i as u64 * 0x80;
+            write_volatile((port_base + PORT_SERR) as *mut u32, 0xFFFF_FFFF);
+
+            let mut ssts = 0;
+            let mut sig = 0;
+            let mut serr = 0;
+            let mut tfd = 0;
+            for _ in 0..1_000_000 {
+                ssts = read_volatile((port_base + PORT_SSTS) as *const u32);
+                sig = read_volatile((port_base + PORT_SIG) as *const u32);
+                serr = read_volatile((port_base + PORT_SERR) as *const u32);
+                tfd = read_volatile((port_base + PORT_TFD) as *const u32);
+                if (ssts & SSTS_DET_MASK) == SSTS_DET_PRESENT
+                    && (ssts & SSTS_IPM_MASK) == SSTS_IPM_ACTIVE
+                {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            serial_println!(
+                "[AHCI] Port {} SSTS={:#x} SERR={:#x} TFD={:#x} SIG={:#x}",
+                i,
+                ssts,
+                serr,
+                tfd,
+                sig
+            );
+
+            let active_link = (ssts & SSTS_DET_MASK) == SSTS_DET_PRESENT
+                && (ssts & SSTS_IPM_MASK) == SSTS_IPM_ACTIVE;
+            let sata_or_qemu_unknown = sig == SIG_SATA || sig == u32::MAX;
+            if active_link && sata_or_qemu_unknown {
+                if sig == u32::MAX {
+                    serial_println!(
+                        "[AHCI] Port {} active with unknown signature; trying ATA IDENTIFY",
+                        i
+                    );
+                }
                 port_idx = Some(i);
                 break;
             }

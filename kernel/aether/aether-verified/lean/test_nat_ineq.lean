@@ -6,4 +6,4 @@ import Mathlib.Data.Nat.Basic
 #check Nat.le_sub_self_of_le
 
 example (n m : Nat) : n - m ≤ n := by
-  sorry
+  exact Nat.sub_le_self n m

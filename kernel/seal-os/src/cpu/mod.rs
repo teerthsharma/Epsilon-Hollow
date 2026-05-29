@@ -20,16 +20,18 @@ use crate::process::task::Task;
 pub mod smp;
 
 pub const MAX_CPUS: usize = 32;
+const PER_CPU_STACK_GUARD_SIZE: usize = 16 * 1024;
 
 /// Per-CPU state. Must be page-aligned so it can be pointed to by GS base.
 #[repr(C, align(4096))]
 pub struct PerCpu {
+    pub kernel_stack_guard: [u8; PER_CPU_STACK_GUARD_SIZE],
+    pub kernel_stack: [u8; KERNEL_STACK_SIZE],
     pub apic_id: u32,
     pub cpu_num: u32,
     pub current_task: *mut Task,
     pub idle_context: TaskContext,
     pub idle_xsave: Vec<u8>,
-    pub kernel_stack: [u8; KERNEL_STACK_SIZE],
     pub double_fault_stack: [u8; 4096],
     pub tss: TaskStateSegment,
     pub scheduler: ManifoldScheduler,
@@ -112,12 +114,13 @@ pub unsafe fn init_bsp() {
     let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
     let ptr = unsafe { (*base.add(cpu_num)).bytes.as_mut_ptr() as *mut PerCpu };
     ptr.write(PerCpu {
+        kernel_stack_guard: [0; PER_CPU_STACK_GUARD_SIZE],
+        kernel_stack: [0; KERNEL_STACK_SIZE],
         apic_id: 0,
         cpu_num: cpu_num as u32,
         current_task: core::ptr::null_mut(),
         idle_context: TaskContext::zero(),
         idle_xsave: Vec::new(),
-        kernel_stack: [0; KERNEL_STACK_SIZE],
         double_fault_stack: [0; 4096],
         tss: TaskStateSegment::new(),
         scheduler: ManifoldScheduler::new(),
@@ -168,12 +171,13 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
         let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
         let ptr = unsafe { (*base.add(cpu_num as usize)).bytes.as_mut_ptr() as *mut PerCpu };
         ptr.write(PerCpu {
+            kernel_stack_guard: [0; PER_CPU_STACK_GUARD_SIZE],
+            kernel_stack: [0; KERNEL_STACK_SIZE],
             apic_id,
             cpu_num,
             current_task: core::ptr::null_mut(),
             idle_context: TaskContext::zero(),
             idle_xsave: Vec::new(),
-            kernel_stack: [0; KERNEL_STACK_SIZE],
             double_fault_stack: [0; 4096],
             tss: TaskStateSegment::new(),
             scheduler: ManifoldScheduler::new(),

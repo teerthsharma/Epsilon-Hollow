@@ -1,14 +1,39 @@
 param(
     [int]$Seconds = 45,
     [switch]$SkipBuild,
-    [string]$SuccessPattern = '\[BOOT\] Seal OS desktop ready\.',
+    [string[]]$SuccessPattern = @(
+        '\[ALLOC\] O\(1\) proof:',
+        '\[THEOREM\] T1/TSS VERIFIED',
+        '\[THEOREM\] T2/SCM VERIFIED',
+        '\[THEOREM\] T3/GMC VERIFIED',
+        '\[THEOREM\] T4/AGCR VERIFIED',
+        '\[THEOREM\] T5/HCS VERIFIED',
+        '\[THEOREM\] T6/RGCS VERIFIED',
+        '\[THEOREM\] T7/PHKP VERIFIED',
+        '\[THEOREM\] T8/TEB VERIFIED',
+        '\[THEOREM\] T9/CMA VERIFIED',
+        '\[THEOREM\] T10/WPHB VERIFIED',
+        '\[AHCI\] Device model: VBOX HARDDISK',
+        '\[AHCI\] Registered as block device 0x800',
+        '\[disk::ahci\] First disk readable \(sector 0 OK\)',
+        '\[VFS\] ManifoldFS mounted from disk',
+        '\[BOOT\] Desktop proof frame blit done',
+        '\[BOOT\] Seal OS desktop ready\.',
+        '\[EVENT\] Entering real event loop'
+    ),
     [string[]]$FailurePattern = @(
         '!!! SEAL OS KERNEL PANIC !!!',
         '\[FAULT\]',
         '\[WATCHDOG\]',
+        '\[VFS\] No persistent disk found',
+        'Falling back to ramfs',
+        '\[AHCI\] No SATA device found',
+        '\[disk::ahci\] No AHCI device present',
         'gurumeditation'
     ),
-    [int]$PollSeconds = 1
+    [int]$PollSeconds = 1,
+    [int]$VBoxCommandTimeoutSeconds = 30,
+    [switch]$UseGlobalVBoxHome
 )
 
 # Build a VDI, boot Seal OS in a temporary VirtualBox VM, and watch serial output.
@@ -20,7 +45,10 @@ $SmokeDir = Join-Path $ReleaseDir "vbox-smoke"
 $SmokeVdi = Join-Path $SmokeDir "seal-os-smoke.vdi"
 $SerialLog = Join-Path $SmokeDir "serial.log"
 $Screenshot = Join-Path $SmokeDir "screenshot.png"
-$VmName = "SealOS-Codex-Smoke"
+$VBoxCommandLogDir = Join-Path $ReleaseDir "vbox-command-logs"
+$RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$VBoxHome = Join-Path $SmokeDir "vbox-home"
+$VmName = "SealOS-Codex-Smoke-$RunStamp"
 
 function Find-VBoxManage {
     $cmd = Get-Command VBoxManage -ErrorAction SilentlyContinue
@@ -48,17 +76,67 @@ function Invoke-VBoxManage {
         [string[]]$Arguments
     )
 
-    $oldErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $output = & $VBoxManage @Arguments 2>&1 | ForEach-Object { $_.ToString() }
-    } finally {
-        $ErrorActionPreference = $oldErrorActionPreference
+    New-Item -ItemType Directory -Force -Path $VBoxCommandLogDir | Out-Null
+    $commandId = [Guid]::NewGuid().ToString("N")
+    $stdoutPath = Join-Path $VBoxCommandLogDir "$commandId.out"
+    $stderrPath = Join-Path $VBoxCommandLogDir "$commandId.err"
+    $argLine = Join-Arguments $Arguments
+
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = $VBoxManage
+    $start.Arguments = $argLine
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $start
+
+    [void]$process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    if (-not $process.WaitForExit($VBoxCommandTimeoutSeconds * 1000)) {
+        try {
+            $process.Kill()
+        } catch {
+            Write-Warning "Failed to kill timed-out VBoxManage process: $($_.Exception.Message)"
+        }
+        throw "VBoxManage $($Arguments -join ' ') timed out after $VBoxCommandTimeoutSeconds seconds"
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw "VBoxManage $($Arguments -join ' ') failed with exit code $LASTEXITCODE`: $($output -join [Environment]::NewLine)"
+
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    Set-Content -LiteralPath $stdoutPath -Value $stdout -NoNewline
+    Set-Content -LiteralPath $stderrPath -Value $stderr -NoNewline
+
+    $output = @()
+    if ($stdout) {
+        $output += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" })
+    }
+    if ($stderr) {
+        $output += ($stderr -split "`r?`n" | Where-Object { $_ -ne "" })
+    }
+
+    if ($process.ExitCode -ne 0) {
+        throw "VBoxManage $($Arguments -join ' ') failed with exit code $($process.ExitCode): $($output -join [Environment]::NewLine)"
     }
     return $output
+}
+
+function Join-Arguments {
+    param([string[]]$Arguments)
+
+    $quoted = foreach ($arg in $Arguments) {
+        if ($null -eq $arg) {
+            '""'
+        } elseif ($arg -match '[\s"]') {
+            '"' + ($arg -replace '"', '\"') + '"'
+        } else {
+            $arg
+        }
+    }
+
+    return ($quoted -join " ")
 }
 
 function Invoke-VBoxManageWarn {
@@ -79,15 +157,24 @@ function Invoke-VBoxManageWarn {
 function Test-VmExists {
     param([string]$Name)
 
-    $existing = & $VBoxManage list vms 2>$null | Select-String "`"$Name`""
-    return [bool]$existing
+    try {
+        Invoke-VBoxManage showvminfo $Name --machinereadable | Out-Null
+        return $true
+    } catch {
+        $message = $_.Exception.Message
+        if ($message -match "Could not find a registered machine named" -or $message -match "Could not find a registered machine") {
+            return $false
+        }
+        Write-Warning "Unable to query VM '$Name': $message"
+        return $false
+    }
 }
 
 function Get-VmState {
     param([string]$Name)
 
     try {
-        $stateLine = & $VBoxManage showvminfo $Name --machinereadable 2>$null | Select-String '^VMState=' | Select-Object -First 1
+        $stateLine = Invoke-VBoxManage showvminfo $Name --machinereadable | Select-String '^VMState=' | Select-Object -First 1
         if ($stateLine) {
             return ($stateLine.ToString() -replace '^VMState="?(.*?)"?$', '$1')
         }
@@ -122,7 +209,11 @@ function Read-SerialLog {
     param([string]$Path)
 
     if (Test-Path -LiteralPath $Path) {
-        return Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+        $content = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $content) {
+            return ""
+        }
+        return [string]$content
     }
 
     return ""
@@ -133,19 +224,31 @@ function Wait-ForSmokeVerdict {
         [string]$VmName,
         [string]$SerialLog,
         [int]$TimeoutSeconds,
-        [string]$SuccessPattern,
+        [string[]]$SuccessPattern,
         [string[]]$FailurePattern,
         [int]$PollSeconds
     )
 
+    if ($SuccessPattern.Count -eq 0) {
+        return @{
+            Verdict = "FAIL"
+            Reason = "no success sentinels configured"
+        }
+    }
+
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $serial = Read-SerialLog $SerialLog
+        $serial = [string](Read-SerialLog $SerialLog)
+        if ($serial.Length -eq 0) {
+            Start-Sleep -Seconds $PollSeconds
+            continue
+        }
 
-        if ($serial -match $SuccessPattern) {
+        $missingSuccess = @($SuccessPattern | Where-Object { $serial -notmatch $_ })
+        if ($missingSuccess.Count -eq 0) {
             return @{
                 Verdict = "PASS"
-                Reason = "success sentinel matched: $SuccessPattern"
+                Reason = "all success sentinels matched"
             }
         }
 
@@ -195,12 +298,15 @@ if (-not $SkipBuild -or -not (Test-Path -LiteralPath $Vdi)) {
     }
 }
 
-Stop-SmokeVm $VmName
-
 if (Test-Path -LiteralPath $SmokeDir) {
     Remove-Item -LiteralPath $SmokeDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $SmokeDir | Out-Null
+if (-not $UseGlobalVBoxHome) {
+    New-Item -ItemType Directory -Force -Path $VBoxHome | Out-Null
+    $env:VBOX_USER_HOME = $VBoxHome
+    Write-Host "Using isolated VBOX_USER_HOME: $VBoxHome"
+}
 Copy-Item -LiteralPath $Vdi -Destination $SmokeVdi -Force
 
 try {
@@ -217,6 +323,35 @@ try {
     Invoke-VBoxManageWarn controlvm $VmName screenshotpng $Screenshot | Out-Null
 } finally {
     Stop-SmokeVm $VmName
+}
+
+$serialText = Read-SerialLog $SerialLog
+if ($result.Verdict -eq "PASS") {
+    $missingAfterRun = @($SuccessPattern | Where-Object { $serialText -notmatch $_ })
+    if ($serialText.Length -eq 0) {
+        $result = @{
+            Verdict = "FAIL"
+            Reason = "serial log is empty after reported PASS"
+        }
+    } elseif ($missingAfterRun.Count -gt 0) {
+        $result = @{
+            Verdict = "FAIL"
+            Reason = "post-run serial proof missing: $($missingAfterRun -join ', ')"
+        }
+    } else {
+        Push-Location (Join-Path $PSScriptRoot "..\seal-mkimage")
+        try {
+            cargo +stable run --release -- --check-vbox-proof $SerialLog
+            if ($LASTEXITCODE -ne 0) {
+                $result = @{
+                    Verdict = "FAIL"
+                    Reason = "seal-mkimage --check-vbox-proof failed"
+                }
+            }
+        } finally {
+            Pop-Location
+        }
+    }
 }
 
 if (Test-Path -LiteralPath $SerialLog) {

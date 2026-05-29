@@ -20,6 +20,10 @@ use self::resolver::DependencyResolver;
 use spin::Mutex;
 
 pub static GLOBAL_PKG: Mutex<ManifoldPkg> = Mutex::new(ManifoldPkg::new());
+const SEAL_PKG_PUBLIC_KEY: [u8; 32] = [
+    0x3b, 0x6a, 0x27, 0xbc, 0xce, 0xb6, 0xa4, 0x2d, 0x62, 0xa3, 0xa8, 0xd0, 0x2a, 0x6f, 0x0d, 0x73,
+    0x63, 0x2e, 0x3e, 0x77, 0xe3, 0xe9, 0xdf, 0x15, 0xe2, 0xda, 0x4c, 0x64, 0x3a, 0x53, 0x97, 0x43,
+];
 
 pub struct ManifoldPkg {
     registry: PackageRegistry,
@@ -37,7 +41,7 @@ impl ManifoldPkg {
     }
 
     pub fn init_defaults(&mut self) {
-        self.registry_url = String::from("http://repo.seal-os.local/packages/");
+        self.registry_url = String::from("https://repo.seal-os.local/packages/");
     }
 
     pub fn set_registry_url(&mut self, url: &str) {
@@ -107,7 +111,7 @@ impl ManifoldPkg {
                 response.status
             ));
         }
-        self.install_bytes(&response.body, None)
+        self.install_bytes(&response.body, Some(&SEAL_PKG_PUBLIC_KEY))
     }
 
     pub fn remove(&mut self, name: &str) -> Result<String, String> {

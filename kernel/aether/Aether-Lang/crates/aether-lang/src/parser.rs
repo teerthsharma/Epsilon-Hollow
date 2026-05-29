@@ -78,20 +78,14 @@ impl<'a> Parser<'a> {
         let mut program = Program::new();
 
         while !self.is_at_end() {
-            // Skip empty lines (though Lexer currently emits Newline tokens, we might consume them)
-            // Actually, grammar says program -> statement*.
-            // Our parse_statement handles newline/empty specially.
-
-            // Consume leading newlines strictly
-            while self.check(TokenKind::Newline) {
-                self.advance();
-            }
+            self.consume_statement_terminators();
 
             if self.is_at_end() {
                 break;
             }
 
             let stmt = self.parse_statement()?;
+            self.consume_statement_terminators();
             // We only push non-empty statements
             if !matches!(stmt.node, StmtKind::Empty) {
                 program.push(stmt);
@@ -164,7 +158,12 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Let => self.parse_let_decl()?,
 
-            TokenKind::Newline | TokenKind::Eof => StmtKind::Empty,
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Tilde | TokenKind::Eof => {
+                if !matches!(token.kind, TokenKind::Eof) {
+                    self.advance();
+                }
+                StmtKind::Empty
+            }
             _ => {
                 return Err(ParseError::new(
                     &format!("unexpected token: {:?}", token.kind),
@@ -474,12 +473,12 @@ impl<'a> Parser<'a> {
 
     fn parse_fn_decl(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(TokenKind::Fn)?;
-        let name = self.expect_ident()?;
+        let name = self.expect_flexible_ident()?;
         self.expect(TokenKind::LParen)?;
 
         let mut params = Vec::new();
         while !self.check(TokenKind::RParen) && !self.is_at_end() {
-            params.push(self.expect_ident()?);
+            params.push(self.expect_flexible_ident()?);
             if self.check(TokenKind::Comma) {
                 self.advance();
             }
@@ -977,13 +976,12 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::LBrace)?;
         let mut statements = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
-            while self.check(TokenKind::Newline) {
-                self.advance();
-            }
+            self.consume_statement_terminators();
             if self.check(TokenKind::RBrace) {
                 break;
             }
             let stmt = self.parse_statement()?;
+            self.consume_statement_terminators();
             if !matches!(stmt.node, StmtKind::Empty) {
                 statements.push(stmt);
             }
@@ -1025,6 +1023,19 @@ impl<'a> Parser<'a> {
 
     fn check_ident(&self) -> bool {
         matches!(self.peek().kind, TokenKind::Identifier(_))
+    }
+
+    fn check_statement_terminator(&self) -> bool {
+        matches!(
+            &self.peek().kind,
+            TokenKind::Newline | TokenKind::Semicolon | TokenKind::Tilde
+        )
+    }
+
+    fn consume_statement_terminators(&mut self) {
+        while self.check_statement_terminator() {
+            self.advance();
+        }
     }
 
     fn peek_next_is(&self, kind: TokenKind) -> bool {
@@ -1074,6 +1085,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Spread
                 | TokenKind::Format
                 | TokenKind::Output
+                | TokenKind::Render
                 | TokenKind::Escalate
                 | TokenKind::Convergence
         )
@@ -1094,6 +1106,7 @@ impl<'a> Parser<'a> {
             TokenKind::Spread => Ok(String::from("spread")),
             TokenKind::Format => Ok(String::from("format")),
             TokenKind::Output => Ok(String::from("output")),
+            TokenKind::Render => Ok(String::from("render")),
             TokenKind::Escalate => Ok(String::from("escalate")),
             TokenKind::Convergence => Ok(String::from("convergence")),
             _ => Err(ParseError::new(
@@ -1102,5 +1115,51 @@ impl<'a> Parser<'a> {
                 token.column,
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_tilde_statement_terminators() {
+        let mut parser = Parser::new("import graphics~\nlet x = 1~\n");
+        let program = parser.parse().expect("tilde-terminated program parses");
+        assert_eq!(program.statements.len(), 2);
+        assert!(matches!(program.statements[0].node, StmtKind::Import(_)));
+        assert!(matches!(program.statements[1].node, StmtKind::Var(_)));
+    }
+
+    #[test]
+    fn parses_windowed_app_host_script_shape() {
+        let source = r#"
+import graphics~
+import window~
+import ui~
+import input~
+
+let win = window.create("Aether App", 640, 480)~
+window.focus(win)~
+
+fn render() {
+    graphics.clear(0x001E1E2E)~
+    graphics.gradient_v(0, 0, 640, 480, 0x001E1E2E, 0x000A0A18)~
+    ui.panel(10, 10, 200, 120, "Controls", 0x002A2A48)~
+    ui.label(20, 40, "Aether-Lang App Host", 0x00FFFFFF)~
+    if ui.button(20, 70, 80, 28, "Click", 0x002A2A48, 0x00DDDDEE) {
+        graphics.fill_rect(250, 70, 40, 40, 0x00FF4444)~
+    }
+    ui.slider(20, 110, 160, 0, 100, 50, 0x00CBA6F7)~
+    let mx = input.mouse_x()~
+    let my = input.mouse_y()~
+    graphics.draw_circle(mx, my, 4, 0x00FFFFFF)~
+    window.set_dirty(win)~
+}
+"#;
+        let mut parser = Parser::new(source);
+        let program = parser.parse().expect("windowed app host script parses");
+        assert_eq!(program.statements.len(), 7);
+        assert!(matches!(program.statements[6].node, StmtKind::Fn(_)));
     }
 }

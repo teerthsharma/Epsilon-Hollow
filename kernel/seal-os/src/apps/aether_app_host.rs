@@ -9,18 +9,12 @@
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
-
-use crate::wm::window::Window;
 
 const DEFAULT_SCRIPT: &str = r#"
 import graphics~
 import window~
 import ui~
 import input~
-
-let win = window.create("Aether App", 640, 480)~
-window.focus(win)~
 
 fn render() {
     graphics.clear(0x001E1E2E)~
@@ -38,8 +32,6 @@ fn render() {
     let mx = input.mouse_x()~
     let my = input.mouse_y()~
     graphics.draw_circle(mx, my, 4, 0x00FFFFFF)~
-
-    window.set_dirty(win)~
 }
 "#;
 
@@ -53,11 +45,7 @@ pub struct AetherAppHost {
 }
 
 impl AetherAppHost {
-    pub fn new() -> Self {
-        let mut runtime = crate::lang::AetherRuntime::new();
-        if let Err(e) = runtime.execute_source(DEFAULT_SCRIPT) {
-            crate::serial_print!("[AetherAppHost] script init error: {}\n", e);
-        }
+    fn from_runtime(runtime: crate::lang::AetherRuntime) -> Self {
         Self {
             runtime,
             mouse_x: 0,
@@ -65,6 +53,39 @@ impl AetherAppHost {
             mouse_pressed: false,
             mouse_clicked: false,
             last_key: String::new(),
+        }
+    }
+
+    pub fn try_new() -> Result<Self, String> {
+        let mut runtime = crate::lang::AetherRuntime::new();
+        runtime.execute_source(DEFAULT_SCRIPT)?;
+        Ok(Self::from_runtime(runtime))
+    }
+
+    pub fn new() -> Self {
+        match Self::try_new() {
+            Ok(host) => host,
+            Err(e) => {
+                let runtime = crate::lang::AetherRuntime::new();
+                crate::serial_print!("[AetherAppHost] script init error: {}\n", e);
+                Self::from_runtime(runtime)
+            }
+        }
+    }
+
+    pub fn boot_probe() -> Result<String, String> {
+        let mut host = Self::try_new()?;
+        let result = host.load_script(
+            r#"
+let aether_boot_probe = "seal-topology-ok"~
+let result = aether_boot_probe~
+"#,
+        )?;
+        if result == "Str(\"seal-topology-ok\")" {
+            core::mem::forget(host);
+            Ok(result)
+        } else {
+            Err(format!("unexpected boot probe result: {}", result))
         }
     }
 
@@ -96,8 +117,8 @@ impl AetherAppHost {
             .set_mouse_state(x as i32, y as i32, self.mouse_pressed, self.mouse_clicked);
     }
 
-    pub fn render_to_window(&mut self, win: &mut Window) {
-        self.runtime.set_current_window(win.id);
+    pub fn render_window(&mut self, window_id: u32) {
+        self.runtime.set_current_window(window_id);
         let _ = self.runtime.call_render();
         self.mouse_clicked = false;
         self.runtime.set_mouse_state(

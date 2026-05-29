@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Ported from epsilon-os manifold_fs.rs to no_std.
 
-//! ManifoldFS — all data is geometry on S². File moves = O(1) topological surgery.
+//! ManifoldFS — raw bytes plus S² geometry; moves use metadata topology while persistence writes bytes.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -27,6 +27,7 @@ use crate::drivers::interrupts;
 
 const VORONOI_CELLS: usize = 8;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
+const TELEPORT_METADATA_OPS: u64 = 7;
 
 #[derive(Debug, Clone)]
 pub enum InodeKind {
@@ -133,6 +134,10 @@ impl ManifoldFS {
     pub fn new_with_mock_store(num_sectors: usize) -> Self {
         let store = BlockStore::with_mock(num_sectors);
         Self::init_with_store(store)
+    }
+
+    pub fn root_id(&self) -> u64 {
+        self.root_id
     }
 
     /// Attach an ext2 filesystem as the raw-byte persistence backend.
@@ -460,6 +465,8 @@ impl ManifoldFS {
                 .map(|i| i.payload.point_count)
                 .unwrap_or(0),
             governor_epsilon: post_epsilon,
+            metadata_ops: TELEPORT_METADATA_OPS,
+            persistence_bytes: original_size,
         })
     }
 
@@ -1281,6 +1288,8 @@ pub struct TeleportResult {
     pub original_size: u64,
     pub payload_points: usize,
     pub governor_epsilon: f64,
+    pub metadata_ops: u64,
+    pub persistence_bytes: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1362,7 +1371,7 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_teleport_is_o1() -> TestResult {
+    fn test_teleport_metadata_is_bounded() -> TestResult {
         let mut fs = ManifoldFS::new();
         let root = 0u64;
         let docs = fs.mkdir("docs", root).unwrap();
@@ -1372,7 +1381,7 @@ pub mod tests {
         let result = fs.teleport("file.txt", docs, vol).unwrap();
         test_assert!(
             result.elapsed_ticks <= 5,
-            "teleport took too many ticks (not O(1))"
+            "metadata teleport took too many ticks"
         );
         test_assert_eq!(fs.exists("file.txt", docs), false);
         test_assert_eq!(fs.exists("file.txt", vol), true);
@@ -1447,7 +1456,10 @@ pub mod tests {
             "filesystem::mkdir_and_resolve_path",
             test_mkdir_and_resolve_path,
         );
-        crate::testing::register_test("filesystem::teleport_is_o1", test_teleport_is_o1);
+        crate::testing::register_test(
+            "filesystem::teleport_metadata_is_bounded",
+            test_teleport_metadata_is_bounded,
+        );
         crate::testing::register_test(
             "filesystem::find_returns_results",
             test_find_returns_results,
@@ -1494,7 +1506,7 @@ mod host_tests {
         let vol = fs.mkdir("vol_a", root).unwrap();
         fs.store_text("file.txt", "content", docs).unwrap();
         let result = fs.teleport("file.txt", docs, vol).unwrap();
-        assert!(result.elapsed_ticks <= 5, "teleport not O(1)");
+        assert!(result.elapsed_ticks <= 5, "metadata teleport too slow");
         assert!(!fs.exists("file.txt", docs));
         assert!(fs.exists("file.txt", vol));
     }
@@ -1577,7 +1589,7 @@ mod host_tests {
             };
             assert!(
                 ratio <= 2,
-                "teleport not O(1) at N={}: {} vs {}",
+                "metadata teleport not flat at N={}: {} vs {}",
                 n,
                 r.elapsed_ticks,
                 base.elapsed_ticks

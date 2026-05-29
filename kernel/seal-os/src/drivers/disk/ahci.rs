@@ -5,7 +5,7 @@
 
 use crate::drivers::pci::get_device_by_class;
 use crate::serial_println;
-use core::ptr::read_volatile;
+use core::ptr::{read_volatile, write_volatile};
 
 pub struct AhciController {
     pub bar5: usize,
@@ -21,9 +21,18 @@ pub struct AhciPort {
 const SIG_SATA: u32 = 0x0000_0101;
 const SIG_ATAPI: u32 = 0xEB14_0101;
 const SIG_SEMB: u32 = 0x9669_0101;
+const PORT_SIG: usize = 0x24;
+const PORT_SSTS: usize = 0x28;
+const PORT_SERR: usize = 0x30;
+const PORT_TFD: usize = 0x20;
+const SSTS_DET_MASK: u32 = 0x0F;
+const SSTS_DET_PRESENT: u32 = 0x03;
+const SSTS_IPM_MASK: u32 = 0x0F00;
+const SSTS_IPM_ACTIVE: u32 = 0x0100;
 
 pub fn probe() -> Option<AhciController> {
     let device = get_device_by_class(0x01, 0x06, 0x01)?;
+    device.enable_bus_mastering();
     let bar5 = device.bar_address(5) as usize;
 
     serial_println!(
@@ -46,9 +55,40 @@ pub fn probe() -> Option<AhciController> {
             if pi & (1 << i) == 0 {
                 continue;
             }
-            let sig = read_volatile((bar5 + 0x100 + i * 0x80 + 0x24) as *const u32);
-            serial_println!("[disk::ahci] Port {} signature: {:#x}", i, sig);
-            if sig == SIG_SATA || sig == SIG_ATAPI || sig == SIG_SEMB {
+            let port_base = bar5 + 0x100 + i * 0x80;
+            write_volatile((port_base + PORT_SERR) as *mut u32, 0xFFFF_FFFF);
+
+            let mut ssts = 0;
+            let mut sig = 0;
+            let mut serr = 0;
+            let mut tfd = 0;
+            for _ in 0..1_000_000 {
+                ssts = read_volatile((port_base + PORT_SSTS) as *const u32);
+                sig = read_volatile((port_base + PORT_SIG) as *const u32);
+                serr = read_volatile((port_base + PORT_SERR) as *const u32);
+                tfd = read_volatile((port_base + PORT_TFD) as *const u32);
+                if (ssts & SSTS_DET_MASK) == SSTS_DET_PRESENT
+                    && (ssts & SSTS_IPM_MASK) == SSTS_IPM_ACTIVE
+                {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            serial_println!(
+                "[disk::ahci] Port {} SSTS={:#x} SERR={:#x} TFD={:#x} SIG={:#x}",
+                i,
+                ssts,
+                serr,
+                tfd,
+                sig
+            );
+
+            let active_link = (ssts & SSTS_DET_MASK) == SSTS_DET_PRESENT
+                && (ssts & SSTS_IPM_MASK) == SSTS_IPM_ACTIVE;
+            let known_or_qemu_unknown =
+                sig == SIG_SATA || sig == SIG_ATAPI || sig == SIG_SEMB || sig == u32::MAX;
+            if active_link && known_or_qemu_unknown {
                 ports[i] = Some(AhciPort {
                     index: i,
                     signature: sig,
@@ -57,6 +97,7 @@ pub fn probe() -> Option<AhciController> {
                     SIG_SATA => "SATA",
                     SIG_ATAPI => "ATAPI",
                     SIG_SEMB => "SEMB",
+                    u32::MAX => "unknown-active",
                     _ => "unknown",
                 };
                 serial_println!("[disk::ahci] Port {} device present ({})", i, sig_name);

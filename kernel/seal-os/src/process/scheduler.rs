@@ -24,7 +24,13 @@ use crate::serial_println;
 use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::PhysAddr;
 
-const VORONOI_CELLS: usize = 8;
+pub const SCHEDULER_SELECT_CELL_PROBE_BOUND: usize = 8;
+pub const SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND: usize = 256;
+pub const SCHEDULER_SELECT_VORONOI_LOCATE_PROBES: usize = SCHEDULER_SELECT_CELL_PROBE_BOUND;
+pub const SCHEDULER_SELECT_MAX_CELL_BITMAP_TESTS: usize = SCHEDULER_SELECT_CELL_PROBE_BOUND + 1;
+pub const SCHEDULER_SELECT_MAX_PRIORITY_BUCKET_SCAN: usize = SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND;
+
+const VORONOI_CELLS: usize = SCHEDULER_SELECT_CELL_PROBE_BOUND;
 
 // ---------------------------------------------------------------------------
 // ThreadPool — T1/T2 driven worker group
@@ -232,6 +238,17 @@ pub struct ManifoldScheduler {
     next_job_id: u64,
 }
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug)]
+pub struct SchedulerSelectProbe {
+    pub ready_tasks_before: usize,
+    pub ready_cells_before: usize,
+    pub selected: bool,
+    pub selected_priority: u8,
+    pub selected_cell: usize,
+    pub ready_tasks_after: usize,
+}
+
 impl ManifoldScheduler {
     pub fn new() -> Self {
         let centroids = [
@@ -331,6 +348,7 @@ impl ManifoldScheduler {
     ) -> Result<u64, super::elf::ElfError> {
         let aslr_base = crate::security::aslr::randomize_mmap_base();
         let loaded = super::elf::load(elf_data, aslr_base, file_mode, file_uid, file_gid)?;
+        super::elf::load_dynamic_dependencies(&loaded.dynamic, loaded.page_table)?;
 
         let id = self.next_id;
         self.next_id += 1;
@@ -531,7 +549,6 @@ impl ManifoldScheduler {
             self.governor.adapt(deviation, 0.01);
 
             let next_ctx = &next_task.context as *const TaskContext;
-
             // Update TSS RSP0 if switching to a userspace task
             if next_task.is_userspace {
                 let stack_top = next_task.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
@@ -634,6 +651,43 @@ impl ManifoldScheduler {
         }
 
         None
+    }
+
+    fn queued_ready_tasks(&self) -> usize {
+        self.cell_queues.iter().map(|queue| queue.ready_count).sum()
+    }
+
+    /// Benchmark-only probe for the bounded O(1) selector without switching
+    /// CPU context. It exercises the same `select_next_task` path used by
+    /// `schedule()`, then requeues the task so live scheduler state is stable.
+    pub fn benchmark_select_probe(&mut self) -> SchedulerSelectProbe {
+        let ready_tasks_before = self.queued_ready_tasks();
+        let ready_cells_before = self.cell_bitmap.count_ones() as usize;
+        let mut selected_priority = 0;
+        let mut selected_cell = 0;
+        let selected = if let Some(idx) = self.select_next_task() {
+            if let Some(task) = self.slab.get(idx) {
+                selected_priority = task.priority;
+                selected_cell = task.voronoi_cell;
+                self.cell_queues[selected_cell].push(idx, selected_priority);
+                self.cell_bitmap |= 1 << selected_cell;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let ready_tasks_after = self.queued_ready_tasks();
+
+        SchedulerSelectProbe {
+            ready_tasks_before,
+            ready_cells_before,
+            selected,
+            selected_priority,
+            selected_cell,
+            ready_tasks_after,
+        }
     }
 
     fn adaptive_timeslice(&self) -> u64 {
@@ -866,7 +920,12 @@ impl ManifoldScheduler {
                 pending_signals: 0,
                 signal_mask: parent.signal_mask,
                 signal_handlers: parent.signal_handlers,
+                signal_flags: parent.signal_flags,
                 signal_saved_context: None,
+                signal_alt_stack_sp: parent.signal_alt_stack_sp,
+                signal_alt_stack_size: parent.signal_alt_stack_size,
+                signal_alt_stack_flags: parent.signal_alt_stack_flags,
+                restart_syscall: None,
                 parent_id: Some(parent.id),
                 children: Vec::new(),
                 is_thread: false,
@@ -997,7 +1056,12 @@ impl ManifoldScheduler {
                 pending_signals: 0,
                 signal_mask: parent.signal_mask,
                 signal_handlers: parent.signal_handlers,
+                signal_flags: parent.signal_flags,
                 signal_saved_context: None,
+                signal_alt_stack_sp: parent.signal_alt_stack_sp,
+                signal_alt_stack_size: parent.signal_alt_stack_size,
+                signal_alt_stack_flags: parent.signal_alt_stack_flags,
+                restart_syscall: None,
                 parent_id: Some(parent_id),
                 children: Vec::new(),
                 is_thread: share_vm,
@@ -1585,6 +1649,15 @@ pub fn cpu_task_count(cpu_num: u32) -> usize {
     }
 }
 
+/// Run one live scheduler select probe on the current CPU.
+pub fn benchmark_select_next_probe() -> SchedulerSelectProbe {
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        cpu.scheduler.benchmark_select_probe()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test-only helpers
 // ---------------------------------------------------------------------------
@@ -1701,5 +1774,24 @@ mod host_tests {
         sched.spawn("t", 5, || {});
         sched.schedule();
         let _ = sched.governor_epsilon();
+    }
+
+    #[test]
+    fn select_probe_pops_one_ready_task_with_static_bounds() {
+        let mut sched = ManifoldScheduler::new();
+        for i in 0..SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND {
+            sched.spawn("bench", i as u8, || {});
+        }
+
+        let probe = sched.benchmark_select_probe();
+
+        assert!(probe.selected);
+        assert_eq!(
+            probe.ready_tasks_before,
+            SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND
+        );
+        assert_eq!(probe.ready_tasks_after, probe.ready_tasks_before);
+        assert!(probe.ready_cells_before <= SCHEDULER_SELECT_CELL_PROBE_BOUND);
+        assert!(probe.selected_cell < SCHEDULER_SELECT_CELL_PROBE_BOUND);
     }
 }
