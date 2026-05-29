@@ -17,7 +17,7 @@ use x86_64::{PhysAddr, VirtAddr};
 global_asm!(
     r#"
     .global setup_recursive_mapping
-    .align 16
+    .p2align 4
 setup_recursive_mapping:
     // rdi = pml4_phys
     mov rax, rdi
@@ -26,7 +26,7 @@ setup_recursive_mapping:
     ret
 
     .global walk_page_table
-    .align 16
+    .p2align 4
 walk_page_table:
     // rdi = pml4_phys, rsi = vaddr
     // returns physical address in rax, 0 if unmapped
@@ -102,7 +102,7 @@ walk_page_table:
     ret
 
     .global switch_cr3_pcid
-    .align 16
+    .p2align 4
 switch_cr3_pcid:
     // rdi = pml4_phys, rsi = pcid (12-bit)
     mov rax, rsi
@@ -112,7 +112,7 @@ switch_cr3_pcid:
     ret
 
     .global invpcid_all
-    .align 16
+    .p2align 4
 invpcid_all:
     // rdi = pcid
     sub rsp, 16
@@ -125,7 +125,7 @@ invpcid_all:
     ret
 
     .global kpti_swap_cr3
-    .align 16
+    .p2align 4
 kpti_swap_cr3:
     // rdi = new_cr3
     mov rax, rdi

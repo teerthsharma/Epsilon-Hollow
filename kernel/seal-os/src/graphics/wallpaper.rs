@@ -37,7 +37,10 @@ pub fn render(console: &mut Console) {
 
     console.write_colored("        All data = geometry on S^2", DIM);
     console.write_str("\n");
-    console.write_colored("        File moves = O(1) topological surgery", DIM);
+    console.write_colored(
+        "        File moves = metadata topology; byte persistence scales",
+        DIM,
+    );
     console.write_str("\n\n");
 
     console.write_colored(

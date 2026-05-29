@@ -1,8 +1,8 @@
 # Seal OS v0.4.5
 
-**The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves are O(1) topological surgery.
+**The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves have an O(1) metadata-surgery core. Persistent ManifoldFS writes still account for raw bytes until metadata-only persistence lands.
 
-Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are driven by T1-T5, every boot passes the T1-T10 theorem gate through the `aether_verified` no_std crate, and Aether-Lang is the native OS language layer above the Rust kernel.
+Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are source-gated against T1-T5, captured VM proofs pass the T1-T10 theorem gate through the `aether_verified` no_std crate, and Aether-Lang is the native OS language layer above the Rust kernel.
 
 ## Quick Start
 
@@ -78,11 +78,18 @@ powershell -File .\run-qemu.ps1
 
 ## Architecture
 
+Allocator note for 0.4.5: the current kernel uses slab/page allocation backed by
+the bounded topological physical allocator. Single-frame allocation is O(1) over
+installed RAM size, and contiguous DMA allocation is capped at 64 pages per
+request; larger transfers must use chunked/scatter-gather I/O. The boot proof
+also emits `[BENCH] toporam-alloc` to prove hint-biased TopoRAM target-cell
+allocation has no target-cell or zone fallback in the measured hot path.
+
 ```
 Layer 10  │ Terminal, Seal IDE, File Manager, Theorem Viewer
 Layer 9   │ Desktop: wallpaper (Schwarzschild + Faraday), taskbar
 Layer 8   │ Window Manager: compositor, decorations, cursor
-Layer 7   │ SealShell: look, move (O(1) teleport), search, seal, race
+Layer 7   │ SealShell: look, move (metadata teleport), search, seal, race
 Layer 6   │ Seal ABI + Epsilon extensions (manifold_query, teleport)
 Layer 5   │ ManifoldScheduler: T1 Voronoi task groups, T4 adaptive timeslice
 Layer 4   │ ManifoldFS: raw bytes + S^2 ManifoldPayload embeddings
@@ -99,7 +106,7 @@ Layer 0   │ Boot: UEFI PE/COFF, GOP framebuffer, GPT/FAT ESP image
 |-----------|:---:|:---:|:---:|:---:|:---:|
 | Memory | frame locality | — | — | heap growth | — |
 | Scheduler | task groups | predict next | — | timeslice adapt | — |
-| Filesystem | file lookup O(1) | file prefetch | dir reorganize | cache pressure | path resolution |
+| Filesystem | Voronoi bucket lookup | file prefetch | dir reorganize | cache pressure | path resolution |
 | Window Mgr | hit-test | — | — | FPS adaptation | — |
 
 ### T1: Topological State Space (TSS)
@@ -122,9 +129,9 @@ Directory hierarchy uses hyperbolic geometry metrics. Deep paths have logarithmi
 The filesystem where files keep raw bytes for faithful reads/writes and also carry `ManifoldPayload`s: 64-point clouds on the unit sphere S^2 for topology-aware search, placement, and moves.
 
 ```
-Write: data → trigram hash → JL project → L2 normalize → 64 pts on S² (1,536 bytes)
-Move:  extract payload → topological surgery → O(1) regardless of file size
-Find:  encode query → Voronoi cell → O(n/K) content-addressable search
+Write: data -> trigram hash -> JL project -> L2 normalize -> 64 pts on S^2 (1,536 bytes)
+Move:  metadata topology surgery -> same inode; current persistent path still writes bytes
+Find:  encode query -> Voronoi cell -> O(bucket size) content-addressable search
 ```
 
 ### Shell Commands
@@ -134,7 +141,7 @@ seal:/$ help
 look [path]   — list directory (shows Voronoi cells, payload points)
 create <name> — create directory
 write <name> <content> — create file (encodes to S² geometry)
-move <src> <dst>       — O(1) teleport via topological surgery
+move <src> <dst>       — metadata teleport; disk persistence still accounts for bytes
 search <query> — content-addressable search via T1 Voronoi
 open <path>   — change directory
 seal          — show T1-T10 theorem status
@@ -144,18 +151,18 @@ ps            — list processes
 uname         — system info
 ```
 
-### Teleportation Benchmark
+### Teleportation Benchmark Target
 
 ```
 seal:/$ race 2000000000
 Race: 2GB transfer
 ========================
-Traditional copy: 1000 ms
-Manifold teleport: 50 us (O(1) topological surgery)
-Speedup: 20000x
+Traditional copy: <measured>
+Manifold teleport: <measured> metadata core, write-through bytes reported
+Speedup: pending raw artifact
 
 Payload: 64 pts * 3 coords * 8 bytes = 1,536 bytes
-Regardless of original file size!
+Current boot gate: [BENCH] manifold-teleport ... metadata_ops_max=7 write_through_bytes_per_move=<payload_bytes>
 ```
 
 ## Built-in Applications
@@ -197,7 +204,7 @@ Real-time dashboard:
 | Kernel binary | `target/x86_64-unknown-uefi/release/seal-os.efi` |
 | VM disk image | `target/x86_64-unknown-uefi/release/seal-os.img` |
 | EFI boot image | `target/x86_64-unknown-uefi/release/seal-os-efi.img` |
-| Heap | 16MB static bump allocator |
+| Heap | Reserved heap with slab classes, page-backed large allocations, and topological frame backing |
 | Display | UEFI GOP framebuffer, 1024x768 target |
 | Font | Embedded 8x16 bitmap (full printable ASCII) |
 | Dependencies | `aether-core`, `aether_verified`, `aether-lang`, `x86_64`, `spin`, `libm`, `uefi` |

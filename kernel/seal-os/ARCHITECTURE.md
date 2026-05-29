@@ -2,6 +2,12 @@
 
 ## Overview
 
+Current 0.4.5 proof scope: topology drives hot paths, single-frame allocation
+uses a bounded topological free index, and contiguous DMA allocation is capped at
+64 pages per request. Larger transfers must use chunked/scatter-gather I/O
+instead of one unbounded contiguous request. The TopoRAM proof marker exercises
+hint-biased target-cell allocation and fails the benchmark gate if it falls back.
+
 Seal OS is a research operating system that proves topology can drive every layer of a real OS kernel. The core thesis: if you embed all state — files, processes, memory regions, screen areas — onto the unit sphere S², then Voronoi partitions give you O(1) lookup, spectral contraction gives you prediction, and geometric governors give you adaptive control.
 
 ## Boot Sequence
@@ -44,7 +50,11 @@ Framebuffer              UEFI GOP address from BootInfo
 Kernel page tables are built from the UEFI memory map and Seal OS allocator state.
 ```
 
-The 16MB heap uses a simple bump allocator. All `alloc` types (Vec, String, BTreeMap) allocate from this pool. No deallocation — acceptable for a demo OS, but a slab allocator is needed for production.
+Current heap state: fixed slab classes serve small allocations, page-backed paths serve large allocations, and the topological physical allocator backs frame ownership. Legacy bump-only notes no longer describe the 0.4.5 runtime.
+
+Current 0.4.5 allocator note: small objects use fixed slab classes, large
+allocations use page-backed paths, and physical frames come from the topological
+allocator.
 
 ## Interrupt Architecture
 
@@ -222,7 +232,7 @@ Procedurally rendered:
 ## Future Work
 
 1. **True userspace**: Per-process page tables, ring 3 execution, SYSCALL/SYSRET
-2. **Slab allocator**: Replace bump allocator with linked-list + slab for deallocation
+2. **Allocator soak**: extend slab/page/topological allocator stress coverage and long-run leak checks
 3. **USB HID**: xHCI host controller driver for USB keyboards/mice/gamepads
 4. **Disk I/O**: ATA/AHCI driver for persistent ManifoldFS storage
 5. **Network**: virtio-net for QEMU, rtl8139 for real hardware

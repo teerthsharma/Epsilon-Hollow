@@ -27,13 +27,26 @@ import numpy as np
 try:
     from kernel.epsilon.epsilon_core.memory import TopologicalManifoldMemory
     from kernel.epsilon.epsilon_core.perception import MultimodalEncoder
-    from kernel.epsilon.epsilon_core.meta_controller import MetaController
 except ModuleNotFoundError:
     from epsilon_core.memory import TopologicalManifoldMemory
     from epsilon_core.perception import MultimodalEncoder
-    from epsilon_core.meta_controller import MetaController
 
 logger = logging.getLogger(__name__)
+
+
+class RustMigratedController:
+    """Legacy host shim; authoritative policy lives in Rust aether-core."""
+
+    def __init__(self, tools: Dict[str, Any], safety: "ConstitutionalSafetyFilter"):
+        self.tools = tools
+        self.safety = safety
+
+    def decide_action(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        latent = state.get("latent")
+        if self.tools and self.safety.check_compliance(latent, {"payload": "execute"}):
+            tool_name = next(iter(self.tools))
+            return {"action": "execute", "tool": tool_name, "payload": {}}
+        return {"action": "reason", "reason": "legacy host controller migrated to Rust aether-core"}
 
 # ─────────────────────────────────────────────────────────────────────
 # Constitutional Safety Filter
@@ -148,7 +161,7 @@ class EpsilonHollowCore:
 
         self.tools = tools or {}
         self.safety = ConstitutionalSafetyFilter()
-        self.controller = MetaController(self.tools, self.safety)
+        self.controller = RustMigratedController(self.tools, self.safety)
 
         # Agent state: always ndarray
         self._latent_state: np.ndarray = np.zeros(self.MANIFOLD_DIM, dtype=np.float64)

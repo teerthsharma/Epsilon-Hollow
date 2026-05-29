@@ -6,3 +6,4 @@
 pub const SYS_KILL: u64 = 25;
 pub const SYS_SIGACTION: u64 = 26;
 pub const SYS_SIGRETURN: u64 = 27;
+pub const SYS_SIGALTSTACK: u64 = 45;

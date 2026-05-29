@@ -43,6 +43,7 @@ pub const SYS_KMSG_READ: u64 = 24;
 pub const SYS_KILL: u64 = 25;
 pub const SYS_SIGACTION: u64 = 26;
 pub const SYS_SIGRETURN: u64 = 27;
+pub const SYS_SIGALTSTACK: u64 = 45;
 pub const SYS_PIPE: u64 = 28;
 pub const SYS_DUP: u64 = 29;
 pub const SYS_DUP2: u64 = 30;
@@ -1030,6 +1031,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             arg0 as u8, arg1, arg2,
         )),
         SYS_SIGRETURN => crate::process::signal::sys_sigreturn_call(),
+        SYS_SIGALTSTACK => SyscallResult::ok(crate::process::signal::sys_sigaltstack(arg0, arg1)),
         SYS_PIPE => crate::syscall::pipe::dispatch_pipe(arg0),
         SYS_DUP => crate::syscall::pipe::dispatch_dup(arg0),
         SYS_DUP2 => crate::syscall::pipe::dispatch_dup2(arg0, arg1),

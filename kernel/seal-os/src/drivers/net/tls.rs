@@ -57,9 +57,9 @@ impl TlsSession {
     }
 
     /// Build TLS 1.3 ClientHello for PSK mode.
-    pub fn build_client_hello(&mut self) -> Vec<u8> {
+    pub fn build_client_hello(&mut self) -> Result<Vec<u8>, String> {
         self.state = TlsState::ClientHello;
-        self.client_random = random_bytes_32();
+        self.client_random = random_bytes_32()?;
 
         // Handshake header placeholder
         let mut hs = Vec::new();
@@ -111,7 +111,7 @@ impl TlsSession {
             (len & 0xFF) as u8,
         ]);
 
-        wrap_record(ContentType::Handshake, &hs)
+        Ok(wrap_record(ContentType::Handshake, &hs))
     }
 
     /// Parse ServerHello and derive traffic keys.
@@ -293,10 +293,13 @@ fn vec_to_array12(v: &[u8]) -> [u8; 12] {
     a
 }
 
-fn random_bytes_32() -> [u8; 32] {
+fn random_bytes_32() -> Result<[u8; 32], String> {
     let mut out = [0u8; 32];
-    let _ = crate::drivers::entropy::getrandom(&mut out);
-    out
+    if crate::drivers::entropy::getrandom(&mut out) {
+        Ok(out)
+    } else {
+        Err(String::from("entropy unavailable"))
+    }
 }
 
 #[cfg(test)]

@@ -29,10 +29,12 @@ extern crate alloc;
 
 pub mod aether;
 pub mod governor;
+pub mod hyperbolic_geometry;
 pub mod manifold;
 /// Memory subsystem primitives (Chebyshev liveness, GC, etc.).
 #[allow(missing_docs)] // Internal compute kernels; field semantics documented at module level.
 pub mod memory;
+pub mod meta_controller;
 /// Internal ML primitives: linear algebra, autograd, classifiers, clustering.
 #[allow(missing_docs)] // Heavy internal compute kernels; not part of stable public API surface.
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags)]
@@ -43,6 +45,8 @@ pub mod ml;
 pub mod os;
 /// Spectral Contraction Mapping (SCM) runnable operator and latent predictor (Theorem 2).
 pub mod scm;
+/// Spectral coherence, entropy, wavelet entropy, and manifold decay helpers.
+pub mod spectral_entropy;
 pub mod state;
 pub mod topology;
 /// Topological State Synchronization (TSS): O(1)-amortized spherical Voronoi index.

@@ -74,45 +74,30 @@ pub fn rdseed_u64() -> Option<u64> {
 
 /// Fill `buf` with random bytes.
 ///
-/// Prefers RDSEED, falls back to RDRAND, and finally to a ticks-based
-/// deterministic LCG when neither instruction is available.
+/// Prefers RDSEED and falls back to RDRAND. Returns `false` if hardware
+/// entropy is unavailable or repeatedly fails.
 pub fn getrandom(buf: &mut [u8]) -> bool {
     let hw = RDRAND_AVAILABLE.load(Ordering::Relaxed) || RDSEED_AVAILABLE.load(Ordering::Relaxed);
 
-    if hw {
-        let mut ok = true;
-        let mut filled = 0usize;
-        while filled + 8 <= buf.len() {
-            if let Some(val) = rdseed_u64().or_else(rdrand_u64) {
-                buf[filled..filled + 8].copy_from_slice(&val.to_ne_bytes());
-                filled += 8;
-            } else {
-                ok = false;
-                break;
-            }
-        }
-        if ok && filled < buf.len() {
-            if let Some(val) = rdseed_u64().or_else(rdrand_u64) {
-                let bytes = val.to_ne_bytes();
-                let remaining = buf.len() - filled;
-                buf[filled..].copy_from_slice(&bytes[..remaining]);
-                filled = buf.len();
-            } else {
-                ok = false;
-            }
-        }
-        if ok && filled == buf.len() {
-            return true;
-        }
+    if !hw {
+        return false;
     }
 
-    // Honest fallback: no hardware RNG available or hardware failed.
-    // Uses a simple LCG seeded from the timer tick counter.
-    let ticks = crate::drivers::interrupts::ticks();
-    let mut seed = ticks.wrapping_mul(0x9e3779b97f4a7c15);
-    for i in 0..buf.len() {
-        seed = seed.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(i as u64);
-        buf[i] = (seed >> (i % 8)) as u8;
+    let mut filled = 0usize;
+    while filled + 8 <= buf.len() {
+        let Some(val) = rdseed_u64().or_else(rdrand_u64) else {
+            return false;
+        };
+        buf[filled..filled + 8].copy_from_slice(&val.to_ne_bytes());
+        filled += 8;
+    }
+    if filled < buf.len() {
+        let Some(val) = rdseed_u64().or_else(rdrand_u64) else {
+            return false;
+        };
+        let bytes = val.to_ne_bytes();
+        let remaining = buf.len() - filled;
+        buf[filled..].copy_from_slice(&bytes[..remaining]);
     }
     true
 }

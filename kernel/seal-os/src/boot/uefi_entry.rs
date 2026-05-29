@@ -19,8 +19,8 @@ use crate::serial_println;
 
 const GOP_MIN_WIDTH: usize = 640;
 const GOP_MIN_HEIGHT: usize = 480;
-const GOP_MAX_BOOT_WIDTH: usize = 1280;
-const GOP_MAX_BOOT_HEIGHT: usize = 1024;
+const GOP_MAX_BOOT_WIDTH: usize = 1024;
+const GOP_MAX_BOOT_HEIGHT: usize = 768;
 
 pub fn run() -> Status {
     // Initialize serial port FIRST — before any fallible UEFI operation.
@@ -289,8 +289,8 @@ mod tests {
 
     #[test]
     fn prefers_largest_mode_inside_boot_cap() {
-        assert!(gop_mode_is_better((1280, 1024), (1024, 768)));
-        assert!(!gop_mode_is_better((1920, 1080), (1280, 1024)));
+        assert!(gop_mode_is_better((1024, 768), (800, 600)));
+        assert!(!gop_mode_is_better((1280, 1024), (1024, 768)));
     }
 
     #[test]

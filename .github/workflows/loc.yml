@@ -1,4 +1,4 @@
-name: Update Rust Line Count
+name: Update Seal OS Language Count
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   count:
-    name: Count Rust LoC
+    name: Count Rust / Assembly / Aether LoC
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,22 +17,32 @@ jobs:
           ref: ${{ github.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Count Rust lines
+      - name: Count Seal OS language lines
         id: loc
         shell: bash
         run: |
-          RUST_LINES=$(find . -name '*.rs' -not -path './target/*' -not -path './.claude/*' | xargs cat | wc -l)
-          RUST_FILES=$(find . -name '*.rs' -not -path './target/*' -not -path './.claude/*' | wc -l)
-          ASM_LINES=$(find . -name '*.S' -o -name '*.s' | xargs cat 2>/dev/null | wc -l)
-          LEAN_LINES=$(find . -name '*.lean' -not -path '*/.lake/*' | xargs cat 2>/dev/null | wc -l)
-          PYTHON_LINES=$(find . -name '*.py' | xargs cat 2>/dev/null | wc -l)
-          TOTAL=$((RUST_LINES + ASM_LINES + LEAN_LINES + PYTHON_LINES))
+          count_lines() {
+            if [ "$#" -eq 0 ]; then
+              echo 0
+            else
+              wc -l -- "$@" | tail -n1 | awk '{print $1}'
+            fi
+          }
+
+          mapfile -t RUST_FILES_LIST < <(git ls-files '*.rs' ':!:target/**' ':!:**/target/**')
+          mapfile -t ASM_FILES_LIST < <(git ls-files '*.S' '*.s' '*.asm' ':!:target/**' ':!:**/target/**')
+          mapfile -t AETHER_FILES_LIST < <(git ls-files '*.aether' '*.ag' '*.aegis' ':!:target/**' ':!:**/target/**')
+
+          RUST_LINES=$(count_lines "${RUST_FILES_LIST[@]}")
+          RUST_FILES=${#RUST_FILES_LIST[@]}
+          ASM_LINES=$(count_lines "${ASM_FILES_LIST[@]}")
+          AETHER_LINES=$(count_lines "${AETHER_FILES_LIST[@]}")
+          TOTAL=$((RUST_LINES + ASM_LINES + AETHER_LINES))
 
           echo "rust_lines=$RUST_LINES" >> "$GITHUB_OUTPUT"
           echo "rust_files=$RUST_FILES" >> "$GITHUB_OUTPUT"
           echo "asm_lines=$ASM_LINES" >> "$GITHUB_OUTPUT"
-          echo "lean_lines=$LEAN_LINES" >> "$GITHUB_OUTPUT"
-          echo "python_lines=$PYTHON_LINES" >> "$GITHUB_OUTPUT"
+          echo "aether_lines=$AETHER_LINES" >> "$GITHUB_OUTPUT"
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
 
           RUST_FMT=$(printf "%'d" "$RUST_LINES")
@@ -40,15 +50,16 @@ jobs:
 
           echo "Rust: $RUST_LINES lines across $RUST_FILES files"
           echo "ASM: $ASM_LINES lines"
-          echo "Lean: $LEAN_LINES lines"
-          echo "Python: $PYTHON_LINES lines"
+          echo "Aether: $AETHER_LINES lines"
           echo "Total: $TOTAL lines"
 
       - name: Update README badge
         shell: bash
         run: |
-          BADGE="**${{ steps.loc.outputs.rust_fmt }} lines of Rust** across ${{ steps.loc.outputs.rust_files }} files · ${{ steps.loc.outputs.asm_lines }} lines of x86 assembly · ${{ steps.loc.outputs.lean_lines }} lines of Lean 4 proofs · ${{ steps.loc.outputs.python_lines }} lines of Python — **${{ steps.loc.outputs.total }} total**"
+          BADGE="**${{ steps.loc.outputs.rust_fmt }} lines of Rust** across ${{ steps.loc.outputs.rust_files }} files | ${{ steps.loc.outputs.asm_lines }} lines of x86 assembly | ${{ steps.loc.outputs.aether_lines }} lines of Aether-Lang DSL | **${{ steps.loc.outputs.total }} total**"
 
+          grep -q '<!-- RUST_LINE_COUNT_START -->' README.md
+          grep -q '<!-- RUST_LINE_COUNT_END -->' README.md
           sed -i '/<!-- RUST_LINE_COUNT_START -->/,/<!-- RUST_LINE_COUNT_END -->/c\<!-- RUST_LINE_COUNT_START -->\n'"$BADGE"'\n<!-- RUST_LINE_COUNT_END -->' README.md
 
       - name: Commit if changed
@@ -58,5 +69,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md
           git diff --cached --quiet && echo "No changes" && exit 0
-          git commit -m "chore: update Rust line count [skip ci]"
+          git commit -m "chore: update Seal OS language count [skip ci]"
           git push

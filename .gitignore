@@ -2,31 +2,41 @@
 # Epsilon-Hollow Unified Ignore File
 # =============================================================================
 
-# --- Python ---
+# --- Legacy Host Script Caches ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
 venv/
 .venv/
 env/
 ENV/
-epsilon-env/
-.pytest_cache/
 .coverage
 .tox/
 htmlcov/
 .mypy_cache/
 
+# --- Local Secrets / Machine State ---
+.env
+.env.*
+!.env.example
+!.env.sample
+*.local
+
 # --- Rust ---
 target/
 **/target/
+target-test-*/
+**/target-test-*/
 # Cargo.lock is committed for reproducible CI builds
 **/*.rs.bk
 *.profraw
 *.profdata
+perf.data
+perf.data.*
 
 # --- Node.js / Frontend ---
 node_modules/
@@ -35,6 +45,8 @@ out/
 .turbo/
 npm-debug.log
 yarn-error.log
+pnpm-debug.log
+.pnpm-store/
 
 # --- ML Models & Data (Large Files) ---
 BitNet/
@@ -52,13 +64,21 @@ models/
 
 # --- Databases ---
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
+*.sqlite*
 *.sqlite3
 clara.db
 vector_store.db
 
 # --- Logs & Runtime ---
 *.log
+*.trace
+*.dump
+*.dmp
+*.core
+core
 logs/
 monitor.log
 debug.log
@@ -68,6 +88,9 @@ memory_journal.jsonl
 state/
 cache/
 .cache/
+results/
+coverage/
+lcov.info
 
 # --- IDE & OS ---
 .vscode/
@@ -75,6 +98,7 @@ cache/
 .DS_Store
 Thumbs.db
 desktop.ini
+WhatsApp Image*
 *.swp
 *.swo
 *~
@@ -86,9 +110,12 @@ build/
 dist/
 temp/
 tmp/
+.tmp/
+.temp/
 *.tmp
 *.temp
 *.bak
+*.wasm
 sdist/
 wheels/
 *.exe
@@ -110,14 +137,28 @@ wheels/
 *.vdi
 *.vmdk
 *.qcow2
+*.vhd
+*.vhdx
+*.raw
 *.efi
 *.fd
 *.ovmf
+*.vbox
+*.vbox-prev
+*.nvram
 *.pdb
 *.map
 *.sym
 *.dSYM/
+**/*.dSYM/
+*.ppm
+*.pcap
+*.pcapng
+OVMF_VARS*.fd
+QEMU_EFI*.fd
 kernel/seal-os/target/**/vbox-smoke/
+kernel/seal-os/target/**/qemu-proof/
+kernel/seal-os/target/**/qemu-proof-runs/
 kernel/seal-os/target/**/serial.log
 kernel/seal-os/target/**/screenshot.png
 kernel/seal-os/*.vdi
@@ -125,12 +166,23 @@ kernel/seal-os/*.img
 kernel/seal-os/*.iso
 kernel/seal-os/*.efi
 
+# --- Lean / Proof Build Artifacts ---
+**/.lake/
+**/lean-toolchain
+*.olean
+*.olean.lock
+*.olean.trace
+
 # --- Agent & Runtime Artifacts ---
 .claude/
 bench.txt
-*.jpeg
-*.jpg
-*.png
+screen.png
+screenshot.png
+ubuntu-alloc.log
+qemu-proof/
+qemu-proof-runs/
+vbox-smoke/
+flamegraph*.svg
 
 # --- LaTeX ---
 *.aux

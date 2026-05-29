@@ -9,6 +9,15 @@ use alloc::vec::Vec;
 use super::context_switch::{init_task_context, xsave_area_size, TaskContext, KERNEL_STACK_SIZE};
 use super::userspace::UserContext;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartSyscall {
+    pub number: u64,
+    pub arg0: u64,
+    pub arg1: u64,
+    pub arg2: u64,
+    pub rip: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TaskState {
     Ready,
@@ -50,7 +59,12 @@ pub struct Task {
     pub pending_signals: u64,
     pub signal_mask: u64,
     pub signal_handlers: [u64; 32],
+    pub signal_flags: [u64; 32],
     pub signal_saved_context: Option<UserContext>,
+    pub signal_alt_stack_sp: u64,
+    pub signal_alt_stack_size: u64,
+    pub signal_alt_stack_flags: u64,
+    pub restart_syscall: Option<RestartSyscall>,
 
     // T5: Topological process tree
     pub parent_id: Option<u64>,
@@ -107,7 +121,12 @@ impl Task {
             pending_signals: 0,
             signal_mask: 0,
             signal_handlers: [0; 32],
+            signal_flags: [0; 32],
             signal_saved_context: None,
+            signal_alt_stack_sp: 0,
+            signal_alt_stack_size: 0,
+            signal_alt_stack_flags: crate::process::signal::SS_DISABLE,
+            restart_syscall: None,
             parent_id: None,
             children: Vec::new(),
             is_thread: false,
@@ -173,7 +192,12 @@ impl Task {
             pending_signals: 0,
             signal_mask: 0,
             signal_handlers: [0; 32],
+            signal_flags: [0; 32],
             signal_saved_context: None,
+            signal_alt_stack_sp: 0,
+            signal_alt_stack_size: 0,
+            signal_alt_stack_flags: crate::process::signal::SS_DISABLE,
+            restart_syscall: None,
             parent_id: None,
             children: Vec::new(),
             is_thread: false,

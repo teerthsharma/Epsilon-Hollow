@@ -78,7 +78,7 @@ impl AetherRuntime {
         let mut parser = aether_lang::Parser::new(source);
         let program = parser
             .parse()
-            .map_err(|e| format!("parse error: {}", e.message))?;
+            .map_err(|e| format!("parse error at {}:{}: {}", e.line, e.column, e.message))?;
         let value = self
             .interpreter
             .execute(&program)

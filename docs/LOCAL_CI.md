@@ -52,11 +52,43 @@ git push --no-verify
 | Format | `cargo fmt --all -- --check` |
 | Lints | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Tests | `cargo test --workspace` |
+| Aether no_std check | `cargo +stable check --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --no-default-features --features no_std` |
+| Aether migration gate | `cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate` |
+| Kernel test-mode build | `cd kernel/seal-os && cargo +nightly build --release --features test-mode` |
 | Kernel build | `cd kernel/seal-os && cargo +nightly build --release` |
-| Python tests | `python -m pytest tests/ -v` *(if pytest installed)* |
-| Python compile | `python -m compileall -q infrastructure scripts tests kernel/epsilon/epsilon_core` *(if python installed)* |
+| Image build | `cd kernel/seal-mkimage && cargo +stable run --release` |
+| Image verify | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --verify kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi` |
+| Seal ABI audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .` |
+| Language hygiene audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .` |
+| Doc claim contract audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .` |
+| Aether migration audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .` |
+| O(1) allocator audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .` |
+| Runtime theorem coverage audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .` |
+| Unsafe inventory | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --unsafe-inventory .` |
+| Ubuntu allocator harness build | `cargo +stable build --manifest-path tools/ubuntu-alloc-bench/Cargo.toml --release` |
+| VM proof audit | If `qemu-proof/serial.log` exists, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-vm-proof kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log` |
+| Aether runtime audit | If `qemu-proof/serial.log` exists, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log` |
+| Desktop soak audit | If `qemu-proof/serial.log` exists, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log` |
+| Benchmark log audit | If `qemu-proof/serial.log` exists, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log` |
+| Ubuntu benchmark audit | If `tools/ubuntu-alloc-bench/ubuntu-alloc.log` exists, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-ubuntu-benchmark-log tools/ubuntu-alloc-bench/ubuntu-alloc.log` |
+| Seal vs Ubuntu allocator comparison | If both logs exist, `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --compare-benchmark-logs kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log tools/ubuntu-alloc-bench/ubuntu-alloc.log` |
 | BOM check | `./scripts/check_no_bom.sh` |
 | Docs | `cargo doc --workspace --no-deps` |
+
+The VM proof audit is mandatory when a captured serial proof exists. It requires
+the theorem gate, QEMU AHCI disk identity, block device `0x800`, readable disk,
+persistent ManifoldFS root, TopoRAM allocation benchmark marker, physical
+allocator benchmark marker, ManifoldFS teleport benchmark marker, scheduler
+select benchmark marker, Aether runtime proof marker, desktop proof frame,
+desktop soak marker, desktop readiness, and event loop entry. The GUI pixel proof is manual/local because it needs a captured
+`kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm` from
+`run-qemu.ps1 -HeadlessProof`. After that capture, run
+`cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm`.
+
+The Ubuntu allocator audit is intentionally optional locally. It becomes a real
+comparison only when `tools/ubuntu-alloc-bench/ubuntu-alloc.log` was captured on
+native Ubuntu 26.04 LTS; the checker rejects non-Ubuntu, stale-Ubuntu, and WSL
+kernel output.
 
 Each step is timed and color-coded:
 - 🟢 **PASS** — green

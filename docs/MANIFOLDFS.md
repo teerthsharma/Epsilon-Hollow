@@ -9,10 +9,10 @@
 ManifoldFS replaces traditional block-based filesystems with a geometry-first approach. All file content is encoded as point clouds on the 2-sphere S^2. File operations become geometric operations:
 
 - **Store** = encode content to manifold points, assign to Voronoi cell
-- **Move (teleport)** = update directory entry pointers (O(1), no data copy)
-- **Search (find)** = encode query, locate Voronoi cell, rank by cosine similarity
+- **Move (teleport)** = update directory/inode metadata in O(1); current persistence still rewrites file bytes
+- **Search (find)** = encode query, locate Voronoi bucket, rank by cosine similarity
 
-The key insight: by projecting file content into a fixed-dimensional geometric space, content-addressable search becomes a nearest-neighbor lookup on S^2, and file moves become pointer updates independent of file size.
+The key insight: by projecting file content into a fixed-dimensional geometric space, content-addressable search can narrow to a Voronoi bucket, and file moves can rewire metadata independently of file size. End-to-end persistent moves still scale with raw bytes until metadata-only persistence lands.
 
 ---
 
@@ -95,13 +95,13 @@ The filesystem uses `BTreeMap<u64, Inode>` for inode storage and `BTreeMap<u64, 
 
 ---
 
-## O(1) Teleport Mechanism
+## Metadata Teleport Mechanism
 
 Source: `manifold_fs.rs` lines 187-255, function `teleport()`
 
 Traditional filesystems (ext4, NTFS) implement file move as copy+delete: the entire file content is read from the source location, written to the destination, then the source is removed. This is O(n) in file size.
 
-ManifoldFS teleport is O(1) regardless of file size:
+ManifoldFS teleport has an O(1) metadata core:
 
 1. **Record start time**: `t0 = interrupts::ticks()` (line 193)
 2. **Lookup inode ID**: `dir_entries[src_dir].get(name)` -- BTreeMap lookup (line 195)
@@ -114,7 +114,7 @@ ManifoldFS teleport is O(1) regardless of file size:
 9. **Log event**: Tagged `"T1/TSS+T4/AGCR"` (line 234)
 10. **Entropy check**: `check_entropy_and_merge()` -- T3/GMC rebalancing (line 242)
 
-No file content is copied. The ManifoldPayload remains in place. Only BTreeMap pointers are updated.
+The current in-memory metadata surgery does not need to change the ManifoldPayload. The persistent path still clones/rewrites raw bytes, so end-to-end teleport is O(file bytes) until metadata-only persistence is implemented.
 
 ---
 
@@ -138,7 +138,7 @@ Search is narrowed to a single Voronoi cell (1/8 of all files by default), then 
 | Operation | Theorem(s) | Function | What It Does |
 |-----------|-----------|----------|-------------|
 | `store()` | T1/TSS, T4/AGCR | `assign_voronoi_cell()`, `governor_tick()` | Places file in nearest Voronoi cell; adapts governor |
-| `teleport()` | T1/TSS, T4/AGCR, T3/GMC | `governor_tick()`, `check_entropy_and_merge()` | O(1) pointer move; governor adapts; entropy rebalancing |
+| `teleport()` | T1/TSS, T4/AGCR, T3/GMC | `governor_tick()`, `check_entropy_and_merge()` | O(1) metadata rewiring; persistent byte rewrite still pending |
 | `find()` | T1/TSS, T2/SCM | `assign_voronoi_cell()`, `update_prefetch_state()` | Cell-scoped search; SCM predicts next access |
 | `mkdir()` | T5/HCS | `update_hyperbolic_ratio()` | Tracks hyperbolic capacity growth with depth |
 | prefetch | T2/SCM | `scm.apply()` | Predicts next file access from access history |
@@ -151,9 +151,9 @@ Search is narrowed to a single Voronoi cell (1/8 of all files by default), then 
 
 | Operation | ext4 / NTFS | ManifoldFS |
 |-----------|-------------|------------|
-| File move (same partition) | Rename: O(1) pointer update | Teleport: O(1) pointer update |
-| File move (cross partition) | Copy + delete: O(n) in file size | Teleport: O(1) pointer update (no partitions) |
-| Search by content | Full scan: O(N * n) | Voronoi cell scan: O(N/K) with geometric ranking |
+| File move (same partition) | Rename: O(1) pointer update | O(1) metadata rewiring; persistent byte rewrite still pending |
+| File move (cross partition) | Copy + delete: O(n) in file size | Metadata teleport core; current persistence still O(file bytes) |
+| Search by content | Full scan: O(N * n) | Voronoi bucket scan plus geometric ranking |
 | Content deduplication | External tools (hash comparison) | Built-in via content_hash (FNV-1a) on ManifoldPayload |
 | Predictive prefetch | OS page cache heuristics | T2/SCM spectral contraction on access state |
 | Adaptive scheduling | None (fixed I/O scheduler) | T4/AGCR governor adapts to workload |

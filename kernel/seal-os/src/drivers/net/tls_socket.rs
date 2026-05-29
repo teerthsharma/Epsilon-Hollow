@@ -42,7 +42,10 @@ impl TlsSocket {
             crate::net::poll();
         }
 
-        let client_hello = self.tls.build_client_hello();
+        let client_hello = self
+            .tls
+            .build_client_hello()
+            .map_err(|_| "TLS entropy unavailable")?;
         self.tcp.send(&client_hello);
 
         let mut buf = [0u8; 4096];

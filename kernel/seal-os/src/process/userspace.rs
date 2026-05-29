@@ -124,7 +124,7 @@ pub struct SyscallFrame {
 
 global_asm!(
     ".global syscall_entry",
-    ".align 16",
+    ".p2align 4",
     "syscall_entry:",
     "push r15",
     "push r14",
@@ -182,7 +182,9 @@ pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
         let arg2 = f.rdx;
 
         let result = crate::syscall::table::dispatch(num, arg0, arg1, arg2);
-        f.rax = result.code as u64;
+        if !crate::process::signal::prepare_syscall_restart(f, num, result.code) {
+            f.rax = result.code as u64;
+        }
 
         crate::security::kpti::switch_to_user_pt();
     }

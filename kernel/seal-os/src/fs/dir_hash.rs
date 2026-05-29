@@ -72,7 +72,8 @@ enum Bucket {
     },
 }
 
-/// O(1) directory entry table. Every op is open-addressing with linear probing.
+/// Directory entry table with average O(1) lookup/insert/remove under its load target.
+/// Growth and directory enumeration are linear in table capacity.
 pub struct DirHash {
     buckets: Vec<Bucket>,
     seed: u64,

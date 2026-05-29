@@ -33,6 +33,8 @@ const HWCR_CPB_DISABLE_BIT: u64 = 1 << 25;
 
 static AMD_DETECTED: AtomicBool = AtomicBool::new(false);
 static CPB_SUPPORTED: AtomicBool = AtomicBool::new(false);
+static CPB_REQUEST_KNOWN: AtomicBool = AtomicBool::new(false);
+static CPB_REQUEST_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
 // CPUID helpers
@@ -260,7 +262,14 @@ impl AmdCpuDriver {
         if !CPB_SUPPORTED.load(Ordering::Relaxed) {
             return;
         }
+        if CPB_REQUEST_KNOWN.load(Ordering::Relaxed)
+            && CPB_REQUEST_ENABLED.load(Ordering::Relaxed) == enable
+        {
+            return;
+        }
         if self.cpb_enabled() == enable {
+            CPB_REQUEST_ENABLED.store(enable, Ordering::Relaxed);
+            CPB_REQUEST_KNOWN.store(true, Ordering::Relaxed);
             return;
         }
         unsafe {
@@ -272,6 +281,8 @@ impl AmdCpuDriver {
             }
             Msr::new(MSR_K7_HWCR).write(hwcr);
         }
+        CPB_REQUEST_ENABLED.store(enable, Ordering::Relaxed);
+        CPB_REQUEST_KNOWN.store(true, Ordering::Relaxed);
         serial_println!("[AMD] CPB {}", if enable { "enabled" } else { "disabled" });
     }
 

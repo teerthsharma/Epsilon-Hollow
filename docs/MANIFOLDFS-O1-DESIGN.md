@@ -7,15 +7,15 @@
 
 ---
 
-## 1. The spec (verbatim from the bible)
+## 1. The Spec Contract
 
-Every claim below is a load-bearing assertion in the project README and must be literally true of the running system. This plan exists to deliver these properties.
+Every claim below is load-bearing. Some entries began as older README targets; the current contract is that the running system must either prove the row at boot/benchmark time or keep it marked as future work. No row may be used as a marketing claim until code, boot log, and benchmark output agree.
 
 | # | README claim | Source |
 |---|---|---|
-| 1 | "every byte on disk is a point cloud on the unit sphere" | `README.md` §intro |
+| 1 | "persistent payload-first extents put ManifoldPayload geometry before raw bytes" | `README.md` storage contract |
 | 2 | "every file move is O(1) topological surgery" | `README.md` §intro |
-| 3 | "All data = geometry on S². File moves = O(1) topological surgery." | `README.md` boot banner |
+| 3 | "OS state = topology on S². File moves = O(1) topological surgery." | `README.md` boot banner |
 | 4 | "Layer 4 │ ManifoldFS: THE filesystem — all data = 64 pts on S²" | `kernel/seal-os/README.md` |
 | 5 | "Filesystem │ file lookup O(1)" — theorem integration table | `kernel/seal-os/README.md` |
 | 6 | "O(1) retrieval via spherical Voronoi tessellation" | `README.md` §Five Theorems |
@@ -29,7 +29,7 @@ Every claim below is a load-bearing assertion in the project README and must be 
 | 14 | "O(1) context transfer between agents via topological surgery on hollow S² manifolds" | `README.md` §Epsilon |
 | 15 | "[ManifoldFS] Teleported 'hello.txt' (19 bytes) in 1 ticks — O(1)" — expected boot log | `README.md` boot banner; `kernel/seal-os/TESTING.md` |
 
-**Success criterion:** every line above is literally true after this work lands. No asterisks. No "amortized except…". No "in-memory only" footnote. The code, the boot log, the benchmark output, and the comparison table all agree with the bible.
+**Success criterion:** every line above is either literally true in the running system or explicitly remains future work. No "perfect" claim is allowed until code, boot log, benchmark output, and comparison table agree.
 
 ## 2. Gap closure required to honor the bible
 

@@ -19,7 +19,7 @@ use core::arch::global_asm;
 global_asm!(
     r#"
     .global simd_landscape_distance
-    .align 16
+    .p2align 4
 simd_landscape_distance:
     // rdi = a (f64*), rsi = b (f64*), rdx = len
     test rdx, rdx
@@ -55,7 +55,7 @@ simd_landscape_distance:
     ret
 
     .global simd_betti_accumulate
-    .align 16
+    .p2align 4
 simd_betti_accumulate:
     // rdi = barcode ([birth: f64, death: f64]*)
     // rsi = pairs
@@ -94,7 +94,7 @@ simd_betti_accumulate:
 global_asm!(
     r#"
     .global simd_landscape_distance_avx512
-    .align 16
+    .p2align 4
 simd_landscape_distance_avx512:
     // rdi = a (f64*), rsi = b (f64*), rdx = len
     test rdx, rdx

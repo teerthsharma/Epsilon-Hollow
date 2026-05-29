@@ -20,6 +20,7 @@ use crate::drivers::interrupts::{scancode_to_char, scancode_to_special, SpecialK
 use crate::fs::manifold_fs::ManifoldFS;
 use crate::wm::compositor::Compositor;
 use crate::wm::event::InputEvent;
+use crate::wm::window::WindowState;
 
 pub struct AppState {
     pub terminal: Terminal,
@@ -79,19 +80,32 @@ impl AppState {
         fs.store_text("notes.txt", "Topological file surgery", docs)
             .ok();
 
+        let terminal = Terminal::new(600, 400);
+        let ide = SealIde::new();
+        let theorem_viewer = TheoremViewer::new();
+        let calculator = Calculator::new();
+        let media_player = MediaPlayer::new();
+        let file_manager = FileManager::new();
+        let snake = SnakeGame::new(400, 380);
+        let breakout = BreakoutGame::new(400, 380);
+        let warp_racer = WarpRacer::new(400, 380);
+        let tensor_viewer = TensorViewer::new();
+        let laamba = LaambaGovernor::new();
+        let aether_app_host = AetherAppHost::new();
+
         Self {
-            terminal: Terminal::new(600, 400),
-            ide: SealIde::new(),
-            theorem_viewer: TheoremViewer::new(),
-            calculator: Calculator::new(),
-            media_player: MediaPlayer::new(),
-            file_manager: FileManager::new(),
-            snake: SnakeGame::new(400, 380),
-            breakout: BreakoutGame::new(400, 380),
-            warp_racer: WarpRacer::new(400, 380),
-            tensor_viewer: TensorViewer::new(),
-            laamba: LaambaGovernor::new(),
-            aether_app_host: AetherAppHost::new(),
+            terminal,
+            ide,
+            theorem_viewer,
+            calculator,
+            media_player,
+            file_manager,
+            snake,
+            breakout,
+            warp_racer,
+            tensor_viewer,
+            laamba,
+            aether_app_host,
             fs,
             term_id: 0,
             ide_id: 0,
@@ -110,7 +124,7 @@ impl AppState {
     }
 
     pub fn create_windows(&mut self, compositor: &mut Compositor) {
-        self.term_id = compositor.create_window("Terminal", 40, 40, 600, 400);
+        self.term_id = compositor.create_window("Terminal", 48, 132, 600, 400);
         self.ide_id = compositor.create_window("Seal IDE", 120, 80, 640, 440);
         self.tv_id = compositor.create_window("Theorems", 500, 60, 460, 560);
         self.calc_id = compositor.create_window("Calculator", 680, 100, 280, 440);
@@ -123,8 +137,36 @@ impl AppState {
         self.laamba_id = compositor.create_window("LAAMBA Governor", 80, 40, 900, 650);
         self.aether_id = compositor.create_window("Aether App", 200, 200, 640, 480);
 
-        // Initial render of all windows
-        self.render_all(compositor);
+        self.minimize_secondary_boot_apps(compositor);
+        if let Some(win) = compositor.window_mut(self.term_id) {
+            self.terminal.render_to_window(win);
+        }
+        self.dirty = [false; 12];
+        self.dirty[0] = true;
+    }
+
+    fn minimize_secondary_boot_apps(&mut self, compositor: &mut Compositor) {
+        let ids = [
+            self.ide_id,
+            self.tv_id,
+            self.calc_id,
+            self.player_id,
+            self.snake_id,
+            self.breakout_id,
+            self.warp_racer_id,
+            self.fm_id,
+            self.tensor_id,
+            self.laamba_id,
+            self.aether_id,
+        ];
+
+        for id in ids {
+            if let Some(win) = compositor.window_mut(id) {
+                win.state = WindowState::Minimized;
+                win.focused = false;
+                win.dirty = false;
+            }
+        }
     }
 
     pub fn handle_event(&mut self, event: InputEvent, compositor: &mut Compositor) {
@@ -291,9 +333,7 @@ impl AppState {
             self.dirty[10] = false;
         }
         if self.dirty[11] {
-            if let Some(win) = compositor.window_mut(self.aether_id) {
-                self.aether_app_host.render_to_window(win);
-            }
+            self.aether_app_host.render_window(self.aether_id);
             self.dirty[11] = false;
         }
     }
@@ -333,9 +373,7 @@ impl AppState {
         if let Some(win) = compositor.window_mut(self.laamba_id) {
             self.laamba.render_to_window(win);
         }
-        if let Some(win) = compositor.window_mut(self.aether_id) {
-            self.aether_app_host.render_to_window(win);
-        }
+        self.aether_app_host.render_window(self.aether_id);
     }
 
     pub fn mark_all_dirty(&mut self) {

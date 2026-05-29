@@ -14,7 +14,7 @@
 
 Seal OS is not Linux, not Unix, not a POSIX ABI, and not a libc target. It is a bare-metal Rust kernel with a native Seal ABI and Aether-Lang as the OS language layer. Familiar syscall names may exist only as Seal-defined semantics. If a doc says POSIX compatibility, Unix contract, libc inheritance, or Linux inheritance, it must be marked historical or removed.
 
-Seal OS can aim to surpass Ubuntu for selected HFT/ML workloads, but the repo must not claim broad superiority until the benchmark plan has reproducible runs against Ubuntu 24.04 or a newer selected Ubuntu baseline on the same host, same VM/hardware class, same CPU/RAM/disk constraints, and named workloads.
+Seal OS can aim to surpass Ubuntu for selected HFT/ML workloads, but the repo must not claim broad superiority until the benchmark plan has reproducible runs against the current Ubuntu 26.04 LTS baseline or a newer selected Ubuntu baseline on the same host, same VM/hardware class, same CPU/RAM/disk constraints, and named workloads.
 
 The README is the bible, but the code is the law. If README and code differ, either the code changes to match the README or the README changes to state the current truth and the plan to close the gap.
 
@@ -58,9 +58,7 @@ Use these findings as the repair queue:
 ### Safety and gates
 
 - Modify: `.github/workflows/ci.yml`
-- Create: `scripts/check_seal_abi.py`
-- Create: `scripts/check_theorem_smoke.py`
-- Create: `scripts/check_unsafe_inventory.py`
+- Modify: `kernel/seal-mkimage/src/main.rs` for Rust-native audit subcommands
 - Modify later with tests: `kernel/seal-os/src/lang/mod.rs`
 - Modify later with tests: `kernel/aether/Aether-Lang/crates/aether-lang/src/interpreter.rs`
 - Modify later with tests: `kernel/seal-os/src/security/smap_smep.rs`
@@ -352,15 +350,14 @@ VM smoke is heavy and host-sensitive. Run only after Tasks 2-7 are patched and l
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
-- Create: `scripts/check_theorem_smoke.py`
-- Create: `scripts/check_seal_abi.py`
+- Modify: `kernel/seal-mkimage/src/main.rs`
 - Modify: `docs/CI.md`
 
-- [ ] **Step 1: Create `scripts/check_theorem_smoke.py`**
+- [ ] **Step 1: Add `--check-theorem-log` to `kernel/seal-mkimage`**
 
-The script must:
+The Rust subcommand must:
 
-- Read a serial log path from `argv[1]`
+- Read a serial log path from the second CLI argument
 - Fail if any line contains `[THEOREM]` and `FAILED`
 - Require each theorem tag:
   - `[THEOREM] T1/TSS VERIFIED`
@@ -376,9 +373,9 @@ The script must:
 - Require the summary line
 - Print missing patterns before exiting nonzero
 
-- [ ] **Step 2: Create `scripts/check_seal_abi.py`**
+- [ ] **Step 2: Add `--check-seal-abi` to `kernel/seal-mkimage`**
 
-The script must scan `kernel/seal-os/src` and fail on:
+The Rust subcommand must scan `kernel/seal-os/src` and fail on:
 
 - `extern crate libc`
 - `use libc`
@@ -389,7 +386,7 @@ The script must scan `kernel/seal-os/src` and fail on:
 - `forkpty`
 - `termios`
 
-The script must not fail on docs comments that explicitly say "not POSIX" or "historical".
+The scanner must ignore line comments so docs text inside source comments does not trip the ABI gate.
 
 - [ ] **Step 3: Wire scripts into CI**
 
@@ -397,13 +394,13 @@ Add CI steps after QEMU serial capture:
 
 ```yaml
 - name: Verify theorem gate lines
-  run: python3 scripts/check_theorem_smoke.py qemu.log
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log qemu.log
 
 - name: Verify Seal ABI/no-POSIX discipline
-  run: python3 scripts/check_seal_abi.py
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .
 ```
 
-Keep the existing hard boot milestone checks, but make theorem verification use the script.
+Keep the existing hard boot milestone checks, but make theorem verification use the Rust audit binary.
 
 - [ ] **Step 4: Update `docs/CI.md`**
 
@@ -499,7 +496,7 @@ Do not patch `smap_smep.rs` or Aether MMIO by guess. First add tests or host-tes
 ## Task 8: Unsafe Inventory Policy
 
 **Files:**
-- Create: `scripts/check_unsafe_inventory.py`
+- Modify: `kernel/seal-mkimage/src/main.rs`
 - Create: `docs/UNSAFE_INVENTORY.md`
 - Modify: `.github/workflows/ci.yml`
 
@@ -518,14 +515,14 @@ Do not patch `smap_smep.rs` or Aether MMIO by guess. First add tests or host-tes
 
 Each touched unsafe site needs a `SAFETY:` comment describing caller requirements or invariant.
 
-- [ ] **Step 2: Create checker**
+- [ ] **Step 2: Add checker subcommand**
 
-`scripts/check_unsafe_inventory.py` must count unsafe blocks/functions in `kernel/seal-os/src` and fail if a new touched unsafe lacks a nearby `SAFETY:` comment. The first version may be baseline-oriented: print counts and fail only on files changed in the current diff.
+`kernel/seal-mkimage --unsafe-inventory` must count unsafe blocks/functions in `kernel/seal-os/src` and fail if a new touched unsafe lacks a nearby `SAFETY:` comment. The first version may be baseline-oriented: print counts and fail only on files changed in the current diff.
 
 Run:
 
 ```powershell
-python scripts\check_unsafe_inventory.py
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --unsafe-inventory .
 ```
 
 Expected: output includes counts by file and a nonzero exit only when changed unsafe sites lack comments.
@@ -584,8 +581,8 @@ Run:
 cargo +nightly fmt --manifest-path kernel\seal-os\Cargo.toml
 cargo +nightly check --manifest-path kernel\seal-os\Cargo.toml
 cargo +stable check --manifest-path kernel\seal-mkimage\Cargo.toml
-python scripts\check_theorem_smoke.py kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
-python scripts\check_seal_abi.py
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-theorem-log kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
 git diff --check
 ```
 
@@ -593,7 +590,7 @@ Expected:
 
 - Rust formatting exits zero
 - Rust checks exit zero
-- theorem smoke script may fail if the last serial log is stale or incomplete; that is useful evidence
+- theorem log audit may fail if the last serial log is stale or incomplete; that is useful evidence
 - Seal ABI scanner exits zero
 - `git diff --check` exits zero
 
@@ -677,4 +674,3 @@ Do not mark the goal complete unless every row is proved. If Ubuntu surpass evid
 - Placeholder scan: No `TBD`, `TODO`, or "fill later" steps are used. Unknowns are stated as audit gaps with closure evidence.
 - Type/path consistency: Script names and file paths match current repo layout from the audit search.
 - Scope check: This is a mountain. The plan splits it into independent lanes so agents can work on docs, hygiene, CI scripts, and safety patches without stepping on the same files.
-

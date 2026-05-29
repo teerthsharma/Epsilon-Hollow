@@ -13,9 +13,10 @@ use core::sync::atomic::Ordering;
 
 use crate::cpu::CPU_COUNT;
 use crate::drivers::interrupts::VECTOR_IPI_RESCHEDULE;
+use crate::process::task::RestartSyscall;
 use crate::process::task::Task;
 use crate::process::task::TaskState;
-use crate::process::userspace::UserContext;
+use crate::process::userspace::{SyscallFrame, UserContext};
 
 // ---------------------------------------------------------------------------
 // Signal numbers
@@ -43,13 +44,22 @@ pub const SIGTSTP: u8 = 20;
 pub const SIGTTIN: u8 = 21;
 pub const SIGTTOU: u8 = 22;
 
+pub const SA_ONSTACK: u64 = 1 << 0;
+pub const SA_RESTART: u64 = 1 << 1;
+
+pub const SS_ONSTACK: u64 = 1 << 0;
+pub const SS_DISABLE: u64 = 1 << 1;
+
+const MINSIGSTKSZ: u64 = 2048;
+const EINTR: i64 = 4;
+
 // ---------------------------------------------------------------------------
 // Sigreturn trampoline
 // ---------------------------------------------------------------------------
 
 global_asm!(
     ".global sigreturn_trampoline",
-    ".align 16",
+    ".p2align 4",
     "sigreturn_trampoline:",
     "mov rax, 27", // SYS_SIGRETURN — must match syscall/signal.rs
     "syscall",
@@ -145,7 +155,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     task.signal_saved_context = Some(*ctx);
 
     // Align stack to 16 bytes (SysV AMD64 ABI)
-    let mut rsp = ctx.rsp & !0xF;
+    let mut rsp = signal_stack_pointer(task, sig, ctx.rsp) & !0xF;
 
     // Push UserContext onto user stack
     let uc_size = core::mem::size_of::<UserContext>() as u64;
@@ -188,6 +198,20 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     ctx.rip = handler;
 }
 
+fn signal_stack_pointer(task: &mut Task, sig: u8, current_rsp: u64) -> u64 {
+    let flags = task.signal_flags[sig as usize];
+    let enabled = task.signal_alt_stack_sp != 0
+        && task.signal_alt_stack_size >= MINSIGSTKSZ
+        && (task.signal_alt_stack_flags & SS_DISABLE) == 0;
+    if enabled && (flags & SA_ONSTACK) != 0 {
+        task.signal_alt_stack_flags |= SS_ONSTACK;
+        task.signal_alt_stack_sp
+            .saturating_add(task.signal_alt_stack_size)
+    } else {
+        current_rsp
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Syscall helpers (exposed for master to wire)
 // ---------------------------------------------------------------------------
@@ -203,8 +227,8 @@ pub fn sys_kill(target_id: u64, sig: u8) -> i64 {
 
 /// `sigaction(2)` — examine and change signal action.
 ///
-/// `act_ptr` points to a `u64` handler address in userspace.
-/// `oldact_ptr` points to a `u64` buffer to receive the old handler.
+/// `act_ptr` points to `{ handler: u64, flags: u64 }` in userspace. For
+/// compatibility with the older ABI, the first 8 bytes remain just the handler.
 pub fn sys_sigaction(sig: u8, act_ptr: u64, oldact_ptr: u64) -> i64 {
     if sig == 0 || sig >= 32 {
         return -22; // EINVAL
@@ -216,11 +240,15 @@ pub fn sys_sigaction(sig: u8, act_ptr: u64, oldact_ptr: u64) -> i64 {
     let task = unsafe { &mut *task_ptr };
     let idx = sig as usize;
     let old = task.signal_handlers[idx];
+    let old_flags = task.signal_flags[idx];
 
     if oldact_ptr != 0 {
-        let old_ptr = oldact_ptr as *mut u8;
+        let mut old_action = [0u8; 16];
+        old_action[..8].copy_from_slice(&old.to_le_bytes());
+        old_action[8..].copy_from_slice(&old_flags.to_le_bytes());
         unsafe {
-            if crate::security::smap_smep::copy_to_user(old_ptr, &old.to_le_bytes()).is_err() {
+            if crate::security::smap_smep::copy_to_user(oldact_ptr as *mut u8, &old_action).is_err()
+            {
                 return -14; // EFAULT
             }
         }
@@ -237,9 +265,148 @@ pub fn sys_sigaction(sig: u8, act_ptr: u64, oldact_ptr: u64) -> i64 {
         }
         let new_handler = u64::from_le_bytes(new_bytes);
         task.signal_handlers[idx] = new_handler;
+
+        let mut flags_bytes = [0u8; 8];
+        unsafe {
+            if crate::security::smap_smep::copy_from_user(
+                &mut flags_bytes,
+                (act_ptr + 8) as *const u8,
+            )
+            .is_ok()
+            {
+                task.signal_flags[idx] = u64::from_le_bytes(flags_bytes);
+            }
+        }
     }
 
     0
+}
+
+/// `sigaltstack(2)` — install or inspect the alternate signal stack.
+///
+/// The user structure is `{ sp: u64, flags: u64, size: u64 }`.
+pub fn sys_sigaltstack(new_stack_ptr: u64, old_stack_ptr: u64) -> i64 {
+    let task_ptr = unsafe { crate::cpu::this_cpu().current_task };
+    if task_ptr.is_null() {
+        return -3; // ESRCH
+    }
+    let task = unsafe { &mut *task_ptr };
+
+    if old_stack_ptr != 0 {
+        let mut old_stack = [0u8; 24];
+        old_stack[..8].copy_from_slice(&task.signal_alt_stack_sp.to_le_bytes());
+        old_stack[8..16].copy_from_slice(&task.signal_alt_stack_flags.to_le_bytes());
+        old_stack[16..].copy_from_slice(&task.signal_alt_stack_size.to_le_bytes());
+        unsafe {
+            if crate::security::smap_smep::copy_to_user(old_stack_ptr as *mut u8, &old_stack)
+                .is_err()
+            {
+                return -14; // EFAULT
+            }
+        }
+    }
+
+    if new_stack_ptr != 0 {
+        let mut new_stack = [0u8; 24];
+        unsafe {
+            if crate::security::smap_smep::copy_from_user(
+                &mut new_stack,
+                new_stack_ptr as *const u8,
+            )
+            .is_err()
+            {
+                return -14; // EFAULT
+            }
+        }
+        let sp = u64::from_le_bytes([
+            new_stack[0],
+            new_stack[1],
+            new_stack[2],
+            new_stack[3],
+            new_stack[4],
+            new_stack[5],
+            new_stack[6],
+            new_stack[7],
+        ]);
+        let flags = u64::from_le_bytes([
+            new_stack[8],
+            new_stack[9],
+            new_stack[10],
+            new_stack[11],
+            new_stack[12],
+            new_stack[13],
+            new_stack[14],
+            new_stack[15],
+        ]);
+        let size = u64::from_le_bytes([
+            new_stack[16],
+            new_stack[17],
+            new_stack[18],
+            new_stack[19],
+            new_stack[20],
+            new_stack[21],
+            new_stack[22],
+            new_stack[23],
+        ]);
+
+        if (task.signal_alt_stack_flags & SS_ONSTACK) != 0 {
+            return -1; // EPERM
+        }
+        if (flags & !SS_DISABLE) != 0 {
+            return -22; // EINVAL
+        }
+        if (flags & SS_DISABLE) == 0 && size < MINSIGSTKSZ {
+            return -12; // ENOMEM
+        }
+
+        task.signal_alt_stack_sp = sp;
+        task.signal_alt_stack_size = size;
+        task.signal_alt_stack_flags = flags;
+    }
+
+    0
+}
+
+fn is_restartable_syscall(number: u64) -> bool {
+    matches!(
+        number,
+        crate::syscall::table::SYS_READ
+            | crate::syscall::table::SYS_WAITPID
+            | crate::syscall::table::SYS_NANOSLEEP
+            | crate::syscall::table::SYS_SLEEP
+    )
+}
+
+pub fn prepare_syscall_restart(frame: &mut SyscallFrame, number: u64, result: i64) -> bool {
+    if result != -EINTR || !is_restartable_syscall(number) {
+        return false;
+    }
+
+    let task_ptr = unsafe { crate::cpu::this_cpu().current_task };
+    if task_ptr.is_null() {
+        return false;
+    }
+    let task = unsafe { &mut *task_ptr };
+    let pending = task.pending_signals & !task.signal_mask;
+    if pending == 0 {
+        return false;
+    }
+    let sig = pending.trailing_zeros() as usize;
+    if sig >= task.signal_flags.len() || (task.signal_flags[sig] & SA_RESTART) == 0 {
+        return false;
+    }
+
+    let restart_rip = frame.rcx.saturating_sub(2);
+    task.restart_syscall = Some(RestartSyscall {
+        number,
+        arg0: frame.rdi,
+        arg1: frame.rsi,
+        arg2: frame.rdx,
+        rip: restart_rip,
+    });
+    frame.rax = number;
+    frame.rcx = restart_rip;
+    true
 }
 
 /// `sigreturn(2)` — restore context saved by signal delivery.
@@ -256,6 +423,8 @@ pub fn sys_sigreturn() -> ! {
     let task = unsafe { &mut *task_ptr };
     if let Some(saved) = task.signal_saved_context.take() {
         let mut saved = saved;
+        task.signal_alt_stack_flags &= !SS_ONSTACK;
+        task.restart_syscall = None;
         unsafe { crate::process::userspace::enter_userspace(&mut saved) }
     } else {
         crate::serial_println!("[signal] sys_sigreturn: no saved context");

@@ -1,11 +1,110 @@
 # GitHub language hygiene for Seal OS.
-# Seal OS source is Rust, assembly, and Aether-Lang DSL. Existing Python
-# research artifacts are not part of the OS language surface.
+# Seal OS source is Rust, assembly, and Aether-Lang DSL. Legacy host research
+# artifacts are not part of the OS language surface.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary
+*.icns binary
+*.wasm binary
 *.rs linguist-language=Rust
 *.s linguist-language=Assembly
 *.S linguist-language=Assembly
 *.asm linguist-language=Assembly
-*.aether linguist-language=Rust
+*.aether linguist-language=Aether
+*.ag linguist-language=Aether
+*.aegis linguist-language=Aether
 *.py linguist-vendored
 *.pyw linguist-vendored
+*.lean linguist-documentation
+*.tex linguist-documentation
+*.bib linguist-documentation
+*.md linguist-documentation
+*.txt linguist-documentation
+LICENSE* linguist-documentation
+*.yml linguist-vendored
+*.yaml linguist-vendored
+*.toml linguist-vendored
+*.json linguist-vendored
+*.lock linguist-vendored
+*.sh linguist-vendored
+*.ps1 linguist-vendored
+*.bat linguist-vendored
+*.js linguist-vendored
+*.mjs linguist-vendored
+*.ts linguist-vendored
+*.tsx linguist-vendored
+*.css linguist-vendored
+*.html linguist-vendored
+*.svg linguist-vendored
+*.ico linguist-vendored
+*.png linguist-vendored
+*.icns linguist-vendored
+*.c linguist-vendored
+*.h linguist-vendored
+*.cpp linguist-vendored
+*.hpp linguist-vendored
+Dockerfile linguist-vendored
+**/Dockerfile linguist-vendored
+.dockerignore linguist-vendored
+**/.dockerignore linguist-vendored
+.gitignore linguist-vendored
+**/.gitignore linguist-vendored
+.gitattributes linguist-vendored
+**/.gitattributes linguist-vendored
+*.local linguist-vendored
+*.env linguist-vendored
+requirements*.txt linguist-vendored
+**/requirements*.txt linguist-vendored
+.githooks/* linguist-vendored
+Cargo.lock linguist-vendored
+package-lock.json linguist-vendored
 
+# Generated/proof/build artifacts.
+**/.lake/** linguist-generated
+*.olean linguist-generated
+*.olean.lock linguist-generated
+*.olean.trace linguist-generated
+*.wasm linguist-generated
+*.db linguist-generated
+*.sqlite* linguist-generated
+*.log linguist-generated
+*.profraw linguist-generated
+*.profdata linguist-generated
+*.db-shm linguist-generated
+*.db-wal linguist-generated
+*.trace linguist-generated
+*.dump linguist-generated
+*.dmp linguist-generated
+*.core linguist-generated
+*.ppm linguist-generated
+*.pcap linguist-generated
+*.pcapng linguist-generated
+perf.data* linguist-generated
+flamegraph*.svg linguist-generated
+*.dSYM/** linguist-generated
+**/lean-toolchain linguist-generated
+*.img linguist-generated
+*.iso linguist-generated
+*.vdi linguist-generated
+*.vmdk linguist-generated
+*.qcow2 linguist-generated
+*.vhd linguist-generated
+*.vhdx linguist-generated
+*.raw linguist-generated
+*.efi linguist-generated
+*.fd linguist-generated
+*.ovmf linguist-generated
+*.vbox linguist-generated
+*.vbox-prev linguist-generated
+*.nvram linguist-generated
+*.pdb linguist-generated
+*.map linguist-generated
+*.sym linguist-generated
+qemu-proof/** linguist-generated
+qemu-proof-runs/** linguist-generated
+vbox-smoke/** linguist-generated
+kernel/seal-os/target/**/qemu-proof/** linguist-generated
+kernel/seal-os/target/**/qemu-proof-runs/** linguist-generated
+kernel/seal-os/target/**/vbox-smoke/** linguist-generated

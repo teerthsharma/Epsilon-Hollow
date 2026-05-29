@@ -29,7 +29,13 @@ impl MouseState {
     }
 
     pub fn apply_move(&mut self, dx: i32, dy: i32, max_x: i32, max_y: i32) {
-        self.x = (self.x + dx).clamp(0, max_x - 1);
-        self.y = (self.y + dy).clamp(0, max_y - 1);
+        if max_x <= 0 || max_y <= 0 {
+            self.x = 0;
+            self.y = 0;
+            return;
+        }
+
+        self.x = self.x.saturating_add(dx).clamp(0, max_x - 1);
+        self.y = self.y.saturating_add(dy).clamp(0, max_y - 1);
     }
 }

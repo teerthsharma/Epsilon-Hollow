@@ -13,7 +13,7 @@ Seal OS exposes a native Seal ABI plus Epsilon theorem extensions. No POSIX ABI 
 | 2 | `read` | fd, buf, len | Real |
 | 3 | `open` | path, flags, mode | Real |
 | 4 | `close` | fd | Real |
-| 5 | `exec` | path | Real: ELF64, shebang, `.aether` |
+| 5 | `exec` | path | Real: ELF64 ET_EXEC/ET_DYN, `PT_INTERP`, `DT_NEEDED`, shebang, `.aether` |
 | 6 | `fork` | - | Real |
 | 7 | `waitpid` | pid | Stub: returns requested pid |
 | 8 | `mmap` | addr, len, prot | Real |
@@ -51,6 +51,21 @@ Seal OS exposes a native Seal ABI plus Epsilon theorem extensions. No POSIX ABI 
 | 42 | `clone` | flags | Real |
 | 43 | `setrlimit` | resource, limit | Real |
 | 44 | `getrlimit` | resource | Real |
+| 45 | `sigaltstack` | new_stack, old_stack | Real |
+
+## Signal ABI
+
+`sigaction` accepts a 16-byte action record: `{ handler: u64, flags: u64 }`.
+The old 8-byte handler-only ABI remains compatible because the handler stays
+in the first slot. Supported flags are `SA_ONSTACK` and `SA_RESTART`.
+
+`sigaltstack` uses `{ sp: u64, flags: u64, size: u64 }`. `SS_DISABLE`
+disables the alternate stack, and `SS_ONSTACK` is reported while a handler is
+running there. Handlers with `SA_ONSTACK` use the alternate stack top when it is
+enabled and at least `MINSIGSTKSZ` bytes.
+
+Interrupted restartable syscalls that return `-EINTR` are rewound to the
+`syscall` instruction when the pending signal action has `SA_RESTART`.
 
 ## Epsilon Extensions
 

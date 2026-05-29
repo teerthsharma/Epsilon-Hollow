@@ -13,7 +13,7 @@
 //! per-zone.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
 
@@ -23,6 +23,12 @@ use crate::THEOREM_STATES;
 const VORONOI_SEEDS: usize = 8;
 const RECENT_ALLOC_LEN: usize = 256;
 const PREFETCH_COUNT: usize = 8;
+const ENTROPY_RECHECK_INTERVAL: u64 = 64;
+const FRAGMENTATION_SAMPLE_LIMIT: usize = 256;
+const RESEED_CELL_REFRESH_LIMIT: usize = RECENT_ALLOC_LEN;
+const PREFETCH_SCAN_LIMIT: usize = 256;
+const GLOBAL_ENTROPY_SAMPLE_LIMIT: usize = FRAGMENTATION_SAMPLE_LIMIT;
+const SWAP_SCAN_LIMIT: usize = 4096;
 
 /// Per-frame topological metadata.
 #[derive(Clone, Copy)]
@@ -70,8 +76,27 @@ pub struct Zones {
 
 static ZONES: Mutex<Option<Zones>> = Mutex::new(None);
 
+static TARGET_CELL_HITS: AtomicUsize = AtomicUsize::new(0);
+static TARGET_CELL_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static LOW_TO_HIGH_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static HIGH_TO_LOW_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static PCIE_TO_HIGH_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+static PCIE_TO_LOW_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone, Copy)]
+pub struct TopoRamAllocStats {
+    pub target_cell_hits: usize,
+    pub target_cell_fallbacks: usize,
+    pub low_to_high_fallbacks: usize,
+    pub high_to_low_fallbacks: usize,
+    pub pcie_to_high_fallbacks: usize,
+    pub pcie_to_low_fallbacks: usize,
+}
+
 impl TopoRam {
     fn new(base_frame: usize, count: usize) -> Self {
+        // SETUP_SCAN_OK: O(zone frame count) metadata construction. This runs
+        // only during boot or BAR registration, not inside allocation hot paths.
         let mut seeds = [[0u16; 32]; VORONOI_SEEDS];
         for s in 0..VORONOI_SEEDS {
             for a in 0..32usize {
@@ -162,6 +187,9 @@ fn reseed_voronoi(topo: &mut TopoRam) {
     if !THEOREM_STATES[0].load(Ordering::Relaxed) {
         return;
     }
+    if topo.frame_meta.is_empty() {
+        return;
+    }
 
     let mut new_seeds = [[0u16; 32]; VORONOI_SEEDS];
     let mut picked = 0usize;
@@ -186,9 +214,12 @@ fn reseed_voronoi(topo: &mut TopoRam) {
 
     topo.voronoi_seeds = new_seeds;
 
-    for i in 0..topo.frame_meta.len() {
-        let cell = voronoi_cell_of(&topo.frame_meta[i].embedding, &topo.voronoi_seeds);
-        topo.frame_meta[i].cell_id = cell;
+    for i in 0..RESEED_CELL_REFRESH_LIMIT {
+        let frame_idx = topo.recent_allocs[i];
+        if frame_idx < topo.frame_meta.len() {
+            let cell = voronoi_cell_of(&topo.frame_meta[frame_idx].embedding, &topo.voronoi_seeds);
+            topo.frame_meta[frame_idx].cell_id = cell;
+        }
     }
 }
 
@@ -291,17 +322,24 @@ fn prefetch_hint_inner(topo: &mut TopoRam, addr: PhysAddr) -> Vec<PhysAddr> {
     let ref_idx = global_idx - topo.base_frame;
     let addr_emb = &topo.frame_meta[ref_idx].embedding;
     let principal = topo.eigenvectors[0];
+    let span = topo.frame_meta.len();
+    if span == 0 {
+        return Vec::new();
+    }
 
-    let mut candidates: [(usize, f32); PREFETCH_COUNT] = [(0, f32::MIN); PREFETCH_COUNT];
+    let mut candidates: [(usize, f32); PREFETCH_COUNT] = [(usize::MAX, f32::MIN); PREFETCH_COUNT];
 
-    phys::with_bitmap_mut(|bitmap| {
-        for local_idx in 0..topo.frame_meta.len() {
+    phys::with_bitmap_read(|bitmap| {
+        let mut scan_candidate = |local_idx: usize| {
+            if local_idx >= span || candidates.iter().any(|(idx, _)| *idx == local_idx) {
+                return;
+            }
             let gidx = topo.base_frame + local_idx;
             let word = gidx / 64;
             let bit = gidx % 64;
             let free = (bitmap[word] >> bit) & 1 == 0;
             if !free {
-                continue;
+                return;
             }
 
             let emb = &topo.frame_meta[local_idx].embedding;
@@ -321,12 +359,25 @@ fn prefetch_hint_inner(topo: &mut TopoRam, addr: PhysAddr) -> Vec<PhysAddr> {
             if score > min_score {
                 candidates[min_idx] = (local_idx, score);
             }
+        };
+
+        scan_candidate(ref_idx);
+
+        let samples = span.min(PREFETCH_SCAN_LIMIT);
+        let stride = (span / samples).max(1);
+        for sample in 0..samples {
+            let local_idx = (ref_idx + sample * stride) % span;
+            scan_candidate(local_idx);
+        }
+
+        for i in 0..RECENT_ALLOC_LEN {
+            scan_candidate(topo.recent_allocs[i]);
         }
     });
 
     let mut result = Vec::with_capacity(PREFETCH_COUNT);
     for (local_idx, _) in candidates.iter() {
-        if *local_idx < topo.frame_meta.len() {
+        if *local_idx != usize::MAX && *local_idx < topo.frame_meta.len() {
             result.push(PhysAddr::new((topo.base_frame + *local_idx) as u64 * 4096));
         }
     }
@@ -341,16 +392,20 @@ fn fragmentation_entropy_inner(_topo: &TopoRam, zone_start: usize, zone_end: usi
     if !THEOREM_STATES[2].load(Ordering::Relaxed) {
         return 0.0;
     }
-    let total_free = phys::free_count();
-    if total_free == 0 {
+    let span = zone_end.saturating_sub(zone_start);
+    if span == 0 {
         return 0.0;
     }
+    let samples = span.min(FRAGMENTATION_SAMPLE_LIMIT);
+    let stride = (span / samples).max(1);
 
     let mut components = 0usize;
+    let mut sampled_free = 0usize;
     let mut in_run = false;
 
-    phys::with_bitmap_mut(|bitmap| {
-        for i in zone_start..zone_end {
+    phys::with_bitmap_read(|bitmap| {
+        for sample in 0..samples {
+            let i = (zone_start + sample * stride).min(zone_end - 1);
             let word = i / 64;
             let bit = i % 64;
             let free = (bitmap[word] >> bit) & 1 == 0;
@@ -360,11 +415,17 @@ fn fragmentation_entropy_inner(_topo: &TopoRam, zone_start: usize, zone_end: usi
             } else if !free {
                 in_run = false;
             }
+            if free {
+                sampled_free += 1;
+            }
         }
     });
+    if sampled_free == 0 {
+        return 0.0;
+    }
 
     let num = libm::log2f((components + 1) as f32);
-    let den = libm::log2f((total_free + 1) as f32);
+    let den = libm::log2f((sampled_free + 1) as f32);
     if den == 0.0 {
         0.0
     } else {
@@ -382,10 +443,16 @@ pub fn fragmentation_entropy() -> f32 {
         return 0.0;
     }
     let limit = phys::total_usable_frames();
+    if limit == 0 {
+        return 0.0;
+    }
+    let samples = limit.min(GLOBAL_ENTROPY_SAMPLE_LIMIT);
+    let stride = (limit / samples).max(1);
     let mut components = 0usize;
     let mut in_run = false;
-    phys::with_bitmap_mut(|bitmap| {
-        for i in 0..limit {
+    phys::with_bitmap_read(|bitmap| {
+        for sample in 0..samples {
+            let i = (sample * stride).min(limit - 1);
             let word = i / 64;
             let bit = i % 64;
             let free = (bitmap[word] >> bit) & 1 == 0;
@@ -444,6 +511,10 @@ pub fn set_pressure(p: f32) {
 // ---------------------------------------------------------------------------
 
 fn hyperbolic_class(access_pattern: u64) -> u8 {
+    if !THEOREM_STATES[4].load(Ordering::Relaxed) {
+        return 1;
+    }
+
     let bits = access_pattern.count_ones();
     let density = bits as f32 / 64.0;
     if density > 0.5 {
@@ -484,112 +555,36 @@ fn alloc_frames_in_zone(
     }
 
     let target_cell = hint.map(|h| voronoi_cell_of(h, &topo.voronoi_seeds));
-    let prefer_contiguous = topo.pressure > 0.6 && count > 1;
-
-    // -----------------------------------------------------------------
-    // High-pressure path: try contiguous first.
-    // -----------------------------------------------------------------
-    if prefer_contiguous {
-        for _ in 0..3 {
-            let mut frames = Vec::with_capacity(count);
-            let mut ok = true;
-            for _ in 0..count {
-                match phys::alloc_frame() {
-                    Some(f) => frames.push(f),
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok && frames.len() == count {
-                let contiguous = frames
-                    .windows(2)
-                    .all(|w| w[1].as_u64() == w[0].as_u64() + 4096);
-                if contiguous {
-                    let first = frames[0];
-                    for f in &frames {
-                        let gidx = (f.as_u64() / 4096) as usize;
-                        let lidx = gidx.saturating_sub(topo.base_frame);
-                        if let Some(meta) = topo.frame_meta.get_mut(lidx) {
-                            meta.access_history = 0;
-                        }
-                        topo.push_recent_alloc(lidx);
-                        topo.alloc_count += 1;
-                    }
-                    return Some(first);
-                }
-            }
-            for f in &frames {
-                unsafe {
-                    phys::free_frame(*f);
-                }
-            }
-            if !ok {
-                break;
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // Normal / fallback path: cell-aware search within zone range.
-    // -----------------------------------------------------------------
-    let mut frames = Vec::with_capacity(count);
-
-    phys::with_bitmap_mut(|bitmap| {
+    let first = if count == 1 {
         if let Some(cell) = target_cell {
-            for gidx in zone_start..zone_end {
-                if frames.len() >= count {
-                    break;
-                }
-                if gidx >= limit {
-                    break;
-                }
-                let word = gidx / 64;
-                let bit = gidx % 64;
-                let free = (bitmap[word] >> bit) & 1 == 0;
-                let lidx = gidx - zone_start;
-                if free && topo.frame_meta[lidx].cell_id == cell {
-                    bitmap[word] |= 1 << bit;
-                    frames.push(gidx);
-                }
+            if let Some(addr) =
+                phys::alloc_frame_in_topo_cell(cell as usize, zone_start, zone_end.min(limit))
+            {
+                TARGET_CELL_HITS.fetch_add(1, Ordering::Relaxed);
+                addr
+            } else {
+                TARGET_CELL_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+                phys::alloc_frame_in_range(zone_start, zone_end.min(limit))?
             }
+        } else {
+            phys::alloc_frame_in_range(zone_start, zone_end.min(limit))?
         }
-
-        if frames.len() < count {
-            for gidx in zone_start..zone_end {
-                if frames.len() >= count {
-                    break;
-                }
-                if gidx >= limit {
-                    break;
-                }
-                let word = gidx / 64;
-                let bit = gidx % 64;
-                let free = (bitmap[word] >> bit) & 1 == 0;
-                if free {
-                    bitmap[word] |= 1 << bit;
-                    frames.push(gidx);
+    } else {
+        let first = phys::alloc_frames_contiguous_in_range(count, zone_start, zone_end.min(limit))?;
+        let gidx = (first.as_u64() / 4096) as usize;
+        if gidx < zone_start || gidx + count > zone_end.min(limit) {
+            for i in 0..count {
+                unsafe {
+                    phys::free_frame(PhysAddr::new(first.as_u64() + (i as u64 * 4096)));
                 }
             }
+            return None;
         }
-    });
+        first
+    };
 
-    if frames.len() < count {
-        phys::with_bitmap_mut(|bitmap| {
-            for &idx in &frames {
-                let word = idx / 64;
-                let bit = idx % 64;
-                bitmap[word] &= !(1 << bit);
-            }
-        });
-        return None;
-    }
-
-    phys::decr_free_count(frames.len());
-
-    let first = PhysAddr::new(frames[0] as u64 * 4096);
-    for &gidx in &frames {
+    let first_idx = (first.as_u64() / 4096) as usize;
+    for gidx in first_idx..first_idx + count {
         let lidx = gidx - zone_start;
         if let Some(meta) = topo.frame_meta.get_mut(lidx) {
             meta.access_history = 0;
@@ -598,9 +593,11 @@ fn alloc_frames_in_zone(
         topo.alloc_count += 1;
     }
 
-    let entropy = fragmentation_entropy_inner(topo, zone_start, zone_end);
-    if entropy > 0.7 {
-        reseed_voronoi(topo);
+    if topo.tick % ENTROPY_RECHECK_INTERVAL == 0 {
+        let entropy = fragmentation_entropy_inner(topo, zone_start, zone_end);
+        if entropy > 0.7 {
+            reseed_voronoi(topo);
+        }
     }
 
     Some(first)
@@ -612,6 +609,8 @@ fn alloc_frames_in_zone(
 
 /// One-time initialisation of the topological RAM metadata (per-zone).
 pub fn init() {
+    // SETUP_SCAN_OK: zone metadata is built once from discovered usable frames.
+    // Runtime allocation below uses bounded Voronoi and physical allocator probes.
     let total = phys::total_usable_frames();
     let low_count = total.min(LOW_FRAME_LIMIT);
     let high_count = total.saturating_sub(LOW_FRAME_LIMIT);
@@ -627,11 +626,40 @@ pub fn init() {
     });
 }
 
+/// Snapshot bounded allocation telemetry.
+pub fn alloc_stats() -> TopoRamAllocStats {
+    TopoRamAllocStats {
+        target_cell_hits: TARGET_CELL_HITS.load(Ordering::Relaxed),
+        target_cell_fallbacks: TARGET_CELL_FALLBACKS.load(Ordering::Relaxed),
+        low_to_high_fallbacks: LOW_TO_HIGH_FALLBACKS.load(Ordering::Relaxed),
+        high_to_low_fallbacks: HIGH_TO_LOW_FALLBACKS.load(Ordering::Relaxed),
+        pcie_to_high_fallbacks: PCIE_TO_HIGH_FALLBACKS.load(Ordering::Relaxed),
+        pcie_to_low_fallbacks: PCIE_TO_LOW_FALLBACKS.load(Ordering::Relaxed),
+    }
+}
+
+/// Return a deterministic seed embedding for proof benches.
+pub fn proof_hint(zone: ZoneHint, cell: usize) -> Option<[u16; 32]> {
+    let guard = ZONES.lock();
+    let zones = guard.as_ref()?;
+    let topo = match zone {
+        ZoneHint::Low => &zones.low,
+        ZoneHint::High => &zones.high,
+        ZoneHint::PcieBar => &zones.pcie_bar,
+    };
+    if topo.frame_meta.is_empty() {
+        return None;
+    }
+    Some(topo.voronoi_seeds[cell & (VORONOI_SEEDS - 1)])
+}
+
 /// Register a PCI BAR range as the PCIE_BAR zone.
 pub fn register_pcie_bar(start: PhysAddr, pages: usize) {
     let mut guard = ZONES.lock();
     if let Some(zones) = guard.as_mut() {
         let base_frame = (start.as_u64() / 4096) as usize;
+        // SETUP_SCAN_OK: O(registered BAR pages) device-registration metadata
+        // construction; this is not a frame allocation hot path.
         let mut new_zone = TopoRam::new(base_frame, pages);
         // T5: PCIE_BAR frames are longest-lived (permanent).
         for meta in &mut new_zone.frame_meta {
@@ -655,20 +683,24 @@ pub fn alloc_frames(count: usize, zone: ZoneHint, hint: Option<&[u16; 32]>) -> O
             if let Some(addr) = alloc_frames_in_zone(&mut zones.low, count, hint) {
                 return Some(addr);
             }
+            LOW_TO_HIGH_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             alloc_frames_in_zone(&mut zones.high, count, hint)
         }
         ZoneHint::High => {
             if let Some(addr) = alloc_frames_in_zone(&mut zones.high, count, hint) {
                 return Some(addr);
             }
+            HIGH_TO_LOW_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             alloc_frames_in_zone(&mut zones.low, count, hint)
         }
         ZoneHint::PcieBar => {
             // PCIE_BAR is not allocatable from the physical allocator;
             // fallback to High then Low.
+            PCIE_TO_HIGH_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             if let Some(addr) = alloc_frames_in_zone(&mut zones.high, count, hint) {
                 return Some(addr);
             }
+            PCIE_TO_LOW_FALLBACKS.fetch_add(1, Ordering::Relaxed);
             alloc_frames_in_zone(&mut zones.low, count, hint)
         }
     }
@@ -781,10 +813,10 @@ pub fn find_swap_candidates(count: usize) -> Vec<PhysAddr> {
     let limit = phys::total_usable_frames();
     let mut candidates: Vec<(PhysAddr, u32)> = Vec::with_capacity(count * 2);
 
-    let scan_low = zones.low.frame_meta.len().min(4096);
-    let scan_high = zones.high.frame_meta.len().min(4096);
+    let scan_low = zones.low.frame_meta.len().min(SWAP_SCAN_LIMIT);
+    let scan_high = zones.high.frame_meta.len().min(SWAP_SCAN_LIMIT);
 
-    phys::with_bitmap_mut(|bitmap| {
+    phys::with_bitmap_read(|bitmap| {
         for local_idx in 0..scan_low {
             let gidx = zones.low.base_frame + local_idx;
             if gidx >= limit {

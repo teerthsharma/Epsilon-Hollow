@@ -27,7 +27,7 @@ pub fn handbook() -> String {
          Transfer:\n\
            copy <file>       Copy file to clipboard\n\
            paste             Paste here\n\
-           move <f> <dest>   O(1) teleport a file\n\
+           move <f> <dest>   metadata teleport a file\n\
            search <query>    Content-addressable search\n\
          \n\
          System:\n\
@@ -108,7 +108,7 @@ pub fn help_for(cmd: &str) -> String {
             "paste\n  Paste the copied file into the current folder.\n  Creates a new inode with the same content.",
         ),
         "move" => String::from(
-            "move <file> <dest_folder>\n  O(1) teleport a file to another folder.\n  Uses topological surgery — no data copying!\n  Example: move data.txt /archive",
+            "move <file> <dest_folder>\n  Metadata-teleport a file to another folder.\n  Uses topological surgery; current persistence still writes bytes.\n  Example: move data.txt /archive",
         ),
         "search" => String::from(
             "search <query>\n  Content-addressable search across ManifoldFS.\n  Encodes query as geometry and finds nearest files by\n  cosine similarity in the Voronoi index.",
@@ -126,7 +126,7 @@ pub fn help_for(cmd: &str) -> String {
             "stats\n  Show ManifoldFS filesystem statistics:\n  files, directories, teleports, entropy, governor epsilon.",
         ),
         "race" => String::from(
-            "race [size_in_bytes]\n  Benchmark traditional copy vs ManifoldFS teleport.\n  Default: 1GB. Shows speedup from O(1) topological surgery.\n  Example: race 10000000000  (10GB)",
+            "race [size_in_bytes]\n  Benchmark traditional copy vs ManifoldFS metadata teleport.\n  Default: 1GB. Reports topology metadata cost separately from byte persistence.\n  Example: race 10000000000  (10GB)",
         ),
         "install" => String::from(
             "install <package>\n  Install a package via ManifoldPkg.\n  Resolves dependencies via Voronoi cell lookup.\n  Example: install math-core",

@@ -64,7 +64,15 @@ impl PciDevice {
 
     pub fn enable_bus_mastering(&self) {
         let cmd = pci_read32(self.bus, self.device, self.function, 0x04);
-        pci_write32(self.bus, self.device, self.function, 0x04, cmd | (1 << 2));
+        // MMIO-backed devices such as AHCI need Memory Space (bit 1) before
+        // BAR reads are meaningful; DMA-capable devices also need Bus Master.
+        pci_write32(
+            self.bus,
+            self.device,
+            self.function,
+            0x04,
+            cmd | (1 << 1) | (1 << 2),
+        );
     }
 }
 

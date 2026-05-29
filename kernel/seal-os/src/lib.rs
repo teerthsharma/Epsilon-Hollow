@@ -57,6 +57,55 @@ pub fn framebuffer() -> Option<&'static Framebuffer> {
     FRAMEBUFFER.get()
 }
 
+#[cfg(not(test))]
+fn pin_kernel_static_pages() {
+    pin_kernel_static_page_range(
+        "FRAMEBUFFER",
+        core::ptr::addr_of!(FRAMEBUFFER).cast::<u8>(),
+        core::mem::size_of_val(&FRAMEBUFFER),
+    );
+    pin_kernel_static_page_range(
+        "BOOT_INFO",
+        core::ptr::addr_of!(BOOT_INFO).cast::<u8>(),
+        core::mem::size_of::<BootInfo>(),
+    );
+}
+
+#[cfg(not(test))]
+fn pin_kernel_static_page_range(name: &str, ptr: *const u8, len: usize) {
+    let start = (ptr as u64) & !0xfff;
+    let end = ((ptr as u64).saturating_add(len as u64).saturating_add(4095)) & !0xfff;
+    let mut pages = 0usize;
+    let mut recovered = 0usize;
+    let mut untranslated = 0usize;
+    let mut page = start;
+
+    while page < end {
+        match memory::virt::translate(x86_64::VirtAddr::new(page)) {
+            Some(phys) => {
+                pages += 1;
+                if memory::phys::mark_used(phys) {
+                    recovered += 1;
+                }
+            }
+            None => {
+                untranslated += 1;
+            }
+        }
+        page = page.saturating_add(4096);
+    }
+
+    if recovered != 0 || untranslated != 0 {
+        serial_println!(
+            "[MEM] pinned kernel static: name={} pages={} recovered_free_pages={} untranslated={}",
+            name,
+            pages,
+            recovered,
+            untranslated
+        );
+    }
+}
+
 /// Static copy of the UEFI BootInfo.  The original lives on the UEFI firmware
 /// stack in low physical memory; once the physical allocator is initialised
 /// that memory may be re-allocated and overwritten.  We copy it here before
@@ -70,7 +119,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Live governor epsilon value (stored as u64 bits).
 pub static GOVERNOR_EPSILON: AtomicU64 = AtomicU64::new(0);
 
-/// Live theorem activation states (T1–T5).
+/// Live theorem verification states (T1-T10; T1-T5 feed runtime subsystems).
 pub const THEOREM_COUNT: usize = 10;
 
 pub static THEOREM_STATES: [AtomicBool; THEOREM_COUNT] = [
@@ -95,7 +144,9 @@ pub const THEOREM_NAMES: [&str; THEOREM_COUNT] = [
 #[no_mangle]
 pub fn kernel_main(info: &BootInfo) -> ! {
     serial_println!("Seal OS v{} — The Geometrical Operating System", VERSION);
-    serial_println!("All data = geometry on S^2. File moves = O(1) topological surgery.");
+    serial_println!(
+        "OS state = topology on S^2. File moves use metadata topology; persistence rewrites bytes."
+    );
     serial_println!("Boot: UEFI (pure Rust, zero assembly)");
     serial_println!("");
 
@@ -133,7 +184,17 @@ pub fn kernel_main(info: &BootInfo) -> ! {
         "[BOOT] init_high() done, free frames = {}",
         memory::phys::free_count()
     );
+    pin_kernel_static_pages();
     memory::topo_ram::init();
+    let alloc_proof = memory::phys::allocation_o1_proof();
+    serial_println!(
+        "[ALLOC] O(1) proof: topo_cells={}, l3_word_probes_per_cell={}, single_word_probes_per_cell={}, contiguous_candidate_probes={}, contiguous_max_run_pages={}, marking=bounded_by_contiguous_max_run_pages",
+        alloc_proof.topo_cells,
+        alloc_proof.l3_word_probes_per_cell,
+        alloc_proof.single_alloc_word_probes_per_cell,
+        alloc_proof.contiguous_candidate_probes,
+        alloc_proof.contiguous_max_run_pages
+    );
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();
     serial_println!(
@@ -148,6 +209,17 @@ pub fn kernel_main(info: &BootInfo) -> ! {
             memory::phys::free_frame(frame);
         }
     }
+    let (alloc_fast_hits, alloc_bounded_misses, alloc_max_contig_probes) =
+        memory::phys::topo_alloc_stats();
+    serial_println!(
+        "[ALLOC] runtime counters: fast_hits={}, bounded_misses={}, max_contiguous_probes_seen={}",
+        alloc_fast_hits,
+        alloc_bounded_misses,
+        alloc_max_contig_probes
+    );
+    run_topo_ram_hotpath_bench();
+    run_allocator_hotpath_bench();
+    run_manifold_teleport_bench();
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
@@ -425,6 +497,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     serial_println!("[BOOT] Scheduler init start");
 
     init_scheduler();
+    run_scheduler_select_bench();
     serial_println!("[BOOT] Scheduler init done");
     graphics::splash::draw_progress_bar(fb, 35, "Task scheduler");
     serial_println!("[BOOT] Scheduler progress drawn");
@@ -508,6 +581,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     let mut app_state = wm::app_state::AppState::new();
 
     app_state.create_windows(&mut compositor);
+    run_aether_desktop_probe(&mut app_state);
     serial_println!("[SealShell] Loaded");
 
     // Bring up the Seal-native control surface first; LAAMBA stays a launchable app lane.
@@ -523,11 +597,20 @@ fn boot_graphical(fb: &'static Framebuffer) {
         app_state.terminal.render_to_window(win);
     }
 
-    compositor.compose(fb);
-    fb.blit();
+    wm::desktop::render_desktop(fb);
+    compositor.mark_dirty(0, 0, fb.width, fb.height);
+    compositor.compose_full(fb);
+    for _ in 0..3 {
+        fb.blit();
+        for _ in 0..50_000u64 {
+            core::hint::spin_loop();
+        }
+    }
+    serial_println!("[BOOT] Desktop proof frame blit done");
+    run_desktop_soak_probe(fb, &mut compositor);
 
     serial_println!(
-        "[Desktop] {} windows active (Terminal, IDE, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer, Tensor Viewer, LAAMBA Governor)",
+        "[Desktop] {} windows active (Terminal, IDE, Files, Theorems, Calculator, SealPlayer, Snake, Breakout, Warp Racer, Tensor Viewer, LAAMBA Governor, Aether App)",
         compositor.window_count()
     );
     drivers::watchdog::enable();
@@ -610,7 +693,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
         if frame_dirty {
             app_state.render_dirty(&mut compositor);
             wm::desktop::render_desktop(fb);
-            compositor.compose(fb);
+            compositor.mark_dirty(0, 0, fb.width, fb.height);
+            compositor.compose_full(fb);
             wm::desktop::render_overlays(fb);
             wm::desktop::render_notifications(fb);
             fb.blit();
@@ -622,6 +706,330 @@ fn boot_graphical(fb: &'static Framebuffer) {
         process::scheduler::yield_current();
         x86_64::instructions::hlt();
     }
+}
+
+fn run_desktop_soak_probe(
+    fb: &graphics::framebuffer::Framebuffer,
+    compositor: &mut wm::compositor::Compositor,
+) {
+    const FRAMES: usize = 24;
+    let mut samples = [0u64; FRAMES];
+    let dirty_px_max = fb.width as u64 * fb.height as u64;
+
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let before = read_desktop_soak_cycles();
+        wm::desktop::render_desktop(fb);
+        compositor.mark_dirty(0, 0, fb.width, fb.height);
+        if idx % 3 == 0 {
+            compositor.mouse_move(7, 3, fb.width as i32, fb.height as i32);
+        }
+        compositor.compose_full(fb);
+        fb.blit();
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+    }
+
+    for i in 1..FRAMES {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let p50_cycles = samples[FRAMES / 2];
+    let p95_cycles = samples[(FRAMES * 95 / 100).min(FRAMES - 1)];
+    let max_cycles = samples[FRAMES - 1];
+    serial_println!(
+        "[GFX] desktop-soak frames={} p50_cycles={} p95_cycles={} max_cycles={} missed_16ms=unscaled input_events=0 dirty_px_max={}",
+        FRAMES,
+        p50_cycles,
+        p95_cycles,
+        max_cycles,
+        dirty_px_max
+    );
+}
+
+#[inline]
+fn read_desktop_soak_cycles() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+fn run_allocator_hotpath_bench() {
+    const ITERS: usize = 64;
+    let mut samples = [0u64; ITERS];
+    let (fast_before, misses_before, contig_before) = memory::phys::topo_alloc_stats();
+    let free_before = memory::phys::free_count();
+    let mut ok = 0usize;
+
+    for sample in &mut samples {
+        let before = read_desktop_soak_cycles();
+        if let Some(frame) = memory::phys::alloc_frame() {
+            unsafe {
+                memory::phys::free_frame(frame);
+            }
+            ok += 1;
+        }
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+    }
+
+    for i in 1..ITERS {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let (fast_after, misses_after, contig_after) = memory::phys::topo_alloc_stats();
+    let free_after = memory::phys::free_count();
+    let p50_cycles = samples[ITERS / 2];
+    let p95_cycles = samples[(ITERS * 95 / 100).min(ITERS - 1)];
+    let max_cycles = samples[ITERS - 1];
+    serial_println!(
+        "[BENCH] alloc-frame iterations={} ok={} p50_cycles={} p95_cycles={} max_cycles={} fast_hits_delta={} bounded_misses_delta={} max_contiguous_probes_seen_delta={} free_before={} free_after={}",
+        ITERS,
+        ok,
+        p50_cycles,
+        p95_cycles,
+        max_cycles,
+        fast_after.saturating_sub(fast_before),
+        misses_after.saturating_sub(misses_before),
+        contig_after.saturating_sub(contig_before),
+        free_before,
+        free_after
+    );
+}
+
+fn run_topo_ram_hotpath_bench() {
+    const ITERS: usize = 64;
+    let mut samples = [0u64; ITERS];
+    let stats_before = memory::topo_ram::alloc_stats();
+    let free_before = memory::phys::free_count();
+    let mut ok = 0usize;
+
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let Some(hint) = memory::topo_ram::proof_hint(memory::topo_ram::ZoneHint::Low, idx & 7)
+        else {
+            continue;
+        };
+        let before = read_desktop_soak_cycles();
+        if let Some(frame) =
+            memory::topo_ram::alloc_frames(1, memory::topo_ram::ZoneHint::Low, Some(&hint))
+        {
+            memory::topo_ram::access_frame(frame);
+            memory::topo_ram::free_frames(frame, 1);
+            ok += 1;
+        }
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+    }
+
+    for i in 1..ITERS {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let stats_after = memory::topo_ram::alloc_stats();
+    let free_after = memory::phys::free_count();
+    let p50_cycles = samples[ITERS / 2];
+    let p95_cycles = samples[(ITERS * 95 / 100).min(ITERS - 1)];
+    let max_cycles = samples[ITERS - 1];
+    serial_println!(
+        "[BENCH] toporam-alloc iterations={} ok={} p50_cycles={} p95_cycles={} max_cycles={} target_cell_hits_delta={} target_cell_fallbacks_delta={} low_to_high_fallbacks_delta={} high_to_low_fallbacks_delta={} pcie_to_high_fallbacks_delta={} pcie_to_low_fallbacks_delta={} free_before={} free_after={}",
+        ITERS,
+        ok,
+        p50_cycles,
+        p95_cycles,
+        max_cycles,
+        stats_after
+            .target_cell_hits
+            .saturating_sub(stats_before.target_cell_hits),
+        stats_after
+            .target_cell_fallbacks
+            .saturating_sub(stats_before.target_cell_fallbacks),
+        stats_after
+            .low_to_high_fallbacks
+            .saturating_sub(stats_before.low_to_high_fallbacks),
+        stats_after
+            .high_to_low_fallbacks
+            .saturating_sub(stats_before.high_to_low_fallbacks),
+        stats_after
+            .pcie_to_high_fallbacks
+            .saturating_sub(stats_before.pcie_to_high_fallbacks),
+        stats_after
+            .pcie_to_low_fallbacks
+            .saturating_sub(stats_before.pcie_to_low_fallbacks),
+        free_before,
+        free_after
+    );
+}
+
+fn run_manifold_teleport_bench() {
+    const SAMPLES: usize = 3;
+    const LOADS: [usize; SAMPLES] = [8, 64, 256];
+    const PAYLOAD_BYTES: usize = 64;
+    let payload = [0xA5u8; PAYLOAD_BYTES];
+    let mut samples = [0u64; SAMPLES];
+    let mut ok = 0usize;
+    let mut ticks_max = 0u64;
+    let mut metadata_ops_max = 0u64;
+    let mut write_through_bytes_per_move = 0u64;
+    let mut payload_points = 0usize;
+    let mut same_inode = 0usize;
+    let mut src_gone = 0usize;
+    let mut dst_present = 0usize;
+
+    for (idx, load) in LOADS.iter().copied().enumerate() {
+        let mut bench_fs = fs::manifold_fs::ManifoldFS::new_ramfs();
+        let root = bench_fs.root_id();
+        let src = match bench_fs.mkdir("src", root) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let dst = match bench_fs.mkdir("dst", root) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        for i in 0..load {
+            let name = alloc::format!("f{}", i);
+            let _ = bench_fs.store(name.as_str(), b"x", src);
+        }
+        if bench_fs.store("target.bin", &payload, src).is_err() {
+            continue;
+        }
+        let inode_before = match bench_fs.resolve_path_from("target.bin", src) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+
+        let before = read_desktop_soak_cycles();
+        let result = bench_fs.teleport("target.bin", src, dst);
+        let after = read_desktop_soak_cycles();
+        samples[idx] = after.saturating_sub(before);
+
+        if let Ok(result) = result {
+            let dst_inode = bench_fs.resolve_path_from("target.bin", dst).ok();
+            let moved_same_inode =
+                result.inode_id == inode_before && dst_inode == Some(inode_before);
+            let source_removed = !bench_fs.exists("target.bin", src);
+            let destination_present = bench_fs.exists("target.bin", dst);
+            if moved_same_inode {
+                same_inode += 1;
+            }
+            if source_removed {
+                src_gone += 1;
+            }
+            if destination_present {
+                dst_present += 1;
+            }
+            if moved_same_inode && source_removed && destination_present {
+                ok += 1;
+            }
+            ticks_max = ticks_max.max(result.elapsed_ticks);
+            metadata_ops_max = metadata_ops_max.max(result.metadata_ops);
+            write_through_bytes_per_move =
+                write_through_bytes_per_move.max(result.persistence_bytes);
+            payload_points = payload_points.max(result.payload_points);
+        }
+    }
+
+    for i in 1..SAMPLES {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    serial_println!(
+        "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples={} ok={} same_inode={} src_gone={} dst_present={} entries_min={} entries_max={} payload_bytes={} p50_cycles={} p95_cycles={} max_cycles={} ticks_max={} metadata_ops_max={} write_through_bytes_per_move={} payload_points={}",
+        SAMPLES,
+        ok,
+        same_inode,
+        src_gone,
+        dst_present,
+        LOADS[0],
+        LOADS[SAMPLES - 1],
+        PAYLOAD_BYTES,
+        samples[SAMPLES / 2],
+        samples[(SAMPLES * 95 / 100).min(SAMPLES - 1)],
+        samples[SAMPLES - 1],
+        ticks_max,
+        metadata_ops_max,
+        write_through_bytes_per_move,
+        payload_points
+    );
+}
+
+fn run_scheduler_select_bench() {
+    const ITERS: usize = 64;
+    let mut samples = [0u64; ITERS];
+    let mut ok = 0usize;
+    let mut ready_before = 0usize;
+    let mut ready_after = 0usize;
+    let mut selected_priority_max = 0u8;
+
+    for sample in &mut samples {
+        let before = read_desktop_soak_cycles();
+        let probe = process::scheduler::benchmark_select_next_probe();
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+
+        selected_priority_max = selected_priority_max.max(probe.selected_priority);
+        if ready_before == 0 {
+            ready_before = probe.ready_tasks_before;
+            ready_after = probe.ready_tasks_after;
+        }
+
+        if probe.selected
+            && probe.ready_tasks_before >= 1
+            && probe.ready_tasks_after == probe.ready_tasks_before
+            && probe.ready_cells_before <= process::scheduler::SCHEDULER_SELECT_CELL_PROBE_BOUND
+            && probe.selected_cell < process::scheduler::SCHEDULER_SELECT_CELL_PROBE_BOUND
+        {
+            ok += 1;
+        }
+    }
+
+    for i in 1..ITERS {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    serial_println!(
+        "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations={} ok={} ready_before={} ready_after={} cells={} priority_buckets={} voronoi_locate_probes={} max_cell_bitmap_tests={} max_priority_bucket_scan={} context_switches=0 selected_priority_max={} p50_cycles={} p95_cycles={} max_cycles={}",
+        ITERS,
+        ok,
+        ready_before,
+        ready_after,
+        process::scheduler::SCHEDULER_SELECT_CELL_PROBE_BOUND,
+        process::scheduler::SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND,
+        process::scheduler::SCHEDULER_SELECT_VORONOI_LOCATE_PROBES,
+        process::scheduler::SCHEDULER_SELECT_MAX_CELL_BITMAP_TESTS,
+        process::scheduler::SCHEDULER_SELECT_MAX_PRIORITY_BUCKET_SCAN,
+        selected_priority_max,
+        samples[ITERS / 2],
+        samples[(ITERS * 95 / 100).min(ITERS - 1)],
+        samples[ITERS - 1]
+    );
 }
 
 /// Lock the currently selected file in the file manager.
@@ -873,6 +1281,25 @@ fn init_aether_lang() {
     serial_println!("[Aether-Lang] Titan VM ready (no_std mode)");
 }
 
+#[cfg(not(test))]
+fn run_aether_desktop_probe(app_state: &mut wm::app_state::AppState) {
+    const BOOT_PROBE: &str = r#"
+let aether_boot_probe = "seal-topology-ok"~
+let result = aether_boot_probe~
+"#;
+
+    match app_state.aether_app_host.load_script(BOOT_PROBE) {
+        Ok(result) if result == "Str(\"seal-topology-ok\")" => serial_println!(
+            "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok"
+        ),
+        Ok(result) => serial_println!(
+            "[Aether-Lang] runtime proof failed: unexpected result={}",
+            result
+        ),
+        Err(e) => serial_println!("[Aether-Lang] runtime proof failed: {}", e),
+    }
+}
+
 const TSS_BOOT_CELL_COUNT: usize = 8;
 
 fn tss_boot_centroids() -> [(f64, f64); TSS_BOOT_CELL_COUNT] {
@@ -897,26 +1324,37 @@ fn init_drivers() {
     unsafe {
         drivers::cpu::amd::init();
     }
+    serial_println!("[BOOT] driver init: cpu done");
     drivers::pci::init();
+    serial_println!("[BOOT] driver init: pci done");
     if drivers::block::ahci::init().is_none() {
         serial_println!("[AHCI] Initialization failed, continuing without AHCI");
     }
+    serial_println!("[BOOT] driver init: ahci done");
     drivers::disk::init();
+    serial_println!("[BOOT] driver init: disk done");
     drivers::wifi::init();
+    serial_println!("[BOOT] driver init: wifi done");
     drivers::bluetooth::init();
+    serial_println!("[BOOT] driver init: bluetooth done");
     drivers::gpu::init();
+    serial_println!("[BOOT] driver init: gpu done");
     if drivers::nvme::init().is_none() {
         serial_println!("[NVMe] Initialization failed, continuing without NVMe");
     }
+    serial_println!("[BOOT] driver init: nvme done");
     if drivers::audio::hda::init().is_none() {
         serial_println!("[HDA] Initialization failed, continuing without audio");
     }
+    serial_println!("[BOOT] driver init: hda done");
     if drivers::usb::xhci::init().is_none() {
         serial_println!("[xHCI] Initialization failed, continuing without USB 3.0");
     } else {
         drivers::usb::mass_storage::init();
     }
+    serial_println!("[BOOT] driver init: xhci done");
     net::init();
+    serial_println!("[BOOT] driver init: net done");
 }
 
 #[cfg(not(test))]
