@@ -368,7 +368,7 @@ fn handle_mkdir(fs: &mut ManifoldFS, name: &str) {
         return;
     }
     match fs.mkdir(name, 0) {
-        Ok(id) => println!("  Created directory '{}' (inode {})", name, id),
+        Ok(id) => println!("  Created directory '{name}' (inode {id})"),
         Err(e) => println!("  Error: {e}"),
     }
 }
@@ -456,7 +456,7 @@ fn handle_du(fs: &ManifoldFS) {
         "    Manifest size: {} bytes (all payloads)",
         stats.total_files * 64 * 3 * 8
     );
-    println!("    Original data: {} bytes", total_original);
+    println!("    Original data: {total_original} bytes");
     println!(
         "    Compression: all files → {} points × 24 bytes each",
         stats.total_files * 64
@@ -491,7 +491,7 @@ fn handle_theorems(world: &World, fs: &ManifoldFS) {
     }
 
     let passed = results.iter().filter(|(_, ok)| *ok).count();
-    println!("\n  {passed}/10 verified in {:.2?}", dt);
+    println!("\n  {passed}/10 verified in {dt:.2?}");
     println!("  T1-T5: ACTIVE (driving ManifoldFS decisions)");
     println!("  T6-T10: VERIFIED (boot-checked, bounds satisfied)");
 }
@@ -541,7 +541,7 @@ fn format_bytes(b: u64) -> String {
     } else if b >= 1_000 {
         format!("{:.1} KB", b as f64 / 1e3)
     } else {
-        format!("{} B", b)
+        format!("{b} B")
     }
 }
 
@@ -553,7 +553,7 @@ fn format_duration_ns(ns: u64) -> String {
     } else if ns >= 1_000 {
         format!("{:.2} μs", ns as f64 / 1e3)
     } else {
-        format!("{} ns", ns)
+        format!("{ns} ns")
     }
 }
 

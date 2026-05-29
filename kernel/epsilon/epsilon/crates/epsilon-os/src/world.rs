@@ -914,7 +914,7 @@ mod tests {
         let mem = ManifoldMemory::new(128, 100);
         let v = mem.encode_text("topological operating system");
         let norm: f64 = libm::sqrt(v.iter().map(|x| x * x).sum::<f64>());
-        assert!((norm - 1.0).abs() < 1e-10, "norm = {}", norm);
+        assert!((norm - 1.0).abs() < 1e-10, "norm = {norm}");
     }
 
     #[test]
@@ -1031,7 +1031,7 @@ mod tests {
         let p = LatentPredictor::new(64, 32, 42);
         let a = p.hash_action("some action string");
         let norm = libm::sqrt(a.iter().map(|x| x * x).sum::<f64>());
-        assert!((norm - 1.0).abs() < 1e-10, "norm = {}", norm);
+        assert!((norm - 1.0).abs() < 1e-10, "norm = {norm}");
     }
 
     // ── World ───────────────────────────────────────────────────
@@ -1073,7 +1073,7 @@ mod tests {
             .filter(|(_, ok)| !*ok)
             .map(|(name, _)| *name)
             .collect();
-        assert!(failed.is_empty(), "failed theorems: {:?}", failed);
+        assert!(failed.is_empty(), "failed theorems: {failed:?}");
         assert_eq!(results.len(), 10);
     }
 

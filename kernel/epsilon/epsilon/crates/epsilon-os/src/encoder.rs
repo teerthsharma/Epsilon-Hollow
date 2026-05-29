@@ -379,8 +379,7 @@ mod tests {
             );
             assert!(
                 (norm - 1.0).abs() < 1e-10,
-                "point not on unit sphere: norm={}",
-                norm
+                "point not on unit sphere: norm={norm}"
             );
         }
     }

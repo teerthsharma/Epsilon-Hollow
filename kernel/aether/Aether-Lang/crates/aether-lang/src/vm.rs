@@ -146,7 +146,7 @@ impl TitanVM {
                     let val = self.stack.pop().ok_or("Stack underflow")?;
                     // In no_std we might print differently, for now simple debug
                     #[cfg(feature = "std")]
-                    println!("{:?}", val);
+                    println!("{val:?}");
                 }
 
                 OpCode::EMBED => {
@@ -552,7 +552,7 @@ mod tests {
         if let Value::Num(n) = res {
             assert_eq!(n, 3.0);
         } else {
-            panic!("Expected number, got {:?}", res);
+            panic!("Expected number, got {res:?}");
         }
     }
 }

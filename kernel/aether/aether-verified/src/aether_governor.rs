@@ -109,7 +109,7 @@ mod tests {
             // After initial transient, error should be bounded
             if prev_error_abs < 1.0 {
                 // Not strictly monotone due to clamp, but bounded
-                assert!(error_abs < 10.0, "Error diverged: {}", error_abs);
+                assert!(error_abs < 10.0, "Error diverged: {error_abs}");
             }
             prev_error_abs = error_abs;
         }
@@ -131,6 +131,6 @@ mod tests {
     #[test]
     fn test_clamp_bounds() {
         let eps = governor_step(0.5, 0.0, 100.0, 1.0, 10.0, 0.0, 0.1, 0.9, 0.3);
-        assert!((0.1..=0.9).contains(&eps), "Clamp violated: {}", eps);
+        assert!((0.1..=0.9).contains(&eps), "Clamp violated: {eps}");
     }
 }

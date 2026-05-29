@@ -30,9 +30,9 @@ fn main() {
         let centroids = [(0.0_f64, 0.0_f64), (1.2, 0.0), (0.0, 1.2)];
         let packing_ok = aether_tss::verify_packing_bound(centroids.len(), 0.5)
             && aether_tss::verify_separation(&centroids, 0.5);
-        println!("[T1 TSS]   P_max(theta=0.5) = {:.3}", p_max_05);
-        println!("           theta_min(eps=0.1) = {:.4} rad", theta_min);
-        println!("           packing OK: {}", packing_ok);
+        println!("[T1 TSS]   P_max(theta=0.5) = {p_max_05:.3}");
+        println!("           theta_min(eps=0.1) = {theta_min:.4} rad");
+        println!("           packing OK: {packing_ok}");
         if packing_ok {
             passed += 1;
         }
@@ -48,12 +48,11 @@ fn main() {
         print!("[T2 SCM]   trajectory:");
         for _ in 0..5 {
             s = aether_scm::apply_operator(s, s_pred, alpha);
-            print!(" {:.3}", s);
+            print!(" {s:.3}");
         }
         println!();
         println!(
-            "           rho = {:.3}, half-life ~ {:.2} steps",
-            rho, half_life
+            "           rho = {rho:.3}, half-life ~ {half_life:.2} steps"
         );
         let contracting = rho < 1.0;
         if contracting {
@@ -68,10 +67,9 @@ fn main() {
         let h_after = aether_gmc::renyi_entropy(&[100, 900], 2.0);
         let dh = h_after - h_before;
         let nonincreasing = aether_gmc::verify_entropy_nonincreasing(40, 60, 1000);
-        println!("[T3 GMC]   max merges (P=1024) = {}", merges);
+        println!("[T3 GMC]   max merges (P=1024) = {merges}");
         println!(
-            "           ΔH₂ on merge = {:.5} bits  (nonincreasing: {})",
-            dh, nonincreasing
+            "           ΔH₂ on merge = {dh:.5} bits  (nonincreasing: {nonincreasing})"
         );
         if nonincreasing {
             passed += 1;
@@ -98,10 +96,9 @@ fn main() {
         }
         let stable = aether_governor::gain_margin_refined(dt);
         println!(
-            "[T4 PDG]   eps after 50 steps = {:.5} (target ratio {:.2})",
-            last, r_target
+            "[T4 PDG]   eps after 50 steps = {last:.5} (target ratio {r_target:.2})"
         );
-        println!("           gain margin refined: {}", stable);
+        println!("           gain margin refined: {stable}");
         if stable {
             passed += 1;
         }
@@ -117,10 +114,9 @@ fn main() {
         let e = aether_hcs::euc_distortion_bound(branching, dim, depth);
         let ratio = aether_hcs::separation_ratio(curvature, branching, depth);
         let verdict = aether_hcs::verify_hcs(curvature, branching, dim, depth);
-        println!("[T5 HCS]   hyp/euc distortion = {:.4} / {:.4}", h, e);
+        println!("[T5 HCS]   hyp/euc distortion = {h:.4} / {e:.4}");
         println!(
-            "           separation ratio = {:.4e}, holds: {}",
-            ratio, verdict
+            "           separation ratio = {ratio:.4e}, holds: {verdict}"
         );
         if verdict {
             passed += 1;
@@ -134,8 +130,8 @@ fn main() {
         let p = 8_usize; // GPUs
         let dt_bound = aether_world::tangent_deviation_bound(delta, kappa, p);
         let cost = aether_world::nvlink_sync_cost(70_000_000_000, p, 900.0);
-        println!("[T6 RGCS]  Δ_T(p={}) = {:.3e}", p, dt_bound);
-        println!("           NVLink sync cost (70B params): {:.3} s", cost);
+        println!("[T6 RGCS]  Δ_T(p={p}) = {dt_bound:.3e}");
+        println!("           NVLink sync cost (70B params): {cost:.3} s");
         passed += 1;
     }
 
@@ -145,10 +141,9 @@ fn main() {
         let sparse = aether_world::sparse_latency(base, 0.7);
         let kv_gb = aether_world::kv_cache_size_gb(8192, 32, 128, 8, 2);
         println!(
-            "[T7 PHKP]  E[T] base = {:.1} ns, sparse(s=0.7) = {:.1} ns",
-            base, sparse
+            "[T7 PHKP]  E[T] base = {base:.1} ns, sparse(s=0.7) = {sparse:.1} ns"
         );
-        println!("           KV cache (8k ctx, 32L) = {:.3} GB", kv_gb);
+        println!("           KV cache (8k ctx, 32L) = {kv_gb:.3} GB");
         passed += 1;
     }
 
@@ -160,11 +155,10 @@ fn main() {
         let h100_power = 700.0_f64;
         let headroom = h100_power / (e_min * 1.0e9); // vs 1 GHz update rate
         println!(
-            "[T8 TEB]   k_B·T·ln2 @ {}K = {:.3e} J/bit",
-            temp_k, landauer
+            "[T8 TEB]   k_B·T·ln2 @ {temp_k}K = {landauer:.3e} J/bit"
         );
-        println!("           E_min/update (1M hot, 16b) = {:.3e} J", e_min);
-        println!("           H100 700W headroom factor  = {:.3e}", headroom);
+        println!("           E_min/update (1M hot, 16b) = {e_min:.3e} J");
+        println!("           H100 700W headroom factor  = {headroom:.3e}");
         passed += 1;
     }
 
@@ -173,8 +167,8 @@ fn main() {
         let pairwise = [0.05_f64, 0.04, 0.06, 0.03, 0.05];
         let chain = aether_world::transitive_error(&pairwise);
         let single = aether_world::alignment_error_bound(0.95, 1.0);
-        println!("[T9 CMA]   single-stage eps_align = {:.4}", single);
-        println!("           5-stage transitive eps = {:.4}", chain);
+        println!("[T9 CMA]   single-stage eps_align = {single:.4}");
+        println!("           5-stage transitive eps = {chain:.4}");
         passed += 1;
     }
 
@@ -186,8 +180,7 @@ fn main() {
         let entropy = 5.0_f64; // bits/token
         let h = aether_world::predictive_horizon(p, d, eps_quant, entropy);
         println!(
-            "[T10 WPHB] horizon = {:.3e} tokens (P={}, d={}, h={:.1} b/tok)",
-            h, p, d, entropy
+            "[T10 WPHB] horizon = {h:.3e} tokens (P={p}, d={d}, h={entropy:.1} b/tok)"
         );
         passed += 1;
     }
@@ -195,8 +188,7 @@ fn main() {
     println!();
     println!("============================================================");
     println!(
-        "All 10 theorems exercised. Bounds satisfied: {}/10.",
-        passed
+        "All 10 theorems exercised. Bounds satisfied: {passed}/10."
     );
     println!("============================================================");
 }

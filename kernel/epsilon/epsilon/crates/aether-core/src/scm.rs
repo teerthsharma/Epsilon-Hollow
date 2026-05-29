@@ -195,7 +195,7 @@ mod tests {
         let start = [100.0, -100.0, 50.0, -50.0];
         let out = scm.iterate(start, pred, 200);
         let err = l2_diff(&out, &pred);
-        assert!(err < 1e-6, "after 200 iterations err = {}", err);
+        assert!(err < 1e-6, "after 200 iterations err = {err}");
     }
 
     #[test]
@@ -249,9 +249,7 @@ mod tests {
         let k = hit_at.expect("did not converge within budget");
         assert!(
             k <= budget,
-            "took {} iters, theoretical bound + 5 = {}",
-            k,
-            budget
+            "took {k} iters, theoretical bound + 5 = {budget}"
         );
     }
 }

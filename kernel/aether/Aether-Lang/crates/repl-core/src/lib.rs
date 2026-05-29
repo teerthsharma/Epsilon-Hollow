@@ -28,7 +28,7 @@ pub fn run_repl(config: &LangConfig) {
     let mut rl = match DefaultEditor::new() {
         Ok(editor) => editor,
         Err(e) => {
-            eprintln!("Error initializing readline: {}", e);
+            eprintln!("Error initializing readline: {e}");
             return;
         }
     };
@@ -53,8 +53,8 @@ pub fn run_repl(config: &LangConfig) {
                 let _ = rl.add_history_entry(&line);
 
                 match execute_line(&mut interpreter, trimmed) {
-                    Ok(result) => println!("{}", result),
-                    Err(e) => eprintln!("Error: {}", e),
+                    Ok(result) => println!("{result}"),
+                    Err(e) => eprintln!("Error: {e}"),
                 }
             }
             Err(ReadlineError::Interrupted) => {
@@ -65,7 +65,7 @@ pub fn run_repl(config: &LangConfig) {
                 break;
             }
             Err(err) => {
-                eprintln!("Error: {:?}", err);
+                eprintln!("Error: {err:?}");
                 break;
             }
         }
@@ -76,11 +76,11 @@ fn execute_line(interpreter: &mut Interpreter, source: &str) -> Result<String, S
     let mut parser = Parser::new(source);
     let ast = parser
         .parse()
-        .map_err(|e| format!("Parse error: {:?}", e))?;
+        .map_err(|e| format!("Parse error: {e:?}"))?;
     let value = interpreter
         .execute(&ast)
-        .map_err(|e| format!("Runtime error: {:?}", e))?;
-    Ok(format!("{:?}", value))
+        .map_err(|e| format!("Runtime error: {e:?}"))?;
+    Ok(format!("{value:?}"))
 }
 
 pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
@@ -90,13 +90,13 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
         config.name.to_uppercase(),
         path.display()
     );
-    println!("  Mode: {}", mode);
+    println!("  Mode: {mode}");
     println!("═══════════════════════════════════════════════════════════════");
 
     let source = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) => {
-            eprintln!("Error reading file: {}", e);
+            eprintln!("Error reading file: {e}");
             std::process::exit(1);
         }
     };
@@ -107,7 +107,7 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
             let exts: Vec<_> = config
                 .extensions
                 .iter()
-                .map(|e| format!(".{}", e))
+                .map(|e| format!(".{e}"))
                 .collect();
             println!(
                 "Warning: File extension '.{}' is not standard ({})",
@@ -121,7 +121,7 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
     let ast = match parser.parse() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("Parse error: {:?}", e);
+            eprintln!("Parse error: {e:?}");
             std::process::exit(1);
         }
     };
@@ -133,12 +133,12 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
         vm.load_code(code);
         match vm.run() {
             Ok(result) => {
-                println!("{:?}", result);
+                println!("{result:?}");
                 println!();
                 println!("Titan Execution complete. \u{26a1}");
             }
             Err(e) => {
-                eprintln!("Titan Runtime error: {:?}", e);
+                eprintln!("Titan Runtime error: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -146,12 +146,12 @@ pub fn run_file(config: &LangConfig, path: &Path, mode: &str) {
         let mut interpreter = Interpreter::new();
         match interpreter.execute(&ast) {
             Ok(result) => {
-                println!("{:?}", result);
+                println!("{result:?}");
                 println!();
                 println!("Bio-Script Execution complete. \u{1f9ad}");
             }
             Err(e) => {
-                eprintln!("Runtime error: {:?}", e);
+                eprintln!("Runtime error: {e:?}");
                 std::process::exit(1);
             }
         }
@@ -164,7 +164,7 @@ pub fn check_file(path: &Path) {
     let source = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(e) => {
-            eprintln!("Error reading file: {}", e);
+            eprintln!("Error reading file: {e}");
             std::process::exit(1);
         }
     };
@@ -173,7 +173,7 @@ pub fn check_file(path: &Path) {
     match parser.parse() {
         Ok(_) => println!("\u{2713} Syntax OK"),
         Err(e) => {
-            eprintln!("\u{274c} Parse error: {:?}", e);
+            eprintln!("\u{274c} Parse error: {e:?}");
             std::process::exit(1);
         }
     }

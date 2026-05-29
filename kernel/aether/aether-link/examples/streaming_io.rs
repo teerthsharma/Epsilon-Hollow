@@ -111,7 +111,7 @@ fn main() {
     println!();
 
     let cycles = 100_000;
-    println!("📊 Running {} I/O cycles per workload...", cycles);
+    println!("📊 Running {cycles} I/O cycles per workload...");
     println!();
 
     println!("┌──────────────┬──────────┬──────────┬─────────┬─────────────┬────────────┐");
@@ -143,7 +143,7 @@ fn main() {
     let elapsed = start.elapsed();
     let ns_per_op = elapsed.as_nanos() as f64 / iterations as f64;
 
-    println!("   Single-cycle latency: {:.1} ns", ns_per_op);
+    println!("   Single-cycle latency: {ns_per_op:.1} ns");
     println!(
         "   Throughput: {:.1} million decisions/sec",
         1000.0 / ns_per_op
@@ -168,9 +168,9 @@ fn main() {
     let p99 = latencies[990];
     let p999 = latencies[999];
 
-    println!("   P50:  {:.1} ns", p50);
-    println!("   P99:  {:.1} ns", p99);
-    println!("   P999: {:.1} ns", p999);
+    println!("   P50:  {p50:.1} ns");
+    println!("   P99:  {p99:.1} ns");
+    println!("   P999: {p999:.1} ns");
     println!("   Jitter (P99-P50): {:.1} ns", p99 - p50);
     println!();
 

@@ -28,7 +28,7 @@ use crate::drivers::interrupts;
 const VORONOI_CELLS: usize = 8;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InodeKind {
     File,
     Directory,
@@ -540,7 +540,7 @@ impl ManifoldFS {
     }
 
     pub fn mkdir(&mut self, name: &str, parent_id: u64) -> Result<u64, FsError> {
-        if self.dirs.lookup(parent_id, ".").is_none() && parent_id != self.root_id {
+        if parent_id != self.root_id && self.inodes.get(parent_id).map_or(true, |node| node.kind != InodeKind::Directory) {
             return Err(FsError::NotADirectory);
         }
         if self.dirs.lookup(parent_id, name).is_some() {

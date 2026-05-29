@@ -519,8 +519,7 @@ mod tests {
         let norm = sqrt(norm_sq);
         assert!(
             (norm - 1.0).abs() < 1e-10,
-            "Projected point must lie on unit sphere, got ||p||₂ = {}",
-            norm
+            "Projected point must lie on unit sphere, got ||p||₂ = {norm}"
         );
     }
 
@@ -604,8 +603,7 @@ mod tests {
         let result = hollow.inject_into_void(payload);
         assert!(
             result.is_ok(),
-            "Valid payload must be accepted by void: {:?}",
-            result
+            "Valid payload must be accepted by void: {result:?}"
         );
 
         let merged = hollow.assimilate();
@@ -634,9 +632,7 @@ mod tests {
 
         assert!(
             close_dist < far_dist,
-            "Similar embeddings ({:.6}) must map closer than dissimilar ({:.6})",
-            close_dist,
-            far_dist
+            "Similar embeddings ({close_dist:.6}) must map closer than dissimilar ({far_dist:.6})"
         );
     }
 

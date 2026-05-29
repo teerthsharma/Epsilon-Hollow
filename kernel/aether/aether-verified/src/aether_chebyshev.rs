@@ -87,7 +87,7 @@ mod tests {
     fn test_stddev_basic() {
         let x = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
         let sd = stddev(&x);
-        assert!((sd - 2.0).abs() < 0.1, "stddev={}", sd);
+        assert!((sd - 2.0).abs() < 0.1, "stddev={sd}");
     }
 
     #[test]

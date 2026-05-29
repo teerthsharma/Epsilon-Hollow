@@ -111,9 +111,7 @@ mod tests {
             let dot: f64 = q.iter().zip(k.iter()).map(|(a, b)| a * b).sum();
             assert!(
                 dot < threshold,
-                "Soundness violation: dot={} >= threshold={}",
-                dot,
-                threshold
+                "Soundness violation: dot={dot} >= threshold={threshold}"
             );
         }
     }
