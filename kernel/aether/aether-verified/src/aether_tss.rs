@@ -74,7 +74,7 @@ mod tests {
         // θ_min = π/6 (30°), sin(π/12) ≈ 0.2588
         // P_max = 4 / 0.2588² ≈ 59.7
         let pm = p_max(core::f64::consts::FRAC_PI_6);
-        assert!(pm > 50.0 && pm < 70.0, "P_max = {}", pm);
+        assert!(pm > 50.0 && pm < 70.0, "P_max = {pm}");
     }
 
     #[test]

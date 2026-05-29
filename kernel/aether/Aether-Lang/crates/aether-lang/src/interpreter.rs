@@ -951,8 +951,7 @@ impl Interpreter {
             return self.execute_function(&func, &args);
         }
         Err(InterpreterError::Message(format!(
-            "function '{}' not found",
-            name
+            "function '{name}' not found"
         )))
     }
 
@@ -1048,7 +1047,7 @@ impl Interpreter {
         let class_handle = if let Some(Value::Class(h)) = self.variables.get(class_name) {
             *h
         } else {
-            return Err(format!("Class '{}' not found", class_name).into());
+            return Err(format!("Class '{class_name}' not found").into());
         };
 
         let class_def = self.classes[class_handle.0].clone();
@@ -1081,7 +1080,7 @@ impl Interpreter {
             "window" => self.import_window(stmt),
             "ui" => self.import_ui(stmt),
             "input" => self.import_input(stmt),
-            _ => Err(format!("Module '{}' not found", mod_name).into()),
+            _ => Err(format!("Module '{mod_name}' not found").into()),
         }
     }
 
@@ -1126,7 +1125,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::MathRange),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in math", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in math").into()),
             }
         } else {
             self.variables
@@ -1156,7 +1155,7 @@ impl Interpreter {
                     String::from("Betti"),
                     Value::NativeFn(NativeFunction::TopoBetti),
                 ),
-                _ => return Err(format!("Symbol '{}' not found in topology", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in topology").into()),
             };
         }
         Ok(Value::Unit)
@@ -1181,7 +1180,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::Conv2DNew),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in ml", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in ml").into()),
             };
         } else {
             self.variables
@@ -1299,7 +1298,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::GfxGlowRect),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in graphics", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in graphics").into()),
             };
         } else {
             self.variables.insert(
@@ -1391,7 +1390,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::WinSetDirty),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in window", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in window").into()),
             };
         } else {
             self.variables.insert(
@@ -1457,7 +1456,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::UiSlider),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in ui", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in ui").into()),
             };
         } else {
             self.variables.insert(
@@ -1509,7 +1508,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::InKeyPressed),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in input", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in input").into()),
             };
         } else {
             self.variables.insert(
@@ -1567,7 +1566,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::PciReadBar5),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in Seal", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in Seal").into()),
             };
         } else {
             self.variables
@@ -1603,7 +1602,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::FsMkdir),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in fs", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in fs").into()),
             };
         } else {
             self.variables
@@ -1622,7 +1621,7 @@ impl Interpreter {
                     self.variables
                         .insert(String::from("exit"), Value::NativeFn(NativeFunction::Print));
                 }
-                _ => return Err(format!("Symbol '{}' not found in process", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in process").into()),
             };
         } else {
             self.variables.insert(
@@ -1648,7 +1647,7 @@ impl Interpreter {
                         Value::NativeFn(NativeFunction::NetHasNic),
                     );
                 }
-                _ => return Err(format!("Symbol '{}' not found in net", symbol).into()),
+                _ => return Err(format!("Symbol '{symbol}' not found in net").into()),
             };
         } else {
             self.variables
@@ -1932,7 +1931,7 @@ impl Interpreter {
                     self.blocks.push(block);
                     Ok(Value::Block(block_handle))
                 } else {
-                    Err(format!("Manifold '{}' not found", object).into())
+                    Err(format!("Manifold '{object}' not found").into())
                 }
             }
             ExprKind::Config(_) => {
@@ -2124,10 +2123,10 @@ impl Interpreter {
                         let val = self.evaluate_expr(expr)?;
                         #[cfg(feature = "std")]
                         match val {
-                            Value::Num(n) => print!("{}", n),
-                            Value::Str(s) => print!("{}", s),
-                            Value::Bool(b) => print!("{}", b),
-                            _ => print!("{:?}", val),
+                            Value::Num(n) => print!("{n}"),
+                            Value::Str(s) => print!("{s}"),
+                            Value::Bool(b) => print!("{b}"),
+                            _ => print!("{val:?}"),
                         }
                     }
                 }
@@ -2752,7 +2751,7 @@ impl Interpreter {
             let val = self.evaluate_expr(expr)?;
             self.value_to_tensor_core(&val)
         } else {
-            Err(format!("Missing argument {}", index).into())
+            Err(format!("Missing argument {index}").into())
         }
     }
 
@@ -2815,7 +2814,7 @@ impl Interpreter {
         let val = if let Some(v) = self.variables.get(object_name) {
             v.clone()
         } else {
-            return Err(format!("Object '{}' not found", object_name).into());
+            return Err(format!("Object '{object_name}' not found").into());
         };
         match val {
             Value::List(mut list) => {
@@ -2842,7 +2841,7 @@ impl Interpreter {
                         let idx = self.get_arg_num(args, 0)? as usize;
                         Ok(list.get(idx).cloned().unwrap_or(Value::Unit))
                     }
-                    _ => Err(format!("Method '{}' not found on List", method)),
+                    _ => Err(format!("Method '{method}' not found on List")),
                 };
                 Ok(res?)
             }
@@ -2877,7 +2876,7 @@ impl Interpreter {
                         let output = mlp.forward(&input);
                         Ok(Value::Tensor(output))
                     }
-                    _ => Err(format!("Method '{}' not found on MLP", method).into()),
+                    _ => Err(format!("Method '{method}' not found on MLP").into()),
                 }
             }
             Value::Module(mod_name) => match (mod_name.as_str(), method.as_str()) {
@@ -2899,7 +2898,7 @@ impl Interpreter {
                 ("Seal", "pci_read_bar5") => {
                     self.execute_native_fn(NativeFunction::PciReadBar5, args)
                 }
-                _ => Err(format!("Method '{}' not found in module '{}'", method, mod_name).into()),
+                _ => Err(format!("Method '{method}' not found in module '{mod_name}'").into()),
             },
             _ => Ok(Value::Unit),
         }

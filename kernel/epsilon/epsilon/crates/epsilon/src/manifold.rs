@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(b0, 1, "Shell must be connected (β₀=1)");
         // β₂ = 2 − β₀ + β₁; for a well-formed S² cloud we expect β₂ ≥ 1
         // (exact value depends on edge count; lower bound holds for connected β₁=0)
-        assert!(b2 >= 1, "S² point cloud must have β₂ ≥ 1, got {}", b2);
+        assert!(b2 >= 1, "S² point cloud must have β₂ ≥ 1, got {b2}");
     }
 
     #[test]

@@ -228,7 +228,7 @@ mod tests {
         // Run gossip
         let iters = ring.converge(0.1, 100);
 
-        println!("Converged in {} iterations", iters);
+        println!("Converged in {iters} iterations");
 
         // Verify
         for node in &ring.nodes {

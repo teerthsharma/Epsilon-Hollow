@@ -98,7 +98,7 @@ mod tests {
     fn test_default_rate() {
         let rho = contraction_rate(0.01, 0.05, 1.0);
         // ρ = 1 − 0.01/1.05 ≈ 0.9905
-        assert!((rho - 0.9905).abs() < 0.001, "ρ = {}", rho);
+        assert!((rho - 0.9905).abs() < 0.001, "ρ = {rho}");
     }
 
     #[test]
@@ -106,7 +106,7 @@ mod tests {
         let rho = contraction_rate(0.01, 0.05, 1.0);
         let hl = half_life(rho);
         // ~73 steps
-        assert!(hl > 65.0 && hl < 80.0, "t_1/2 = {}", hl);
+        assert!(hl > 65.0 && hl < 80.0, "t_1/2 = {hl}");
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod tests {
     fn test_settling_99() {
         let rho = contraction_rate(0.01, 0.05, 1.0);
         let t99 = settling_time(rho, 0.01);
-        assert!(t99 > 400.0 && t99 < 550.0, "t_99 = {}", t99);
+        assert!(t99 > 400.0 && t99 < 550.0, "t_99 = {t99}");
     }
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_spectral_radius_less_than_one() {
         let rho = spectral_radius(0.01, 0.05, 1.0);
-        assert!(rho < 1.0, "spectral_radius = {}", rho);
+        assert!(rho < 1.0, "spectral_radius = {rho}");
     }
 
     #[test]

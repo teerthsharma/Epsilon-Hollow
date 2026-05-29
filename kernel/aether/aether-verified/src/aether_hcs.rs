@@ -53,8 +53,8 @@ mod tests {
         // δ_euc = ln(4)/128 · 9 ≈ 0.0974
         let d_hyp = hyp_distortion_bound(1.0, 128, 10);
         let d_euc = euc_distortion_bound(4, 128, 10);
-        assert!(d_hyp < 0.002, "δ_hyp = {}", d_hyp);
-        assert!(d_euc > 0.05, "δ_euc = {}", d_euc);
+        assert!(d_hyp < 0.002, "δ_hyp = {d_hyp}");
+        assert!(d_euc > 0.05, "δ_euc = {d_euc}");
         assert!(verify_hcs(1.0, 4, 128, 10));
     }
 
@@ -64,14 +64,14 @@ mod tests {
         let d_hyp = hyp_distortion_bound(0.1, 4096, 50);
         let _d_euc = euc_distortion_bound(64, 4096, 50);
         let ratio = separation_ratio(0.1, 64, 50);
-        assert!(d_hyp < 0.0001, "δ_hyp = {}", d_hyp);
-        assert!(ratio > 400.0, "ratio = {}", ratio);
+        assert!(d_hyp < 0.0001, "δ_hyp = {d_hyp}");
+        assert!(ratio > 400.0, "ratio = {ratio}");
     }
 
     #[test]
     fn test_separation_ratio() {
         let r = separation_ratio(1.0, 4, 10);
         // c·ln(4)·10·9/2 ≈ 62.4
-        assert!(r > 60.0 && r < 65.0, "ratio = {}", r);
+        assert!(r > 60.0 && r < 65.0, "ratio = {r}");
     }
 }

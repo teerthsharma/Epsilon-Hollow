@@ -281,7 +281,7 @@ mod tests {
                     "At least one point must be assimilated"
                 );
             }
-            other => panic!("Expected Success, got {:?}", other),
+            other => panic!("Expected Success, got {other:?}"),
         }
 
         // Governor must be restored (β must be non-zero again)

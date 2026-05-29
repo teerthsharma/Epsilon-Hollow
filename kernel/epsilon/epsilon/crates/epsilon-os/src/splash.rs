@@ -44,8 +44,7 @@ pub fn print_splash(config: &LlmConfig, dim: usize, capacity: usize, theorems_pa
         }
     );
     println!(
-        "    ║  Memory: dim={:<4} capacity={:<7}          ║",
-        dim, capacity
+        "    ║  Memory: dim={dim:<4} capacity={capacity:<7}          ║"
     );
     println!(
         "    ║  LLM: {:<42}║",

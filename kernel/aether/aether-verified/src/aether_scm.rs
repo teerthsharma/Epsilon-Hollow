@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn test_half_life() {
         let hl = convergence_half_life(0.99);
-        assert!(hl > 60.0 && hl < 80.0, "half_life = {}", hl);
+        assert!(hl > 60.0 && hl < 80.0, "half_life = {hl}");
     }
 
     #[test]

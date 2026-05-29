@@ -202,7 +202,7 @@ impl ManifoldFS {
         // T4: Governor tick
         self.governor_tick(1.0);
 
-        self.log_event("T1/TSS", format!("stored '{}' → cell {}", name, cell));
+        self.log_event("T1/TSS", format!("stored '{name}' → cell {cell}"));
 
         Ok(id)
     }
@@ -271,8 +271,7 @@ impl ManifoldFS {
         self.log_event(
             "T1/TSS+T4/AGCR",
             format!(
-                "teleported '{}' ({} bytes) in {:?} [governor ε: {:.4} → {:.4}]",
-                name, original_size, elapsed, pre_epsilon, post_epsilon
+                "teleported '{name}' ({original_size} bytes) in {elapsed:?} [governor ε: {pre_epsilon:.4} → {post_epsilon:.4}]"
             ),
         );
 

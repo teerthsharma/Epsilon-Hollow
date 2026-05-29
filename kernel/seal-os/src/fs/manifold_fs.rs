@@ -28,7 +28,7 @@ use crate::drivers::interrupts;
 const VORONOI_CELLS: usize = 8;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InodeKind {
     File,
     Directory,

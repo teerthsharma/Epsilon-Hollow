@@ -33,7 +33,7 @@ fn main() {
     ];
 
     println!("📥 Processing LBA stream ({} addresses):", lba_stream.len());
-    println!("   {:?}", lba_stream);
+    println!("   {lba_stream:?}");
     println!();
 
     // Process the I/O cycle

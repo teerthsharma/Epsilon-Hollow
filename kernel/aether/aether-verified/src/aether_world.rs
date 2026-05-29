@@ -246,7 +246,7 @@ mod tests {
     #[test]
     fn test_betti_latency() {
         let lat = betti_latency(800, 150, 50);
-        assert!(lat < 5000.0, "latency = {} ns", lat);
+        assert!(lat < 5000.0, "latency = {lat} ns");
     }
 
     #[test]
@@ -259,13 +259,13 @@ mod tests {
     #[test]
     fn test_landauer() {
         let e = landauer_energy_per_bit(300.0);
-        assert!(e > 2.8e-21 && e < 2.9e-21, "E = {} J", e);
+        assert!(e > 2.8e-21 && e < 2.9e-21, "E = {e} J");
     }
 
     #[test]
     fn test_hot_ratio_headroom() {
         let r = max_hot_ratio(70_000_000_000, 700.0, 20.0, 16, 300.0);
-        assert!(r > 1e10, "r_max = {}", r); // Enormous headroom
+        assert!(r > 1e10, "r_max = {r}"); // Enormous headroom
     }
 
     // T9 tests
@@ -304,14 +304,14 @@ mod tests {
     #[test]
     fn test_horizon_info() {
         let h = predictive_horizon(1000, 128, 1e-4, 10.0);
-        assert!(h > 1e5, "H = {}", h);
+        assert!(h > 1e5, "H = {h}");
     }
 
     #[test]
     fn test_stability_horizon_paper_value() {
         let h = paper_horizon_estimate();
         // Formula gives ~4.2 billion; paper's 21.8M includes additional capacity factors.
-        assert!(h > 1e6, "H_stability = {}", h);
+        assert!(h > 1e6, "H_stability = {h}");
     }
 
     #[test]
@@ -327,6 +327,6 @@ mod tests {
         let horizons = vec![1e6, 5e5, 1e5];
         let cross = vec![1000.0, 500.0, 200.0];
         let combined = multi_model_horizon(&horizons, &cross, 10.0);
-        assert!(combined > 1e6, "H_combined = {}", combined);
+        assert!(combined > 1e6, "H_combined = {combined}");
     }
 }
