@@ -55,6 +55,7 @@ pub mod thermodynamic_plasticity;
 pub mod topology;
 /// Topological State Synchronization (TSS): O(1)-amortized spherical Voronoi index.
 pub mod tss;
+pub mod world_model_horizon;
 
 // Re-export key types for convenience
 pub use aether::{BlockMetadata, DriftDetector, HierarchicalBlockTree};
