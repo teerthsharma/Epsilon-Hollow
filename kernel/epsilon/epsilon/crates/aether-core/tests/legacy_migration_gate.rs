@@ -18,6 +18,10 @@ use aether_core::meta_controller::{
     Action, ConstitutionalSafetyFilter, DecisionReason, DecisionTarget, MetaController, MetaInput,
     ToolDecision, ToolRegistry, ToolSpec,
 };
+use aether_core::parallel_riemannian::{
+    coherence_bound, nvlink_sync_cost_seconds, stiefel_project_tangent, sync_frequency,
+    tangent_space_deviation, DistributedRiemannianSgd,
+};
 use aether_core::persistent_kv_partition::{
     kv_cache_size_gb, topological_locality, BettiGuidedPartitioner, MemoryTier,
 };
@@ -371,4 +375,33 @@ fn legacy_cross_manifold_alignment_is_rust_backed() {
     assert!(verification.pairwise_results[1].bound_holds);
     assert!(verification.linear_bound_holds);
     assert!(verification.theorem_holds);
+}
+
+#[test]
+fn legacy_parallel_riemannian_is_rust_backed() {
+    let x_ref = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+    let x_worker = [[1.0, 0.0], [0.0, 0.99], [0.0, 0.01]];
+    let grad = [[0.0, 0.2], [-0.2, 0.0], [0.1, 0.0]];
+    let projected = stiefel_project_tangent(&x_ref, &grad);
+    let deviation = tangent_space_deviation(&x_ref, &x_worker, &grad);
+
+    assert!((projected[0][1] - 0.2).abs() < 1e-12);
+    assert!((projected[1][0] + 0.2).abs() < 1e-12);
+    assert!(deviation > 0.0);
+
+    let bound = coherence_bound(0.02, 1.0, 16);
+    let freq = sync_frequency(0.01, 16, 0.001, 0.5, 1.0);
+    let cost = nvlink_sync_cost_seconds(70_000_000_000, 8, 900.0);
+
+    assert!((bound - 0.005).abs() < 1e-12);
+    assert!((freq - 80.0).abs() < 1e-12);
+    assert!(cost > 0.54 && cost < 0.55);
+
+    let verifier = DistributedRiemannianSgd::new(64, 8, 8, 0.01, 1);
+    let report = verifier.verify_theorem(20);
+    assert_eq!(report.n_steps, 20);
+    assert_eq!(report.sync_frequency, 1);
+    assert!(report.bound_holds);
+    assert!(report.theorem_holds);
+    assert!(report.h100_sync_cost_ms > 0.0);
 }
