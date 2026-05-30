@@ -2586,6 +2586,28 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("spectral_entropy.rs", "pub struct HaarWaveletTransform"),
         ("spectral_entropy.rs", "pub fn haar_wavelet_transform"),
         ("spectral_entropy.rs", "pub struct SpectralCoherenceTracker"),
+        (
+            "thermodynamic_plasticity.rs",
+            "pub fn landauer_energy_per_bit",
+        ),
+        (
+            "thermodynamic_plasticity.rs",
+            "pub fn min_energy_per_update",
+        ),
+        (
+            "thermodynamic_plasticity.rs",
+            "pub fn max_sustainable_hot_ratio",
+        ),
+        ("thermodynamic_plasticity.rs", "pub fn gibbs_entropy"),
+        ("thermodynamic_plasticity.rs", "pub fn thermodynamic_lr"),
+        (
+            "thermodynamic_plasticity.rs",
+            "pub fn helmholtz_free_energy_change",
+        ),
+        (
+            "thermodynamic_plasticity.rs",
+            "pub struct ThermodynamicAnalyzer",
+        ),
         ("tss.rs", "pub struct SphericalGridHashIndex"),
         ("tss.rs", "pub const EMPTY_LOCATE"),
         ("tss.rs", "pub fn auto_sized_dimensions"),
@@ -2619,6 +2641,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("meta_controller.py", "meta_controller.rs"),
         ("spectral_contraction.py", "scm.rs"),
         ("spectral_entropy.py", "spectral_entropy.rs"),
+        ("thermodynamic_plasticity.py", "thermodynamic_plasticity.rs"),
         ("topological_state_sync.py", "tss.rs"),
     ];
     for (legacy_file, rust_file) in legacy_migrations {
@@ -2712,6 +2735,13 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "spectral_entropy",
         "wavelet_entropy_per_scale",
         "predict_betti_survival",
+        "landauer_energy_per_bit",
+        "min_energy_per_update",
+        "max_sustainable_hot_ratio",
+        "gibbs_entropy",
+        "thermodynamic_lr",
+        "helmholtz_free_energy_change",
+        "ThermodynamicAnalyzer",
         "PoincareBall",
         "AngularMomentumTracker",
         "verify_plasticity_bound",

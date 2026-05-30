@@ -18,6 +18,11 @@ use aether_core::spectral_entropy::{
     haar_wavelet_transform, spectral_entropy, wavelet_entropy_per_scale, HaarWaveletTransform,
     SpectralCoherenceTracker,
 };
+use aether_core::thermodynamic_plasticity::{
+    gibbs_entropy, helmholtz_free_energy_change, landauer_energy_per_bit,
+    max_sustainable_hot_ratio, min_energy_per_update, thermodynamic_lr, ThermodynamicAnalyzer,
+    K_BOLTZMANN, LN2,
+};
 use aether_core::tss::{
     auto_sized_dimensions, epsilon_from_chebyshev, tss_retrieval_bound, SphericalGridHashIndex,
     TssVerifier, EMPTY_LOCATE,
@@ -213,4 +218,40 @@ fn legacy_hyperbolic_capacity_is_rust_backed() {
     assert!(report.tree_nodes > 0);
     assert!(report.separation_ratio_theory > 38.0);
     assert!(report.hyperbolic_better);
+}
+
+#[test]
+fn legacy_thermodynamic_plasticity_is_rust_backed() {
+    let bit_floor = landauer_energy_per_bit(300.0);
+    assert!((bit_floor - (K_BOLTZMANN * 300.0 * LN2)).abs() < 1e-35);
+
+    let update_floor = min_energy_per_update(350_000_000, 16, 300.0);
+    assert!(update_floor > 1.6e-11 && update_floor < 1.7e-11);
+
+    let hot_ratio = max_sustainable_hot_ratio(70_000_000_000, 700.0, 20.0, 16, 300.0);
+    assert!(hot_ratio > 1.0e10);
+
+    let peaked_entropy = gibbs_entropy(&[1.0, 0.0, 0.0, 0.0]);
+    let uniform_entropy = gibbs_entropy(&[1.0, 1.0, 1.0, 1.0]);
+    assert!(peaked_entropy < uniform_entropy);
+
+    let lr = thermodynamic_lr(0.01, peaked_entropy, uniform_entropy);
+    assert!(lr > 0.009);
+
+    let delta_f = helmholtz_free_energy_change(0.0, 300.0, uniform_entropy - peaked_entropy);
+    assert!(delta_f < 0.0);
+
+    let analyzer = ThermodynamicAnalyzer::h100_default();
+    let energy = analyzer.energy_analysis(20.0);
+    assert_eq!(energy.hot_params, 350_000_000);
+    assert!(energy.orders_above_landauer > 12.0);
+    assert!(energy.thermodynamic_headroom > 1.0e12);
+
+    let cluster = analyzer.h100_cluster_analysis(8);
+    assert_eq!(cluster.n_gpus, 8);
+    assert!(cluster.max_hot_ratio_cluster > energy.max_hot_ratio_thermodynamic);
+
+    let lr_report = analyzer.lr_analysis(&[1.0, 1.0, 1.0, 1.0], 0.01);
+    assert!(lr_report.lr_agreement);
+    assert!(lr_report.eta_gibbs < 1e-12);
 }

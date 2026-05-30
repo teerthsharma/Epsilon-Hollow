@@ -49,6 +49,7 @@ pub mod scm;
 /// Spectral coherence, entropy, wavelet entropy, and manifold decay helpers.
 pub mod spectral_entropy;
 pub mod state;
+pub mod thermodynamic_plasticity;
 pub mod topology;
 /// Topological State Synchronization (TSS): O(1)-amortized spherical Voronoi index.
 pub mod tss;
