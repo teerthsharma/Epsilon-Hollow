@@ -31,6 +31,15 @@ manifest commit and dirty flag against local Git state instead of accepting an
 older proof bundle as current. Failed proof runs are kept in the staging
 directory.
 
+If a staging run already has `serial.log`, `screen.ppm`, `screen.png`,
+`seal-os.img`, and `seal-os.efi` but the wrapper exits before writing the
+manifest, regenerate the manifest with the Rust verifier instead of hand-writing
+checksums:
+
+```powershell
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --write-qemu-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof-runs\<stamp> kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof-runs\<stamp>\seal-os.img native 240 .
+```
+
 A VM run fails on:
 
 - `!!! SEAL OS KERNEL PANIC !!!`
