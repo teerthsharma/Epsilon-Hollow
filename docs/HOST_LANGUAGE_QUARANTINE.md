@@ -39,6 +39,7 @@ theorem/runtime replacement is `kernel/epsilon/epsilon/crates/aether-core`.
 
 The migration gate currently requires Rust/Aether replacement symbols for:
 
+- angular sparse attention / online softmax pruning
 - geodesic consolidation / bounded entropy-reducing merge
 - cross-manifold alignment / Procrustes information preservation
 - governor convergence
@@ -64,8 +65,9 @@ The migration gate fails if the deleted theorem Python modules reappear, if
 root tests import those deleted modules, or if the Rust gate stops covering the
 restored GMC entropy merge bounds, governor history, HCS capacity bounds,
 TEB/Landauer energy bounds, meta-controller tool registry, Haar transform, and
-PHKP tier locality, TSS empty/dynamic grid semantics, CMA alignment bounds, and
-RGCS synchronization bounds, and WPHB horizon formulas.
+PHKP tier locality, TSS empty/dynamic grid semantics, angular sparse attention
+pruning/online softmax, CMA alignment bounds, RGCS synchronization bounds, and
+WPHB horizon formulas.
 
 ## LAAMBA Governor migration
 

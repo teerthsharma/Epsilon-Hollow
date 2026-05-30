@@ -2,8 +2,8 @@
 
 `epsilon_core/` is no longer the production theorem runtime. Seal OS treats the
 Rust/Aether implementation under `kernel/epsilon/epsilon/crates/aether-core` as
-the authoritative path for geodesic consolidation, governor convergence,
-cross-manifold alignment, hyperbolic capacity, hyperbolic geometry, the
+the authoritative path for angular sparse attention, geodesic consolidation,
+governor convergence, cross-manifold alignment, hyperbolic capacity, hyperbolic geometry, the
 meta-controller, spectral contraction, spectral entropy, persistent KV
 partitioning, ring-allreduce gradient coherence, thermodynamic plasticity,
 world-model predictive horizon, and topological state sync.
@@ -21,6 +21,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 
 | Legacy module | Current status | Rust replacement |
 |---|---|---|
+| `angular_sparse_attention` | migrated/deleted | `aether_core::angular_sparse_attention::AngularSparseAttention` |
 | `cross_manifold_alignment` | migrated/deleted; compatibility shim folded into `world_model.py` | `aether_core::cross_manifold_alignment::CrossManifoldAligner` |
 | `geodesic_consolidation` | migrated | `aether_core::geodesic_consolidation::GeodesicConsolidator` |
 | `governor_convergence` | migrated | `aether_core::governor::GovernorConvergenceAnalyzer` |

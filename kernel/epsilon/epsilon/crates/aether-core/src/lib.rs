@@ -28,6 +28,7 @@ extern crate alloc;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub mod aether;
+pub mod angular_sparse_attention;
 pub mod cross_manifold_alignment;
 pub mod geodesic_consolidation;
 pub mod governor;

@@ -1,3 +1,4 @@
+use aether_core::angular_sparse_attention::{normalized_block_centroid, AngularSparseAttention};
 use aether_core::cross_manifold_alignment::{
     alignment_error_bound, mutual_information_bound, transitive_error_bound, CrossManifoldAligner,
 };
@@ -404,4 +405,33 @@ fn legacy_parallel_riemannian_is_rust_backed() {
     assert!(report.bound_holds);
     assert!(report.theorem_holds);
     assert!(report.h100_sync_cost_ms > 0.0);
+}
+
+#[test]
+fn legacy_angular_sparse_attention_is_rust_backed() {
+    let keys = [[1.0, 0.0], [0.8, 0.2], [-1.0, 0.0], [-0.8, -0.2]];
+    let values = [[10.0, 0.0], [20.0, 0.0], [100.0, 0.0], [200.0, 0.0]];
+    let centroids = [
+        normalized_block_centroid(&keys[0..2]),
+        normalized_block_centroid(&keys[2..4]),
+    ];
+    let query = [1.0, 0.0];
+
+    let mut active = [usize::MAX; 2];
+    let mut attention = AngularSparseAttention::new(2, 0.3, 2);
+    let active_len = attention.generate_active_indices(&query, &centroids, &mut active);
+    assert_eq!(active_len, 1);
+    assert_eq!(active[0], 0);
+    assert_eq!(attention.total_blocks_checked(), 2);
+    assert_eq!(attention.total_blocks_active(), 1);
+    assert!((attention.sparsity_ratio() - 0.5).abs() < 1e-12);
+
+    let mut output = [0.0; 2];
+    attention.sparse_flash_forward(&query, &keys, &values, &active, active_len, &mut output);
+    assert!(output[0] > 14.0 && output[0] < 16.0);
+    assert_eq!(output[1], 0.0);
+
+    attention.reset_stats();
+    assert_eq!(attention.total_blocks_checked(), 0);
+    assert_eq!(attention.total_blocks_active(), 0);
 }
