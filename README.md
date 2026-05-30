@@ -1539,6 +1539,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 |---|---:|---|---|
 | UEFI image build | ✓ | ✓ | `seal-mkimage --verify` passes |
 | VM desktop boot proof | ✓ | ✓ | `run-qemu.ps1 -HeadlessProof` plus `seal-mkimage --check-vm-proof` captures theorem gate, AHCI disk, ManifoldFS mount, desktop proof frame, desktop soak marker, desktop ready, and event loop |
+| QEMU proof bundle manifest | ✓ | N/A | `run-qemu.ps1 -HeadlessProof` writes `qemu-proof\proof-manifest.txt`; `seal-mkimage --check-proof-manifest` verifies the image/EFI/log/screen byte counts, CRC32 fingerprints, SHA-256 fingerprints, QEMU backend, commit/dirty flag, and gate statuses before publishing canonical artifacts |
 | README/doc claim contract | ✓ | N/A | `seal-mkimage --check-doc-claim-contract .` fails if Ubuntu wins, O(1) allocation, ManifoldFS teleport, Aether runtime, or benchmark claims lose their proof/artifact guardrails |
 | Oracle VirtualBox automated smoke | ✓ | ✓ | Fresh `smoke-vbox.ps1 -Seconds 240` rebuilds the VDI, then `seal-mkimage --check-vbox-proof` proves `VBOX HARDDISK`, block device `0x800`, readable sector 0, persistent ManifoldFS, desktop proof frame, desktop soak marker, desktop ready, event loop, and current allocator markers |
 | First desktop pixel proof | ✓ | N/A | `seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm` verifies nonblank 1024x768 desktop pixels, icon lane, control region, and primary terminal titlebar |

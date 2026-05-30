@@ -4,6 +4,7 @@
 //! Creates bootable UEFI disk images and ISOs for Seal OS.
 //! VirtualBox-compatible: GPT + FAT32 ESP with proper boot sector.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
@@ -171,6 +172,19 @@ fn main() {
             std::process::exit(1);
         });
         println!("[seal-audit] PROOF SCREEN OK: {}", ppm.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-proof-manifest") {
+        let manifest = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(
+                "../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/proof-manifest.txt",
+            )
+        });
+        check_proof_manifest(&manifest).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] PROOF MANIFEST FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] PROOF MANIFEST OK: {}", manifest.display());
         return;
     }
     if args.get(1).map(|s| s.as_str()) == Some("--check-desktop-soak") {
@@ -1258,6 +1272,184 @@ fn check_desktop_soak_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
+    let fields = parse_manifest_fields(&text)?;
+    let parent = manifest_path
+        .parent()
+        .ok_or_else(|| format!("manifest has no parent: {}", manifest_path.display()))?;
+
+    require_manifest_field_eq(&fields, "seal_proof_manifest_version", "1")?;
+    require_manifest_field_eq(&fields, "vm_target", "qemu")?;
+    require_manifest_field_eq(&fields, "proof_verdict", "PASS")?;
+    require_manifest_field_eq(&fields, "gate_verify", "ok")?;
+    require_manifest_field_eq(&fields, "gate_vm_proof", "ok")?;
+    require_manifest_field_eq(&fields, "gate_theorem_log", "ok")?;
+    require_manifest_field_eq(&fields, "gate_aether_runtime", "ok")?;
+    require_manifest_field_eq(&fields, "gate_desktop_soak", "ok")?;
+    require_manifest_field_eq(&fields, "gate_benchmark_log", "ok")?;
+    require_manifest_field_eq(&fields, "gate_proof_screen", "ok")?;
+
+    let backend = require_manifest_field(&fields, "qemu_backend")?;
+    if backend != "native" && backend != "wsl" && backend != "ci" {
+        return Err(format!("unexpected qemu_backend `{backend}`"));
+    }
+
+    let git_commit = require_manifest_field(&fields, "git_commit")?;
+    if git_commit != "unknown" && (git_commit.len() < 7 || !is_lower_hex(git_commit)) {
+        return Err(format!("invalid git_commit `{git_commit}`"));
+    }
+
+    let git_dirty = require_manifest_field(&fields, "git_dirty")?;
+    if git_dirty != "true" && git_dirty != "false" {
+        return Err(format!(
+            "git_dirty must be true or false, got `{git_dirty}`"
+        ));
+    }
+
+    let created_utc = require_manifest_field(&fields, "created_utc")?;
+    if !created_utc.ends_with('Z') || !created_utc.contains('T') {
+        return Err(format!(
+            "created_utc must be an ISO-8601 UTC stamp: {created_utc}"
+        ));
+    }
+
+    let proof_seconds = parse_manifest_u64(&fields, "proof_seconds")?;
+    if proof_seconds == 0 {
+        return Err(String::from("proof_seconds must be nonzero"));
+    }
+
+    check_manifest_artifact(&fields, parent, "serial_log", Some("serial.log"))?;
+    check_manifest_artifact(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
+    if fields.contains_key("screen_png_path") {
+        check_manifest_artifact(&fields, parent, "screen_png", Some("screen.png"))?;
+    }
+    check_manifest_artifact(&fields, parent, "image", None)?;
+    if fields.contains_key("efi_path") {
+        check_manifest_artifact(&fields, parent, "efi", None)?;
+    }
+
+    Ok(())
+}
+
+fn parse_manifest_fields(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut fields = BTreeMap::new();
+    for (idx, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("manifest line {} is not key=value: {line}", idx + 1))?;
+        if key.is_empty()
+            || !key
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        {
+            return Err(format!("manifest line {} has invalid key `{key}`", idx + 1));
+        }
+        if value.trim().is_empty() {
+            return Err(format!("manifest key `{key}` has an empty value"));
+        }
+        if fields
+            .insert(key.to_string(), value.trim().to_string())
+            .is_some()
+        {
+            return Err(format!("manifest key `{key}` is duplicated"));
+        }
+    }
+    Ok(fields)
+}
+
+fn require_manifest_field<'a>(
+    fields: &'a BTreeMap<String, String>,
+    key: &str,
+) -> Result<&'a str, String> {
+    fields
+        .get(key)
+        .map(String::as_str)
+        .ok_or_else(|| format!("proof manifest missing `{key}`"))
+}
+
+fn require_manifest_field_eq(
+    fields: &BTreeMap<String, String>,
+    key: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let actual = require_manifest_field(fields, key)?;
+    if actual != expected {
+        return Err(format!(
+            "proof manifest `{key}` must be `{expected}`, got `{actual}`"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_manifest_u64(fields: &BTreeMap<String, String>, key: &str) -> Result<u64, String> {
+    require_manifest_field(fields, key)?
+        .parse::<u64>()
+        .map_err(|e| format!("manifest `{key}` is not a u64: {e}"))
+}
+
+fn is_lower_hex(text: &str) -> bool {
+    text.bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn check_manifest_artifact(
+    fields: &BTreeMap<String, String>,
+    manifest_parent: &Path,
+    prefix: &str,
+    bundled_name: Option<&str>,
+) -> Result<(), String> {
+    let path_key = format!("{prefix}_path");
+    let bytes_key = format!("{prefix}_bytes");
+    let crc_key = format!("{prefix}_crc32");
+    let sha_key = format!("{prefix}_sha256");
+    let manifest_path = PathBuf::from(require_manifest_field(fields, &path_key)?);
+    let path = bundled_name
+        .map(|name| manifest_parent.join(name))
+        .unwrap_or(manifest_path);
+    let expected_bytes = parse_manifest_u64(fields, &bytes_key)?;
+    let expected_crc = require_manifest_field(fields, &crc_key)?;
+    let expected_sha = require_manifest_field(fields, &sha_key)?;
+
+    if expected_bytes == 0 {
+        return Err(format!("manifest `{bytes_key}` must be nonzero"));
+    }
+    if expected_crc.len() != 8 || !is_lower_hex(expected_crc) {
+        return Err(format!("manifest `{crc_key}` is not lowercase CRC32 hex"));
+    }
+    if expected_sha.len() != 64 || !is_lower_hex(expected_sha) {
+        return Err(format!("manifest `{sha_key}` is not lowercase SHA-256 hex"));
+    }
+
+    let data = fs::read(&path).map_err(|e| format!("read {prefix} {}: {e}", path.display()))?;
+    if data.is_empty() {
+        return Err(format!("manifest artifact `{prefix}` is empty"));
+    }
+    if data.len() as u64 != expected_bytes {
+        return Err(format!(
+            "manifest `{bytes_key}` mismatch for {}: manifest={}, actual={}",
+            path.display(),
+            expected_bytes,
+            data.len()
+        ));
+    }
+    let actual_crc = format!("{:08x}", crc32(&data));
+    if actual_crc != expected_crc {
+        return Err(format!(
+            "manifest `{crc_key}` mismatch for {}: manifest={}, actual={actual_crc}",
+            path.display(),
+            expected_crc
+        ));
+    }
+
+    Ok(())
+}
+
 fn parse_metric(line: &str, key: &str) -> Result<u64, String> {
     let value = parse_field(line, key)?;
     value
@@ -1290,6 +1482,99 @@ mod tests {
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("seal-mkimage-{label}-{nanos}"))
+    }
+
+    fn fake_sha256() -> &'static str {
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
+    fn manifest_artifact(prefix: &str, path: &Path, data: &[u8]) -> String {
+        format!(
+            "{prefix}_path={}\n{prefix}_bytes={}\n{prefix}_crc32={:08x}\n{prefix}_sha256={}\n",
+            path.display(),
+            data.len(),
+            crc32(data),
+            fake_sha256()
+        )
+    }
+
+    fn write_test_manifest(root: &Path) -> PathBuf {
+        fs::create_dir_all(root).unwrap();
+        let serial = b"serial proof log";
+        let screen = b"P6\n1 1\n255\nrgb";
+        let image = b"disk image bytes";
+        let efi = b"efi image bytes";
+        fs::write(root.join("serial.log"), serial).unwrap();
+        fs::write(root.join("screen.ppm"), screen).unwrap();
+        fs::write(root.join("seal-os.img"), image).unwrap();
+        fs::write(root.join("seal-os.efi"), efi).unwrap();
+
+        let mut manifest = String::from(
+            "seal_proof_manifest_version=1\n\
+vm_target=qemu\n\
+qemu_backend=ci\n\
+proof_verdict=PASS\n\
+proof_seconds=300\n\
+created_utc=2026-05-30T00:00:00Z\n\
+git_commit=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+git_dirty=false\n\
+gate_verify=ok\n\
+gate_vm_proof=ok\n\
+gate_theorem_log=ok\n\
+gate_aether_runtime=ok\n\
+gate_desktop_soak=ok\n\
+gate_benchmark_log=ok\n\
+gate_proof_screen=ok\n",
+        );
+        manifest.push_str(&manifest_artifact(
+            "image",
+            &root.join("seal-os.img"),
+            image,
+        ));
+        manifest.push_str(&manifest_artifact("efi", &root.join("seal-os.efi"), efi));
+        manifest.push_str(&manifest_artifact(
+            "serial_log",
+            &root.join("serial.log"),
+            serial,
+        ));
+        manifest.push_str(&manifest_artifact(
+            "screen_ppm",
+            &root.join("screen.ppm"),
+            screen,
+        ));
+
+        let manifest_path = root.join("proof-manifest.txt");
+        fs::write(&manifest_path, manifest).unwrap();
+        manifest_path
+    }
+
+    #[test]
+    fn proof_manifest_checks_bundle_artifacts() {
+        let root = unique_temp_dir("manifest-ok");
+        let manifest = write_test_manifest(&root);
+
+        assert!(check_proof_manifest(&manifest).is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_rejects_artifact_drift() {
+        let root = unique_temp_dir("manifest-drift");
+        let manifest = write_test_manifest(&root);
+        fs::write(root.join("screen.ppm"), b"changed screen").unwrap();
+
+        assert!(check_proof_manifest(&manifest).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_seal_and_ubuntu_allocator_benchmarks() {

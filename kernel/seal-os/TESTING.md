@@ -60,6 +60,7 @@ Expected proof artifacts:
 target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
 target\x86_64-unknown-uefi\release\qemu-proof\screen.png
+target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 ```
 
 ## Required Serial Markers
@@ -95,6 +96,7 @@ cargo +stable check --manifest-path kernel\epsilon\epsilon\crates\aether-core\Ca
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --verify kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.img kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.efi
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-theorem-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-o1-allocator .
