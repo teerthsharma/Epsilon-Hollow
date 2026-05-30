@@ -1,6 +1,10 @@
 use aether_core::governor::{
     GovernorConvergenceAnalyzer, GovernorSimulationHistory, GovernorTheoremVerification,
 };
+use aether_core::hyperbolic_capacity::{
+    euclidean_distortion_bound, h100_analysis, hyperbolic_distortion_bound, separation_ratio,
+    HcsVerifier,
+};
 use aether_core::hyperbolic_geometry::{
     verify_plasticity_bound, AngularMomentumTracker, PoincareBall,
 };
@@ -186,4 +190,27 @@ fn legacy_world_model_math_is_rust_backed() {
     );
     assert!(angular_value >= 0.0);
     assert!(verify_plasticity_bound(0.009, 0.01, 0.0, 10.0, 0.01));
+}
+
+#[test]
+fn legacy_hyperbolic_capacity_is_rust_backed() {
+    let hyp = hyperbolic_distortion_bound(1.0, 128, 10);
+    let euc = euclidean_distortion_bound(4, 128, 10);
+    let ratio = separation_ratio(1.0, 4, 10);
+
+    assert!((hyp - 0.0015625).abs() < 1e-12);
+    assert!(euc > 0.09 && euc < 0.10);
+    assert!(ratio > 62.0 && ratio < 63.0);
+
+    let h100 = h100_analysis();
+    assert_eq!(h100.dim, 4096);
+    assert_eq!(h100.depth, 50);
+    assert!(!h100.fits_h100_80gb);
+
+    let report = HcsVerifier::new(128, 1.0).verify_theorem(4, 8);
+    assert_eq!(report.branching_factor, 4);
+    assert_eq!(report.depth, 8);
+    assert!(report.tree_nodes > 0);
+    assert!(report.separation_ratio_theory > 38.0);
+    assert!(report.hyperbolic_better);
 }

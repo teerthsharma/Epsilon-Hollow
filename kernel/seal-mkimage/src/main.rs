@@ -2542,6 +2542,18 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("governor.rs", "pub struct GovernorSimulationHistory"),
         ("governor.rs", "pub fn simulate_measurements"),
         ("governor.rs", "pub fn simulate_default_history"),
+        (
+            "hyperbolic_capacity.rs",
+            "pub fn hyperbolic_distortion_bound",
+        ),
+        (
+            "hyperbolic_capacity.rs",
+            "pub fn euclidean_distortion_bound",
+        ),
+        ("hyperbolic_capacity.rs", "pub fn separation_ratio"),
+        ("hyperbolic_capacity.rs", "pub fn h100_analysis"),
+        ("hyperbolic_capacity.rs", "pub struct HcsVerifier"),
+        ("hyperbolic_capacity.rs", "pub struct HcsVerification"),
         ("hyperbolic_geometry.rs", "pub struct PoincareBall"),
         (
             "hyperbolic_geometry.rs",
@@ -2602,6 +2614,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
     let legacy_root = root.join("kernel").join("epsilon").join("epsilon_core");
     let legacy_migrations = [
         ("governor_convergence.py", "governor.rs"),
+        ("hyperbolic_capacity.py", "hyperbolic_capacity.rs"),
         ("hyperbolic_geometry.py", "hyperbolic_geometry.rs"),
         ("meta_controller.py", "meta_controller.rs"),
         ("spectral_contraction.py", "scm.rs"),
@@ -2676,6 +2689,11 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "simulate_measurements",
         "simulate_default_history",
         "GovernorTheoremVerification",
+        "hyperbolic_distortion_bound",
+        "euclidean_distortion_bound",
+        "separation_ratio",
+        "h100_analysis",
+        "HcsVerifier",
         "ToolSpec",
         "ToolRegistry",
         "ToolDecision",
