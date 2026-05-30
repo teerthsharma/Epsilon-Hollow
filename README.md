@@ -1558,7 +1558,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | Content-addressable geometric lookup | △ | △ | Voronoi narrows lookup to a bucket; current find is O(bucket size) plus sorting until bucket occupancy is hard-capped |
 | GPU/VRAM topology fast path | △ | CUDA/ROCm userspace, not topology fast path | design contract exists; vendor GPU driver and peer-DMA proof pending |
 | Aether-Lang native OS language | ✓ | ✗ | lexer/parser/interpreter/VM are in kernel runtime; `seal-mkimage --check-aether-runtime ...\serial.log` requires the boot marker proving an Aether script executed inside the kernel app host |
-| Legacy host-language-free Seal OS surface | ✓ | ✓ | `--check-language-hygiene` bans host scripts from production OS/Rust roots and requires GitHub Linguist quarantine so visible OS language stats stay Rust, Assembly, and Aether DSL; `--check-aether-migration` proves deleted theorem modules are absent, rejects stale root test imports, and requires Rust migration tests for restored theorem APIs |
+| Legacy host-language-free Seal OS surface | ✓ | ✓ | `--check-language-hygiene` bans host scripts from production OS/Rust roots and requires GitHub Linguist quarantine so visible OS language stats stay Rust, Assembly, and Aether DSL; `--check-aether-migration` proves deleted theorem modules are absent, rejects stale root or legacy imports, and requires Rust migration tests for restored theorem APIs |
 | HFT/ML benchmark comparison vs Ubuntu | △ | ✓ | allocator comparison harness now exists; full benchmark matrix still requires fresh side-by-side Ubuntu numbers |
 
 | Feature | **Seal OS v0.4.5** | **Redox OS 0.9.0** | **Ubuntu 26.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |

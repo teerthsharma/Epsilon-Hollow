@@ -2632,6 +2632,12 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
             "thermodynamic_plasticity.rs",
             "pub struct ThermodynamicAnalyzer",
         ),
+        ("world_model_horizon.rs", "pub fn predictive_horizon"),
+        ("world_model_horizon.rs", "pub fn flat_horizon"),
+        ("world_model_horizon.rs", "pub fn topological_advantage"),
+        ("world_model_horizon.rs", "pub fn multi_model_horizon"),
+        ("world_model_horizon.rs", "pub struct WorldModelAnalyzer"),
+        ("world_model_horizon.rs", "pub struct HorizonVerification"),
         ("tss.rs", "pub struct SphericalGridHashIndex"),
         ("tss.rs", "pub const EMPTY_LOCATE"),
         ("tss.rs", "pub fn auto_sized_dimensions"),
@@ -2669,6 +2675,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("spectral_entropy.py", "spectral_entropy.rs"),
         ("thermodynamic_plasticity.py", "thermodynamic_plasticity.rs"),
         ("topological_state_sync.py", "tss.rs"),
+        ("world_model_horizon.py", "world_model_horizon.rs"),
     ];
     for (legacy_file, rust_file) in legacy_migrations {
         let legacy_path = legacy_root.join(legacy_file);
@@ -2682,12 +2689,17 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
     }
 
     let banned_imports = [
+        "geodesic_consolidation",
         "governor_convergence",
+        "hyperbolic_capacity",
         "hyperbolic_geometry",
         "meta_controller",
+        "persistent_kv_partition",
         "spectral_contraction",
         "spectral_entropy",
+        "thermodynamic_plasticity",
         "topological_state_sync",
+        "world_model_horizon",
     ];
     let tests_root = root.join("tests");
     for import_root in [&legacy_root, &tests_root] {
@@ -2776,6 +2788,11 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "thermodynamic_lr",
         "helmholtz_free_energy_change",
         "ThermodynamicAnalyzer",
+        "predictive_horizon",
+        "flat_horizon",
+        "topological_advantage",
+        "multi_model_horizon",
+        "WorldModelAnalyzer",
         "PoincareBall",
         "AngularMomentumTracker",
         "verify_plasticity_bound",

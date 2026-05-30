@@ -33,6 +33,10 @@ use aether_core::tss::{
     auto_sized_dimensions, epsilon_from_chebyshev, tss_retrieval_bound, SphericalGridHashIndex,
     TssVerifier, EMPTY_LOCATE,
 };
+use aether_core::world_model_horizon::{
+    flat_horizon, multi_model_horizon, predictive_horizon, topological_advantage,
+    WorldModelAnalyzer,
+};
 
 #[test]
 fn legacy_agent_safety_filter_is_rust_backed() {
@@ -312,4 +316,32 @@ fn legacy_persistent_kv_partition_is_rust_backed() {
 
     let sparse = BettiGuidedPartitioner::default().sparse_latency(report.latency_betti_ns, 0.7);
     assert!(sparse < report.latency_betti_ns);
+}
+
+#[test]
+fn legacy_world_model_horizon_is_rust_backed() {
+    let topo = predictive_horizon(1_000, 128, 1e-4, 10.0);
+    let flat = flat_horizon(100_000, 128, 1e-4, 10.0);
+    let advantage = topological_advantage(100_000, 1_000, 128, 1e-4);
+
+    assert!(topo > 170_000.0 && topo < 171_000.0);
+    assert!(flat > 17_000_000.0 && flat < 18_000_000.0);
+    assert!(advantage > 99.0 && advantage < 101.0);
+
+    let combined = multi_model_horizon(&[100.0, 80.0, 40.0], &[30.0, 20.0, 10.0], 10.0);
+    assert_eq!(combined, 102.0);
+
+    let analyzer = WorldModelAnalyzer::new(10.0);
+    let single = analyzer.single_model_analysis(128, 100_000, 1_000, 1e-4);
+    assert!(single.horizon_topological > 0.0);
+    assert!(single.topological_advantage > 99.0);
+
+    let stack = analyzer.three_model_stack();
+    assert!(stack.combined_horizon >= stack.individual_horizons[0]);
+    assert!(stack.advantage_over_best_single >= 1.0);
+
+    let verification = analyzer.verify_theorem();
+    assert!(verification.ratio_correct);
+    assert!(verification.combined_exceeds_individuals);
+    assert!(verification.theorem_holds);
 }
