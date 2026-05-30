@@ -1,3 +1,6 @@
+use aether_core::cross_manifold_alignment::{
+    alignment_error_bound, mutual_information_bound, transitive_error_bound, CrossManifoldAligner,
+};
 use aether_core::geodesic_consolidation::{
     cluster_entropy, entropy_change_on_merge, great_circle_distance, GeodesicConsolidator,
 };
@@ -343,5 +346,29 @@ fn legacy_world_model_horizon_is_rust_backed() {
     let verification = analyzer.verify_theorem();
     assert!(verification.ratio_correct);
     assert!(verification.combined_exceeds_individuals);
+    assert!(verification.theorem_holds);
+}
+
+#[test]
+fn legacy_cross_manifold_alignment_is_rust_backed() {
+    let singular_values = [10.0, 8.0, 6.0];
+    let bound = alignment_error_bound(&singular_values);
+    let mi = mutual_information_bound(64, 10.0, &singular_values);
+    let total = transitive_error_bound(&[0.08, 0.04, 0.02]);
+
+    assert!(bound > 0.79 && bound < 0.81);
+    assert!(mi > 70.0);
+    assert!((total - 0.14).abs() < 1e-12);
+
+    let aligner = CrossManifoldAligner::<3>::new([128, 64, 32]);
+    assert_eq!(aligner.n_models(), 3);
+    assert_eq!(aligner.model_dims(), &[128, 64, 32]);
+
+    let verification = aligner.verify_theorem(128);
+    assert_eq!(verification.model_dims, [128, 64, 32]);
+    assert_eq!(verification.n_pairs, 2);
+    assert!(verification.pairwise_results[0].bound_holds);
+    assert!(verification.pairwise_results[1].bound_holds);
+    assert!(verification.linear_bound_holds);
     assert!(verification.theorem_holds);
 }
