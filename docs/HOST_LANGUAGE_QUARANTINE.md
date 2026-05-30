@@ -45,6 +45,7 @@ The migration gate currently requires Rust/Aether replacement symbols for:
 - meta-controller and constitutional safety filter
 - spectral contraction
 - spectral entropy
+- thermodynamic plasticity / Landauer erasure bound
 - topological state sync
 
 Required verification:
@@ -56,8 +57,9 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 
 The migration gate fails if the deleted theorem Python modules reappear, if
 root tests import those deleted modules, or if the Rust gate stops covering the
-restored governor history, HCS capacity bounds, meta-controller tool registry,
-Haar transform, and TSS empty/dynamic grid semantics.
+restored governor history, HCS capacity bounds, TEB/Landauer energy bounds,
+meta-controller tool registry, Haar transform, and TSS empty/dynamic grid
+semantics.
 
 ## LAAMBA Governor migration
 

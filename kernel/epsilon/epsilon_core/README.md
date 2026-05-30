@@ -4,7 +4,7 @@
 Rust/Aether implementation under `kernel/epsilon/epsilon/crates/aether-core` as
 the authoritative path for governor convergence, hyperbolic capacity,
 hyperbolic geometry, the meta-controller, spectral contraction, spectral
-entropy, and topological state sync.
+entropy, thermodynamic plasticity, and topological state sync.
 
 The remaining host files are compatibility/reference scaffolding only. They must
 not import deleted theorem modules. The Rust gate below enforces that rule and
@@ -25,6 +25,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 | `meta_controller` | migrated with host shim | `aether_core::meta_controller::{MetaController, ConstitutionalSafetyFilter}` |
 | `spectral_contraction` | migrated | `aether_core::scm::{TelemetryOperator, LatentPredictor}` |
 | `spectral_entropy` | migrated | `aether_core::spectral_entropy::SpectralCoherenceTracker` |
+| `thermodynamic_plasticity` | migrated | `aether_core::thermodynamic_plasticity::ThermodynamicAnalyzer` |
 | `topological_state_sync` | migrated with host shim | `aether_core::tss::SphericalGridHashIndex` |
 
 Compatibility shims in `agent.py`, `memory.py`, and `world_model.py` exist only
