@@ -2133,6 +2133,31 @@ gate_benchmark_log=ok\n",
     }
 
     #[test]
+    fn vm_proof_scripts_require_current_manifest_provenance() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let qemu_script = fs::read_to_string(
+            repo_root
+                .join("kernel")
+                .join("seal-os")
+                .join("run-qemu.ps1"),
+        )
+        .unwrap();
+        let vbox_script = fs::read_to_string(
+            repo_root
+                .join("kernel")
+                .join("seal-os")
+                .join("smoke-vbox.ps1"),
+        )
+        .unwrap();
+
+        assert!(qemu_script.contains("--write-qemu-proof-manifest"));
+        assert!(qemu_script.contains("--check-current-proof-manifest"));
+        assert!(vbox_script.contains("--check-current-proof-manifest"));
+    }
+
+    #[test]
     fn proof_manifest_rejects_vbox_ppm_parity_claim() {
         let root = unique_temp_dir("manifest-vbox-ppm");
         let manifest = write_test_vbox_manifest(&root);

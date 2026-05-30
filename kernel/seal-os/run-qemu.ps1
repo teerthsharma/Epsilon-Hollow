@@ -280,51 +280,15 @@ function Write-ProofManifest {
         [int]$Seconds
     )
 
-    $serialLog = Join-Path $RunPath "serial.log"
-    $ppm = Join-Path $RunPath "screen.ppm"
-    $png = Join-Path $RunPath "screen.png"
-    $imageSnapshot = Join-Path $RunPath "seal-os.img"
     $efiSnapshot = Join-Path $RunPath "seal-os.efi"
-    Copy-Item -LiteralPath $ImagePath -Destination $imageSnapshot -Force
     if (Test-Path -LiteralPath $EfiImage -PathType Leaf) {
         Copy-Item -LiteralPath $EfiImage -Destination $efiSnapshot -Force
     }
 
     $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
-    $gitCommit = Get-GitValue -RepoRoot $repoRoot -Arguments @("rev-parse", "HEAD") -Fallback "unknown"
-    $dirty = Get-GitValue -RepoRoot $repoRoot -Arguments @("status", "--porcelain") -Fallback ""
-    $gitDirty = if ($dirty) { "true" } else { "false" }
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("seal_proof_manifest_version=1")
-    $lines.Add("vm_target=qemu")
-    $lines.Add("qemu_backend=$Backend")
-    $lines.Add("proof_verdict=PASS")
-    $lines.Add("proof_seconds=$Seconds")
-    $lines.Add("created_utc=$((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))")
-    $lines.Add("git_commit=$gitCommit")
-    $lines.Add("git_dirty=$gitDirty")
-    $lines.Add("gate_verify=ok")
-    $lines.Add("gate_vm_proof=ok")
-    $lines.Add("gate_theorem_log=ok")
-    $lines.Add("gate_aether_runtime=ok")
-    $lines.Add("gate_desktop_soak=ok")
-    $lines.Add("gate_benchmark_log=ok")
-    $lines.Add("gate_proof_screen=ok")
-
-    Add-ManifestArtifact -Lines $lines -Prefix "image" -Path $imageSnapshot
-    if (Test-Path -LiteralPath $efiSnapshot -PathType Leaf) {
-        Add-ManifestArtifact -Lines $lines -Prefix "efi" -Path $efiSnapshot
-    }
-    Add-ManifestArtifact -Lines $lines -Prefix "serial_log" -Path $serialLog
-    Add-ManifestArtifact -Lines $lines -Prefix "screen_ppm" -Path $ppm
-    if (Test-Path -LiteralPath $png -PathType Leaf) {
-        Add-ManifestArtifact -Lines $lines -Prefix "screen_png" -Path $png
-    }
-
     $manifest = Join-Path $RunPath "proof-manifest.txt"
-    Set-Content -LiteralPath $manifest -Value $lines -Encoding ascii
-    Invoke-SealMkimageGate -Arguments @("--check-proof-manifest", $manifest)
+    Invoke-SealMkimageGate -Arguments @("--write-qemu-proof-manifest", $RunPath, $ImagePath, $Backend, "$Seconds", $repoRoot)
+    Invoke-SealMkimageGate -Arguments @("--check-current-proof-manifest", $manifest, $repoRoot)
 }
 
 function Publish-ProofArtifacts {
