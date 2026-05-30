@@ -1287,19 +1287,34 @@ fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
         .ok_or_else(|| format!("manifest has no parent: {}", manifest_path.display()))?;
 
     require_manifest_field_eq(&fields, "seal_proof_manifest_version", "1")?;
-    require_manifest_field_eq(&fields, "vm_target", "qemu")?;
+    let vm_target = require_manifest_field(&fields, "vm_target")?;
+    if vm_target != "qemu" && vm_target != "vbox" {
+        return Err(format!("unexpected vm_target `{vm_target}`"));
+    }
     require_manifest_field_eq(&fields, "proof_verdict", "PASS")?;
     require_manifest_field_eq(&fields, "gate_verify", "ok")?;
-    require_manifest_field_eq(&fields, "gate_vm_proof", "ok")?;
     require_manifest_field_eq(&fields, "gate_theorem_log", "ok")?;
     require_manifest_field_eq(&fields, "gate_aether_runtime", "ok")?;
     require_manifest_field_eq(&fields, "gate_desktop_soak", "ok")?;
     require_manifest_field_eq(&fields, "gate_benchmark_log", "ok")?;
-    require_manifest_field_eq(&fields, "gate_proof_screen", "ok")?;
 
-    let backend = require_manifest_field(&fields, "qemu_backend")?;
-    if backend != "native" && backend != "wsl" && backend != "ci" {
-        return Err(format!("unexpected qemu_backend `{backend}`"));
+    match vm_target {
+        "qemu" => {
+            require_manifest_field_eq(&fields, "gate_vm_proof", "ok")?;
+            require_manifest_field_eq(&fields, "gate_proof_screen", "ok")?;
+            let backend = require_manifest_field(&fields, "qemu_backend")?;
+            if backend != "native" && backend != "wsl" && backend != "ci" {
+                return Err(format!("unexpected qemu_backend `{backend}`"));
+            }
+        }
+        "vbox" => {
+            require_manifest_field_eq(&fields, "gate_vbox_proof", "ok")?;
+            let backend = require_manifest_field(&fields, "virtualbox_backend")?;
+            if backend != "headless" {
+                return Err(format!("unexpected virtualbox_backend `{backend}`"));
+            }
+        }
+        _ => unreachable!(),
     }
 
     let git_commit = require_manifest_field(&fields, "git_commit")?;
@@ -1327,9 +1342,22 @@ fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
     }
 
     check_manifest_artifact(&fields, parent, "serial_log", Some("serial.log"))?;
-    check_manifest_artifact(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
-    if fields.contains_key("screen_png_path") {
-        check_manifest_artifact(&fields, parent, "screen_png", Some("screen.png"))?;
+    match vm_target {
+        "qemu" => {
+            check_manifest_artifact(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
+            if fields.contains_key("screen_png_path") {
+                check_manifest_artifact(&fields, parent, "screen_png", Some("screen.png"))?;
+            }
+        }
+        "vbox" => {
+            check_manifest_artifact(&fields, parent, "screenshot_png", Some("screenshot.png"))?;
+            if fields.contains_key("screen_ppm_path") {
+                return Err(String::from(
+                    "VirtualBox manifest must not claim QEMU PPM proof-screen parity",
+                ));
+            }
+        }
+        _ => unreachable!(),
     }
     check_manifest_artifact(&fields, parent, "image", None)?;
     if fields.contains_key("efi_path") {
@@ -1415,9 +1443,18 @@ fn check_manifest_artifact(
     let crc_key = format!("{prefix}_crc32");
     let sha_key = format!("{prefix}_sha256");
     let manifest_path = PathBuf::from(require_manifest_field(fields, &path_key)?);
-    let path = bundled_name
-        .map(|name| manifest_parent.join(name))
-        .unwrap_or(manifest_path);
+    let path = if let Some(name) = bundled_name {
+        manifest_parent.join(name)
+    } else if let Some(name) = manifest_path.file_name() {
+        let bundled = manifest_parent.join(name);
+        if bundled.exists() {
+            bundled
+        } else {
+            manifest_path
+        }
+    } else {
+        manifest_path
+    };
     let expected_bytes = parse_manifest_u64(fields, &bytes_key)?;
     let expected_crc = require_manifest_field(fields, &crc_key)?;
     let expected_sha = require_manifest_field(fields, &sha_key)?;
@@ -1561,6 +1598,55 @@ gate_proof_screen=ok\n",
         manifest_path
     }
 
+    fn write_test_vbox_manifest(root: &Path) -> PathBuf {
+        fs::create_dir_all(root).unwrap();
+        let serial = b"vbox serial proof log";
+        let screenshot = b"fake png bytes";
+        let image = b"disk image bytes";
+        let efi = b"efi image bytes";
+        fs::write(root.join("serial.log"), serial).unwrap();
+        fs::write(root.join("screenshot.png"), screenshot).unwrap();
+        fs::write(root.join("seal-os.img"), image).unwrap();
+        fs::write(root.join("seal-os.efi"), efi).unwrap();
+
+        let mut manifest = String::from(
+            "seal_proof_manifest_version=1\n\
+vm_target=vbox\n\
+virtualbox_backend=headless\n\
+proof_verdict=PASS\n\
+proof_seconds=240\n\
+created_utc=2026-05-30T00:00:00Z\n\
+git_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\
+git_dirty=false\n\
+gate_verify=ok\n\
+gate_vbox_proof=ok\n\
+gate_theorem_log=ok\n\
+gate_aether_runtime=ok\n\
+gate_desktop_soak=ok\n\
+gate_benchmark_log=ok\n",
+        );
+        manifest.push_str(&manifest_artifact(
+            "image",
+            &root.join("seal-os.img"),
+            image,
+        ));
+        manifest.push_str(&manifest_artifact("efi", &root.join("seal-os.efi"), efi));
+        manifest.push_str(&manifest_artifact(
+            "serial_log",
+            &root.join("serial.log"),
+            serial,
+        ));
+        manifest.push_str(&manifest_artifact(
+            "screenshot_png",
+            &root.join("screenshot.png"),
+            screenshot,
+        ));
+
+        let manifest_path = root.join("proof-manifest.txt");
+        fs::write(&manifest_path, manifest).unwrap();
+        manifest_path
+    }
+
     #[test]
     fn proof_manifest_checks_bundle_artifacts() {
         let root = unique_temp_dir("manifest-ok");
@@ -1576,6 +1662,34 @@ gate_proof_screen=ok\n",
         let root = unique_temp_dir("manifest-drift");
         let manifest = write_test_manifest(&root);
         fs::write(root.join("screen.ppm"), b"changed screen").unwrap();
+
+        assert!(check_proof_manifest(&manifest).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_accepts_vbox_bundle_without_ppm_claim() {
+        let root = unique_temp_dir("manifest-vbox");
+        let manifest = write_test_vbox_manifest(&root);
+
+        assert!(check_proof_manifest(&manifest).is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_rejects_vbox_ppm_parity_claim() {
+        let root = unique_temp_dir("manifest-vbox-ppm");
+        let manifest = write_test_vbox_manifest(&root);
+        fs::write(root.join("screen.ppm"), b"ppm").unwrap();
+        let mut text = fs::read_to_string(&manifest).unwrap();
+        text.push_str(&manifest_artifact(
+            "screen_ppm",
+            &root.join("screen.ppm"),
+            b"ppm",
+        ));
+        fs::write(&manifest, text).unwrap();
 
         assert!(check_proof_manifest(&manifest).is_err());
 
