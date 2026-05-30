@@ -2542,6 +2542,23 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("governor.rs", "pub struct GovernorSimulationHistory"),
         ("governor.rs", "pub fn simulate_measurements"),
         ("governor.rs", "pub fn simulate_default_history"),
+        (
+            "cross_manifold_alignment.rs",
+            "pub fn alignment_error_bound",
+        ),
+        (
+            "cross_manifold_alignment.rs",
+            "pub fn mutual_information_bound",
+        ),
+        (
+            "cross_manifold_alignment.rs",
+            "pub fn transitive_error_bound",
+        ),
+        (
+            "cross_manifold_alignment.rs",
+            "pub struct CrossManifoldAligner",
+        ),
+        ("cross_manifold_alignment.rs", "pub struct CmaVerification"),
         ("geodesic_consolidation.rs", "pub fn cluster_entropy"),
         (
             "geodesic_consolidation.rs",
@@ -2665,6 +2682,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
 
     let legacy_root = root.join("kernel").join("epsilon").join("epsilon_core");
     let legacy_migrations = [
+        ("cross_manifold_alignment.py", "cross_manifold_alignment.rs"),
         ("geodesic_consolidation.py", "geodesic_consolidation.rs"),
         ("governor_convergence.py", "governor.rs"),
         ("hyperbolic_capacity.py", "hyperbolic_capacity.rs"),
@@ -2689,6 +2707,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
     }
 
     let banned_imports = [
+        "cross_manifold_alignment",
         "geodesic_consolidation",
         "governor_convergence",
         "hyperbolic_capacity",
@@ -2750,6 +2769,10 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "simulate_measurements",
         "simulate_default_history",
         "GovernorTheoremVerification",
+        "alignment_error_bound",
+        "mutual_information_bound",
+        "transitive_error_bound",
+        "CrossManifoldAligner",
         "cluster_entropy",
         "entropy_change_on_merge",
         "great_circle_distance",
