@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const DISK_SIZE: u64 = 128 * 1024 * 1024; // 128MB
 const SECTOR_SIZE: u64 = 512;
@@ -185,6 +186,26 @@ fn main() {
             std::process::exit(1);
         });
         println!("[seal-audit] PROOF MANIFEST OK: {}", manifest.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-current-proof-manifest") {
+        let manifest = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(
+                "../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/proof-manifest.txt",
+            )
+        });
+        let root = args
+            .get(3)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_current_proof_manifest(&manifest, &root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] CURRENT PROOF MANIFEST FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "[seal-audit] CURRENT PROOF MANIFEST OK: {}",
+            manifest.display()
+        );
         return;
     }
     if args.get(1).map(|s| s.as_str()) == Some("--check-desktop-soak") {
@@ -740,6 +761,120 @@ fn crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = sha256(data);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+
+    let mut h = [
+        0x6a09e667_u32,
+        0xbb67ae85,
+        0x3c6ef372,
+        0xa54ff53a,
+        0x510e527f,
+        0x9b05688c,
+        0x1f83d9ab,
+        0x5be0cd19,
+    ];
+
+    let bit_len = (data.len() as u64).wrapping_mul(8);
+    let mut padded = Vec::with_capacity((data.len() + 9).div_ceil(64) * 64);
+    padded.extend_from_slice(data);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in padded.chunks_exact(64) {
+        let mut w = [0_u32; 64];
+        for (idx, word) in w.iter_mut().take(16).enumerate() {
+            let offset = idx * 4;
+            *word = u32::from_be_bytes([
+                chunk[offset],
+                chunk[offset + 1],
+                chunk[offset + 2],
+                chunk[offset + 3],
+            ]);
+        }
+        for idx in 16..64 {
+            let s0 =
+                w[idx - 15].rotate_right(7) ^ w[idx - 15].rotate_right(18) ^ (w[idx - 15] >> 3);
+            let s1 = w[idx - 2].rotate_right(17) ^ w[idx - 2].rotate_right(19) ^ (w[idx - 2] >> 10);
+            w[idx] = w[idx - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[idx - 7])
+                .wrapping_add(s1);
+        }
+
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut h_work = h[7];
+
+        for idx in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = h_work
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[idx])
+                .wrapping_add(w[idx]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            h_work = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(h_work);
+    }
+
+    let mut digest = [0_u8; 32];
+    for (idx, word) in h.iter().enumerate() {
+        digest[idx * 4..idx * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    digest
 }
 
 fn check_theorem_log(log_path: &Path) -> Result<(), String> {
@@ -1367,6 +1502,75 @@ fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn check_current_proof_manifest(manifest_path: &Path, root: &Path) -> Result<(), String> {
+    check_proof_manifest(manifest_path)?;
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
+    let fields = parse_manifest_fields(&text)?;
+    let (head, dirty) = current_git_state(root)?;
+    check_manifest_provenance_fields(&fields, &head, dirty)
+}
+
+fn check_manifest_provenance_fields(
+    fields: &BTreeMap<String, String>,
+    expected_commit: &str,
+    expected_dirty: bool,
+) -> Result<(), String> {
+    let manifest_commit = require_manifest_field(fields, "git_commit")?;
+    if manifest_commit == "unknown" || manifest_commit != expected_commit {
+        return Err(format!(
+            "proof manifest git_commit does not match current HEAD: manifest={manifest_commit}, current={expected_commit}"
+        ));
+    }
+
+    let manifest_dirty = require_manifest_field(fields, "git_dirty")?;
+    let current_dirty = if expected_dirty { "true" } else { "false" };
+    if manifest_dirty != current_dirty {
+        return Err(format!(
+            "proof manifest git_dirty does not match current checkout: manifest={manifest_dirty}, current={current_dirty}"
+        ));
+    }
+    Ok(())
+}
+
+fn current_git_state(root: &Path) -> Result<(String, bool), String> {
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .map_err(|e| format!("run git rev-parse: {e}"))?;
+    if !head.status.success() {
+        return Err(format!(
+            "git rev-parse failed: {}",
+            String::from_utf8_lossy(&head.stderr).trim()
+        ));
+    }
+    let head_text = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if head_text.len() != 40 || !is_lower_hex(&head_text) {
+        return Err(format!(
+            "git HEAD is not a full lowercase SHA-1: {head_text}"
+        ));
+    }
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("status")
+        .arg("--porcelain")
+        .arg("--untracked-files=all")
+        .output()
+        .map_err(|e| format!("run git status: {e}"))?;
+    if !status.status.success() {
+        return Err(format!(
+            "git status failed: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        ));
+    }
+    Ok((head_text, !status.stdout.is_empty()))
+}
+
 fn parse_manifest_fields(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut fields = BTreeMap::new();
     for (idx, raw) in text.lines().enumerate() {
@@ -1489,6 +1693,14 @@ fn check_manifest_artifact(
             expected_crc
         ));
     }
+    let actual_sha = sha256_hex(&data);
+    if actual_sha != expected_sha {
+        return Err(format!(
+            "manifest `{sha_key}` mismatch for {}: manifest={}, actual={actual_sha}",
+            path.display(),
+            expected_sha
+        ));
+    }
 
     Ok(())
 }
@@ -1534,18 +1746,22 @@ mod tests {
         std::env::temp_dir().join(format!("seal-mkimage-{label}-{nanos}"))
     }
 
-    fn fake_sha256() -> &'static str {
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    }
-
     fn manifest_artifact(prefix: &str, path: &Path, data: &[u8]) -> String {
         format!(
             "{prefix}_path={}\n{prefix}_bytes={}\n{prefix}_crc32={:08x}\n{prefix}_sha256={}\n",
             path.display(),
             data.len(),
             crc32(data),
-            fake_sha256()
+            sha256_hex(data)
         )
+    }
+
+    #[test]
+    fn sha256_matches_known_answer() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     fn write_test_manifest(root: &Path) -> PathBuf {
@@ -1664,6 +1880,60 @@ gate_benchmark_log=ok\n",
         fs::write(root.join("screen.ppm"), b"changed screen").unwrap();
 
         assert!(check_proof_manifest(&manifest).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_rejects_sha256_mismatch() {
+        let root = unique_temp_dir("manifest-sha-mismatch");
+        let manifest = write_test_manifest(&root);
+        let text = fs::read_to_string(&manifest).unwrap();
+        let text = text.replace(
+            &format!("serial_log_sha256={}", sha256_hex(b"serial proof log")),
+            "serial_log_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        fs::write(&manifest, text).unwrap();
+
+        assert!(check_proof_manifest(&manifest).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_provenance_requires_current_commit() {
+        let root = unique_temp_dir("manifest-provenance-commit");
+        let manifest = write_test_manifest(&root);
+        let fields = parse_manifest_fields(&fs::read_to_string(&manifest).unwrap()).unwrap();
+
+        assert!(check_manifest_provenance_fields(
+            &fields,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            false,
+        )
+        .is_ok());
+        assert!(check_manifest_provenance_fields(
+            &fields,
+            "cccccccccccccccccccccccccccccccccccccccc",
+            false,
+        )
+        .is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_provenance_requires_current_dirty_flag() {
+        let root = unique_temp_dir("manifest-provenance-dirty");
+        let manifest = write_test_manifest(&root);
+        let fields = parse_manifest_fields(&fs::read_to_string(&manifest).unwrap()).unwrap();
+
+        assert!(check_manifest_provenance_fields(
+            &fields,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            true,
+        )
+        .is_err());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2632,6 +2902,19 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
             "pub struct DistributedRiemannianSgd",
         ),
         ("parallel_riemannian.rs", "pub struct RgcsVerification"),
+        ("riemannian_optimizer.rs", "pub enum ManifoldType"),
+        ("riemannian_optimizer.rs", "pub fn sphere_project_tangent"),
+        ("riemannian_optimizer.rs", "pub fn sphere_retract"),
+        (
+            "riemannian_optimizer.rs",
+            "pub fn parallel_transport_sphere",
+        ),
+        (
+            "riemannian_optimizer.rs",
+            "pub fn grassmann_project_tangent",
+        ),
+        ("riemannian_optimizer.rs", "pub struct RiemannianSgd"),
+        ("riemannian_optimizer.rs", "pub struct RiemannianAdam"),
         ("persistent_kv_partition.rs", "pub enum MemoryTier"),
         ("persistent_kv_partition.rs", "pub fn kv_cache_size_gb"),
         ("persistent_kv_partition.rs", "pub fn topological_locality"),
@@ -2715,6 +2998,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("meta_controller.py", "meta_controller.rs"),
         ("parallel_riemannian.py", "parallel_riemannian.rs"),
         ("persistent_kv_partition.py", "persistent_kv_partition.rs"),
+        ("riemannian_optimizer.py", "riemannian_optimizer.rs"),
         ("spectral_contraction.py", "scm.rs"),
         ("spectral_entropy.py", "spectral_entropy.rs"),
         ("thermodynamic_plasticity.py", "thermodynamic_plasticity.rs"),
@@ -2742,6 +3026,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "meta_controller",
         "parallel_riemannian",
         "persistent_kv_partition",
+        "riemannian_optimizer",
         "spectral_contraction",
         "spectral_entropy",
         "thermodynamic_plasticity",
@@ -2823,6 +3108,12 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "sync_frequency",
         "nvlink_sync_cost_seconds",
         "DistributedRiemannianSgd",
+        "sphere_project_tangent",
+        "sphere_retract",
+        "parallel_transport_sphere",
+        "grassmann_project_tangent",
+        "RiemannianSgd",
+        "RiemannianAdam",
         "kv_cache_size_gb",
         "topological_locality",
         "BettiGuidedPartitioner",

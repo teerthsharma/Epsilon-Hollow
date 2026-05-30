@@ -49,6 +49,7 @@ pub mod ml;
 pub mod os;
 pub mod parallel_riemannian;
 pub mod persistent_kv_partition;
+pub mod riemannian_optimizer;
 /// Spectral Contraction Mapping (SCM) runnable operator and latent predictor (Theorem 2).
 pub mod scm;
 /// Spectral coherence, entropy, wavelet entropy, and manifold decay helpers.

@@ -181,6 +181,9 @@ event-loop entry. The smoke script also writes `vbox-smoke\proof-manifest.txt`
 and verifies it with `seal-mkimage --check-proof-manifest`; the manifest records
 the proof VDI copy, EFI snapshot, serial log, screenshot PNG, commit, dirty flag,
 and Oracle gate statuses without claiming QEMU-style PPM pixel parity.
+Use `seal-mkimage --check-current-proof-manifest` when the question is whether
+the proof belongs to the checkout in front of you; it rejects stale proof bundles
+whose commit or dirty flag no longer match local Git state.
 `-SkipBuild` is only valid after `seal-os.vdi` was regenerated from the current
 `seal-os.img`.
 
@@ -198,6 +201,8 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-current-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt .
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-current-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-migration .

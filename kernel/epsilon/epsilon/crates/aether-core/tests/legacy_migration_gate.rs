@@ -26,6 +26,10 @@ use aether_core::parallel_riemannian::{
 use aether_core::persistent_kv_partition::{
     kv_cache_size_gb, topological_locality, BettiGuidedPartitioner, MemoryTier,
 };
+use aether_core::riemannian_optimizer::{
+    grassmann_project_tangent, parallel_transport_sphere, sphere_project_tangent, sphere_retract,
+    ManifoldType, RiemannianAdam, RiemannianSgd,
+};
 use aether_core::scm::SpectralContractionVerifier;
 use aether_core::scm::{LatentPredictor, TelemetryOperator};
 use aether_core::spectral_entropy::{
@@ -434,4 +438,40 @@ fn legacy_angular_sparse_attention_is_rust_backed() {
     attention.reset_stats();
     assert_eq!(attention.total_blocks_checked(), 0);
     assert_eq!(attention.total_blocks_active(), 0);
+}
+
+#[test]
+fn legacy_riemannian_optimizer_is_rust_backed() {
+    let x = [1.0, 0.0, 0.0];
+    let grad = [1.0, 2.0, 0.0];
+    let projected = sphere_project_tangent(&x, &grad);
+    assert!(projected[0].abs() < 1e-12);
+    assert!((projected[1] - 2.0).abs() < 1e-12);
+
+    let retracted = sphere_retract(&x, &[0.0, 1.0, 0.0]);
+    assert!(retracted[0] > 0.70 && retracted[0] < 0.71);
+    assert!(retracted[1] > 0.70 && retracted[1] < 0.71);
+
+    let transported = parallel_transport_sphere(&x, &retracted, &[0.0, 2.0, 0.0]);
+    let dot = transported[0] * retracted[0] + transported[1] * retracted[1];
+    assert!(dot.abs() < 1e-12);
+
+    let basis = [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]];
+    let z = [[1.0, 0.0], [0.0, 1.0], [2.0, 3.0]];
+    let grassmann = grassmann_project_tangent(&basis, &z);
+    assert!(grassmann[0][0].abs() < 1e-12);
+    assert!(grassmann[1][1].abs() < 1e-12);
+    assert_eq!(grassmann[2], [2.0, 3.0]);
+
+    let mut sgd = RiemannianSgd::<3>::new(0.1, 0.0, ManifoldType::Sphere);
+    let stepped = sgd.step_vector(x, grad);
+    assert_eq!(sgd.steps(), 1);
+    assert!(stepped[0] > 0.98);
+    assert!(stepped[1] < -0.19);
+
+    let mut adam = RiemannianAdam::<3>::new(0.01, 0.9, 0.999, 1e-8, ManifoldType::Sphere);
+    let adam_step = adam.step_vector(x, grad);
+    assert_eq!(adam.steps(), 1);
+    assert!(adam_step[0] > 0.99);
+    assert!(adam_step[1] < -0.009);
 }

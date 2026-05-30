@@ -47,6 +47,7 @@ The migration gate currently requires Rust/Aether replacement symbols for:
 - hyperbolic geometry
 - meta-controller and constitutional safety filter
 - persistent KV-cache partitioning
+- Riemannian optimizer projection/retraction
 - ring-allreduce gradient coherence
 - spectral contraction
 - spectral entropy
@@ -67,7 +68,7 @@ restored GMC entropy merge bounds, governor history, HCS capacity bounds,
 TEB/Landauer energy bounds, meta-controller tool registry, Haar transform, and
 PHKP tier locality, TSS empty/dynamic grid semantics, angular sparse attention
 pruning/online softmax, CMA alignment bounds, RGCS synchronization bounds, and
-WPHB horizon formulas.
+Riemannian optimizer projection/retraction formulas, and WPHB horizon formulas.
 
 ## LAAMBA Governor migration
 
