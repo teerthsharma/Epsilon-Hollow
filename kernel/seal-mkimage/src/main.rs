@@ -283,8 +283,33 @@ fn main() {
             std::process::exit(1);
         });
         println!(
-            "[seal-audit] BENCHMARK COMPARE OK: Seal beats Ubuntu for alloc-frame ({}, {})",
+            "[seal-audit] BENCHMARK COMPARE OK: provided alloc-frame logs show Seal p50/p95/max below Ubuntu; allocator-only, not a global Ubuntu win ({}, {})",
             seal_log.display(),
+            ubuntu_log.display()
+        );
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-current-benchmark-proof") {
+        let manifest = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from(
+                "../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/proof-manifest.txt",
+            )
+        });
+        let ubuntu_log = args
+            .get(3)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("ubuntu-alloc.log"));
+        let root = args
+            .get(4)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_current_benchmark_proof_manifest(&manifest, &ubuntu_log, &root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] CURRENT BENCHMARK PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!(
+            "[seal-audit] CURRENT BENCHMARK PROOF OK: current VM proof manifest plus native Ubuntu artifact show allocator-only Seal p50/p95/max lead ({}, {})",
+            manifest.display(),
             ubuntu_log.display()
         );
         return;
@@ -1088,6 +1113,35 @@ fn compare_benchmark_logs(seal_log: &Path, ubuntu_log: &Path) -> Result<(), Stri
     require_seal_alloc_bench_lead(seal, ubuntu)
 }
 
+fn check_current_benchmark_proof_manifest(
+    manifest_path: &Path,
+    ubuntu_log: &Path,
+    root: &Path,
+) -> Result<(), String> {
+    let (head, dirty) = current_git_state(root)?;
+    check_benchmark_proof_manifest_with_state(manifest_path, ubuntu_log, &head, dirty)
+}
+
+fn check_benchmark_proof_manifest_with_state(
+    manifest_path: &Path,
+    ubuntu_log: &Path,
+    expected_commit: &str,
+    expected_dirty: bool,
+) -> Result<(), String> {
+    check_proof_manifest(manifest_path)?;
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("read {}: {e}", manifest_path.display()))?;
+    let fields = parse_manifest_fields(&text)?;
+    check_manifest_provenance_fields(&fields, expected_commit, expected_dirty)?;
+    let parent = manifest_path
+        .parent()
+        .ok_or_else(|| format!("manifest has no parent: {}", manifest_path.display()))?;
+    let seal_log =
+        manifest_artifact_resolved_path(&fields, parent, "serial_log", Some("serial.log"))?;
+    check_benchmark_log(&seal_log)?;
+    compare_benchmark_logs(&seal_log, ubuntu_log)
+}
+
 fn require_seal_alloc_bench_lead(
     seal: AllocBenchMetrics,
     ubuntu: AllocBenchMetrics,
@@ -1795,23 +1849,10 @@ fn check_manifest_artifact(
     prefix: &str,
     bundled_name: Option<&str>,
 ) -> Result<(), String> {
-    let path_key = format!("{prefix}_path");
     let bytes_key = format!("{prefix}_bytes");
     let crc_key = format!("{prefix}_crc32");
     let sha_key = format!("{prefix}_sha256");
-    let manifest_path = PathBuf::from(require_manifest_field(fields, &path_key)?);
-    let path = if let Some(name) = bundled_name {
-        manifest_parent.join(name)
-    } else if let Some(name) = manifest_path.file_name() {
-        let bundled = manifest_parent.join(name);
-        if bundled.exists() {
-            bundled
-        } else {
-            manifest_path
-        }
-    } else {
-        manifest_path
-    };
+    let path = manifest_artifact_resolved_path(fields, manifest_parent, prefix, bundled_name)?;
     let expected_bytes = parse_manifest_u64(fields, &bytes_key)?;
     let expected_crc = require_manifest_field(fields, &crc_key)?;
     let expected_sha = require_manifest_field(fields, &sha_key)?;
@@ -1856,6 +1897,29 @@ fn check_manifest_artifact(
     }
 
     Ok(())
+}
+
+fn manifest_artifact_resolved_path(
+    fields: &BTreeMap<String, String>,
+    manifest_parent: &Path,
+    prefix: &str,
+    bundled_name: Option<&str>,
+) -> Result<PathBuf, String> {
+    let path_key = format!("{prefix}_path");
+    let manifest_path = PathBuf::from(require_manifest_field(fields, &path_key)?);
+    let path = if let Some(name) = bundled_name {
+        manifest_parent.join(name)
+    } else if let Some(name) = manifest_path.file_name() {
+        let bundled = manifest_parent.join(name);
+        if bundled.exists() {
+            bundled
+        } else {
+            manifest_path
+        }
+    } else {
+        manifest_path
+    };
+    Ok(path)
 }
 
 fn parse_metric(line: &str, key: &str) -> Result<u64, String> {
@@ -2009,6 +2073,68 @@ gate_benchmark_log=ok\n",
             "screenshot_png",
             &root.join("screenshot.png"),
             screenshot,
+        ));
+
+        let manifest_path = root.join("proof-manifest.txt");
+        fs::write(&manifest_path, manifest).unwrap();
+        manifest_path
+    }
+
+    fn full_benchmark_log() -> String {
+        [
+            ALLOC_PROOF_LOG,
+            TOPORAM_ALLOC_LOG,
+            SEAL_ALLOC_LOG,
+            MANIFOLD_TELEPORT_LOG,
+            SCHEDULER_SELECT_LOG,
+        ]
+        .concat()
+    }
+
+    fn write_test_benchmark_manifest(root: &Path, commit: &str, dirty: bool) -> PathBuf {
+        fs::create_dir_all(root).unwrap();
+        let serial = full_benchmark_log();
+        let screen = b"P6\n1 1\n255\nrgb";
+        let image = b"disk image bytes";
+        let efi = b"efi image bytes";
+        fs::write(root.join("serial.log"), serial.as_bytes()).unwrap();
+        fs::write(root.join("screen.ppm"), screen).unwrap();
+        fs::write(root.join("seal-os.img"), image).unwrap();
+        fs::write(root.join("seal-os.efi"), efi).unwrap();
+
+        let mut manifest = format!(
+            "seal_proof_manifest_version=1\n\
+vm_target=qemu\n\
+qemu_backend=ci\n\
+proof_verdict=PASS\n\
+proof_seconds=300\n\
+created_utc=2026-05-30T00:00:00Z\n\
+git_commit={commit}\n\
+git_dirty={}\n\
+gate_verify=ok\n\
+gate_vm_proof=ok\n\
+gate_theorem_log=ok\n\
+gate_aether_runtime=ok\n\
+gate_desktop_soak=ok\n\
+gate_benchmark_log=ok\n\
+gate_proof_screen=ok\n",
+            if dirty { "true" } else { "false" }
+        );
+        manifest.push_str(&manifest_artifact(
+            "image",
+            &root.join("seal-os.img"),
+            image,
+        ));
+        manifest.push_str(&manifest_artifact("efi", &root.join("seal-os.efi"), efi));
+        manifest.push_str(&manifest_artifact(
+            "serial_log",
+            &root.join("serial.log"),
+            serial.as_bytes(),
+        ));
+        manifest.push_str(&manifest_artifact(
+            "screen_ppm",
+            &root.join("screen.ppm"),
+            screen,
         ));
 
         let manifest_path = root.join("proof-manifest.txt");
@@ -2263,6 +2389,7 @@ gate_benchmark_log=ok\n",
 not a blanket victory claim
 Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists
 raw Ubuntu artifact pending
+`--check-current-benchmark-proof`
 persistent write-through bytes still counted
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
@@ -2280,11 +2407,13 @@ global and not automatic
 Ubuntu comparison numbers are still pending, so no global Ubuntu win is claimed
 [UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=<native-kernel>
 WSL is rejected for benchmark evidence
+The second gate is the claim gate
 ";
         let ci = "\
 `seal-mkimage --check-aether-runtime /tmp/seal-os.log`
 `seal-mkimage --check-benchmark-log /tmp/seal-os.log`
 `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log`
+`seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .`
 ";
 
         assert!(check_doc_claim_contract_text(readme, benchmark, ci).is_ok());
@@ -2302,6 +2431,47 @@ WSL is rejected for benchmark evidence
 
         let faster_ubuntu = AllocBenchMetrics { p95: 120, ..ubuntu };
         assert!(require_seal_alloc_bench_lead(seal, faster_ubuntu).is_err());
+    }
+
+    #[test]
+    fn benchmark_proof_requires_current_vm_manifest_and_native_ubuntu_artifact() {
+        let root = unique_temp_dir("benchmark-proof-current");
+        let commit = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let manifest = write_test_benchmark_manifest(&root, commit, false);
+        let ubuntu = root.join("ubuntu-alloc.log");
+        fs::write(&ubuntu, UBUNTU_ALLOC_LOG).unwrap();
+
+        assert!(
+            check_benchmark_proof_manifest_with_state(&manifest, &ubuntu, commit, false).is_ok()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn benchmark_proof_rejects_stale_or_dirty_vm_manifest() {
+        let root = unique_temp_dir("benchmark-proof-stale");
+        let manifest =
+            write_test_benchmark_manifest(&root, "ffffffffffffffffffffffffffffffffffffffff", false);
+        let ubuntu = root.join("ubuntu-alloc.log");
+        fs::write(&ubuntu, UBUNTU_ALLOC_LOG).unwrap();
+
+        assert!(check_benchmark_proof_manifest_with_state(
+            &manifest,
+            &ubuntu,
+            "1111111111111111111111111111111111111111",
+            false,
+        )
+        .is_err());
+        assert!(check_benchmark_proof_manifest_with_state(
+            &manifest,
+            &ubuntu,
+            "ffffffffffffffffffffffffffffffffffffffff",
+            true,
+        )
+        .is_err());
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -2852,6 +3022,12 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
         (
             "README.md",
             readme,
+            "`--check-current-benchmark-proof`",
+            "README must bind Ubuntu comparison claims to a current proof manifest",
+        ),
+        (
+            "README.md",
+            readme,
             "persistent write-through bytes still counted",
             "README must not claim persistent ManifoldFS moves are byte-free",
         ),
@@ -2934,6 +3110,12 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             "benchmark plan must reject WSL artifacts",
         ),
         (
+            "docs/BENCHMARK_PLAN.md",
+            benchmark,
+            "The second gate is the claim gate",
+            "benchmark plan must identify current benchmark proof as the claim gate",
+        ),
+        (
             "docs/CI.md",
             ci,
             "`seal-mkimage --check-aether-runtime /tmp/seal-os.log`",
@@ -2950,6 +3132,12 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             ci,
             "`seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log`",
             "CI docs must include the Seal-vs-Ubuntu comparison gate",
+        ),
+        (
+            "docs/CI.md",
+            ci,
+            "`seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .`",
+            "CI docs must include the current benchmark proof gate",
         ),
     ];
 

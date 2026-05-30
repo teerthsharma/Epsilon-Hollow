@@ -222,6 +222,7 @@ Additional Rust-native audit commands run against the same OS surface:
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
 | `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log` | Fails unless Seal OS p50, p95, and max allocation cycles beat the validated Ubuntu artifact |
+| `seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .` | Fails unless the Seal allocator comparison is bound to the serial log inside a current VM proof manifest whose commit and dirty flag match the checkout; this is allocator-only evidence, not a global Ubuntu win |
 | `seal-mkimage --check-seal-abi .` | Scans `kernel/seal-os/src` for banned ABI imports and calls such as `extern crate libc`, `use libc`, `std::os::unix`, `std::os::linux`, `posix_spawn`, `pthread_`, `forkpty`, and `termios` |
 | `seal-mkimage --check-language-hygiene .` | Keeps the public OS CI/docs surface on Rust, assembly, and Aether-Lang; also requires `.gitattributes` to mark scripts, JS/TS app scaffolding, Dockerfiles, requirements text, configs, assets, docs, and generated proof output as vendored/generated/documentation, and requires `.gitignore` to ignore VM/proof/trace/profile artifacts |
 | `seal-mkimage --check-doc-claim-contract .` | Fails if README/docs drop the guardrails that tie Ubuntu wins, O(1) allocation, ManifoldFS teleport, Aether runtime, and benchmark claims to hard audit gates or recorded artifacts |
@@ -239,8 +240,9 @@ The `ubuntu-alloc-baseline` job is manual-only (`workflow_dispatch`) and require
 a self-hosted runner labeled `ubuntu-26.04`. It rejects non-Ubuntu, stale Ubuntu,
 and WSL kernels, boots the Seal image on that same runner, captures
 `ubuntu-alloc.log`, runs `--check-benchmark-log`, `--check-ubuntu-benchmark-log`,
-and `--compare-benchmark-logs`, then uploads the Seal log, Ubuntu log, and host
-manifest as `ubuntu-26-alloc-comparison`.
+`--compare-benchmark-logs`, and, when a proof bundle is available for the same
+checkout, `--check-current-benchmark-proof`, then uploads the Seal log, Ubuntu
+log, and host manifest as `ubuntu-26-alloc-comparison`.
 
 The pixel and manifest gates, `seal-mkimage --check-proof-screen
 qemu-proof/screen.ppm` and `seal-mkimage --check-proof-manifest
