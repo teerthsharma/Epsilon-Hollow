@@ -177,8 +177,12 @@ image when the VDI is rebuilt from the current raw image. `smoke-vbox.ps1
 -Seconds 240` reached the theorem gate, `VBOX HARDDISK`, block device `0x800`,
 readable sector 0, persistent ManifoldFS, current allocator markers, desktop
 proof-frame blit, Aether runtime proof marker, desktop readiness, and
-event-loop entry. `-SkipBuild` is only valid after `seal-os.vdi` was regenerated
-from the current `seal-os.img`.
+event-loop entry. The smoke script also writes `vbox-smoke\proof-manifest.txt`
+and verifies it with `seal-mkimage --check-proof-manifest`; the manifest records
+the proof VDI copy, EFI snapshot, serial log, screenshot PNG, commit, dirty flag,
+and Oracle gate statuses without claiming QEMU-style PPM pixel parity.
+`-SkipBuild` is only valid after `seal-os.vdi` was regenerated from the current
+`seal-os.img`.
 
 ## Audit Gates
 
@@ -193,6 +197,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-theorem-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-migration .

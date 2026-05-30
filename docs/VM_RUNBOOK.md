@@ -2,8 +2,8 @@
 
 This is the clean path from checkout to VM boot proof. It covers QEMU and Oracle
 VM VirtualBox. The proof target is serial output, a machine-checked
-`screen.ppm` pixel gate for GUI proof, and a `proof-manifest.txt` bundle that
-ties the artifacts back to the exact image, EFI, commit, backend, and gates.
+`screen.ppm` pixel gate for QEMU GUI proof, and a `proof-manifest.txt` bundle
+that ties artifacts back to the exact image, EFI, commit, backend, and gates.
 
 ## Boot Proof Rule
 
@@ -126,10 +126,13 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 Verify the full Oracle/VirtualBox serial proof after `smoke-vbox.ps1`:
 
 ```powershell
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --verify kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.img kernel\seal-os\target\x86_64-unknown-uefi\release\seal-os.efi
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-vbox-proof kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-theorem-log kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-runtime kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-desktop-soak kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt
 ```
 
 The benchmark log gate requires all four current markers:
@@ -236,10 +239,13 @@ The required success sentinels are the allocator O(1) proof marker, every
 `[THEOREM] T1` through `T10` verified line, `VBOX HARDDISK`, block device
 `0x800`, readable sector 0, persistent ManifoldFS, the desktop proof-frame blit,
 desktop ready, and event-loop entry. The script runs
-`seal-mkimage --check-vbox-proof` before returning success.
+`seal-mkimage --verify`, `--check-vbox-proof`, theorem/Aether/desktop/benchmark
+gates, and `--check-proof-manifest` before returning success.
 
 VirtualBox smoke currently captures PNG only. It is visual evidence, not the same
-machine-checked PPM gate used by QEMU.
+machine-checked PPM gate used by QEMU. The VirtualBox manifest therefore
+records `screenshot.png` as visual evidence and deliberately refuses a
+`screen_ppm` parity claim.
 
 ## Oracle VM VirtualBox: Manual GUI Run
 

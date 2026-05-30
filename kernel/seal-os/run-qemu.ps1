@@ -283,6 +283,13 @@ function Write-ProofManifest {
     $serialLog = Join-Path $RunPath "serial.log"
     $ppm = Join-Path $RunPath "screen.ppm"
     $png = Join-Path $RunPath "screen.png"
+    $imageSnapshot = Join-Path $RunPath "seal-os.img"
+    $efiSnapshot = Join-Path $RunPath "seal-os.efi"
+    Copy-Item -LiteralPath $ImagePath -Destination $imageSnapshot -Force
+    if (Test-Path -LiteralPath $EfiImage -PathType Leaf) {
+        Copy-Item -LiteralPath $EfiImage -Destination $efiSnapshot -Force
+    }
+
     $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
     $gitCommit = Get-GitValue -RepoRoot $repoRoot -Arguments @("rev-parse", "HEAD") -Fallback "unknown"
     $dirty = Get-GitValue -RepoRoot $repoRoot -Arguments @("status", "--porcelain") -Fallback ""
@@ -305,9 +312,9 @@ function Write-ProofManifest {
     $lines.Add("gate_benchmark_log=ok")
     $lines.Add("gate_proof_screen=ok")
 
-    Add-ManifestArtifact -Lines $lines -Prefix "image" -Path $ImagePath
-    if (Test-Path -LiteralPath $EfiImage -PathType Leaf) {
-        Add-ManifestArtifact -Lines $lines -Prefix "efi" -Path $EfiImage
+    Add-ManifestArtifact -Lines $lines -Prefix "image" -Path $imageSnapshot
+    if (Test-Path -LiteralPath $efiSnapshot -PathType Leaf) {
+        Add-ManifestArtifact -Lines $lines -Prefix "efi" -Path $efiSnapshot
     }
     Add-ManifestArtifact -Lines $lines -Prefix "serial_log" -Path $serialLog
     Add-ManifestArtifact -Lines $lines -Prefix "screen_ppm" -Path $ppm
@@ -328,8 +335,11 @@ function Publish-ProofArtifacts {
 
     New-Item -ItemType Directory -Force -Path $CanonicalPath | Out-Null
 
-    foreach ($name in @("serial.log", "screen.ppm", "proof-manifest.txt")) {
+    foreach ($name in @("serial.log", "screen.ppm", "proof-manifest.txt", "seal-os.img", "seal-os.efi")) {
         $source = Join-Path $SourcePath $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            continue
+        }
         $destination = Join-Path $CanonicalPath $name
         Copy-Item -LiteralPath $source -Destination $destination -Force
     }
