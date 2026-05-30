@@ -348,7 +348,13 @@ Ubuntu:
 
 ```bash
 cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --compare-benchmark-logs kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log tools/ubuntu-alloc-bench/ubuntu-alloc.log
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-current-benchmark-proof kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/proof-manifest.txt tools/ubuntu-alloc-bench/ubuntu-alloc.log .
 ```
+
+The second gate is the claim gate. It refuses to compare Ubuntu against an
+arbitrary Seal serial log: the Seal benchmark log must be the serial artifact
+inside a current VM proof manifest whose commit and dirty flag match the working
+checkout.
 
 Output:
 
@@ -374,6 +380,9 @@ benchmark marker, a ManifoldFS same-inode teleport marker, a desktop compositor
 soak marker, first-frame screenshot pixels, and a Rust-only Ubuntu allocator
 baseline harness with a comparison gate.
 Ubuntu comparison numbers are still pending, so no global Ubuntu win is claimed.
+The allocator-only Ubuntu comparison becomes claimable only after
+`--check-current-benchmark-proof` passes against a current Seal proof manifest
+and a native Ubuntu 26.04 artifact from the same benchmark environment.
 
 ## Claim Policy
 
@@ -408,5 +417,8 @@ The first benchmark milestone is modest and measurable:
    `seal-mkimage --check-ubuntu-benchmark-log`.
 9. Run `seal-mkimage --compare-benchmark-logs` against the Seal OS serial log
    and Ubuntu allocator log.
-10. Capture boot-to-target timings and the remaining comparable microbenchmarks.
-11. Publish raw logs and summary table.
+10. Run `seal-mkimage --check-current-benchmark-proof` against the Seal proof
+    manifest and Ubuntu allocator log so the comparison is bound to current VM
+    proof provenance.
+11. Capture boot-to-target timings and the remaining comparable microbenchmarks.
+12. Publish raw logs and summary table.

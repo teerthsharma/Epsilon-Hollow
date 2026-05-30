@@ -1,290 +1,50 @@
-# 25 Hour Status Report - 2026-05-30
+# 25 Hour Bug And Status Report - 2026-05-30
 
 ## Bottom line
 
-The OS is not working yet.
-
-The repository is better audited than before, and several legacy host theorem paths were migrated into Rust. At the time this report was first written, the tree contained an unfinished Riemannian optimizer migration test. That specific red test has now been repaired.
-
-Initial failure captured:
-
-```text
-error[E0432]: unresolved import `aether_core::riemannian_optimizer`
-  --> crates\aether-core\tests\legacy_migration_gate.rs:29:18
-   |
-29 | use aether_core::riemannian_optimizer::{
-   |                  ^^^^^^^^^^^^^^^^^^^^ could not find `riemannian_optimizer` in `aether_core`
-```
-
-This meant the test demanded a Rust-backed `riemannian_optimizer` module before the module had been implemented/exported.
-
-## Current repo state
-
-Checked on 2026-05-30 from `C:\Users\seal\Documents\GitHub\Epsilon-Hollow`.
-
-Initial git status:
-
-```text
- M kernel/epsilon/epsilon/crates/aether-core/tests/legacy_migration_gate.rs
-```
-
-At first inspection, only one file was modified and no production Rust module had been half-added.
-
-Initial diff size:
-
-```text
-1 file changed, 40 insertions(+)
-```
-
-Remaining legacy host-script files under `kernel` after the repair:
-
-```text
-51
-```
-
-Current repair touched:
-
-```text
-docs/HOST_LANGUAGE_QUARANTINE.md
-docs/2026-05-30-25h-status-report.md
-kernel/epsilon/epsilon/crates/aether-core/src/lib.rs
-kernel/epsilon/epsilon/crates/aether-core/src/riemannian_optimizer.rs
-kernel/epsilon/epsilon/crates/aether-core/tests/legacy_migration_gate.rs
-kernel/epsilon/epsilon_core/README.md
-kernel/epsilon/epsilon_core/riemannian_optimizer legacy host file deleted
-kernel/seal-mkimage/src/main.rs
-```
-
-## What passed today
-
-These checks passed:
-
-```text
-cargo +stable check --manifest-path .\kernel\epsilon\epsilon\crates\aether-core\Cargo.toml
-```
-
-Result:
-
-```text
-Finished `dev` profile
-```
-
-These audit gates also passed:
-
-```text
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-aether-migration .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-doc-claim-contract .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-o1-allocator .
-```
-
-Results:
-
-```text
-[seal-audit] AETHER MIGRATION OK
-[seal-audit] LANGUAGE HYGIENE OK
-[seal-audit] SEAL ABI OK
-[seal-audit] DOC CLAIM CONTRACT OK
-[seal-audit] O(1) ALLOCATOR OK
-```
-
-Important: these passing gates alone did not prove that the OS boots, reaches
-desktop, runs in Oracle VM, beats Ubuntu, or satisfies every README claim. The
-later VM proof section records the boot evidence that was captured after this
-initial audit snapshot.
-
-## What failed today
-
-This focused test failed before repair:
-
-```text
-cargo +stable test --manifest-path .\kernel\epsilon\epsilon\crates\aether-core\Cargo.toml --test legacy_migration_gate legacy_riemannian_optimizer_is_rust_backed
-```
-
-Initial reason:
-
-```text
-could not find `riemannian_optimizer` in `aether_core`
-```
-
-Root cause:
-
-The test was added before the Rust replacement module was added. That was correct TDD shape, but bad stopping point. The repo was left red instead of immediately finishing the implementation.
-
-Repair result:
-
-```text
-cargo +stable test --manifest-path .\kernel\epsilon\epsilon\crates\aether-core\Cargo.toml --test legacy_migration_gate legacy_riemannian_optimizer_is_rust_backed
-```
-
-```text
-1 passed; 0 failed
-```
-
-## What changed recently
-
-Recent commits show many theorem and migration gates were added:
-
-```text
-ffbda23 Migrate angular sparse attention to Rust
-73b2bc9 Migrate ring allreduce theorem to Rust
-4e202a3 Migrate cross-manifold alignment theorem to Rust
-acaf0e6 Migrate world model horizon theorem to Rust
-360f945 Migrate persistent KV partition theorem to Rust
-82eebb0 Migrate geodesic consolidation theorem to Rust
-182fd57 Migrate thermodynamic plasticity theorem to Rust
-a641656 Migrate hyperbolic capacity theorem to Rust
-71d07d7 Add VM proof manifest provenance gates
-25447fe Cap TopoRAM allocation proof surface
-2ae2d01 Add QEMU proof manifest gate
-```
-
-These commits hardened parts of the repo, but they are not the same thing as delivering a full bootable topological OS.
-
-## Subagent audit result
-
-A read-only audit agent inspected the legacy Riemannian optimizer host file under `kernel/epsilon/epsilon_core/`.
-
-Findings:
-
-- No live imports of that legacy host file were found.
-- It should not be deleted blindly.
-- It should be replaced by a Rust module at `aether_core::riemannian_optimizer`.
-- The Rust module should preserve:
-  - `ManifoldType`
-  - sphere projection
-  - sphere retraction
-  - sphere parallel transport
-  - Grassmann projection
-  - `RiemannianSgd`
-  - `RiemannianAdam`
-- Existing `parallel_riemannian.rs` already owns distributed Stiefel/RGCS theorem behavior, so the optimizer should be a separate module instead of dumping unrelated optimizer state into that theorem file.
-
-## Bugs and risk I introduced
-
-1. I left the repo in a red-test state.
-
-The `legacy_riemannian_optimizer_is_rust_backed` test imported a module that did not exist yet. That immediate bug has now been repaired by adding the Rust module, exporting it, and deleting the legacy host file it replaces.
-
-2. I advanced migration pressure faster than boot proof.
-
-The repo now has stronger audit gates and more Rust theorem modules, but that
-did not equal a working OS until the VM boot proofs were regenerated and checked
-against the current checkout.
-
-3. I treated README/doc claim gates as necessary proof, but not sufficient proof.
-
-The README is the bible, yes. But a doc-claim gate passing only proves claims are represented and bounded by current audit code. It does not prove hardware behavior, bootability, scheduler performance, graphics output, or Ubuntu-beating benchmarks.
-
-4. I created too much movement without enough green checkpoints.
-
-The correct rhythm should be: one migration, one failing test, one implementation, full focused verification, commit, then next migration. This repair moved the Riemannian optimizer migration back into that rhythm.
-
-5. The repo still contains legacy host-script files under `kernel`.
-
-The count is now 51 files after deleting the Riemannian optimizer host file. Some may be tests, adapters, docs, or legacy surfaces, but the user requirement is no host-script runtime surface for the OS. That is not complete.
-
-## What is true right now
-
-True:
-
-- `aether-core` production code compiles.
-- Several Seal audit gates pass.
-- The Riemannian optimizer migration gate now passes.
-- The Riemannian optimizer formulas now have a no-std Rust module.
-- The OS boot proof is current for QEMU and Oracle/VirtualBox at commit
-  `b2e8f624b051fe6d92c9f84236244f0023a9e109`.
-- No legacy host-runtime command was run as part of the theorem migration; later
-  VM wrapper commands were run only to prove boot artifacts.
-
-Not true yet:
-
-- It is not proven to be better than Ubuntu today.
-- It is not proven that all README v0.4.5 claims are implemented as live OS behavior.
-- It is not proven that all allocation/data movement paths are O(1).
-
-## Immediate repair plan
-
-1. Restore green by finishing the Riemannian optimizer migration. Done.
-
-Implement `kernel/epsilon/epsilon/crates/aether-core/src/riemannian_optimizer.rs`, export it from `lib.rs`, preserve the legacy formulas in no-std Rust, and make the current failing test pass.
-
-2. Update migration gates. Done.
-
-Add the legacy Riemannian optimizer host file to the migration contract, banned imports, and docs. Delete the legacy host file only after the Rust replacement passes.
-
-3. Run the focused verification set. Done.
-
-Required checks:
-
-```text
-cargo +stable test --manifest-path .\kernel\epsilon\epsilon\crates\aether-core\Cargo.toml --test legacy_migration_gate
-cargo +stable check --manifest-path .\kernel\epsilon\epsilon\crates\aether-core\Cargo.toml --no-default-features --features no_std
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-aether-migration .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-doc-claim-contract .
-cargo +stable run --manifest-path .\kernel\seal-mkimage\Cargo.toml --release -- --check-o1-allocator .
-```
-
-4. Stop upgrading README claims until the executable path proves them.
-
-README changes should follow working code, boot evidence, and benchmark evidence. No more claim inflation.
-
-5. Next major checkpoint must be VM boot proof.
-
-The highest-value work is not another doc pass. It is a bootable image path with captured proof: build artifact, VM command, boot log, graphical/desktop state if present, and failure reason if it does not reach desktop.
-
-## VM proof follow-up
-
-Existing local QEMU and Oracle/VirtualBox proof bundles were inspected after the
-Riemannian optimizer repair, then regenerated after the proof scripts were
-tightened.
-
-What verified:
-
-```text
-seal-mkimage --check-proof-manifest ...\qemu-proof\proof-manifest.txt
-seal-mkimage --check-proof-manifest ...\vbox-smoke\proof-manifest.txt
-seal-mkimage --check-vm-proof ...\qemu-proof\serial.log
-seal-mkimage --check-vbox-proof ...\vbox-smoke\serial.log
-seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm
-seal-mkimage --check-theorem-log ...\qemu-proof\serial.log
-seal-mkimage --check-aether-runtime ...\qemu-proof\serial.log
-seal-mkimage --check-desktop-soak ...\qemu-proof\serial.log
-seal-mkimage --check-benchmark-log ...\qemu-proof\serial.log
-```
-
-All of those gates passed for the existing local proof bundles.
-
-Initial stale-proof failure:
-
-```text
-seal-mkimage --check-current-proof-manifest ...\qemu-proof\proof-manifest.txt .
-```
-
-The stricter gate initially failed because the manifest commit was
-`71d07d7a433db0dcbf4044eefd972805dd74a434`, while current HEAD is
-`ffbda23723b07a05707a00ea9a085f6c1895b019`.
-
-That means the old proof bundle is real evidence for its recorded commit, but
-not proof for the current checkout.
-
-Current regenerated proof:
-
-```text
-powershell -NoProfile -ExecutionPolicy Bypass -File .\run-qemu.ps1 -HeadlessProof -ProofSeconds 240
-powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240
-```
-
-Both proof paths now pass the normal artifact manifest gate and the current
-checkout provenance gate:
-
-```text
-[seal-audit] PROOF MANIFEST OK
-[seal-audit] CURRENT PROOF MANIFEST OK
-```
+Seal OS is not finished.
+
+There is real VM proof now: QEMU and Oracle/VirtualBox boot proof bundles exist
+for clean commit `d2faac5162395845b0d3c7ccc3ee32fdcdadc4d4`, and both manifests
+record `proof_verdict=PASS`. Those proofs show theorem-gated boot, Aether runtime
+markers, desktop proof markers, desktop soak, benchmark-log markers, and current
+artifact provenance.
+
+But the full README-scale target is not delivered. Seal OS is not yet proven to
+beat Ubuntu. It is not yet proven across "any VM machine". It is not yet proven
+that every O(1), HFT, ML, filesystem, network, GPU, and desktop claim is live OS
+behavior.
+
+Small caveat: this report itself edits the tracked tree. The proof manifests
+below were current for the clean checkout at commit
+`d2faac5162395845b0d3c7ccc3ee32fdcdadc4d4`. After editing this report, a strict
+`--check-current-proof-manifest` should reject the dirty checkout until the report
+is committed and the proofs are regenerated, or until the tree is restored clean.
+
+## What I did wrong
+
+I moved too much surface area at once.
+
+The big mistake was treating a giant OS target like it could be advanced through
+lots of partial gates without a hard stop after every claim. That created bug
+risk, stale proof risk, and documentation pressure ahead of measured behavior.
+The repo is not destroyed, but the work rhythm was not tight enough for this
+scale.
+
+## Bugs and regressions I introduced
+
+| Problem | Evidence | Current state |
+| --- | --- | --- |
+| Red test left in repo during migration | `legacy_riemannian_optimizer_is_rust_backed` imported `aether_core::riemannian_optimizer` before the module existed | Fixed by commit `202d446`; module exists and legacy migration gate passed after repair |
+| Stale proof accepted as too meaningful | Old report claimed VM proof around `b2e8f62`, then later commit `d2faac5` changed HEAD | Fixed structurally by current-proof manifest gates, but any new tracked edit now makes proofs stale again |
+| README/docs ran ahead of full OS proof | README has many checkmarks and proof-gate rows while Ubuntu comparison artifacts are still pending | Still a live risk; docs must stay claim-limited |
+| Ubuntu-beating claim not proven | `docs/BENCHMARK_PLAN.md` says Ubuntu numbers are pending; `README.md` says raw Ubuntu artifact pending | Not fixed |
+| O(1) claim not universal | Current gates prove bounded allocator/log markers, not every data movement and persistence path | Partially fixed only |
+| Host-script surface still exists | `kernel` currently contains 84 legacy host-language files total; 56 excluding vendored proof dependencies; 10 remain in `kernel/epsilon/epsilon_core` | Not fixed |
+| Too much deletion pressure | User warned not to delete legacy host logic without Rust replacement | Riemannian optimizer was replaced properly, but remaining host-script logic needs module-by-module conversion, not deletion |
+| Agent/audit workflow got noisy | Many docs/plans/checks were added, but the user needed OS progress and a short truth ledger | This report is the reset point |
+
+## Current VM proof
 
 QEMU proof manifest:
 
@@ -293,9 +53,20 @@ vm_target=qemu
 qemu_backend=wsl
 proof_verdict=PASS
 proof_seconds=240
-git_commit=b2e8f624b051fe6d92c9f84236244f0023a9e109
+created_utc=2026-05-30T14:41:16Z
+git_commit=d2faac5162395845b0d3c7ccc3ee32fdcdadc4d4
 git_dirty=false
-image_sha256=f6b7027fb1abc9f382e1cf452dbea541b5eb35ddf42ae988179251865688132a
+gate_verify=ok
+gate_vm_proof=ok
+gate_theorem_log=ok
+gate_aether_runtime=ok
+gate_desktop_soak=ok
+gate_benchmark_log=ok
+gate_proof_screen=ok
+image_sha256=1153d4bd4d622fae44c347c496588c646a3fb5f91f68a348a6fd9a96c8e94f8c
+efi_sha256=19f3e45bda9726651f34e5b38f14d418528807f5747c73088534d56bee8e5d3c
+serial_log_sha256=2a862bcb8452a3df534222eebfa710b4720b5ad54297263aac430578814b407c
+screen_ppm_sha256=bd43ae8903a77dc56d7e75ab78f0a2c7fee698e8918e0fd093ef2704d975364b
 ```
 
 Oracle/VirtualBox proof manifest:
@@ -305,29 +76,215 @@ vm_target=vbox
 virtualbox_backend=headless
 proof_verdict=PASS
 proof_seconds=240
-git_commit=b2e8f624b051fe6d92c9f84236244f0023a9e109
+created_utc=2026-05-30T14:43:47Z
+git_commit=d2faac5162395845b0d3c7ccc3ee32fdcdadc4d4
 git_dirty=false
-image_sha256=1669cb3d92365172327711e3902df0bff8d987f3b48e2952317879e88ea68c7a
+gate_verify=ok
+gate_vbox_proof=ok
+gate_theorem_log=ok
+gate_aether_runtime=ok
+gate_desktop_soak=ok
+gate_benchmark_log=ok
+image_sha256=bd72d6624056755d14e5844bf30d495c69729bcbdcaecbd12c8471cb38649105
+efi_sha256=19f3e45bda9726651f34e5b38f14d418528807f5747c73088534d56bee8e5d3c
+serial_log_sha256=e48ac110dd7eb6d0080a171403a497e2c283192ecfd910c300c10129c7b24d4b
+screenshot_png_sha256=94067b295e0a5f70f8fda410913175867d2314d2d280ade3b6d8b80ca72731a8
 ```
 
-The boot logs for both paths reach theorem verification, persistent disk mount,
-Aether runtime proof, desktop proof frame, desktop soak, desktop ready, and the
-event loop.
+This means: the OS boots in the proved local QEMU path and in the proved local
+Oracle/VirtualBox headless path for that clean commit. It does not mean full
+hardware support, all VM vendors, all Ubuntu comparisons, or full production OS
+parity.
 
-Verifier repair:
+## Current repository evidence
 
-- `seal-mkimage --check-proof-manifest` now compares SHA-256 fingerprints,
-  not only byte count and CRC32.
-- A new `--check-current-proof-manifest` command compares manifest provenance
-  against local Git state.
-- The seal-mkimage regression suite covers SHA-256 known-answer verification,
-  SHA-256 mismatch rejection, stale commit rejection, and dirty-flag mismatch
-  rejection.
+Recent commits:
+
+```text
+d2faac5 Record current VM proof status
+b2e8f62 Require current proof manifests in VM scripts
+de7bbd4 Add current QEMU proof manifest writer
+202d446 Migrate riemannian optimizer and tighten proof manifests
+ffbda23 Migrate angular sparse attention to Rust
+73b2bc9 Migrate ring allreduce theorem to Rust
+4e202a3 Migrate cross-manifold alignment theorem to Rust
+acaf0e6 Migrate world model horizon theorem to Rust
+```
+
+Host-language surface under `kernel`:
+
+```text
+legacy interpreter files = 84 total
+legacy interpreter files = 56 excluding vendored proof dependencies
+legacy interpreter files = 10 under kernel/epsilon/epsilon_core
+shell scripts             = 17
+frontend scripts          = 18
+typed frontend scripts    = 1
+PowerShell VM scripts     = 5
+```
+
+Non-vendored legacy host-language concentration:
+
+```text
+kernel/epsilon/epsilon-ide      39
+kernel/epsilon/epsilon_core     10
+kernel/aether/Aether-Lang        3
+kernel/runtime                   2
+kernel root/package markers      2
+```
+
+This does not automatically mean the OS runtime depends on legacy host code. The language
+hygiene gate is meant to quarantine host scripts. But it absolutely means the
+repo is not yet visually or structurally clean enough for the "bare-metal Rust +
+Aether only" story without careful classification and conversion.
+
+## Current benchmark truth
+
+The Seal-side allocator and benchmark markers are present in the VM logs and the
+Rust verifier can parse them. The Ubuntu comparison harness exists:
+
+```text
+tools/ubuntu-alloc-bench
+seal-mkimage --check-ubuntu-benchmark-log
+seal-mkimage --compare-benchmark-logs
+manual CI lane: ubuntu-alloc-baseline
+```
+
+The comparison function requires Seal p50, p95, and max allocation cycles to beat
+Ubuntu. That is good shape.
+
+The missing piece is the actual native Ubuntu 26.04 artifact produced on the same
+machine or approved self-hosted runner. Until that artifact exists, the correct
+status is:
+
+```text
+Ubuntu comparison infrastructure: partial
+Ubuntu-beating result: not proven
+HFT/ML dominance: not proven
+```
+
+Follow-up repair added after this report was rewritten:
+
+```text
+seal-mkimage --check-current-benchmark-proof <proof-manifest.txt> <ubuntu-alloc.log> .
+```
+
+This new gate refuses to compare Ubuntu against an arbitrary Seal serial log. It
+first verifies the VM proof manifest, checks that the manifest commit and dirty
+flag match the checkout, resolves the benchmark serial log from that manifest,
+checks the Seal benchmark markers, validates the native Ubuntu 26.04 allocator
+artifact, and only then accepts the allocator-only comparison. It still does not
+prove global Ubuntu superiority, HFT dominance, or ML dominance.
+
+## Current O(1) truth
+
+What is currently supported by gates:
+
+- single-frame physical allocation has a bounded topological free-index proof
+- contiguous DMA allocation is bounded by fixed candidate probes and a 64-page run cap
+- TopoRAM single-frame benchmark marker exists
+- allocator boot markers are checked by `seal-mkimage --check-benchmark-log`
+- ManifoldFS teleport marker proves bounded metadata movement and same-inode RAMFS behavior
+
+What is not fully proven:
+
+- all physical allocation paths in every condition
+- end-to-end persistent file teleport without byte write-through cost
+- VRAM-backed file/data teleportation
+- GPU-native data movement
+- HFT tick-to-action latency
+- ML tensor locality against Ubuntu
+- network and block I/O superiority
+
+So the honest phrase is "bounded O(1) proof gates exist for selected hot paths",
+not "O(1) for everything".
+
+## Root cause
+
+The root cause is not one compiler error. It is process debt:
+
+1. The goal is enormous: build a new topological OS, remove POSIX/Linux
+   assumptions, migrate legacy theorem code, prove VM boot, prove Aether runtime,
+   prove desktop, prove O(1), and beat Ubuntu.
+2. I kept advancing multiple fronts before each front had a sealed artifact.
+3. The README became a pressure source instead of a strict contract backed only
+   by executable proof.
+4. VM proof, theorem proof, benchmark proof, and documentation proof were mixed
+   together too loosely.
+5. Some "green" gates were necessary but not sufficient, and I did not call that
+   out early enough.
+
+## Do not repeat
+
+These rules should control the next work:
+
+1. No README checkmark unless an executable gate and artifact exist.
+2. No host-script deletion unless the Rust replacement module and migration test pass.
+3. No Ubuntu win language until same-machine Ubuntu logs are committed or attached.
+4. No O(1) expansion unless the exact path is named, bounded, and measured.
+5. No broad refactors during proof repair.
+6. No claiming "current proof" after any tracked edit until proof manifests are
+   regenerated or the checkout is clean again.
+
+## Next repair plan
+
+Priority 1: freeze claims.
+
+Do not upgrade README language. If anything, downgrade rows that imply global
+completion without measured proof.
+
+Priority 2: make proof provenance harder to misuse. Started.
+
+The new current benchmark proof gate now binds:
+
+- Seal proof manifest
+- Seal serial benchmark log
+- Ubuntu 26.04 benchmark artifact
+- commit hash
+- dirty flag
+
+Still missing: full host/VM configuration binding for every HFT/ML workload, not
+just allocator proof.
+
+Priority 3: finish host-to-Rust conversion in the core path.
+
+Start with `kernel/epsilon/epsilon_core` because it still has 10 host-language files and
+is closest to the user's concern about deleted theorem/agent logic. Each file
+needs:
+
+- legacy behavior read
+- Rust API designed
+- failing migration test
+- no-std or kernel-suitable Rust implementation where appropriate
+- deletion only after test passes
+
+Priority 4: prove the allocator and data movement claims path by path.
+
+Do not try to prove "everything". Prove:
+
+- single-frame allocation
+- contiguous bounded allocation
+- TopoRAM allocation
+- file metadata teleport
+- persistent ManifoldFS move
+- VRAM/GPU data residency only after actual implementation
+
+Priority 5: run the boring VM matrix only after fixes.
+
+Current local proof covers QEMU and Oracle/VirtualBox headless for one clean
+commit. The next VM proof should be run only after the next code/doc checkpoint is
+complete, otherwise every report edit invalidates current provenance again.
 
 ## Accountability
 
-The repo is not destroyed, but it is not where it should be after 25 hours.
+The repo is better than it was in some ways: current-proof manifests exist,
+artifact SHA-256 checks exist, VM proof exists, and several theorem surfaces were
+migrated into Rust.
 
-The clean fact is this: I improved audit structure and migrated several Rust theorem surfaces, but I did not deliver the full OS working state. The active Riemannian optimizer bug was mine and has now been repaired.
+But your complaint is valid. After 25 hours, the result should be clearer,
+tighter, and closer to a working OS. I brought too much churn and not enough
+single-file-at-a-time closure.
 
-Next action should be boring and disciplined: move to boot proof.
+The correction is boring discipline: proof first, claim second, one migration at
+a time, no deleted logic without Rust replacement, no Ubuntu victory talk without
+Ubuntu numbers.
