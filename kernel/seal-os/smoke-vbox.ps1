@@ -294,6 +294,7 @@ function Write-VBoxProofManifest {
 
     Set-Content -LiteralPath $ProofManifest -Value $lines -Encoding ascii
     Invoke-SealMkimageGate -Arguments @("--check-proof-manifest", $ProofManifest)
+    Invoke-SealMkimageGate -Arguments @("--check-current-proof-manifest", $ProofManifest, $repoRoot)
 }
 
 function Invoke-VBoxManageWarn {
