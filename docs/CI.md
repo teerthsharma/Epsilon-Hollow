@@ -219,6 +219,7 @@ Additional Rust-native audit commands run against the same OS surface:
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses the `[GFX] desktop-soak` marker and requires frame count, monotonic cycle percentiles, input-events field, and full-frame dirty-pixel coverage |
 | `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, and `[BENCH] scheduler-select-next`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries, bounded metadata ops, explicit write-through byte accounting, and live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches |
+| `seal-mkimage --check-proof-manifest qemu-proof/proof-manifest.txt` | Verifies the QEMU proof bundle provenance: image/EFI/log/screen byte counts, CRC32 fingerprints, SHA-256 fingerprints, QEMU backend, commit/dirty flag, and every hard gate status recorded before canonical artifact publication |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
 | `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log` | Fails unless Seal OS p50, p95, and max allocation cycles beat the validated Ubuntu artifact |
 | `seal-mkimage --check-seal-abi .` | Scans `kernel/seal-os/src` for banned ABI imports and calls such as `extern crate libc`, `use libc`, `std::os::unix`, `std::os::linux`, `posix_spawn`, `pthread_`, `forkpty`, and `termios` |
@@ -241,9 +242,11 @@ and WSL kernels, boots the Seal image on that same runner, captures
 and `--compare-benchmark-logs`, then uploads the Seal log, Ubuntu log, and host
 manifest as `ubuntu-26-alloc-comparison`.
 
-The pixel gate, `seal-mkimage --check-proof-screen qemu-proof/screen.ppm`, is a
-local WSL2/QEMU proof because the CI smoke job runs with `-nographic` and does
-not capture a framebuffer dump. It must pass before claiming a GUI desktop proof.
+The pixel and manifest gates, `seal-mkimage --check-proof-screen
+qemu-proof/screen.ppm` and `seal-mkimage --check-proof-manifest
+qemu-proof/proof-manifest.txt`, are local WSL2/QEMU proof gates because the CI
+smoke job runs with `-nographic` and does not capture a framebuffer dump. They
+must pass before claiming a GUI desktop proof.
 
 ### QEMU Soft Milestones
 

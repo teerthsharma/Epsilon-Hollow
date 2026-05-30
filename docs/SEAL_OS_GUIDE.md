@@ -90,6 +90,7 @@ Proof output:
 kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
 kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.png
+kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 ```
 
 The serial log must contain:
@@ -124,6 +125,11 @@ The theorem log audit now requires desktop readiness and event-loop entry, not
 just theorem banner lines. The screenshot audit parses `screen.ppm` directly and
 requires a nonblank 1024x768 desktop with the icon lane, control region, and
 primary terminal titlebar visible.
+
+The manifest audit parses `proof-manifest.txt` and verifies the proof bundle
+against the current artifacts. It requires the QEMU backend, commit/dirty flag,
+image and EFI fingerprints, serial/screen fingerprints, and every hard gate
+status to be recorded as `ok`.
 
 The desktop soak marker is the first anti-jank gate. It proves the boot path ran
 a deterministic compositor compose+blit exercise before declaring the desktop
@@ -186,6 +192,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-runtime kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-theorem-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-seal-abi .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-language-hygiene .
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-migration .

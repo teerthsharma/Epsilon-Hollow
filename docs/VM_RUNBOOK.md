@@ -1,8 +1,9 @@
 # Seal OS VM Runbook
 
 This is the clean path from checkout to VM boot proof. It covers QEMU and Oracle
-VM VirtualBox. The proof target is serial output plus a machine-checked
-`screen.ppm` pixel gate for GUI proof, not vibes.
+VM VirtualBox. The proof target is serial output, a machine-checked
+`screen.ppm` pixel gate for GUI proof, and a `proof-manifest.txt` bundle that
+ties the artifacts back to the exact image, EFI, commit, backend, and gates.
 
 ## Boot Proof Rule
 
@@ -19,6 +20,12 @@ A VM run passes only when the serial log reaches:
 For QEMU GUI proof, `seal-mkimage --check-proof-screen` must also pass against
 the captured `qemu-proof\screen.ppm`. The script also writes `screen.png`; the
 checker accepts that path when the sibling PPM proof capture is present.
+
+For QEMU provenance proof, `run-qemu.ps1 -HeadlessProof` writes a timestamped
+`qemu-proof-runs\<stamp>` staging directory, runs every hard gate, writes
+`proof-manifest.txt`, verifies that manifest with
+`seal-mkimage --check-proof-manifest`, and only then publishes the canonical
+`qemu-proof` directory. Failed proof runs are kept in the staging directory.
 
 A VM run fails on:
 
@@ -112,6 +119,8 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-aether-runtime kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-desktop-soak kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 ```
 
 Verify the full Oracle/VirtualBox serial proof after `smoke-vbox.ps1`:
@@ -132,6 +141,7 @@ Expected:
 
 ```text
 [seal-audit] VM PROOF OK
+[seal-audit] PROOF MANIFEST OK
 ```
 
 ## Ubuntu Allocation Comparison Gate
