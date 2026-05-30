@@ -6,7 +6,8 @@ the authoritative path for angular sparse attention, geodesic consolidation,
 governor convergence, cross-manifold alignment, hyperbolic capacity, hyperbolic geometry, the
 meta-controller, spectral contraction, spectral entropy, persistent KV
 partitioning, ring-allreduce gradient coherence, thermodynamic plasticity,
-world-model predictive horizon, and topological state sync.
+Riemannian optimizer projection/retraction, world-model predictive horizon, and
+topological state sync.
 
 The remaining host files are compatibility/reference scaffolding only. They must
 not import deleted theorem modules. The Rust gate below enforces that rule and
@@ -30,6 +31,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 | `meta_controller` | migrated with host shim | `aether_core::meta_controller::{MetaController, ConstitutionalSafetyFilter}` |
 | `parallel_riemannian` | migrated/deleted; compatibility shim folded into `world_model.py` | `aether_core::parallel_riemannian::DistributedRiemannianSgd` |
 | `persistent_kv_partition` | migrated | `aether_core::persistent_kv_partition::BettiGuidedPartitioner` |
+| `riemannian_optimizer` | migrated/deleted | `aether_core::riemannian_optimizer::{RiemannianSgd, RiemannianAdam}` |
 | `spectral_contraction` | migrated | `aether_core::scm::{TelemetryOperator, LatentPredictor}` |
 | `spectral_entropy` | migrated | `aether_core::spectral_entropy::SpectralCoherenceTracker` |
 | `thermodynamic_plasticity` | migrated | `aether_core::thermodynamic_plasticity::ThermodynamicAnalyzer` |

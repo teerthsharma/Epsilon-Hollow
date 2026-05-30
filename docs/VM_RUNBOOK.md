@@ -25,7 +25,11 @@ For QEMU provenance proof, `run-qemu.ps1 -HeadlessProof` writes a timestamped
 `qemu-proof-runs\<stamp>` staging directory, runs every hard gate, writes
 `proof-manifest.txt`, verifies that manifest with
 `seal-mkimage --check-proof-manifest`, and only then publishes the canonical
-`qemu-proof` directory. Failed proof runs are kept in the staging directory.
+`qemu-proof` directory. To prove the bundle belongs to the checkout in front of
+you, also run `seal-mkimage --check-current-proof-manifest`; it compares the
+manifest commit and dirty flag against local Git state instead of accepting an
+older proof bundle as current. Failed proof runs are kept in the staging
+directory.
 
 A VM run fails on:
 
@@ -121,6 +125,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-screen kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\screen.ppm
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-current-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt .
 ```
 
 Verify the full Oracle/VirtualBox serial proof after `smoke-vbox.ps1`:
@@ -133,6 +138,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-desktop-soak kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-benchmark-log kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\serial.log
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt
+cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-current-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt .
 ```
 
 The benchmark log gate requires all four current markers:
@@ -145,6 +151,7 @@ Expected:
 ```text
 [seal-audit] VM PROOF OK
 [seal-audit] PROOF MANIFEST OK
+[seal-audit] CURRENT PROOF MANIFEST OK
 ```
 
 ## Ubuntu Allocation Comparison Gate
