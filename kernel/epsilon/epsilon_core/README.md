@@ -5,8 +5,8 @@ Rust/Aether implementation under `kernel/epsilon/epsilon/crates/aether-core` as
 the authoritative path for geodesic consolidation, governor convergence,
 cross-manifold alignment, hyperbolic capacity, hyperbolic geometry, the
 meta-controller, spectral contraction, spectral entropy, persistent KV
-partitioning, thermodynamic plasticity, world-model predictive horizon, and
-topological state sync.
+partitioning, ring-allreduce gradient coherence, thermodynamic plasticity,
+world-model predictive horizon, and topological state sync.
 
 The remaining host files are compatibility/reference scaffolding only. They must
 not import deleted theorem modules. The Rust gate below enforces that rule and
@@ -27,6 +27,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 | `hyperbolic_capacity` | migrated | `aether_core::hyperbolic_capacity::{HcsVerifier, h100_analysis}` |
 | `hyperbolic_geometry` | migrated | `aether_core::hyperbolic_geometry::{PoincareBall, AngularMomentumTracker}` |
 | `meta_controller` | migrated with host shim | `aether_core::meta_controller::{MetaController, ConstitutionalSafetyFilter}` |
+| `parallel_riemannian` | migrated/deleted; compatibility shim folded into `world_model.py` | `aether_core::parallel_riemannian::DistributedRiemannianSgd` |
 | `persistent_kv_partition` | migrated | `aether_core::persistent_kv_partition::BettiGuidedPartitioner` |
 | `spectral_contraction` | migrated | `aether_core::scm::{TelemetryOperator, LatentPredictor}` |
 | `spectral_entropy` | migrated | `aether_core::spectral_entropy::SpectralCoherenceTracker` |
