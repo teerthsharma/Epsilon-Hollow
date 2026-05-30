@@ -1,0 +1,3 @@
+## 2024-05-30 - [Adding meaningful disabled states and keyboard focus]
+**Learning:** Adding dynamic disabled state tooltips and clear focus styles for keyboard accessibility improves the intuitive nature of interactive elements, significantly aiding screen reader navigation and keyboard navigation.
+**Action:** Always provide explicit disabled styles `disabled:cursor-not-allowed` and dynamic title attributes indicating why a button is disabled, alongside keyboard accessible `focus-visible` styles.
