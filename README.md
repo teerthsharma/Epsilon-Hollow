@@ -16,7 +16,7 @@ OS state = topology on S². File moves use metadata topology; byte persistence s
 [BOOT] IDT + PIC initialized
 [T4/AGCR] Governor online: epsilon = 0.1000
 [T1/TSS]  Voronoi index: 8 cells, test lookup -> cell 0
-[ALLOC] O(1) proof: topo_cells=8, l3_word_probes_per_cell=2, single_word_probes_per_cell=8192, contiguous_candidate_probes=128, contiguous_max_run_pages=64, marking=bounded_by_contiguous_max_run_pages
+[ALLOC] O(1) proof: topo_cells=8, l3_word_probes_per_cell=2, single_word_probes_per_cell=8192, contiguous_candidate_probes=128, contiguous_max_run_pages=64, toporam_max_run_pages=64, marking=bounded_by_contiguous_max_run_pages
 [ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
@@ -338,7 +338,7 @@ The physical frame allocator keeps a bitmap as the truth source, then layers a f
 - **Contiguous frame path**: multi-page DMA requests use 128 bounded topological candidate probes and a hard 64-page run cap. Search is O(1) with respect to installed RAM, and marking is bounded by `MAX_CONTIGUOUS_RUN_PAGES`; larger transfers must use chunked/scatter-gather I/O instead of one unbounded contiguous allocation.
 - **Bitmap truth**: one bit per 4 KiB frame, predictable cache behavior, trivial serialization for snapshots, and recovery if the summary index is rebuilt. Direct mutable bitmap access is allocator-private; TopoRAM can read bounded samples but cannot mutate around the topological index.
 - **Slab**: Six fixed size classes (64B–2048B) with intrusive singly-linked free lists. Carved from 4 KiB pages. O(1) alloc/dealloc, no fragmentation within a page.
-- **TopoRAM wrapper**: Adds 64 bytes of metadata per frame (S² embedding, access history, Voronoi cell, lifetime class). The overhead is 1.5% of total RAM (64B × 1M frames = 64MB metadata for 4GB RAM). Acceptable for the predictive benefits.
+- **TopoRAM wrapper**: Adds 64 bytes of metadata per frame (S² embedding, access history, Voronoi cell, lifetime class). Public TopoRAM allocation and free-side topology repair now share the physical allocator's 64-page run cap, so request-size metadata work cannot silently become unbounded. The overhead is 1.5% of total RAM (64B × 1M frames = 64MB metadata for 4GB RAM). Acceptable for the predictive benefits.
 
 The hybrid gives us: small objects -> slab (fast, no external fragmentation). Single frames -> topological free-index allocation. Large contiguous DMA requests -> bounded topological candidate probes, with scatter-gather still planned for devices that do not need contiguous pages. All frames -> topological metadata for T1-T5 decisions.
 
@@ -1239,7 +1239,7 @@ graph LR
 | **Physical alloc** | alloc_frame() | O(1) bounded topological free-index lookup across 8 cells; max 2 L3 words and 8192 summary-backed word candidates per cell | source-gated + boot log proof marker + `[BENCH] alloc-frame`; Ubuntu comparison gate exists, raw Ubuntu artifact pending |
 | **Slab alloc** | slab.alloc(size) | O(1) | benchmark pending |
 | **TopoRAM alloc** | alloc_frames(1, hint) | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` requires 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycles, and no frame leak; Ubuntu comparison gate exists, raw Ubuntu artifact pending |
-| **TopoRAM contiguous** | alloc_frames(count > 1, hint) | 128 bounded topological candidate probes + hard 64-page marking cap | source-gated; latency benchmark pending |
+| **TopoRAM contiguous** | alloc_frames(count > 1, hint) | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap shared with the physical allocator | source-gated by `--check-o1-allocator`; latency benchmark pending |
 | **ManifoldFS lookup** | lookup(path) | O(path depth) + O(K) cell search | benchmark pending |
 | **ManifoldFS teleport** | move file | O(1) metadata rewiring with same-inode directory topology move; current persistence write-through rewrites bytes | `[BENCH] manifold-teleport` gate proves same inode, source removal, destination presence, bounded metadata ops, and write-through byte accounting |
 | **Scheduler select** | select_next_task() | O(1) — one predicted-cell check plus bounded fallback across 8 cells and 256 priority buckets | `[BENCH] scheduler-select-next` gate proves 64 live requeue selections, ready count preservation, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 bucket scan |

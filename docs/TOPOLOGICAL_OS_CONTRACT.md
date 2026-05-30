@@ -70,6 +70,9 @@ Allowed today:
   `MAX_CONTIGUOUS_RUN_PAGES = 64` bounding per-call marking and summary refresh.
   Larger transfers must use chunked/scatter-gather I/O instead of one
   unbounded contiguous request.
+- TopoRAM public allocation and free-side topology repair share that 64-page
+  run cap, so frame metadata repair is bounded by the same constant as physical
+  allocation.
 - Scheduler selection: O(1) over eight Voronoi cells and fixed priority buckets.
   The `[BENCH] scheduler-select-next` boot marker proves live requeue selection
   with zero context switches, max 9 bitmap tests, and max 256 bucket scan.

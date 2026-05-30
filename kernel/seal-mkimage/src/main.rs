@@ -866,6 +866,7 @@ fn parse_alloc_o1_proof(text: &str) -> Result<(), String> {
     let single_word_probes = parse_metric(line, "single_word_probes_per_cell=")?;
     let contiguous_candidate_probes = parse_metric(line, "contiguous_candidate_probes=")?;
     let contiguous_max_run_pages = parse_metric(line, "contiguous_max_run_pages=")?;
+    let toporam_max_run_pages = parse_metric(line, "toporam_max_run_pages=")?;
     let marking = parse_field(line, "marking=")?;
 
     if topo_cells != 8 {
@@ -891,6 +892,11 @@ fn parse_alloc_o1_proof(text: &str) -> Result<(), String> {
     if contiguous_max_run_pages > 64 {
         return Err(format!(
             "allocator proof contiguous max run too high: {contiguous_max_run_pages}"
+        ));
+    }
+    if toporam_max_run_pages != contiguous_max_run_pages {
+        return Err(format!(
+            "TopoRAM run cap must match physical contiguous run cap: toporam={toporam_max_run_pages}, contiguous={contiguous_max_run_pages}"
         ));
     }
     if marking != "bounded_by_contiguous_max_run_pages" {
@@ -1475,7 +1481,7 @@ enum VmProofTarget {
 mod tests {
     use super::*;
 
-    const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
+    const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 toporam_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
     const TOPORAM_ALLOC_LOG: &str = "[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=90 p95_cycles=130 max_cycles=150 target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=10 free_after=10\n";
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=4\n";
@@ -1587,6 +1593,16 @@ gate_proof_screen=ok\n",
         assert_eq!(seal.p50, 100);
         assert_eq!(ubuntu.iterations, 64);
         assert_eq!(ubuntu.p95, 300);
+    }
+
+    #[test]
+    fn allocator_o1_proof_requires_matching_toporam_run_cap() {
+        let missing = ALLOC_PROOF_LOG.replace(" toporam_max_run_pages=64", "");
+        assert!(parse_alloc_o1_proof(&missing).is_err());
+
+        let mismatched =
+            ALLOC_PROOF_LOG.replace("toporam_max_run_pages=64", "toporam_max_run_pages=65");
+        assert!(parse_alloc_o1_proof(&mismatched).is_err());
     }
 
     #[test]
@@ -2867,6 +2883,8 @@ fn check_o1_allocator(root: &Path) -> Result<(), String> {
     }
 
     let topo_required = [
+        "pub const MAX_TOPO_RAM_RUN_PAGES",
+        "pub const fn max_run_pages",
         "const ENTROPY_RECHECK_INTERVAL",
         "const FRAGMENTATION_SAMPLE_LIMIT",
         "const RESEED_CELL_REFRESH_LIMIT",
@@ -2922,6 +2940,21 @@ fn check_o1_allocator(root: &Path) -> Result<(), String> {
             &topo_text,
             "SETUP_SCAN_OK: O(registered BAR pages) device-registration metadata",
         ),
+        (
+            "topo_ram module",
+            &topo_text,
+            "RUNTIME_BOUNDED_BY_REQUEST: TopoRAM rejects count >",
+        ),
+        (
+            "topo_ram module",
+            &topo_text,
+            "RUNTIME_BOUNDED_BY_REQUEST: public TopoRAM allocation uses the same",
+        ),
+        (
+            "topo_ram module",
+            &topo_text,
+            "RUNTIME_BOUNDED_BY_REQUEST: free-side topology repair is bounded",
+        ),
     ];
     for (name, module_text, marker) in setup_claim_markers {
         if !module_text.contains(marker) {
@@ -2949,6 +2982,33 @@ fn check_o1_allocator(root: &Path) -> Result<(), String> {
     if !topo_alloc_body.contains("ENTROPY_RECHECK_INTERVAL") {
         return Err(String::from(
             "topo allocation must gate entropy checks behind a bounded interval",
+        ));
+    }
+    if !topo_alloc_body.contains("count > MAX_TOPO_RAM_RUN_PAGES") {
+        return Err(String::from(
+            "topo allocation must reject requests above MAX_TOPO_RAM_RUN_PAGES",
+        ));
+    }
+
+    let topo_public_alloc_body = extract_between(
+        &topo_text,
+        "pub fn alloc_frames(count: usize",
+        "/// Free `count` frames starting at `addr`.",
+    )?;
+    if !topo_public_alloc_body.contains("count > MAX_TOPO_RAM_RUN_PAGES") {
+        return Err(String::from(
+            "public TopoRAM allocation must reject unbounded run sizes",
+        ));
+    }
+
+    let topo_free_body = extract_between(
+        &topo_text,
+        "pub fn free_frames(addr: PhysAddr, count: usize)",
+        "/// Record an access tick for `addr`.",
+    )?;
+    if !topo_free_body.contains("count > MAX_TOPO_RAM_RUN_PAGES") {
+        return Err(String::from(
+            "TopoRAM free-side metadata repair must reject unbounded run sizes",
         ));
     }
 

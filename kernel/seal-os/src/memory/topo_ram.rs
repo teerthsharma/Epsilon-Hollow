@@ -29,6 +29,11 @@ const RESEED_CELL_REFRESH_LIMIT: usize = RECENT_ALLOC_LEN;
 const PREFETCH_SCAN_LIMIT: usize = 256;
 const GLOBAL_ENTROPY_SAMPLE_LIMIT: usize = FRAGMENTATION_SAMPLE_LIMIT;
 const SWAP_SCAN_LIMIT: usize = 4096;
+pub const MAX_TOPO_RAM_RUN_PAGES: usize = phys::MAX_CONTIGUOUS_RUN_PAGES;
+
+pub const fn max_run_pages() -> usize {
+    MAX_TOPO_RAM_RUN_PAGES
+}
 
 /// Per-frame topological metadata.
 #[derive(Clone, Copy)]
@@ -545,6 +550,13 @@ fn alloc_frames_in_zone(
     count: usize,
     hint: Option<&[u16; 32]>,
 ) -> Option<PhysAddr> {
+    // RUNTIME_BOUNDED_BY_REQUEST: TopoRAM rejects count >
+    // MAX_TOPO_RAM_RUN_PAGES so request-size metadata work cannot grow with an
+    // unbounded caller request.
+    if count == 0 || count > MAX_TOPO_RAM_RUN_PAGES {
+        return None;
+    }
+
     let limit = phys::total_usable_frames();
     let zone_start = topo.base_frame;
     let zone_end = zone_start + topo.frame_meta.len();
@@ -671,7 +683,10 @@ pub fn register_pcie_bar(start: PhysAddr, pages: usize) {
 
 /// Allocate `count` frames, optionally biased toward `hint` embedding.
 pub fn alloc_frames(count: usize, zone: ZoneHint, hint: Option<&[u16; 32]>) -> Option<PhysAddr> {
-    if count == 0 {
+    // RUNTIME_BOUNDED_BY_REQUEST: public TopoRAM allocation uses the same
+    // fixed run cap as the physical contiguous allocator. Larger transfers
+    // must be split into chunks or described with scatter-gather descriptors.
+    if count == 0 || count > MAX_TOPO_RAM_RUN_PAGES {
         return None;
     }
 
@@ -708,7 +723,10 @@ pub fn alloc_frames(count: usize, zone: ZoneHint, hint: Option<&[u16; 32]>) -> O
 
 /// Free `count` frames starting at `addr`.
 pub fn free_frames(addr: PhysAddr, count: usize) {
-    if count == 0 {
+    // RUNTIME_BOUNDED_BY_REQUEST: free-side topology repair is bounded by the
+    // allocation cap, so propagation and per-frame metadata updates stay
+    // independent of installed RAM and unbounded caller sizes.
+    if count == 0 || count > MAX_TOPO_RAM_RUN_PAGES {
         return;
     }
 
