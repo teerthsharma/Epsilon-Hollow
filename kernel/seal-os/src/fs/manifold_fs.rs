@@ -1352,7 +1352,7 @@ pub mod tests {
 
     fn test_store_and_ls() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let id = fs.store_text("hello.txt", "world", root).unwrap();
         test_assert_eq!(id, 1);
         let entries = fs.ls(root).unwrap();
@@ -1363,7 +1363,7 @@ pub mod tests {
 
     fn test_mkdir_and_resolve_path() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let nested = fs.mkdir("nested", docs).unwrap();
         let resolved = fs.resolve_path("/docs/nested").unwrap();
@@ -1373,7 +1373,7 @@ pub mod tests {
 
     fn test_teleport_metadata_is_bounded() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         fs.store_text("file.txt", "content", docs).unwrap();
@@ -1390,7 +1390,7 @@ pub mod tests {
 
     fn test_find_returns_results() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         fs.store_text("alpha.txt", "alpha content", root).unwrap();
         fs.store_text("beta.txt", "beta content", root).unwrap();
         let results = fs.find("alpha");
@@ -1401,7 +1401,7 @@ pub mod tests {
 
     fn test_resolve_path_from_relative() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let inner = fs.mkdir("inner", docs).unwrap();
         let resolved = fs.resolve_path_from("inner", docs).unwrap();
@@ -1415,7 +1415,7 @@ pub mod tests {
 
     fn test_delete_and_rename() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         fs.store_text("old.txt", "data", root).unwrap();
         fs.rename("old.txt", "new.txt", root).unwrap();
         test_assert_eq!(fs.exists("old.txt", root), false);
@@ -1427,7 +1427,7 @@ pub mod tests {
 
     fn test_duplicate() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         fs.store_text("file.txt", "content", docs).unwrap();
@@ -1440,7 +1440,7 @@ pub mod tests {
 
     fn test_teleport_errors() -> TestResult {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         let r = fs.teleport("missing.txt", docs, vol);
@@ -1481,7 +1481,7 @@ mod host_tests {
     #[test]
     fn store_and_ls() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let id = fs.store_text("hello.txt", "world", root).unwrap();
         assert_eq!(id, 1);
         let entries = fs.ls(root).unwrap();
@@ -1492,7 +1492,7 @@ mod host_tests {
     #[test]
     fn mkdir_and_resolve_path() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let nested = fs.mkdir("nested", docs).unwrap();
         assert_eq!(fs.resolve_path("/docs/nested").unwrap(), nested);
@@ -1501,7 +1501,7 @@ mod host_tests {
     #[test]
     fn teleport_is_fast() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         fs.store_text("file.txt", "content", docs).unwrap();
@@ -1514,7 +1514,7 @@ mod host_tests {
     #[test]
     fn find_returns_results() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         fs.store_text("alpha.txt", "alpha content", root).unwrap();
         let results = fs.find("alpha");
         assert!(!results.is_empty());
@@ -1524,7 +1524,7 @@ mod host_tests {
     #[test]
     fn resolve_path_from_relative() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let inner = fs.mkdir("inner", docs).unwrap();
         assert_eq!(fs.resolve_path_from("inner", docs).unwrap(), inner);
@@ -1533,7 +1533,7 @@ mod host_tests {
     #[test]
     fn delete_and_rename() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         fs.store_text("old.txt", "data", root).unwrap();
         fs.rename("old.txt", "new.txt", root).unwrap();
         assert!(!fs.exists("old.txt", root));
@@ -1545,7 +1545,7 @@ mod host_tests {
     #[test]
     fn duplicate_file() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         fs.store_text("file.txt", "content", docs).unwrap();
@@ -1557,7 +1557,7 @@ mod host_tests {
     #[test]
     fn teleport_errors() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let docs = fs.mkdir("docs", root).unwrap();
         let vol = fs.mkdir("vol_a", root).unwrap();
         assert!(fs.teleport("missing.txt", docs, vol).is_err());
@@ -1567,7 +1567,7 @@ mod host_tests {
     #[test]
     fn teleport_o1_under_load() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         let src = fs.mkdir("src", root).unwrap();
         let dst = fs.mkdir("dst", root).unwrap();
         fs.store_text("base.txt", "x", src).unwrap();
@@ -1600,7 +1600,7 @@ mod host_tests {
     #[test]
     fn find_bounded_bucket_size() {
         let mut fs = ManifoldFS::new();
-        let root = 0u64;
+        let root = fs.root_id;
         for i in 0..500u64 {
             fs.store_text(
                 &alloc::format!("file{}", i),
