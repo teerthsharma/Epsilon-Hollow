@@ -2538,6 +2538,20 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         .join("aether-core")
         .join("src");
     let required_files = [
+        (
+            "angular_sparse_attention.rs",
+            "pub fn normalized_block_centroid",
+        ),
+        ("angular_sparse_attention.rs", "pub fn cosine_similarity"),
+        (
+            "angular_sparse_attention.rs",
+            "pub struct AngularSparseAttention",
+        ),
+        (
+            "angular_sparse_attention.rs",
+            "pub fn generate_active_indices",
+        ),
+        ("angular_sparse_attention.rs", "pub fn sparse_flash_forward"),
         ("governor.rs", "pub struct GovernorConvergenceAnalyzer"),
         ("governor.rs", "pub struct GovernorSimulationHistory"),
         ("governor.rs", "pub fn simulate_measurements"),
@@ -2692,6 +2706,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
 
     let legacy_root = root.join("kernel").join("epsilon").join("epsilon_core");
     let legacy_migrations = [
+        ("angular_sparse_attention.py", "angular_sparse_attention.rs"),
         ("cross_manifold_alignment.py", "cross_manifold_alignment.rs"),
         ("geodesic_consolidation.py", "geodesic_consolidation.rs"),
         ("governor_convergence.py", "governor.rs"),
@@ -2718,6 +2733,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
     }
 
     let banned_imports = [
+        "angular_sparse_attention",
         "cross_manifold_alignment",
         "geodesic_consolidation",
         "governor_convergence",
@@ -2781,6 +2797,8 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "simulate_measurements",
         "simulate_default_history",
         "GovernorTheoremVerification",
+        "normalized_block_centroid",
+        "AngularSparseAttention",
         "alignment_error_bound",
         "mutual_information_bound",
         "transitive_error_bound",
