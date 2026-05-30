@@ -15,6 +15,9 @@ use aether_core::meta_controller::{
     Action, ConstitutionalSafetyFilter, DecisionReason, DecisionTarget, MetaController, MetaInput,
     ToolDecision, ToolRegistry, ToolSpec,
 };
+use aether_core::persistent_kv_partition::{
+    kv_cache_size_gb, topological_locality, BettiGuidedPartitioner, MemoryTier,
+};
 use aether_core::scm::SpectralContractionVerifier;
 use aether_core::scm::{LatentPredictor, TelemetryOperator};
 use aether_core::spectral_entropy::{
@@ -280,4 +283,33 @@ fn legacy_geodesic_consolidation_is_rust_backed() {
     assert!(report.entropy_after <= report.entropy_before);
     assert!(report.merges_within_bound);
     assert!(report.theorem_holds);
+}
+
+#[test]
+fn legacy_persistent_kv_partition_is_rust_backed() {
+    let cache_gb = kv_cache_size_gb(131_072, 80, 128, 8, 2, 1);
+    assert!(cache_gb > 39.0 && cache_gb < 41.0);
+
+    let split_partition = [
+        MemoryTier::Hbm3,
+        MemoryTier::Ddr5,
+        MemoryTier::Hbm3,
+        MemoryTier::Nvme,
+    ];
+    let cluster_ids = [0_usize, 0, 1, 1];
+    assert_eq!(topological_locality(&split_partition, &cluster_ids), 2);
+
+    let cluster_sizes = [400_u64, 300, 200, 100];
+    let report = BettiGuidedPartitioner::new(0.00008, 0.0001).partition(&cluster_sizes, 256);
+    assert_eq!(report.p_total, 4);
+    assert_eq!(report.assignments[0], MemoryTier::Ddr5);
+    assert_eq!(report.assignments[1], MemoryTier::Hbm3);
+    assert_eq!(report.assignments[2], MemoryTier::Nvme);
+    assert_eq!(report.assignments[3], MemoryTier::Nvme);
+    assert_eq!(report.topological_locality, 0);
+    assert!(report.perfect_locality);
+    assert!(report.latency_betti_ns < report.latency_random_ns);
+
+    let sparse = BettiGuidedPartitioner::default().sparse_latency(report.latency_betti_ns, 0.7);
+    assert!(sparse < report.latency_betti_ns);
 }
