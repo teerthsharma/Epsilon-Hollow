@@ -89,7 +89,10 @@ Results:
 [seal-audit] O(1) ALLOCATOR OK
 ```
 
-Important: these passing gates do not prove that the OS boots, reaches desktop, runs in Oracle VM, beats Ubuntu, or satisfies every README claim. They only prove the current audit contracts passed.
+Important: these passing gates alone did not prove that the OS boots, reaches
+desktop, runs in Oracle VM, beats Ubuntu, or satisfies every README claim. The
+later VM proof section records the boot evidence that was captured after this
+initial audit snapshot.
 
 ## What failed today
 
@@ -166,7 +169,9 @@ The `legacy_riemannian_optimizer_is_rust_backed` test imported a module that did
 
 2. I advanced migration pressure faster than boot proof.
 
-The repo now has stronger audit gates and more Rust theorem modules, but that does not equal a working OS. The VM/desktop/Oracle path still needs direct boot validation.
+The repo now has stronger audit gates and more Rust theorem modules, but that
+did not equal a working OS until the VM boot proofs were regenerated and checked
+against the current checkout.
 
 3. I treated README/doc claim gates as necessary proof, but not sufficient proof.
 
@@ -188,12 +193,13 @@ True:
 - Several Seal audit gates pass.
 - The Riemannian optimizer migration gate now passes.
 - The Riemannian optimizer formulas now have a no-std Rust module.
-- No host-script command was run for this report.
+- The OS boot proof is current for QEMU and Oracle/VirtualBox at commit
+  `b2e8f624b051fe6d92c9f84236244f0023a9e109`.
+- No legacy host-runtime command was run as part of the theorem migration; later
+  VM wrapper commands were run only to prove boot artifacts.
 
 Not true yet:
 
-- The OS is not proven bootable today.
-- It is not proven to run on Oracle VM today.
 - It is not proven to be better than Ubuntu today.
 - It is not proven that all README v0.4.5 claims are implemented as live OS behavior.
 - It is not proven that all allocation/data movement paths are O(1).
@@ -233,7 +239,8 @@ The highest-value work is not another doc pass. It is a bootable image path with
 ## VM proof follow-up
 
 Existing local QEMU and Oracle/VirtualBox proof bundles were inspected after the
-Riemannian optimizer repair.
+Riemannian optimizer repair, then regenerated after the proof scripts were
+tightened.
 
 What verified:
 
@@ -251,20 +258,61 @@ seal-mkimage --check-benchmark-log ...\qemu-proof\serial.log
 
 All of those gates passed for the existing local proof bundles.
 
-What is still not current proof:
+Initial stale-proof failure:
 
 ```text
 seal-mkimage --check-current-proof-manifest ...\qemu-proof\proof-manifest.txt .
 ```
 
-This stricter gate failed because the manifest commit is
+The stricter gate initially failed because the manifest commit was
 `71d07d7a433db0dcbf4044eefd972805dd74a434`, while current HEAD is
 `ffbda23723b07a05707a00ea9a085f6c1895b019`.
 
 That means the old proof bundle is real evidence for its recorded commit, but
-not proof for the current checkout. The next boot task is to regenerate QEMU and
-VirtualBox proofs after the current changes land, then require both
-`--check-proof-manifest` and `--check-current-proof-manifest`.
+not proof for the current checkout.
+
+Current regenerated proof:
+
+```text
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run-qemu.ps1 -HeadlessProof -ProofSeconds 240
+powershell -NoProfile -ExecutionPolicy Bypass -File .\smoke-vbox.ps1 -Seconds 240
+```
+
+Both proof paths now pass the normal artifact manifest gate and the current
+checkout provenance gate:
+
+```text
+[seal-audit] PROOF MANIFEST OK
+[seal-audit] CURRENT PROOF MANIFEST OK
+```
+
+QEMU proof manifest:
+
+```text
+vm_target=qemu
+qemu_backend=wsl
+proof_verdict=PASS
+proof_seconds=240
+git_commit=b2e8f624b051fe6d92c9f84236244f0023a9e109
+git_dirty=false
+image_sha256=f6b7027fb1abc9f382e1cf452dbea541b5eb35ddf42ae988179251865688132a
+```
+
+Oracle/VirtualBox proof manifest:
+
+```text
+vm_target=vbox
+virtualbox_backend=headless
+proof_verdict=PASS
+proof_seconds=240
+git_commit=b2e8f624b051fe6d92c9f84236244f0023a9e109
+git_dirty=false
+image_sha256=1669cb3d92365172327711e3902df0bff8d987f3b48e2952317879e88ea68c7a
+```
+
+The boot logs for both paths reach theorem verification, persistent disk mount,
+Aether runtime proof, desktop proof frame, desktop soak, desktop ready, and the
+event loop.
 
 Verifier repair:
 
