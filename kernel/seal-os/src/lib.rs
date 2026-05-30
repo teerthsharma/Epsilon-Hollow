@@ -188,12 +188,13 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     memory::topo_ram::init();
     let alloc_proof = memory::phys::allocation_o1_proof();
     serial_println!(
-        "[ALLOC] O(1) proof: topo_cells={}, l3_word_probes_per_cell={}, single_word_probes_per_cell={}, contiguous_candidate_probes={}, contiguous_max_run_pages={}, marking=bounded_by_contiguous_max_run_pages",
+        "[ALLOC] O(1) proof: topo_cells={}, l3_word_probes_per_cell={}, single_word_probes_per_cell={}, contiguous_candidate_probes={}, contiguous_max_run_pages={}, toporam_max_run_pages={}, marking=bounded_by_contiguous_max_run_pages",
         alloc_proof.topo_cells,
         alloc_proof.l3_word_probes_per_cell,
         alloc_proof.single_alloc_word_probes_per_cell,
         alloc_proof.contiguous_candidate_probes,
-        alloc_proof.contiguous_max_run_pages
+        alloc_proof.contiguous_max_run_pages,
+        memory::topo_ram::max_run_pages()
     );
     let ram_mb = memory::total_ram(info) / (1024 * 1024);
     let free_frames = memory::phys::free_count();

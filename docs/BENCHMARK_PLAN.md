@@ -322,6 +322,8 @@ Seal OS:
 - hint-biased TopoRAM `alloc_frames(1, ZoneHint::Low, Some(seed))` via target
   Voronoi cell
 - multi-page `alloc_frames_contiguous_in_range()` via 128 bounded candidate probes
+- TopoRAM public allocation/free-side metadata repair capped at 64 pages per
+  call; larger transfers must be chunked or scatter-gather
 - boot markers:
 
 ```text
