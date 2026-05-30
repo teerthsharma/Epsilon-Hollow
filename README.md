@@ -1678,7 +1678,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**Seal OS language surface**: Rust kernel, assembly boot/context edges where needed, and Aether-Lang DSL. Legacy non-OS research artifacts are quarantined from the Seal OS language target until removed or rewritten.
+**107925 lines of Rust** across 379 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **109748 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
