@@ -45,6 +45,7 @@ pub mod ml;
 /// OS-level integration primitives (page tables, syscalls).
 #[allow(missing_docs)] // Internal OS scaffolding; not part of stable public API surface.
 pub mod os;
+pub mod persistent_kv_partition;
 /// Spectral Contraction Mapping (SCM) runnable operator and latent predictor (Theorem 2).
 pub mod scm;
 /// Spectral coherence, entropy, wavelet entropy, and manifold decay helpers.
