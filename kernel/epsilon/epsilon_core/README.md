@@ -2,9 +2,9 @@
 
 `epsilon_core/` is no longer the production theorem runtime. Seal OS treats the
 Rust/Aether implementation under `kernel/epsilon/epsilon/crates/aether-core` as
-the authoritative path for governor convergence, hyperbolic geometry, the
-meta-controller, spectral contraction, spectral entropy, and topological state
-sync.
+the authoritative path for governor convergence, hyperbolic capacity,
+hyperbolic geometry, the meta-controller, spectral contraction, spectral
+entropy, and topological state sync.
 
 The remaining host files are compatibility/reference scaffolding only. They must
 not import deleted theorem modules. The Rust gate below enforces that rule and
@@ -20,6 +20,7 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 | Legacy module | Current status | Rust replacement |
 |---|---|---|
 | `governor_convergence` | migrated | `aether_core::governor::GovernorConvergenceAnalyzer` |
+| `hyperbolic_capacity` | migrated | `aether_core::hyperbolic_capacity::{HcsVerifier, h100_analysis}` |
 | `hyperbolic_geometry` | migrated | `aether_core::hyperbolic_geometry::{PoincareBall, AngularMomentumTracker}` |
 | `meta_controller` | migrated with host shim | `aether_core::meta_controller::{MetaController, ConstitutionalSafetyFilter}` |
 | `spectral_contraction` | migrated | `aether_core::scm::{TelemetryOperator, LatentPredictor}` |

@@ -29,6 +29,7 @@ extern crate alloc;
 
 pub mod aether;
 pub mod governor;
+pub mod hyperbolic_capacity;
 pub mod hyperbolic_geometry;
 pub mod manifold;
 /// Memory subsystem primitives (Chebyshev liveness, GC, etc.).
