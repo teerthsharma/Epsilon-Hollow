@@ -1,3 +1,6 @@
+use aether_core::geodesic_consolidation::{
+    cluster_entropy, entropy_change_on_merge, great_circle_distance, GeodesicConsolidator,
+};
 use aether_core::governor::{
     GovernorConvergenceAnalyzer, GovernorSimulationHistory, GovernorTheoremVerification,
 };
@@ -254,4 +257,27 @@ fn legacy_thermodynamic_plasticity_is_rust_backed() {
     let lr_report = analyzer.lr_analysis(&[1.0, 1.0, 1.0, 1.0], 0.01);
     assert!(lr_report.lr_agreement);
     assert!(lr_report.eta_gibbs < 1e-12);
+}
+
+#[test]
+fn legacy_geodesic_consolidation_is_rust_backed() {
+    let sizes = [10_u32, 10, 5, 5];
+    let entropy_before = cluster_entropy(&sizes);
+    let delta = entropy_change_on_merge(10, 10, 30);
+    assert!(entropy_before > 1.9);
+    assert!(delta < 0.0);
+
+    let close = great_circle_distance((1.0, 1.0), (1.02, 1.01));
+    let far = great_circle_distance((0.2, -2.0), (2.8, 2.0));
+    assert!(close < far);
+
+    let centroids = [(1.0, 1.0), (1.02, 1.01), (2.4, -2.1), (2.45, -2.08)];
+    let report = GeodesicConsolidator::new(0.08).consolidate(&centroids, &sizes);
+    assert_eq!(report.p_before, 4);
+    assert_eq!(report.p_after, 2);
+    assert_eq!(report.merges_performed, 2);
+    assert!(report.entropy_reduced);
+    assert!(report.entropy_after <= report.entropy_before);
+    assert!(report.merges_within_bound);
+    assert!(report.theorem_holds);
 }

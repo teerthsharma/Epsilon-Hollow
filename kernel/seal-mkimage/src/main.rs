@@ -2542,6 +2542,20 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         ("governor.rs", "pub struct GovernorSimulationHistory"),
         ("governor.rs", "pub fn simulate_measurements"),
         ("governor.rs", "pub fn simulate_default_history"),
+        ("geodesic_consolidation.rs", "pub fn cluster_entropy"),
+        (
+            "geodesic_consolidation.rs",
+            "pub fn entropy_change_on_merge",
+        ),
+        ("geodesic_consolidation.rs", "pub fn great_circle_distance"),
+        (
+            "geodesic_consolidation.rs",
+            "pub struct GeodesicConsolidator",
+        ),
+        (
+            "geodesic_consolidation.rs",
+            "pub struct ConsolidationReport",
+        ),
         (
             "hyperbolic_capacity.rs",
             "pub fn hyperbolic_distortion_bound",
@@ -2635,6 +2649,7 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
 
     let legacy_root = root.join("kernel").join("epsilon").join("epsilon_core");
     let legacy_migrations = [
+        ("geodesic_consolidation.py", "geodesic_consolidation.rs"),
         ("governor_convergence.py", "governor.rs"),
         ("hyperbolic_capacity.py", "hyperbolic_capacity.rs"),
         ("hyperbolic_geometry.py", "hyperbolic_geometry.rs"),
@@ -2712,6 +2727,10 @@ fn check_aether_migration(root: &Path) -> Result<(), String> {
         "simulate_measurements",
         "simulate_default_history",
         "GovernorTheoremVerification",
+        "cluster_entropy",
+        "entropy_change_on_merge",
+        "great_circle_distance",
+        "GeodesicConsolidator",
         "hyperbolic_distortion_bound",
         "euclidean_distortion_bound",
         "separation_ratio",

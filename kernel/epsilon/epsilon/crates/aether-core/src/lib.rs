@@ -28,6 +28,7 @@ extern crate alloc;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub mod aether;
+pub mod geodesic_consolidation;
 pub mod governor;
 pub mod hyperbolic_capacity;
 pub mod hyperbolic_geometry;
