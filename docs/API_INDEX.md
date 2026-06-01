@@ -92,7 +92,7 @@ These crates share the workspace root (`Cargo.toml`) and build together.
   - `vm` — Virtual machine
   - `ascii_render` — ASCII visualization
   - `webgl_export` — WebGL export
-- **Features:** `std` (default), `alloc`, `no_std`, `gpu`, `net`, `ml`, `python`
+- **Features:** `std` (default), `alloc`, `no_std`, `gpu`, `net`, `ml`, `pyo3`
 
 ### `aether-cli`
 - **Path:** `kernel/aether/Aether-Lang/crates/aether-cli`
