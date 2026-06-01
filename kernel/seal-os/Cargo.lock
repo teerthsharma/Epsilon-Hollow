@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "aether-lang"
-version = "0.1.1"
+version = "0.4.5"
 dependencies = [
  "aether-core",
  "heapless",

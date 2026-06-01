@@ -530,7 +530,7 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
         return;
     }
     // SAFETY: pkt is at least 20 bytes; read_unaligned avoids UB on unaligned pointers.
-    let hdr = unsafe { core::ptr::read_unaligned(pkt.as_ptr() as *const TcpHeader) };
+    let Some(hdr) = TcpHeader::from_bytes(&pkt[..20]) else { return; };
     let data_offset = hdr.data_offset();
     if data_offset < 20 || pkt.len() < data_offset {
         return;

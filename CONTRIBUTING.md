@@ -11,7 +11,7 @@ Thank you for your interest in Seal OS. This document will get you from zero to 
 | OVMF | latest | UEFI firmware binaries (edk2-ovmf package) |
 | Python | 3.11+ | For auxiliary scripts and kernel tests |
 
-The `aether-kernel` crate requires **nightly Rust** and a bare-metal target (`x86_64-unknown-none` or equivalent). Install it with:
+The `seal-os` kernel crate requires **nightly Rust** and a bare-metal target (`x86_64-unknown-none` or equivalent). Install it with:
 
 ```bash
 rustup target add x86_64-unknown-none
@@ -63,10 +63,10 @@ cargo test --workspace
 
 ### Building the bare-metal kernel
 
-`aether-kernel` is excluded from the default workspace because it requires nightly and a bare-metal target:
+`seal-os` is excluded from the default workspace because it requires nightly and a bare-metal target:
 
 ```bash
-cargo +nightly build -p aether-kernel
+cargo +nightly build --manifest-path kernel/seal-os/Cargo.toml
 ```
 
 ### Running in QEMU
@@ -76,7 +76,7 @@ cargo +nightly build -p aether-kernel
 qemu-system-x86_64 \
   -drive if=pflash,format=raw,readonly=on,file=OVMF_CODE.fd \
   -drive if=pflash,format=raw,file=OVMF_VARS.fd \
-  -drive format=raw,file=target/x86_64/debug/seal-os.img \
+  -drive format=raw,file=target/x86_64-unknown-uefi/release/seal-os.img \
   -serial stdio \
   -m 512M
 ```
@@ -112,7 +112,7 @@ qemu-system-x86_64 ... -s -S
 In another terminal:
 
 ```bash
-gdb target/x86_64/debug/seal-os
+gdb target/x86_64-unknown-uefi/release/seal-os
 (gdb) target remote :1234
 (gdb) break main
 (gdb) continue

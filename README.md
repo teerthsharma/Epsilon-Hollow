@@ -1,4 +1,4 @@
-<!-- NEW README — Seal OS v0.5.0 Email-Ready Edition -->
+<!-- Seal OS v0.4.5 README -->
 <!-- Target: longer than 1687 lines, better scannability, same technical depth -->
 
 <p align="center">
@@ -16,7 +16,7 @@
 <p align="center">
   <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/teerthsharma/epsilon-hollow/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/teerthsharma/epsilon-hollow?style=flat-square&color=00aaff" alt="License: MIT"></a>
-  <a href="#build-and-run"><img src="https://img.shields.io/badge/rust-1.85%2B-orange?style=flat-square&logo=rust" alt="Rust 1.85+"></a>
+  <a href="#build-and-run"><img src="https://img.shields.io/badge/rust-stable-orange?style=flat-square&logo=rust" alt="Rust stable"></a>
   <a href="#build-and-run"><img src="https://img.shields.io/badge/nightly-kernel-purple?style=flat-square&logo=rust" alt="Nightly kernel"></a>
   <a href="docs/THEOREMS.md"><img src="https://img.shields.io/badge/Lean%204-proofs-green?style=flat-square" alt="Lean 4 proofs"></a>
   <a href="#performance-characteristics"><img src="https://img.shields.io/badge/benchmarks-gated-blue?style=flat-square" alt="Benchmark gated"></a>
@@ -1357,7 +1357,7 @@ Every claim in this README has a supplementary document. Every document traces t
 | [kernel/seal-os/ARCHITECTURE.md](kernel/seal-os/ARCHITECTURE.md) | UEFI boot sequence, init, hardware setup | `src/boot/uefi_entry.rs`, `src/lib.rs` |
 | [docs/BOOT.md](docs/BOOT.md) | UEFI firmware to Seal kernel, GOP, VM image path | `src/boot/uefi_entry.rs`, `kernel/seal-mkimage` |
 | [docs/MANIFOLDFS.md](docs/MANIFOLDFS.md) | Encoding pipeline, inode structure, metadata teleport, bucketed content search | `seal-os/src/fs/encoder.rs`, `manifold_fs.rs` |
-| [docs/MANIFOLDFS-SPEC.md](docs/MANIFOLDFS-SPEC.md) | Formal on-disk layout specification | `src/fs/manifold_fs.rs` |
+| [docs/MANIFOLDFS.md](docs/MANIFOLDFS.md) | Encoding pipeline, inode structure, metadata teleport, bucketed content search | `src/fs/manifold_fs.rs` |
 | [docs/MEMORY.md](docs/MEMORY.md) | Physical layout, allocator, UEFI map, MMIO | `src/memory/mod.rs`, `src/boot/uefi_entry.rs` |
 
 ### Theorems & Verification
@@ -1546,7 +1546,7 @@ We welcome contributions from systems programmers, mathematicians, language desi
 Please report suspected vulnerabilities privately. Do **not** open a public issue for security-sensitive reports.
 
 - **Preferred**: GitHub Security Advisories ("Report a vulnerability" on the repo's Security tab)
-- **Email fallback**: `teerthsharma@example.com` (see [SECURITY.md](SECURITY.md) for current contact)
+- **Email fallback**: `teerths57@gmail.com` (see [SECURITY.md](SECURITY.md) for current contact)
 
 Include reproduction steps, affected version/commit, and impact. Coordinated disclosure is appreciated.
 
@@ -1575,7 +1575,6 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
   <em>OS state is topology on S². No timelines. No excuses. Only geometry.</em>
 </p>
-
 
 ---
 

@@ -157,7 +157,7 @@
 
 **ON-SCREEN TEXT:**
 - `Seal OS — where every byte is geometry.`
-- `github.com/Epsilon-Hollow  |  MIT License`
+- `github.com/teerthsharma/epsilon-hollow  |  MIT License`
 - `Contributors & research collaborators welcome.`
 
 **ACTION:**

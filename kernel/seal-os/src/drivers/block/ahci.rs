@@ -332,7 +332,7 @@ impl AhciPort {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().unwrap();
+        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
         let actual_bytes = core::cmp::min(bytes, 4096);
 
         let mut retries = 0;
@@ -402,7 +402,7 @@ impl AhciPort {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().unwrap();
+        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
         let actual_bytes = core::cmp::min(bytes, 4096);
 
         core::ptr::copy_nonoverlapping(
@@ -469,7 +469,7 @@ impl AhciPort {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().unwrap();
+        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
         self.setup_command(slot, false, self.buf_phys[slot as usize], bytes as u32);
         self.fill_fis_ncq(slot, ATA_CMD_READ_FPDMA_QUEUED, lba, count);
@@ -497,7 +497,7 @@ impl AhciPort {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().unwrap();
+        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
         core::ptr::copy_nonoverlapping(
             buf.as_ptr(),
