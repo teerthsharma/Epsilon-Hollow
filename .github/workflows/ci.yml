@@ -553,6 +553,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/laamba-governor/src-tauri
+      - name: Create stub frontend dist for tauri context
+        working-directory: apps/laamba-governor
+        run: mkdir -p dist && echo '<html><body>stub</body></html>' > dist/index.html
       - name: cargo check (laamba-governor backend)
         working-directory: apps/laamba-governor/src-tauri
         env:
