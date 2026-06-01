@@ -1366,6 +1366,7 @@ fn init_usb() {
 
 #[cfg(not(test))]
 fn run_tcp_packet_demux_bench() {
+    net::tcp::reset_for_benchmark();
     let proof = net::tcp::packet_fixture_proof();
     let accepted_state = match proof.accepted_state {
         net::tcp::TcpState::Established => "established",

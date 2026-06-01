@@ -37,10 +37,7 @@ pub struct PoincareBall {
 impl PoincareBall {
     /// Construct a Poincare ball, falling back to unit curvature for invalid input.
     pub fn new(curvature: f64) -> Self {
-        match Self::try_new(curvature) {
-            Ok(ball) => ball,
-            Err(_) => Self::unit(),
-        }
+        Self::try_new(curvature).unwrap_or_default()
     }
 
     /// Construct a Poincare ball and report invalid curvature.

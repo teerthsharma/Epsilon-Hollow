@@ -291,6 +291,14 @@ static PENDING_SYN_QUEUE: Mutex<Vec<(u16, crate::net::IpAddr, u16, u32)>> = Mute
 
 pub fn init() {}
 
+/// Reset all TCP state for benchmark isolation.
+/// Only call from benchmark fixtures — this drops every socket.
+pub fn reset_for_benchmark() {
+    TCP_SOCKETS.lock().clear();
+    PENDING_SYN_QUEUE.lock().clear();
+    *NEXT_TCP_PORT.lock() = 40000;
+}
+
 pub fn socket() -> usize {
     let mut sockets = TCP_SOCKETS.lock();
     let port = {

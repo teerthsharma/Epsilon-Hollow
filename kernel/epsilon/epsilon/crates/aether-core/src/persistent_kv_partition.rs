@@ -88,7 +88,7 @@ pub fn topological_locality(partition: &[MemoryTier], cluster_ids: &[usize]) -> 
     for idx in 0..len {
         let cid = cluster_ids[idx];
         let mut first_seen = true;
-        if cluster_ids[..idx].iter().any(|&c| c == cid) {
+        if cluster_ids[..idx].contains(&cid) {
             first_seen = false;
         }
         if !first_seen {
