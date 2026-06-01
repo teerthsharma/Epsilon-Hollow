@@ -1827,7 +1827,7 @@ Seal OS stands on the shoulders of:
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**111176 lines of Rust** across 387 files | ~40 lines of inline assembly | 1823 lines of Aether-Lang DSL | **113039 total**
+**111176 lines of Rust** across 387 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **112999 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
