@@ -16,6 +16,7 @@ pub enum BlockError {
     InvalidLba,
     Timeout,
     Unsupported,
+    Busy,
 }
 
 /// A block device capable of reading and writing sectors.

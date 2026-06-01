@@ -67,8 +67,7 @@ slowdown — re-run the workflow once before assuming a real regression.
 
 ## End-to-end demo
 
-The executable harness specified in `docs/research/MOTHER_OF_ALL_DOCS.md` (§3.5)
-ships as a Rust example that exercises every theorem (T1-T10) through the
+The executable harness ships as a Rust example that exercises every theorem (T1-T10) through the
 `aether_verified` kernel API in a single run.
 
 Run it with:

@@ -53,5 +53,5 @@ Open source under MIT. Seeking contributors and research collaborators in:
 - Bare-metal driver development
 - Aether-Lang language design
 
-**Repository:** `github.com/Epsilon-Hollow`  
+**Repository:** `github.com/teerthsharma/epsilon-hollow`  
 **Tagline:** *Seal OS — where every byte is geometry.*

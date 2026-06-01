@@ -58,6 +58,17 @@ fn hex_val(c: u8) -> Option<u8> {
     }
 }
 
+/// Constant-time comparison of two equal-length byte arrays.
+/// Returns true iff every byte matches. Timing does not depend on
+/// where the first mismatch occurs, preventing oracle attacks.
+fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    let mut diff = 0u8;
+    for i in 0..32 {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
 /// T1: Voronoi cell centroid as salt.
 /// The salt is derived from the user's Voronoi cell assignment on S²,
 /// producing a deterministic 8-byte centroid from their identity manifold.
@@ -160,13 +171,13 @@ pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
     if entry.legacy {
         // Legacy migration: old direct SHA-256(password)
         let legacy_hash = sha256(password.as_bytes());
-        if legacy_hash == entry.hash {
+        if constant_time_eq(&legacy_hash, &entry.hash) {
             return crate::security::passwd::get_user(username);
         }
         return None;
     }
     let computed = compute_hash(password, &entry.salt, &*seed);
-    if computed == entry.hash {
+    if constant_time_eq(&computed, &entry.hash) {
         crate::security::passwd::get_user(username)
     } else {
         None
