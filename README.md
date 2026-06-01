@@ -233,7 +233,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 - **Lexer, Parser, AST, Interpreter** — all running in `no_std` kernel space
 - **VM (Titan Mode)** — bytecode execution
 - **Stdlib** — `math` (pi, e), `fs` (read/write/exists/mkdir/teleport), `process` (pid, exit, spawn), `net` (local_ip, has_nic, status), `theorem` (status)
-- **Kernel bridge** — Aether-Lang wired directly into Seal ABI syscalls
+- **Kernel bridge** — Aether-Lang wired directly into Seal ABI syscalls; runtime proof gate is `seal-mkimage --check-aether-runtime`
 
 </details>
 
@@ -268,7 +268,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 | **GPU** | PM4 compute ring infrastructure is real (MMIO, packet builder, fence polling). AMD firmware scanner parses VBIOS and identifies architecture families. GCN shader binaries are honest stubs with correct ABI — they execute but don't yet compute full topology. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Compile real OpenCL C → GCN ISA and replace stub arrays |
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
-| **Package Manager** | Local extraction + signed verification path exist. Remote signed registry fixture pending. | Build registry + fixture |
+| **Package Manager** | Local extraction + signed verification path exist. remote registry fixture and signed package gate are pending. | Build registry + fixture |
 | **Installer** | UI exists. Actual GPT partitioning and filesystem formatting not yet implemented. | Raw block device write path |
 | **FAT / ext2 parity** | Write paths exist; fixture gate pending before "full filesystem parity" claims. | Comprehensive fixture tests |
 | **Security hardening** | Scaffolding present; per-feature hardening proof gates pending before production security claims. | Boot selftests for each feature |
@@ -888,7 +888,7 @@ The TLS path is intentionally narrow: PSK-only record encryption for the native 
 4. **AES-128-GCM**: Per-record encryption with 12-byte nonce (4-byte salt + 8-byte sequence number)
 5. **Record wrapping**: TLSInnerPlaintext → AEAD encrypt → TLSRecord
 
-No X.509, PKI, or ECDHE gate exists yet; production HTTPS compatibility is pending. The random bytes function uses RDSEED first, then RDRAND. If neither source is available or the CPU repeatedly reports carry-clear failure, `getrandom` returns failure instead of manufacturing cryptographic bytes.
+Minimal TLS 1.3 PSK record path — no X.509/PKI/ECDHE gate yet; production HTTPS compatibility is pending. The random bytes function uses RDSEED first, then RDRAND. If neither source is available or the CPU repeatedly reports carry-clear failure, `getrandom` returns failure instead of manufacturing cryptographic bytes.
 
 ### Driver Stack
 
@@ -1148,7 +1148,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | GPU/VRAM topology fast path | △ | CUDA/ROCm userspace, not topology fast path | design contract exists; vendor GPU driver and peer-DMA proof pending |
 | Aether-Lang native OS language | ✓ | ✗ | lexer/parser/interpreter/VM are in kernel runtime |
 | Legacy host-language-free Seal OS surface | △ | ✓ | `--check-language-hygiene` bans host scripts from production OS/Rust roots |
-| HFT/ML benchmark comparison vs Ubuntu | △ | ✓ | allocator comparison harness exists; full benchmark matrix still requires fresh side-by-side Ubuntu numbers |
+| HFT/ML benchmark comparison vs Ubuntu | △ | ✓ | allocator comparison harness exists; full benchmark matrix still requires fresh side-by-side Ubuntu numbers; raw Ubuntu artifact pending; current proof manifest is `--check-current-benchmark-proof` |
 
 ### Seal OS vs Redox OS vs Ubuntu vs Debian vs Windows vs macOS
 
