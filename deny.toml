@@ -47,7 +47,12 @@ allow = [
     # NOTE: Copyleft licenses (GPL-* LGPL-*) are intentionally banned.
 ]
 confidence-threshold = 0.9
-exceptions = []
+exceptions = [
+    # wav v1.0.1 (transitive via candle-transformers -> tokenizers -> spm_precompiled)
+    # is LGPL-3.0. We do not use it directly; it is pulled in for audio model support
+    # in the aether-lang REPL. This exception is scoped to the specific crate.
+    { allow = ["LGPL-3.0"], name = "wav", version = "*" },
+]
 
 [licenses.private]
 ignore = true
