@@ -21,7 +21,7 @@ impl ProcFs {
 fn cpu_vendor_string() -> String {
     #[cfg(target_arch = "x86_64")]
     {
-        let cpuid = unsafe { core::arch::x86_64::__cpuid(0) };
+        let cpuid = core::arch::x86_64::__cpuid(0);
         let mut bytes = [0u8; 12];
         bytes[0..4].copy_from_slice(&cpuid.ebx.to_le_bytes());
         bytes[4..8].copy_from_slice(&cpuid.edx.to_le_bytes());

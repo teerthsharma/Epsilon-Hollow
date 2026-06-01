@@ -11,7 +11,6 @@
 
 use alloc::vec::Vec;
 use crate::memory::phys::alloc_frames_contiguous;
-use crate::serial_println;
 
 /// A buffer allocated in GPU-visible memory.
 pub struct GpuBuffer {
@@ -51,11 +50,22 @@ impl GpuBuffer {
 
 
     /// Return a mutable byte slice for CPU access.
+    ///
+    /// # Safety
+    /// The caller must ensure that `self.phys` points to valid, mapped memory
+    /// with at least `self.size` bytes accessible. The returned slice must not
+    /// outlive the buffer or alias with GPU DMA operations targeting the same
+    /// memory. Violating these invariants causes undefined behavior.
     pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
         core::slice::from_raw_parts_mut(self.phys as *mut u8, self.size)
     }
 
     /// Return an immutable byte slice for CPU access.
+    ///
+    /// # Safety
+    /// The caller must ensure that `self.phys` points to valid, mapped memory
+    /// with at least `self.size` bytes accessible. The returned slice must not
+    /// outlive the buffer or alias with concurrent GPU DMA or CPU writes.
     pub unsafe fn as_slice(&self) -> &[u8] {
         core::slice::from_raw_parts(self.phys as *const u8, self.size)
     }
@@ -103,12 +113,22 @@ impl GpuBufferPool {
 }
 
 /// Copy data from host slice into GPU buffer.
+///
+/// # Safety
+/// `dst.phys` must point to valid, writable memory of at least `min(dst.size, src.len())`
+/// bytes. The destination must not overlap with `src`. Concurrent GPU access to
+/// `dst` during the copy results in a data race and undefined behavior.
 pub unsafe fn upload(dst: &GpuBuffer, src: &[u8]) {
     let len = core::cmp::min(dst.size, src.len());
     core::ptr::copy_nonoverlapping(src.as_ptr(), dst.phys as *mut u8, len);
 }
 
 /// Copy data from GPU buffer into host slice.
+///
+/// # Safety
+/// `src.phys` must point to valid, readable memory of at least `min(src.size, dst.len())`
+/// bytes. The source and destination must not overlap. Concurrent GPU writes to
+/// `src` during the copy result in a data race and undefined behavior.
 pub unsafe fn download(dst: &mut [u8], src: &GpuBuffer) {
     let len = core::cmp::min(src.size, dst.len());
     core::ptr::copy_nonoverlapping(src.phys as *const u8, dst.as_mut_ptr(), len);

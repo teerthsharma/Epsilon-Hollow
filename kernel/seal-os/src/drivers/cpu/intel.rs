@@ -43,7 +43,7 @@ impl IntelCpuDriver {
     /// Returns `None` if the CPU vendor string is not `"GenuineIntel"`.
     pub fn init() -> Option<Self> {
         // ----- CPUID leaf 0: vendor string ---------------------------------
-        let cpuid0 = unsafe { __cpuid(0) };
+        let cpuid0 = __cpuid(0);
         let mut vendor = [0u8; 12];
         vendor[0..4].copy_from_slice(&cpuid0.ebx.to_le_bytes());
         vendor[4..8].copy_from_slice(&cpuid0.edx.to_le_bytes());
@@ -54,7 +54,7 @@ impl IntelCpuDriver {
         }
 
         // ----- CPUID leaf 1: family/model/stepping -------------------------
-        let cpuid1 = unsafe { __cpuid(1) };
+        let cpuid1 = __cpuid(1);
         let stepping = (cpuid1.eax & 0xF) as u8;
         let model = ((cpuid1.eax >> 4) & 0xF) as u8;
         let family = ((cpuid1.eax >> 8) & 0xF) as u8;

@@ -98,7 +98,7 @@ pub unsafe fn munmap_user(start: VirtAddr, pages: usize) -> bool {
 /// not belong to any known mmap region — the caller should treat it as a
 /// hard fault.
 pub fn handle_page_fault(fault_addr: VirtAddr) -> bool {
-    let current_pt = unsafe { x86_64::registers::control::Cr3::read() }
+    let current_pt = x86_64::registers::control::Cr3::read()
         .0
         .start_address()
         .as_u64();

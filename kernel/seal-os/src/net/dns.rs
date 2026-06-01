@@ -15,6 +15,7 @@ struct DnsCacheEntry {
 
 static DNS_SERVER: Mutex<[u8; 4]> = Mutex::new([10, 0, 2, 3]);
 static CACHE: Mutex<BTreeMap<String, DnsCacheEntry>> = Mutex::new(BTreeMap::new());
+#[allow(dead_code)] // REASON: UDP socket handle reserved for future async DNS resolver
 static DNS_SOCKET: Mutex<Option<usize>> = Mutex::new(None);
 static QUERY_ID: Mutex<u16> = Mutex::new(1);
 

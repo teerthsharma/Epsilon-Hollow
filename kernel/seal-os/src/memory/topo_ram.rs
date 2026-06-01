@@ -13,7 +13,7 @@
 //! per-zone.
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
 

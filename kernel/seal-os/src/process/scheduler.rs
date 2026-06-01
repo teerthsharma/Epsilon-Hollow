@@ -566,7 +566,7 @@ impl ManifoldScheduler {
             let target_cr3 = if next_task.is_userspace && next_task.page_table != 0 {
                 next_task.page_table
             } else {
-                unsafe { crate::memory::virt::bsp_pml4() }
+                crate::memory::virt::bsp_pml4()
             };
 
             // Release the scheduler lock BEFORE context switch.

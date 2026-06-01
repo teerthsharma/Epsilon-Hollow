@@ -10,11 +10,11 @@ static RDSEED_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Initialise entropy support by probing CPUID.
 pub fn init() {
-    let cpuid1 = unsafe { core::arch::x86_64::__cpuid(1) };
+    let cpuid1 = core::arch::x86_64::__cpuid(1);
     if (cpuid1.ecx & (1 << 30)) != 0 {
         RDRAND_AVAILABLE.store(true, Ordering::Relaxed);
     }
-    let cpuid7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+    let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
     if (cpuid7.ebx & (1 << 18)) != 0 {
         RDSEED_AVAILABLE.store(true, Ordering::Relaxed);
     }

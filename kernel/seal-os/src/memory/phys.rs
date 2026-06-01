@@ -648,6 +648,12 @@ pub fn alloc_frame_high() -> Option<PhysAddr> {
 }
 
 /// Free a single 4 KiB physical frame (any zone).
+///
+/// # Safety
+/// `addr` must be a physical address previously returned by `alloc_frame`,
+/// `alloc_frame_high`, or `alloc_frames_contiguous`, and must not have been
+/// freed already. Double-free or freeing an in-use frame causes memory
+/// corruption, use-after-free, or data loss.
 pub unsafe fn free_frame(addr: PhysAddr) {
     let frame = (addr.as_u64() / 4096) as usize;
     if frame >= total_usable_frames() {

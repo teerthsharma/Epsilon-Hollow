@@ -2,17 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #![no_std]
-#![allow(
-    dead_code,
-    unused_unsafe,
-    improper_ctypes_definitions,
-    unused_imports,
-    unused_features
-)]
 #![no_main]
-#![feature(abi_x86_interrupt)]
-
-#[macro_use]
 extern crate alloc;
 
 use core::fmt::{self, Write};

@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: NVMe register constants for future admin queue completion
+
 //! NVMe controller driver — admin + I/O queues, identify, read/write sectors.
 
 use crate::drivers::pci::get_device_by_class;
@@ -80,10 +82,24 @@ impl NvmeController {
         read_volatile((self.bar0 + offset) as *const u64)
     }
 
+    /// Write a 32-bit value to an NVMe controller register.
+    ///
+    /// # Safety
+    /// `offset` must be a valid register offset within BAR0 and `self.bar0`
+    /// must point to a mapped NVMe MMIO region. Writing to incorrect offsets
+    /// or with invalid values can reset the controller, corrupt in-flight
+    /// commands, or cause the device to enter a fatal error state.
     pub unsafe fn write_reg32(&self, offset: u64, val: u32) {
         write_volatile((self.bar0 + offset) as *mut u32, val);
     }
 
+    /// Write a 64-bit value to an NVMe controller register.
+    ///
+    /// # Safety
+    /// `offset` must be a valid register offset within BAR0 and `self.bar0`
+    /// must point to a mapped NVMe MMIO region. Writing to incorrect offsets
+    /// or with invalid values can reset the controller, corrupt in-flight
+    /// commands, or cause the device to enter a fatal error state.
     pub unsafe fn write_reg64(&self, offset: u64, val: u64) {
         write_volatile((self.bar0 + offset) as *mut u64, val);
     }

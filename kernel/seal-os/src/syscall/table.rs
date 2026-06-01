@@ -140,6 +140,7 @@ static SYSCALL_PATH: Mutex<String> = Mutex::new(String::new());
 #[derive(Clone)]
 pub(crate) struct FdEntry {
     pub(crate) handle: VfsHandle,
+    #[allow(dead_code)] // REASON: path stored for future syscall debugging and fcntl(F_GETPATH)
     pub(crate) path: String,
     pub(crate) offset: usize,
 }

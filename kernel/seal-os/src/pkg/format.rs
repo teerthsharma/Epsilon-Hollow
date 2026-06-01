@@ -15,7 +15,6 @@
 //!     [N]   file data
 //!   [4]   trailer "END\0"
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};

@@ -25,9 +25,7 @@ static SHOOTDOWN_ACK: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }
 /// 4. Clears the shared shootdown address.
 pub fn shootdown(virt_addr: VirtAddr) {
     // Flush locally first.
-    unsafe {
-        x86_64::instructions::tlb::flush(virt_addr);
-    }
+    x86_64::instructions::tlb::flush(virt_addr);
 
     let current = cpu::current_cpu_num() as usize;
     let cpu_count = cpu::CPU_COUNT.load(Ordering::SeqCst);
@@ -76,9 +74,7 @@ pub fn handle_tlb_shootdown_ipi() {
     let addr = SHOOTDOWN_ADDR.load(Ordering::SeqCst);
     if addr != 0 {
         let va = VirtAddr::new(addr);
-        unsafe {
-            x86_64::instructions::tlb::flush(va);
-        }
+        x86_64::instructions::tlb::flush(va);
     }
 
     let cpu = cpu::current_cpu_num() as usize;

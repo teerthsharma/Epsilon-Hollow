@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: UI color constants planned for future toolbar styling
+
 //! LAAMBA Governor — native workstation UI for topology-driven ML governance.
 //! Renders toolbar, sample bay, topology scope, parameter roll, and console.
 

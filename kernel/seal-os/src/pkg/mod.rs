@@ -13,7 +13,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use self::format::{parse_eph, verify_signature, EphError};
+use self::format::{parse_eph, verify_signature};
 use self::manifest::PackageManifest;
 use self::registry::PackageRegistry;
 use self::resolver::DependencyResolver;
@@ -158,6 +158,7 @@ impl ManifoldPkg {
 
 #[derive(Debug)]
 enum VfsInstallError {
+    #[allow(dead_code)] // REASON: VFS error payload preserved for future install error diagnostics
     Vfs(crate::fs::vfs::VfsError),
 }
 

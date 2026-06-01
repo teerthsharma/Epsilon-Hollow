@@ -186,6 +186,10 @@ jobs:
       - name: Build kernel test-mode (UEFI)
         working-directory: kernel/seal-os
         run: cargo +nightly build --release --features test-mode
+      - name: Save test-mode EFI
+        run: |
+          mkdir -p /tmp/kernel-test-mode-artifact
+          cp kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi /tmp/kernel-test-mode-artifact/seal-os.efi
       - name: Build kernel (release)
         working-directory: kernel/seal-os
         run: cargo +nightly build --release
@@ -207,6 +211,18 @@ jobs:
             echo "FAIL: Expected MZ header, got $MAGIC"
             exit 1
           fi
+      - name: Upload kernel release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-release
+          path: kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
+          retention-days: 1
+      - name: Upload kernel test-mode artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-test-mode
+          path: /tmp/kernel-test-mode-artifact/seal-os.efi
+          retention-days: 1
       # Debug build is disabled on x86_64-unknown-uefi due to LLVM SIMD
       # lowering issues with crypto crates (aes, curve25519-dalek) on this target.
       # Release build is what we ship and is fully verified above.
@@ -232,9 +248,11 @@ jobs:
           workspaces: |
             kernel/seal-os
             kernel/seal-mkimage
-      - name: Build kernel
-        working-directory: kernel/seal-os
-        run: cargo +nightly build --release
+      - name: Download kernel release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-release
+          path: kernel/seal-os/target/x86_64-unknown-uefi/release/
       - name: Build mkimage tool
         working-directory: kernel/seal-mkimage
         run: cargo +stable build --release

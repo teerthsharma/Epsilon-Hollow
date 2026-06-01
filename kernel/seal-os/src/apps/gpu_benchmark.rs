@@ -5,8 +5,7 @@
 //!
 //! Run from SealShell: `gpu_benchmark`
 
-use crate::drivers::gpu::topology_accel::{self, TopologyAccelerator, GpuError};
-use crate::drivers::gpu::gpu_mem::GpuBuffer;
+use crate::drivers::gpu::topology_accel;
 use crate::serial_println;
 
 const WARMUP: usize = 4;

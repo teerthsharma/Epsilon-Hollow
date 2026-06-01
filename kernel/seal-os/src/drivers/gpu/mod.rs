@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: GPU capability fields for future compute budget management
+
 //! GPU driver — PCI vendor detection with framebuffer init.
 //! 2D blit/fill supported on VirtIO-GPU and direct framebuffer access.
 //! 3D/compute dispatch requires vendor-signed firmware (GSP, SMU).

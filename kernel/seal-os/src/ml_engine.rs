@@ -44,39 +44,33 @@ pub fn xsave_available() -> bool {
 
 /// Detect XSAVE support via CPUID.
 fn detect_xsave() -> bool {
-    unsafe {
-        let leaf1 = core::arch::x86_64::__cpuid(1);
-        let has_xsave = (leaf1.ecx & (1 << 26)) != 0;
-        let osxsave = (leaf1.ecx & (1 << 27)) != 0;
-        has_xsave && osxsave
-    }
+    let leaf1 = core::arch::x86_64::__cpuid(1);
+    let has_xsave = (leaf1.ecx & (1 << 26)) != 0;
+    let osxsave = (leaf1.ecx & (1 << 27)) != 0;
+    has_xsave && osxsave
 }
 
 /// Detect AVX2 support via CPUID.
 fn detect_avx2() -> bool {
-    unsafe {
-        let leaf1 = core::arch::x86_64::__cpuid(1);
-        let avx_available = (leaf1.ecx & (1 << 28)) != 0;
-        let osxsave = (leaf1.ecx & (1 << 27)) != 0;
-        if !avx_available || !osxsave {
-            return false;
-        }
-        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
-        (leaf7.ebx & (1 << 5)) != 0
+    let leaf1 = core::arch::x86_64::__cpuid(1);
+    let avx_available = (leaf1.ecx & (1 << 28)) != 0;
+    let osxsave = (leaf1.ecx & (1 << 27)) != 0;
+    if !avx_available || !osxsave {
+        return false;
     }
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    (leaf7.ebx & (1 << 5)) != 0
 }
 
 /// Detect AVX-512 support via CPUID.
 fn detect_avx512() -> bool {
-    unsafe {
-        let leaf1 = core::arch::x86_64::__cpuid(1);
-        let avx_available = (leaf1.ecx & (1 << 28)) != 0;
-        if !avx_available {
-            return false;
-        }
-        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
-        (leaf7.ebx & (1 << 16)) != 0
+    let leaf1 = core::arch::x86_64::__cpuid(1);
+    let avx_available = (leaf1.ecx & (1 << 28)) != 0;
+    if !avx_available {
+        return false;
     }
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    (leaf7.ebx & (1 << 16)) != 0
 }
 
 /// Probe PCI for GPU presence.

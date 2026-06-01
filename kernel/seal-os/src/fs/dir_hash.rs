@@ -30,12 +30,14 @@ impl Hasher for FxHasher64 {
     }
 }
 
+#[allow(dead_code)] // REASON: FxHash hasher reserved for future O(1) directory entry lookup
 #[derive(Clone, Copy)]
 struct FxBuildHasher {
     seed: u64,
 }
 
 impl FxBuildHasher {
+    #[allow(dead_code)] // REASON: constructor for future seeded hasher instantiation
     fn new(seed: u64) -> Self {
         Self { seed }
     }

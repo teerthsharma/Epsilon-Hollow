@@ -7,8 +7,8 @@
 //! computations to the GPU.  Kernel subsystems (TopoRAM, ManifoldFS, Scheduler)
 //! use `TopologyAccelerator` without knowing the underlying vendor.
 
-use super::compute_queue::{CommandBuffer, ComputeRing, GpuFence};
-use super::firmware_scanner::{FallbackReason, GpuFirmwareCaps, TopologyKernelMask};
+use super::compute_queue::{ComputeRing, GpuFence};
+use super::firmware_scanner::{FallbackReason, GpuFirmwareCaps};
 use super::gpu_mem::{GpuBuffer, upload, download};
 use super::shader_binaries::{find_kernel, KernelMeta};
 use crate::drivers::gpu::amd::AmdGpu;
@@ -38,6 +38,12 @@ pub enum GpuError {
 /// Unified interface for GPU-accelerated topology operations.
 pub trait TopologyAccelerator {
     /// Probe firmware and initialise hardware.
+    ///
+    /// # Safety
+    /// `pci_dev` must describe a valid, enumerated PCI device that matches the
+    /// vendor specified in `caps`. The caller must ensure that no other code is
+    /// concurrently accessing the GPU MMIO registers. Incorrect arguments can
+    /// leave the GPU in an undefined state or cause system hangs.
     unsafe fn init(&mut self, pci_dev: &PciDevice, caps: &GpuFirmwareCaps) -> Result<(), GpuError>;
 
     /// Allocate GPU-visible memory.

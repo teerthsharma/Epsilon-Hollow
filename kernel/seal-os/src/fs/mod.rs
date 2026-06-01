@@ -23,7 +23,6 @@ pub mod vfs;
 pub mod voronoi_cap;
 
 use alloc::boxed::Box;
-use vfs::FileSystem;
 
 /// Flush all mounted filesystems.
 pub fn sync() -> Result<(), vfs::VfsError> {

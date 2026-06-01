@@ -38,10 +38,27 @@ fi
 echo "[test_kernel] QEMU: $(command -v "$QEMU")"
 echo "[test_kernel] OVMF: $OVMF_PATH"
 
+# ── Parse args ───────────────────────────────────────────────────────────────
+SKIP_KERNEL_BUILD=false
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --skip-kernel-build)
+      SKIP_KERNEL_BUILD=true
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+  esac
+done
+
 # ── Build Seal OS with test-mode ─────────────────────────────────────────────
-echo "[test_kernel] Building Seal OS with test-mode (release)..."
-cd "$PROJECT_ROOT/kernel/seal-os"
-cargo +nightly build --release --features test-mode
+if [ "$SKIP_KERNEL_BUILD" = false ]; then
+  echo "[test_kernel] Building Seal OS with test-mode (release)..."
+  cd "$PROJECT_ROOT/kernel/seal-os"
+  cargo +nightly build --release --features test-mode
+fi
 
 # ── Build disk image ─────────────────────────────────────────────────────────
 echo "[test_kernel] Building disk image..."

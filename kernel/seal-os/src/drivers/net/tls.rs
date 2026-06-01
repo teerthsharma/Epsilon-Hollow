@@ -5,7 +5,6 @@
 //! Real cryptography. Not a stub. No X.509 (uses pre-shared keys).
 
 use aes_gcm::{AeadInPlace, Aes128Gcm, KeyInit};
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
@@ -202,6 +201,7 @@ impl TlsSession {
     }
 }
 
+#[allow(dead_code)] // REASON: TLS content-type variants reserved for full handshake and alert handling
 #[derive(Debug, Clone, Copy)]
 enum ContentType {
     Invalid = 0,

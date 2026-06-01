@@ -338,44 +338,6 @@ impl AppState {
         }
     }
 
-    fn render_all(&mut self, compositor: &mut Compositor) {
-        if let Some(win) = compositor.window_mut(self.term_id) {
-            self.terminal.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.ide_id) {
-            self.ide.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.tv_id) {
-            self.theorem_viewer.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.calc_id) {
-            self.calculator.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.player_id) {
-            self.media_player.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.snake_id) {
-            self.snake.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.breakout_id) {
-            self.breakout.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.warp_racer_id) {
-            self.warp_racer.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.fm_id) {
-            let fs = &self.fs;
-            self.file_manager.render_to_window(win, fs);
-        }
-        if let Some(win) = compositor.window_mut(self.tensor_id) {
-            self.tensor_viewer.render_to_window(win);
-        }
-        if let Some(win) = compositor.window_mut(self.laamba_id) {
-            self.laamba.render_to_window(win);
-        }
-        self.aether_app_host.render_window(self.aether_id);
-    }
-
     pub fn mark_all_dirty(&mut self) {
         self.dirty = [true; 12];
     }

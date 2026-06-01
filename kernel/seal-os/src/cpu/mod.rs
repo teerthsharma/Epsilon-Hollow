@@ -169,7 +169,7 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
         );
 
         let base = PER_CPU_ARRAY.0.get() as *mut PerCpuStorage;
-        let ptr = unsafe { (*base.add(cpu_num as usize)).bytes.as_mut_ptr() as *mut PerCpu };
+        let ptr = (*base.add(cpu_num as usize)).bytes.as_mut_ptr() as *mut PerCpu;
         ptr.write(PerCpu {
             kernel_stack_guard: [0; PER_CPU_STACK_GUARD_SIZE],
             kernel_stack: [0; KERNEL_STACK_SIZE],
@@ -244,7 +244,7 @@ pub fn apic_id_for_cpu(cpu_num: u32) -> Option<u32> {
         let idx = cpu_num as usize;
         if idx < MAX_CPUS && PER_CPU_INITIALIZED[idx].load(Ordering::SeqCst) {
             let base = PER_CPU_ARRAY.0.get() as *const PerCpuStorage;
-            let ptr = unsafe { (*base.add(idx)).bytes.as_ptr() as *const PerCpu };
+            let ptr = (*base.add(idx)).bytes.as_ptr() as *const PerCpu;
             Some((*ptr).apic_id)
         } else {
             None

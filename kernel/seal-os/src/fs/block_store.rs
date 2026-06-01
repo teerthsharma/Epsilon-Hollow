@@ -603,36 +603,6 @@ impl BlockStore {
         Ok(())
     }
 
-    fn write_inode_table(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
-        let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
-        let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
-
-        let zero = [0u8; SECTOR_SIZE];
-        for block in 0..sb.inode_table_blocks {
-            backend.write_sector(sb.inode_table_start + block, &zero)?;
-        }
-
-        for (&id, record) in &self.inode_records {
-            let block = id / (records_per_sector as u64);
-            let rec = (id % (records_per_sector as u64)) as usize;
-            if block >= sb.inode_table_blocks {
-                continue;
-            }
-            let lba = sb.inode_table_start + block;
-            let mut sector = [0u8; SECTOR_SIZE];
-            backend.read_sector(lba, &mut sector)?;
-            let offset = rec * INODE_RECORD_SIZE;
-            sector[offset..offset + INODE_RECORD_SIZE].copy_from_slice(record.as_bytes());
-            backend.write_sector(lba, &sector)?;
-        }
-        Ok(())
-    }
-
     fn replay_journal(&mut self) -> Result<(), BlockError> {
         let sb = self
             .superblock

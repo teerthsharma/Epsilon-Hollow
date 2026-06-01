@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: USB Bluetooth class constants for future HCI driver completion
+
 //! Bluetooth driver — PCI probe + topological device simulation.
 //! Real HCI firmware upload is out of scope; this driver provides a fully
 //! functional state machine and simulated device topology.

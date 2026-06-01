@@ -105,6 +105,12 @@ static SLAB: Mutex<SlabAllocator> = Mutex::new(SlabAllocator::new());
 
 /// Allocate an object of exactly `size` bytes from the slab.
 /// `size` must be one of the supported slab sizes.
+///
+/// # Safety
+/// The returned pointer is uninitialized. The caller must ensure `size` is one
+/// of the supported slab sizes (64, 128, 256, 512, 1024, or 2048). Using an
+/// unsupported size returns a null pointer; dereferencing it without a check
+/// causes undefined behavior.
 pub unsafe fn slab_alloc(size: usize) -> *mut u8 {
     let result = SLAB.lock().alloc(size);
     if result.is_none() {
@@ -114,6 +120,12 @@ pub unsafe fn slab_alloc(size: usize) -> *mut u8 {
 }
 
 /// Free an object previously allocated with `slab_alloc`.
+///
+/// # Safety
+/// `ptr` must be a non-null pointer previously returned by `slab_alloc` with
+/// the same `size`. Passing a mismatched size, a null pointer, or a pointer
+/// not owned by the slab allocator corrupts the free list and causes heap
+/// memory corruption or use-after-free.
 pub unsafe fn slab_free(ptr: *mut u8, size: usize) {
     if !ptr.is_null() {
         SLAB.lock().free(ptr, size);

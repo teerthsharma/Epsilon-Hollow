@@ -12,7 +12,6 @@
 //! * Buffer-cache dirty-batch flushing is governed by T4 ε (low ε = large
 //!   stable batches; high ε = frequent small flushes).
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 

@@ -1,6 +1,8 @@
 // Seal OS -- Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: PCI config constants for future AMD GPU init sequence
+
 //! AMD GPU driver -- PCI probe, BAR mapping, architecture detection, VBIOS readout.
 //! AMD GPU init driver — ATOMBIOS, VRAM/GART detect, safe init sequence.
 //! 3D acceleration requires signed SMU firmware (not included).

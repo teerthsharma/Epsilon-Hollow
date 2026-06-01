@@ -1,11 +1,12 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: SCSI command constants and endpoint fields for future MSC completion
+
 //! USB Mass Storage Class (MSC) driver — Bulk-Only Transport (BBB) with SCSI.
 //! Implements the kernel BlockDevice trait for xHCI bulk endpoints.
 #![allow(static_mut_refs)]
 
-use alloc::vec::Vec;
 use core::ptr::read_unaligned;
 use spin::Mutex;
 
