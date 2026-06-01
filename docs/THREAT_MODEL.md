@@ -135,7 +135,7 @@ no DPDK-style offload). A compromised driver has full kernel privilege.
 
 ### 4.3 FastAPI Backend ↔ Host
 
-The FastAPI backend is a host-side Python process, not part of the bare-metal
+The FastAPI backend is a host-side auxiliary process, not part of the bare-metal
 kernel. It is bound to loopback by default and gated by bearer tokens. See
 [`SECURITY.md`](../SECURITY.md) for the full backend threat model.
 
