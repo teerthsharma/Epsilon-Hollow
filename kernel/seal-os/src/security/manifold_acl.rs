@@ -10,7 +10,6 @@
 //! T4: Governor ε adapts MAC strictness after anomalies.
 //! T5: Hyperbolic trust hierarchy — distance from root = privilege level.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;

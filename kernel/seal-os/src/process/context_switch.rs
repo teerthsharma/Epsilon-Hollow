@@ -348,6 +348,7 @@ unsafe fn switch_context_fxsave(old: *mut TaskContext, new: *const TaskContext) 
 ///
 /// The task's `rip` is set to this function, and its `rdi` contains the
 /// user entry function pointer.
+#[allow(improper_ctypes_definitions)] // REASON: kernel_task_wrapper is an internal kernel ABI boundary, not user FFI
 extern "C" fn kernel_task_wrapper(entry: fn()) {
     entry();
     // When entry returns, mark task as dead and yield

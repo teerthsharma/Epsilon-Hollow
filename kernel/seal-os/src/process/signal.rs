@@ -12,7 +12,6 @@ use core::arch::global_asm;
 use core::sync::atomic::Ordering;
 
 use crate::cpu::CPU_COUNT;
-use crate::drivers::interrupts::VECTOR_IPI_RESCHEDULE;
 use crate::process::task::RestartSyscall;
 use crate::process::task::Task;
 use crate::process::task::TaskState;
@@ -415,7 +414,7 @@ pub fn prepare_syscall_restart(frame: &mut SyscallFrame, number: u64, result: i6
 pub fn sys_sigreturn() -> ! {
     let task_ptr = unsafe { crate::cpu::this_cpu().current_task };
     if task_ptr.is_null() {
-        unsafe { crate::process::scheduler::yield_current() };
+        crate::process::scheduler::yield_current();
         loop {
             x86_64::instructions::hlt();
         }
@@ -429,7 +428,7 @@ pub fn sys_sigreturn() -> ! {
     } else {
         crate::serial_println!("[signal] sys_sigreturn: no saved context");
         task.state = TaskState::Dead;
-        unsafe { crate::process::scheduler::yield_current() };
+        crate::process::scheduler::yield_current();
         loop {
             x86_64::instructions::hlt();
         }

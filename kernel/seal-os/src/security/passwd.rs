@@ -73,29 +73,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-/// Decode lowercase hex string to a 32-byte array.
-fn hex_decode(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for i in 0..32 {
-        let hi = s.as_bytes()[i * 2];
-        let lo = s.as_bytes()[i * 2 + 1];
-        out[i] = (hex_val(hi)? << 4) | hex_val(lo)?;
-    }
-    Some(out)
-}
-
-fn hex_val(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
 fn read_passwd_file() -> Vec<u8> {
     with_vfs(|vfs| {
         let handle = vfs.lookup_follow("/etc/passwd").ok()?;

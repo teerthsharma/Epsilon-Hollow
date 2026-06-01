@@ -21,6 +21,7 @@ pub struct Terminal {
     lines: Vec<String>,
     scroll_offset: usize,
     cursor_visible: bool,
+    #[allow(dead_code)] // REASON: column count reserved for future terminal resizing
     cols: u32,
     rows: u32,
 }

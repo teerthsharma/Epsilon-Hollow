@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use aether_core::manifold::{ManifoldPoint, SparseAttentionGraph};
+use aether_core::manifold::SparseAttentionGraph;
 use aether_core::scm::SpectralContractionOperator;
 use aether_core::tss::SphericalVoronoiIndex;
 

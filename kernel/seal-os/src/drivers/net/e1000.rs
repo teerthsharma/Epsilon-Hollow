@@ -1,6 +1,8 @@
 // Seal OS -- Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: e1000 MMIO register constants for future NIC driver completion
+
 //! Intel 8254x (e1000) Ethernet driver -- MMIO, legacy descriptors.
 
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};

@@ -1,6 +1,8 @@
 // Seal OS -- Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: Intel GPU MMIO constants for future display driver completion
+
 //! Intel GPU driver — PCI probe, MMIO BAR mapping, display detection.
 //! 2D framebuffer fill/blit via direct BAR0 access.
 //! Full modesetting requires i915-style display engine init.

@@ -5,7 +5,6 @@
 //!
 //! Format: `groupname:gid:member1,member2,...`
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 

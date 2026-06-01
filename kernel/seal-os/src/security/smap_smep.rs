@@ -15,12 +15,9 @@ const USER_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000;
 
 /// Check whether the CPU supports SMEP/SMAP via CPUID leaf 7.
 fn has_smep_smap() -> bool {
-    let (smep, smap) = unsafe {
-        let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
-        let smep = (leaf7.ebx & (1 << 7)) != 0;
-        let smap = (leaf7.ebx & (1 << 20)) != 0;
-        (smep, smap)
-    };
+    let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
+    let smep = (leaf7.ebx & (1 << 7)) != 0;
+    let smap = (leaf7.ebx & (1 << 20)) != 0;
     smep && smap
 }
 

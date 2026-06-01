@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: PM4 register and shader constants for future compute dispatch
+
 //! AMD GCN Compute Queue — PM4 command buffer ring, packet builder, and dispatch.
 //!
 //! This module implements the bare-metal interface to the AMD Command Processor (CP)
@@ -13,7 +15,6 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{fence, Ordering};
 
-use crate::drivers::pci::PciDevice;
 use crate::serial_println;
 
 // ------------------------------------------------------------------
@@ -140,6 +141,13 @@ pub struct GpuFence {
 impl ComputeRing {
     /// Create a new compute ring.  `base` must point to GPU-visible physical
     /// memory that is identity-mapped for CPU access.  `size_dw` must be a power of two ≥ 256.
+    ///
+    /// # Safety
+    /// `bar0` must be a valid, mapped PCI BAR0 base address for the target GPU.
+    /// `base` must point to identity-mapped physical memory that is visible to
+    /// both the CPU and the GPU, and must remain valid for the lifetime of the ring.
+    /// `size_dw` must be a power of two and at least 256. Incorrect values can
+    /// cause GPU hangs, memory corruption, or system instability.
     pub unsafe fn new(bar0: u64, base: *mut u32, size_dw: u32, phys_addr: u64) -> Option<Self> {
         if size_dw.count_ones() != 1 || size_dw < 256 {
             serial_println!("[COMPUTE] Ring buffer size {} is not a power of two or < 256", size_dw);
@@ -238,6 +246,11 @@ impl ComputeRing {
 
     /// Write shader registers.  `reg_offset` is the first SH register index.
     /// `values` are the register values to write consecutively.
+    ///
+    /// # Safety
+    /// `reg_offset` must be a valid shader register offset for the target GPU
+    /// architecture. Writing to reserved or incorrect registers can alter GPU
+    /// execution state, cause shader hangs, or corrupt GPU memory.
     pub unsafe fn set_sh_regs(&mut self, reg_offset: u32, values: &[u32]) {
         let need = 2 + values.len() as u32;
         self.wait_free(need);
@@ -250,6 +263,12 @@ impl ComputeRing {
 
     /// Dispatch a compute grid directly.
     /// `dim_x`, `dim_y`, `dim_z` — number of thread groups in each dimension.
+    ///
+    /// # Safety
+    /// Caller must ensure a valid compute shader has been loaded via
+    /// `set_compute_pgm` and that all required resources (user data, thread
+    /// counts) are correctly configured. Dispatching without proper setup can
+    /// cause GPU hangs, data corruption, or out-of-bounds memory accesses.
     pub unsafe fn dispatch_direct(&mut self, dim_x: u32, dim_y: u32, dim_z: u32) {
         let need = 4;
         self.wait_free(need);
@@ -275,6 +294,12 @@ impl ComputeRing {
     }
 
     /// SDMA copy: host-visible `src` → host-visible `dst`, both physical addresses.
+    ///
+    /// # Safety
+    /// `dst_phys` and `src_phys` must be valid, GPU-visible physical addresses
+    /// with at least `size_bytes` of accessible memory. The regions must not
+    /// overlap. Incorrect addresses can cause DMA to invalid memory, data
+    /// corruption, or system instability.
     pub unsafe fn dma_data(
         &mut self,
         dst_phys: u64,
@@ -305,6 +330,12 @@ impl ComputeRing {
     }
 
     /// Set compute shader address.
+    ///
+    /// # Safety
+    /// `shader_phys` must be a valid, GPU-visible physical address pointing to
+    /// correctly formed shader code for the target GPU architecture. An invalid
+    /// address or malformed shader will cause a GPU hang or undefined behavior
+    /// when dispatch is triggered.
     pub unsafe fn set_compute_pgm(&mut self, shader_phys: u64) {
         let lo = ((shader_phys >> 8) & 0xFFFFFFFF) as u32;
         let hi = ((shader_phys >> 40) & 0xFFFF) as u32;
@@ -312,6 +343,12 @@ impl ComputeRing {
     }
 
     /// Submit all queued packets to the GPU and return a fence.
+    ///
+    /// # Safety
+    /// `fence_addr` must be a valid, GPU-visible physical address with at least
+    /// 8 bytes of writable memory. The ring must have been correctly initialized
+    /// and all queued packets must form a valid command sequence. Submission of
+    /// malformed commands can hang the GPU or corrupt memory.
     pub unsafe fn submit(&mut self, fence_addr: u64) -> GpuFence {
         let wptr_before = self.wptr;
         self.event_write_eop(fence_addr, 0xABCDEF00);
@@ -323,6 +360,11 @@ impl ComputeRing {
     }
 
     /// Poll until the fence value at `fence.eop_addr` becomes non-zero.
+    ///
+    /// # Safety
+    /// `fence.eop_addr` must be a valid, mapped physical address that was
+    /// previously passed to `submit` and is writable by the GPU. Reading from
+    /// an invalid address causes a page fault or memory corruption.
     pub unsafe fn wait_fence(&self, fence: &GpuFence, timeout_ms: u32) -> bool {
         let start = unsafe { core::arch::x86_64::_rdtsc() };
         // Approximate: assume 2.5 GHz TSC.

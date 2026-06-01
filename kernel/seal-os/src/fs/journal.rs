@@ -20,7 +20,6 @@
 
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use super::block_store::BlockStoreBackend;

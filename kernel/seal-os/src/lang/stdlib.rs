@@ -4,12 +4,11 @@
 //! Seal OS standard library bindings for Aether-Lang.
 //! All modules call real OS functions — no stubs.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use crate::fs::vfs::{with_vfs, VfsNodeType};
+use crate::fs::vfs::with_vfs;
 
 pub struct SealStdlib;
 

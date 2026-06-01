@@ -13,11 +13,9 @@
 //! T5 Hyperbolic P-state:      P-states arranged on Poincaré disk; transition
 //!                             follows geodesic movement.
 
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
-use crate::serial_println;
 
 use super::fadt;
 
@@ -31,6 +29,7 @@ const T_TARGET: f64 = 75.0; // °C target temperature
 /// Per-core thermal zone state.
 #[derive(Clone, Copy, Debug)]
 struct ThermalZone {
+    #[allow(dead_code)] // REASON: CPU identifier reserved for future per-core thermal tracking
     cpu_num: u32,
     temp_c: f64,
     prev_temp_c: f64,

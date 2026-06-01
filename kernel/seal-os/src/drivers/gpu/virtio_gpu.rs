@@ -3,7 +3,7 @@
 
 //! VirtIO-GPU driver — 2D acceleration support.
 
-use crate::drivers::pci::{get_devices, PciDevice};
+use crate::drivers::pci::get_devices;
 use alloc::alloc::{alloc_zeroed, Layout};
 use core::ptr;
 use x86_64::instructions::port::Port;

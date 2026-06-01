@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: hardware register constants for future APIC features
+
 //! Local APIC and I/O APIC driver for x86_64 SMP.
 //!
 //! Replaces the legacy 8259 PIC with memory-mapped APIC controllers.
@@ -52,6 +54,12 @@ impl LocalApic {
     }
 
     /// Write a 32-bit Local APIC register.
+    ///
+    /// # Safety
+    /// `offset` must be a valid Local APIC register offset and `self.base`
+    /// must point to a mapped APIC MMIO region. Writing incorrect values to
+    /// control registers (e.g., ICR, LVT) can mask interrupts, send spurious
+    /// IPIs, or cause system hangs.
     pub unsafe fn write_reg(&self, offset: u32, val: u32) {
         write_volatile((self.base + offset as usize) as *mut u32, val);
     }
@@ -70,6 +78,12 @@ impl LocalApic {
     }
 
     /// Send an Inter-Processor Interrupt.
+    ///
+    /// # Safety
+    /// `apic_id` must be a valid APIC ID of an online processor. `vector`
+    /// must be a valid interrupt vector with a registered handler. Sending an
+    /// IPI to a non-existent CPU or an unhandled vector causes undefined
+    /// behavior, system hangs, or double-faults on the target processor.
     pub unsafe fn send_ipi(&self, apic_id: u32, vector: u8) {
         // Wait for delivery status idle (bit 12)
         while self.read_reg(ICR_LOW) & 0x1000 != 0 {}
@@ -192,6 +206,12 @@ impl IoApic {
     }
 
     /// Route an IRQ to a vector on a specific Local APIC.
+    ///
+    /// # Safety
+    /// `irq` must be within the I/O APIC redirection table bounds. `vector`
+    /// must have a valid interrupt handler installed. `destination_apic_id`
+    /// must be an existing, online CPU. Routing to invalid destinations or
+    /// vectors causes lost interrupts, spurious IRQ storms, or system hangs.
     pub unsafe fn redirect_irq(&self, irq: u8, vector: u8, destination_apic_id: u32) {
         let reg_low = 0x10 + irq * 2;
         let reg_high = reg_low + 1;
@@ -262,6 +282,12 @@ pub fn bsp_apic_id() -> u32 {
 }
 
 /// Initialise the global Local APIC and I/O APIC instances.
+///
+/// # Safety
+/// Must be called exactly once per system boot, after the APIC MMIO regions
+/// are identity-mapped and before any interrupts or IPIs are used. Calling
+/// before paging is active or calling twice causes undefined behavior,
+/// interrupt loss, or APIC state corruption.
 #[cfg(not(test))]
 pub unsafe fn init() {
     if !LOCAL_APIC_INIT.swap(true, Ordering::SeqCst) {

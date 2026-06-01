@@ -1,3 +1,5 @@
+#![allow(dead_code)] // REASON: virtio descriptor flags for future virtqueue completion
+
 //! Virtio-net NIC driver
 //! Phase 3.1: NIC Drivers implementation
 

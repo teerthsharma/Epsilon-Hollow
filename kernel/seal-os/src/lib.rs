@@ -2,13 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 #![cfg_attr(not(test), no_std)]
-#![allow(
-    dead_code,
-    unused_unsafe,
-    improper_ctypes_definitions,
-    unused_imports,
-    unused_features
-)]
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(abi_x86_interrupt))]
 

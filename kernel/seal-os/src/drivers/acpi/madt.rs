@@ -55,6 +55,7 @@ struct IoApicEntry {
     global_system_interrupt_base: u32,
 }
 
+#[allow(dead_code)] // REASON: MADT entry type for future interrupt source override parsing
 #[repr(C, packed)]
 struct IntSrcOverrideEntry {
     header: MadtEntryHeader,

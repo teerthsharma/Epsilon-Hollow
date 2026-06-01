@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: MSR constants for future P-state and power-management features
+
 //! AMD CPU power-management driver.
 //!
 //! Detects AMD processors via CPUID, exposes Core Performance Boost (CPB)
@@ -42,7 +44,7 @@ static CPB_REQUEST_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Read the vendor string from CPUID leaf 0.
 fn cpuid_vendor() -> [u8; 12] {
-    let cpuid = unsafe { __cpuid(0) };
+    let cpuid = __cpuid(0);
     let mut buf = [0u8; 12];
     let ebx = cpuid.ebx.to_le_bytes();
     let edx = cpuid.edx.to_le_bytes();
@@ -60,7 +62,7 @@ fn is_amd() -> bool {
 
 /// Returns (family, model, stepping) from CPUID leaf 1.
 fn amd_family_model_stepping() -> (u32, u32, u32) {
-    let leaf1 = unsafe { __cpuid(1) };
+    let leaf1 = __cpuid(1);
     let eax = leaf1.eax;
     let stepping = eax & 0xF;
     let base_family = (eax >> 8) & 0xF;
@@ -83,7 +85,7 @@ fn amd_family_model_stepping() -> (u32, u32, u32) {
 
 /// Check whether CPB is supported (CPUID leaf 0x8000_0001, EDX bit 9).
 fn cpb_supported() -> bool {
-    let leaf = unsafe { __cpuid(0x8000_0001) };
+    let leaf = __cpuid(0x8000_0001);
     (leaf.edx >> 9) & 1 == 1
 }
 
@@ -99,21 +101,6 @@ unsafe fn read_msr_safe(addr: u32) -> Option<u64> {
         None
     } else {
         Some(val)
-    }
-}
-
-/// Read a 64-bit MSR, logging a warning on zero/failure.
-unsafe fn read_msr_warn(addr: u32, name: &str) -> Option<u64> {
-    match read_msr_safe(addr) {
-        Some(v) => Some(v),
-        None => {
-            serial_println!(
-                "[AMD] Warning: {} MSR ({:#x}) read 0 or unavailable",
-                name,
-                addr
-            );
-            None
-        }
     }
 }
 
@@ -304,7 +291,7 @@ impl AmdCpuDriver {
             }
         }
         // Fallback: CPUID leaf 6, ECX bit 0 = digital temperature sensor supported
-        let leaf6 = unsafe { __cpuid(6) };
+        let leaf6 = __cpuid(6);
         if (leaf6.ecx & 1) != 0 {
             // Sensor present but no direct MSR reading on this path;
             // return None because we don't have an accurate value.

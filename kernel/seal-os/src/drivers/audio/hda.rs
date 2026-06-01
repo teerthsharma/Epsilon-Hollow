@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: HDA register constants for future audio driver completion
+
 //! Intel HDA driver — real CORB/RIRB init, codec probe, widget discovery, PCM stream output.
 
 use crate::drivers::pci::get_device_by_class;

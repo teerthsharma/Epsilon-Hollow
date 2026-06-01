@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: AHCI register constants and port structs for future driver completion
+
 //! AHCI SATA driver for bare-metal x86_64.
 
 use core::ptr::{read_volatile, write_volatile};
@@ -321,6 +323,13 @@ impl AhciPort {
     }
 
     // ------------------------------------------------------------------ public
+    /// Read `count` sectors starting at `lba` into `buf`.
+    ///
+    /// # Safety
+    /// `buf` must be large enough to hold `count * 512` bytes. `lba` must be
+    /// within the valid range reported by the device. Concurrent access to the
+    /// same port from multiple callers can corrupt the command list or cause
+    /// data races in the DMA buffer.
     pub unsafe fn read_sectors(
         &self,
         lba: u64,
@@ -396,6 +405,13 @@ impl AhciPort {
         Ok(())
     }
 
+    /// Write `count` sectors starting at `lba` from `buf`.
+    ///
+    /// # Safety
+    /// `buf` must contain at least `count * 512` bytes of valid data. `lba`
+    /// must be within the device capacity. Writing to the wrong LBA destroys
+    /// filesystem metadata or user data. Concurrent port access can corrupt
+    /// the command list or DMA buffers.
     pub unsafe fn write_sectors(&self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
         if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
@@ -486,6 +502,13 @@ impl AhciPort {
         Ok(())
     }
 
+    /// Write `count` sectors using NCQ (Native Command Queuing).
+    ///
+    /// # Safety
+    /// `buf` must contain at least `count * 512` bytes. `lba` must be within
+    /// the device capacity. NCQ requires that the port was initialized with
+    /// proper command-tag management; concurrent commands to the same tag
+    /// corrupt DMA state and can destroy on-disk data.
     pub unsafe fn write_sectors_ncq(
         &self,
         lba: u64,

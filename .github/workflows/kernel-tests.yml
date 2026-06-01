@@ -1,8 +1,10 @@
 name: Kernel Tests
 
 on:
-  push:
-  pull_request:
+  workflow_run:
+    workflows: [CI]
+    types:
+      - completed
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,10 +14,11 @@ jobs:
     name: Seal OS kernel integration tests (QEMU)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Kernel integration tests run inside QEMU with test-mode feature.
-    # The test_kernel.sh script skips gracefully if QEMU/OVMF is missing.
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install Rust nightly (kernel)
         uses: dtolnay/rust-toolchain@nightly
@@ -31,6 +34,14 @@ jobs:
             kernel/seal-os
             kernel/seal-mkimage
 
+      - name: Download kernel test-mode artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-test-mode
+          path: kernel/seal-os/target/x86_64-unknown-uefi/release/
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
       - name: Install QEMU and OVMF
         run: |
           sudo apt-get update
@@ -40,7 +51,7 @@ jobs:
         shell: bash
         run: |
           chmod +x scripts/test_kernel.sh
-          scripts/test_kernel.sh 2>&1 | tee kernel-test-log.txt
+          scripts/test_kernel.sh --skip-kernel-build 2>&1 | tee kernel-test-log.txt
 
       - name: Check test result
         shell: bash

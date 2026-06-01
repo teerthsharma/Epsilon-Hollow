@@ -4,7 +4,6 @@
 //! In-memory pipe filesystem — ring-buffer backed FIFO.
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -20,7 +19,9 @@ pub struct Pipe {
     read_pos: usize,
     write_pos: usize,
     len: usize,
+    #[allow(dead_code)] // REASON: reader/writer counts reserved for future EOF propagation
     readers: u32,
+    #[allow(dead_code)] // REASON: reader/writer counts reserved for future EOF propagation
     writers: u32,
 }
 

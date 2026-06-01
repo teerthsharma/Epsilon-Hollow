@@ -669,20 +669,6 @@ impl FatFs {
         Err(VfsError::NotFound)
     }
 
-    fn find_free_dir_slot(&self, dir_cluster: u32) -> Result<(usize, Vec<u8>), VfsError> {
-        let data = self.read_dir_raw(dir_cluster)?;
-        let mut offset = 0;
-        while offset + 32 <= data.len() {
-            let b = data[offset];
-            if b == 0x00 || b == 0xE5 {
-                return Ok((offset, data));
-            }
-            offset += 32;
-        }
-        // No free slot; caller must extend directory.
-        Err(VfsError::IoError)
-    }
-
     fn add_dir_entry(
         &mut self,
         dir_cluster: u32,
@@ -750,20 +736,6 @@ impl FatFs {
             .map_err(|_| VfsError::NotFound)?;
         let mut data = self.read_dir_raw(dir_cluster)?;
         data[offset] = 0xE5;
-        self.write_dir_raw(dir_cluster, &data)?;
-        Ok(())
-    }
-
-    fn update_dir_entry_size(
-        &mut self,
-        dir_cluster: u32,
-        name: &str,
-        size: u32,
-    ) -> Result<(), VfsError> {
-        let (offset, _raw, _dc) = self.find_entry_in_dir(dir_cluster, name)?;
-        let mut data = self.read_dir_raw(dir_cluster)?;
-        let size_off = offset + 28;
-        data[size_off..size_off + 4].copy_from_slice(&size.to_le_bytes());
         self.write_dir_raw(dir_cluster, &data)?;
         Ok(())
     }

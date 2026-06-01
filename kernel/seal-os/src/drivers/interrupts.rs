@@ -382,16 +382,6 @@ pub fn poll_event() -> Option<crate::wm::event::InputEvent> {
 pub fn push_event(_event: crate::wm::event::InputEvent) {}
 
 #[cfg(not(test))]
-extern "x86-interrupt" fn timer_handler_pic(_frame: InterruptStackFrame) {
-    TICKS.fetch_add(1, Ordering::Relaxed);
-    crate::process::scheduler::scheduler_tick();
-    // Legacy PIC EOI (fallback only)
-    unsafe {
-        x86_64::instructions::port::Port::<u8>::new(0x20).write(0x20);
-    }
-}
-
-#[cfg(not(test))]
 extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     crate::process::scheduler::scheduler_tick();

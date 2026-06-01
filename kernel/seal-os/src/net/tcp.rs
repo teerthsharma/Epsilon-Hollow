@@ -131,6 +131,7 @@ pub struct TcpSocket {
     seq_num: u32,
     ack_num: u32,
     rx_buffer: Vec<u8>,
+    #[allow(dead_code)] // REASON: transmit buffer reserved for future TCP send path
     tx_buffer: Vec<u8>,
     retransmit_queue: Vec<RetransmitEntry>,
     rto: u64,

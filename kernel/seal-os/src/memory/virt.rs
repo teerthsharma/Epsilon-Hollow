@@ -203,6 +203,12 @@ pub unsafe fn unmap_page_in_pml4(virt: VirtAddr, pml4_phys: PhysAddr) -> Option<
 }
 
 /// Unmap a 4 KiB page and return the previously mapped physical address.
+///
+/// # Safety
+/// `virt` must be a currently mapped virtual address in the active page table.
+/// Unmapping an address that is in use by the kernel or hardware DMA causes
+/// immediate page faults, data loss, or undefined behavior. Caller must ensure
+/// the physical frame is not leaked after unmapping.
 pub unsafe fn unmap_page(virt: VirtAddr) -> Option<PhysAddr> {
     let ptr_opt = PML4_VIRT.lock();
     let pml4 = unsafe { &mut *(ptr_opt.as_u64() as *mut PageTable) };

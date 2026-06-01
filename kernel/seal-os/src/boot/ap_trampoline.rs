@@ -32,6 +32,14 @@ pub const OFF_64BIT_CODE: u64 = 0xC0;
 // Naked trampoline function
 // ---------------------------------------------------------------------------
 
+/// AP real-to-long mode trampoline code.
+///
+/// # Safety
+/// This function contains raw assembly and must never be called directly from
+/// Rust. The BSP must copy its machine-code bytes to `TRAMPOLINE_PAGE` (0x8000)
+/// and ensure the GDTR, GDT, PML4, per-CPU pointer, and `ap_main` address are
+/// correctly populated at the fixed offsets before issuing INIT-SIPI-SIPI.
+/// Incorrect setup causes the AP to triple-fault or corrupt memory.
 #[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".ap_trampoline"]

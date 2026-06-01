@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)] // REASON: xHCI TRB types, descriptor types, and context structs for future enumeration completion
+
 //! xHCI (USB 3.x) host controller driver — MMIO register interface + enumeration + HID.
 
 use crate::drivers::pci::get_device_by_class;
