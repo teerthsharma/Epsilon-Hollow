@@ -37,6 +37,25 @@ target-test-*/
 *.profdata
 perf.data
 perf.data.*
+# Intermediate / incremental artifacts
+*.rmeta
+*.rlib
+*.dylib
+*.so
+*.dll
+*.lib
+*.exp
+*.ilk
+*.manifest
+incremental/
+**/.rustc_info.json
+**/.rustdoc_fingerprint.json
+**/.cargo-ok
+# Local cargo overrides (keep workspace .cargo/config.toml, ignore local)
+.cargo/config.local.toml
+# Kernel-specific build directories with non-standard names
+kernel/seal-os/target/
+kernel/seal-os/target-*/
 
 # --- Node.js / Frontend ---
 node_modules/
@@ -161,10 +180,6 @@ kernel/seal-os/target/**/qemu-proof/
 kernel/seal-os/target/**/qemu-proof-runs/
 kernel/seal-os/target/**/serial.log
 kernel/seal-os/target/**/screenshot.png
-kernel/seal-os/*.vdi
-kernel/seal-os/*.img
-kernel/seal-os/*.iso
-kernel/seal-os/*.efi
 
 # --- Lean / Proof Build Artifacts ---
 **/.lake/
@@ -183,7 +198,6 @@ qemu-proof/
 qemu-proof-runs/
 vbox-smoke/
 flamegraph*.svg
-kernel/seal-os/target-nightly-*/
 
 # --- LaTeX ---
 *.aux
