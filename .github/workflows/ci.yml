@@ -344,6 +344,7 @@ jobs:
           check "\\[BENCH\\] alloc-frame" "Physical allocator benchmark emitted"
           check "\\[BENCH\\] manifold-teleport" "ManifoldFS teleport benchmark emitted"
           check "\\[BENCH\\] scheduler-select-next" "Scheduler selector benchmark emitted"
+          check "\\[BENCH\\] tcp-packet-demux" "TCP packet demux benchmark emitted"
           check "\\[Aether-Lang\\] runtime proof" "Aether-Lang runtime proof emitted"
           check "\\[GFX\\] desktop-soak" "Desktop compositor soak emitted"
           check "Device model: QEMU HARDDISK" "AHCI disk identified"

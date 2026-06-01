@@ -78,8 +78,11 @@ Allowed today:
   with zero context switches, max 9 bitmap tests, and max 256 bucket scan.
 - Same-ManifoldFS teleport: O(1) metadata/connectivity update. The
   `[BENCH] manifold-teleport` boot marker proves same-inode movement and bounded
-  metadata ops across a small directory-load sweep. Current disk persistence
-  still rewrites file bytes until metadata-only persistence lands.
+  metadata ops across a small directory-load sweep, with
+  `persistence_bytes_per_move=0` forbidding file-byte rewrites.
+- TCP packet demux: same-port listener and accepted sockets must resolve through
+  the flow-specific match before listener fallback. The `[BENCH] tcp-packet-demux`
+  boot marker proves accepted-socket payload delivery for that fixture.
 - TopoRAM hint allocation: `[BENCH] toporam-alloc` must show target Voronoi-cell
   hits with zero target-cell fallback, zero zone fallback, monotonic cycles, and
   no frame leak. Prefetch and fragmentation telemetry use bounded sampling, not

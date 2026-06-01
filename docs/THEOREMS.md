@@ -60,9 +60,9 @@ Additional proof kernels:
 
 | Kernel | Source | Purpose |
 |---|---|---|
-| Betti | `aether_betti.rs`, `AetherVerified/Betti.lean` | Heuristic-vs-exact Betti-1 overlap bound |
-| Chebyshev | `aether_chebyshev.rs`, `AetherVerified/Chebyshev.lean` | One-sided Chebyshev guard |
-| Pruning | `aether_pruning.rs`, `AetherVerified/Pruning.lean` | Cauchy-Schwarz pruning bound; sqrt upper-bound form partial |
+| Betti | `kernel/aether/aether-verified/src/aether_betti.rs`, `kernel/aether/aether-verified/lean/AetherVerified/Betti.lean` | Heuristic-vs-exact Betti-1 overlap bound |
+| Chebyshev | `kernel/aether/aether-verified/src/aether_chebyshev.rs`, `kernel/aether/aether-verified/lean/AetherVerified/Chebyshev.lean` | One-sided Chebyshev guard |
+| Pruning | `kernel/aether/aether-verified/src/aether_pruning.rs`, `kernel/aether/aether-verified/lean/AetherVerified/Pruning.lean` | Cauchy-Schwarz pruning bound; sqrt upper-bound form partial |
 
 ## Open Formalization Work
 

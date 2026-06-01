@@ -1,0 +1,27 @@
+# Seal OS / Epsilon-Hollow — CODEOWNERS
+# Each line is a file pattern followed by one or more owners.
+# Order matters: the last matching pattern has the most precedence.
+
+# Kernel subsystems
+kernel/seal-os/src/memory/          @teerthsharma
+kernel/seal-os/src/fs/              @teerthsharma
+kernel/seal-os/src/process/         @teerthsharma
+kernel/seal-os/src/drivers/         @teerthsharma
+kernel/seal-os/src/net/             @teerthsharma
+kernel/seal-os/src/security/        @teerthsharma
+kernel/seal-os/src/wm/              @teerthsharma
+kernel/seal-os/src/apps/            @teerthsharma
+kernel/seal-os/src/lang/            @teerthsharma
+
+# Research kernels
+kernel/epsilon/                     @teerthsharma
+kernel/aether/                      @teerthsharma
+
+# CI / infrastructure
+.github/workflows/                  @teerthsharma
+
+# Documentation
+docs/                               @teerthsharma
+
+# Fallback for anything not matched above
+*                                   @teerthsharma

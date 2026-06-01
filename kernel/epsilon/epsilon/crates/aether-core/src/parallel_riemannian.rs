@@ -26,9 +26,9 @@ pub fn stiefel_project_tangent<const N: usize, const P: usize>(
 ) -> [[f64; P]; N] {
     let mut xtz = [[0.0_f64; P]; P];
     for row in 0..N {
-        for col_x in 0..P {
-            for col_z in 0..P {
-                xtz[col_x][col_z] += x[row][col_x] * z[row][col_z];
+        for (xtz_row, x_val) in xtz.iter_mut().zip(x[row].iter()) {
+            for (xtz_val, z_val) in xtz_row.iter_mut().zip(z[row].iter()) {
+                *xtz_val += x_val * z_val;
             }
         }
     }
@@ -44,8 +44,8 @@ pub fn stiefel_project_tangent<const N: usize, const P: usize>(
     for row in 0..N {
         for col in 0..P {
             let mut correction = 0.0;
-            for mid in 0..P {
-                correction += x[row][mid] * sym[mid][col];
+            for (x_val, sym_row) in x[row].iter().zip(sym.iter()) {
+                correction += x_val * sym_row[col];
             }
             projected[row][col] -= correction;
         }

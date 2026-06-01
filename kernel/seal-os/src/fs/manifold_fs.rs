@@ -415,6 +415,7 @@ impl ManifoldFS {
 
         let pre_epsilon = self.governor.epsilon();
         self.governor_tick(0.0);
+        let data_writes_before = self.store.data_write_ops();
 
         self.dirs.remove(src_dir, name);
         self.unlink_child(src_dir, inode_id);
@@ -448,12 +449,27 @@ impl ManifoldFS {
 
         self.path_cache.bump_generation();
         if let Some(inode) = self.inodes.get(inode_id) {
-            let data = inode.data.clone();
-            let _ = self.store.write_inode(inode, &data);
-            self.persist_raw_to_ext2(inode_id, &data);
+            if self.store.update_inode_metadata(inode).is_err() {
+                self.dirs.remove(dst_dir, name);
+                self.unlink_child(dst_dir, inode_id);
+                self.dirs.insert(src_dir, name, inode_id);
+                self.link_child(src_dir, inode_id);
+                if let Some(inode) = self.inodes.get_mut(inode_id) {
+                    inode.parent = src_dir;
+                    inode.metadata.modified_ms = now_ms();
+                }
+                self.path_cache.bump_generation();
+                return Err(FsError::Storage);
+            }
         }
 
         self.check_entropy_and_merge();
+        let data_writes_after = self.store.data_write_ops();
+        let persistence_bytes = if data_writes_after == data_writes_before {
+            0
+        } else {
+            original_size
+        };
 
         Ok(TeleportResult {
             inode_id,
@@ -466,7 +482,7 @@ impl ManifoldFS {
                 .unwrap_or(0),
             governor_epsilon: post_epsilon,
             metadata_ops: TELEPORT_METADATA_OPS,
-            persistence_bytes: original_size,
+            persistence_bytes,
         })
     }
 
@@ -1000,6 +1016,7 @@ fn map_err(e: FsError) -> VfsError {
         FsError::NotFound => VfsError::NotFound,
         FsError::NotADirectory => VfsError::NotADirectory,
         FsError::AlreadyExists => VfsError::AlreadyExists,
+        FsError::Storage => VfsError::IoError,
     }
 }
 
@@ -1330,6 +1347,7 @@ pub enum FsError {
     NotFound,
     NotADirectory,
     AlreadyExists,
+    Storage,
 }
 
 impl core::fmt::Display for FsError {
@@ -1338,6 +1356,7 @@ impl core::fmt::Display for FsError {
             Self::NotFound => write!(f, "not found"),
             Self::NotADirectory => write!(f, "not a directory"),
             Self::AlreadyExists => write!(f, "already exists"),
+            Self::Storage => write!(f, "storage error"),
         }
     }
 }
@@ -1509,6 +1528,26 @@ mod host_tests {
         assert!(result.elapsed_ticks <= 5, "metadata teleport too slow");
         assert!(!fs.exists("file.txt", docs));
         assert!(fs.exists("file.txt", vol));
+    }
+
+    #[test]
+    fn teleport_does_not_rewrite_file_bytes() {
+        let mut fs = ManifoldFS::new_with_mock_store(4096);
+        let root = 0u64;
+        let src = fs.mkdir("src", root).unwrap();
+        let dst = fs.mkdir("dst", root).unwrap();
+        let data: Vec<u8> = (0..8192).map(|i| (i & 0xFF) as u8).collect();
+        let inode_id = fs.store("big.bin", &data, src).unwrap();
+        let before = fs.store.read_data(inode_id).unwrap().1;
+
+        let result = fs.teleport("big.bin", src, dst).unwrap();
+        let after = fs.store.read_data(inode_id).unwrap().1;
+
+        assert_eq!(result.persistence_bytes, 0);
+        assert_eq!(before, data);
+        assert_eq!(after, data);
+        assert!(fs.exists("big.bin", dst));
+        assert!(!fs.exists("big.bin", src));
     }
 
     #[test]

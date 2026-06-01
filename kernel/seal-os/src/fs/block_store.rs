@@ -349,6 +349,7 @@ pub struct BlockStore {
     journal_seq: u64,
     journal_pos: u64,
     topo_journal: Option<TopologicalJournal>,
+    data_write_ops: u64,
 }
 
 impl BlockStore {
@@ -365,6 +366,7 @@ impl BlockStore {
             journal_seq: 0,
             journal_pos: 0,
             topo_journal: Some(TopologicalJournal::new()),
+            data_write_ops: 0,
         }
     }
 
@@ -809,8 +811,13 @@ impl BlockStore {
             sector[..end - start].copy_from_slice(&data[start..end]);
             backend.write_sector(lba + i as u64, &sector)?;
         }
+        self.data_write_ops = self.data_write_ops.saturating_add(1);
         self.data_extents.insert(lba, data.to_vec());
         Ok(())
+    }
+
+    pub fn data_write_ops(&self) -> u64 {
+        self.data_write_ops
     }
 
     pub fn write_inode(&mut self, inode: &Inode, data: &[u8]) -> Result<(), BlockError> {
@@ -897,6 +904,56 @@ impl BlockStore {
         Ok(())
     }
 
+    pub fn update_inode_metadata(&mut self, inode: &Inode) -> Result<(), BlockError> {
+        let Some(old) = self.inode_records.get(&inode.id).copied() else {
+            return if self.backend.is_none() {
+                Ok(())
+            } else {
+                Err(BlockError::InvalidLba)
+            };
+        };
+        let record = InodeRecord::from_inode(inode, old.data_lba, old.data_blocks);
+        self.inode_records.insert(inode.id, record);
+        self.dirty_inodes.push(inode.id);
+
+        self.journal_seq += 1;
+        let mut name = [0u8; 128];
+        let name_bytes = inode.name.as_bytes();
+        let name_len = name_bytes.len().min(128);
+        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        let mut entry = JournalEntry {
+            seq: self.journal_seq,
+            op: 1,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: inode.id,
+            parent: inode.parent,
+            kind: match inode.kind {
+                InodeKind::File => 0,
+                InodeKind::Directory => 1,
+            },
+            _pad2: [0; 7],
+            data_lba: old.data_lba,
+            data_blocks: old.data_blocks,
+            voronoi_cell: inode.voronoi_cell as u32,
+            original_size: inode.metadata.original_size,
+            permissions: inode.metadata.permissions,
+            _pad3: [0; 6],
+            created_ms: inode.metadata.created_ms,
+            modified_ms: inode.metadata.modified_ms,
+            content_hash: inode.payload.content_hash,
+            name_len: name_len as u16,
+            name,
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        entry.checksum = entry.checksum();
+        self.write_journal_entry(&entry)?;
+
+        Ok(())
+    }
+
     pub fn read_data(&self, inode_id: u64) -> Option<(ManifoldPayload, Vec<u8>)> {
         let record = self.inode_records.get(&inode_id)?;
         let extent = self.data_extents.get(&record.data_lba)?;
@@ -921,11 +978,6 @@ impl BlockStore {
             Some(r) => r,
             None => return Ok(()),
         };
-        if record.data_lba != 0 && record.data_blocks > 0 {
-            if let Some(extent) = self.data_extents.get(&record.data_lba).cloned() {
-                self.write_data_extent(record.data_lba, record.data_blocks as usize, &extent)?;
-            }
-        }
         let sb = self
             .superblock
             .as_ref()

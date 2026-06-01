@@ -9,6 +9,7 @@ pub mod calculator;
 pub mod clipboard;
 pub mod file_manager;
 pub mod game_engine;
+pub mod gpu_benchmark;
 pub mod help;
 pub mod installer;
 pub mod laamba_governor;

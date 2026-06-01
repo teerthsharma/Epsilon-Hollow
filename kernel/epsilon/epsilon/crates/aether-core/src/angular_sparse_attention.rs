@@ -164,8 +164,8 @@ impl AngularSparseAttention {
                 let beta = exp(score - new_max);
 
                 normalizer = normalizer * alpha + beta;
-                for dim in 0..D {
-                    out[dim] = out[dim] * alpha + beta * values[token_idx][dim];
+                for (out_dim, val_dim) in out.iter_mut().zip(values[token_idx].iter()) {
+                    *out_dim = *out_dim * alpha + beta * *val_dim;
                 }
                 max_score = new_max;
             }

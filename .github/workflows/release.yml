@@ -118,7 +118,7 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
           body: |
-            ## Seal OS (dev build)
+            ## Seal OS ${{ github.event.inputs.tag || 'latest' }}
 
             Built from `main` branch at ${{ github.sha }}.
 
@@ -132,4 +132,5 @@ jobs:
             # Create VM: Other/Unknown (64-bit), EFI enabled, SATA/AHCI, attach seal-os.vdi
             # Or boot from seal-os.iso as UEFI optical media.
             ```
-          prerelease: true
+          prerelease: false
+          make_latest: true

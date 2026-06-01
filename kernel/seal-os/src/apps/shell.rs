@@ -86,6 +86,10 @@ impl Shell {
             "seal" => self.cmd_seal(),
             "tasks" => self.cmd_tasks(),
             "stats" => self.cmd_stats(),
+            "gpu_benchmark" => {
+                crate::apps::gpu_benchmark::main();
+                String::from("[gpu_benchmark] Done. See serial log for results.")
+            }
             "race" => self.cmd_race(arg1),
             "history" => self.cmd_history(),
             "clear" => String::from("\x1b[clear]"),

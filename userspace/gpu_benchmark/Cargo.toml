@@ -1,0 +1,19 @@
+[package]
+name = "gpu_benchmark"
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+description = "Host-side benchmark for Seal OS topology operations with GPU acceleration simulation"
+
+[dependencies]
+aether-core = { path = "../../kernel/epsilon/epsilon/crates/aether-core", default-features = false }
+
+[features]
+default = ["std"]
+std = ["aether-core/std"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

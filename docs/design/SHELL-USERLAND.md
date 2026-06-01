@@ -133,7 +133,7 @@ Essential Seal utilities, implemented in Rust or Aether-Lang:
 
 - [x] Implement P0 utilities in Rust
 - [x] Compile P0 utilities as static binaries
-- [x] Implement `mv` using ManifoldFS teleport metadata rewiring; current disk persistence still rewrites file bytes
+- [x] Implement `mv` using ManifoldFS teleport metadata rewiring with `persistence_bytes_per_move=0` on same-filesystem moves
 - [x] Implement `ps` reading `/proc`
 - [x] Implement `df` reading mount table + filesystem stats
 - [x] Implement `free` reading `/proc/meminfo`

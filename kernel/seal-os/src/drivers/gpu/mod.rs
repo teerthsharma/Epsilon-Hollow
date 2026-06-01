@@ -10,6 +10,12 @@ pub mod intel;
 pub mod nvidia;
 pub mod virtio_gpu;
 
+pub mod compute_queue;
+pub mod firmware_scanner;
+pub mod gpu_mem;
+pub mod shader_binaries;
+pub mod topology_accel;
+
 use crate::drivers::pci::PciDevice;
 use crate::serial_println;
 use spin::Mutex;
@@ -111,7 +117,10 @@ impl GpuDriver {
 }
 
 pub fn init() {
-    // Try vendor-specific drivers first.
+    // Phase 1: firmware scan + topology accelerator (compute-capable GPUs).
+    topology_accel::init_topology_accelerator();
+
+    // Phase 2: vendor-specific display/framebuffer drivers.
     if amd::init().is_some() {
         return;
     }
