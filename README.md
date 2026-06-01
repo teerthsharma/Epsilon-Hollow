@@ -1567,7 +1567,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**107,925 lines of Rust** across 379 files | 0 lines of x86 assembly | 1,823 lines of Aether-Lang DSL | **109,748 total**
+**110857 lines of Rust** across 386 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **112680 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
@@ -1839,7 +1839,7 @@ Seal OS stands on the shoulders of:
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**107,925 lines of Rust** across 379 files | 0 lines of x86 assembly | 1,823 lines of Aether-Lang DSL | **109,748 total**
+**110857 lines of Rust** across 386 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **112680 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
