@@ -1,0 +1,16 @@
+[package]
+name = "nv-4060-probe"
+version = "0.1.0"
+edition = "2021"
+authors = ["Teerth Sharma"]
+license = "MIT"
+description = "Host-side probe tool for validating Seal OS NVIDIA RTX 4060 driver assumptions"
+
+[dependencies]
+
+[workspace]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -22,6 +22,20 @@ const NV_PRAMIN_OFFSET: u64 = 0x700000;
 /// PCI config-space offset for the Expansion ROM BAR.
 const PCI_ROM_BAR_OFFSET: u8 = 0x30;
 
+// ------------------------------------------------------------------
+// Known Ada / RTX 40-series device IDs
+// Source: NVIDIA open-gpu-doc, TechPowerUp BIOS collection
+// ------------------------------------------------------------------
+
+/// RTX 4060 Ti (8 GB / 16 GB desktop)
+pub const DID_RTX_4060_TI: u16 = 0x2803;
+/// RTX 4060 (8 GB desktop)
+pub const DID_RTX_4060: u16 = 0x2882;
+/// RTX 4060 Mobile / Laptop GPU
+pub const DID_RTX_4060_MOBILE_A: u16 = 0x28A0;
+/// RTX 4060 Mobile (alternate SKU)
+pub const DID_RTX_4060_MOBILE_B: u16 = 0x28E0;
+
 /// NVIDIA GPU instance.
 pub struct NvidiaGpu {
     pub bar0_phys: u64,
@@ -61,6 +75,22 @@ impl NvidiaGpu {
     /// Return architecture name for this GPU.
     pub fn arch_name(&self) -> &'static str {
         self.arch_name
+    }
+
+    /// Map a known NVIDIA device ID to a marketing name.
+    pub fn product_name_from_id(device_id: u16) -> &'static str {
+        match device_id {
+            DID_RTX_4060_TI => "GeForce RTX 4060 Ti",
+            DID_RTX_4060 => "GeForce RTX 4060",
+            DID_RTX_4060_MOBILE_A | DID_RTX_4060_MOBILE_B => "GeForce RTX 4060 Laptop GPU",
+            0x2805 => "GeForce RTX 4060 Ti (OEM)",
+            0x2808 => "GeForce RTX 4060 (OEM)",
+            0x2684 => "GeForce RTX 4080",
+            0x2704 => "GeForce RTX 4090",
+            0x2782 => "GeForce RTX 4070",
+            0x2786 => "GeForce RTX 4070 Ti",
+            _ => "Unknown NVIDIA GPU",
+        }
     }
 
     /// Return physical address for direct framebuffer access.
@@ -116,12 +146,14 @@ impl NvidiaGpu {
         let fb_size_mb = if fb_size_mb == 0 { 256 } else { fb_size_mb };
 
         let arch_name = Self::arch_name_from_id(boot0);
+        let product_name = Self::product_name_from_id(dev.device_id);
 
         // Display engine detection: bit 12 of NV_PMC_ENABLE
         let display_detected = (enable & (1 << 12)) != 0;
 
         serial_println!(
-            "[NVGPU] Detected {:04X}:{:04X} -- arch={} ({:08X}) enable={:08X} fb={} MiB",
+            "[NVGPU] Detected {} [{:04X}:{:04X}] -- arch={} ({:08X}) enable={:08X} fb={} MiB",
+            product_name,
             dev.vendor_id,
             dev.device_id,
             arch_name,

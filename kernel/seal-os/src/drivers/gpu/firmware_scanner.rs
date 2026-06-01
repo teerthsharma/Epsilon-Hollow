@@ -365,6 +365,12 @@ fn scan_nvidia(dev: &PciDevice) -> GpuFirmwareCaps {
     // GSP required for compute on Turing+ (0x00011000+).
     let needs_gsp = arch_id >= 0x00011000;
 
+    // Detect specific Ada RTX 4060 variants for honest reporting.
+    let is_rtx_4060_family = dev.device_id == super::nvidia::DID_RTX_4060
+        || dev.device_id == super::nvidia::DID_RTX_4060_TI
+        || dev.device_id == super::nvidia::DID_RTX_4060_MOBILE_A
+        || dev.device_id == super::nvidia::DID_RTX_4060_MOBILE_B;
+
     // VRAM heuristic from PFB_CFG0.
     let pfb_cfg0 = unsafe { core::ptr::read_volatile((bar0 + 0x100000) as *const u32) };
     caps.vram_size_mb = ((pfb_cfg0 >> 12) & 0x1FF) as u32;
@@ -389,7 +395,12 @@ fn scan_nvidia(dev: &PciDevice) -> GpuFirmwareCaps {
 
     if needs_gsp && !caps.firmware_blob_loaded {
         caps.fallback_reason = Some(FallbackReason::FirmwareBlobMissing);
-        serial_println!("[FWSCAN] NVIDIA Turing+ requires GSP blob at /lib/firmware/nvidia/gsp.bin");
+        if is_rtx_4060_family {
+            serial_println!("[FWSCAN] RTX 4060 family detected (Ada Lovelace). GSP firmware required for compute.");
+            serial_println!("[FWSCAN]   To test: boot Seal OS with GPU passthrough or use tools/nv-4060-probe from Linux host.");
+        } else {
+            serial_println!("[FWSCAN] NVIDIA Turing+ requires GSP blob at /lib/firmware/nvidia/gsp.bin");
+        }
         return caps;
     }
 
