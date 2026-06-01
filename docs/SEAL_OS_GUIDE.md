@@ -100,7 +100,9 @@ The serial log must contain:
 [ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=<n> ready_after=<n> cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
@@ -123,8 +125,8 @@ The serial log must contain:
 
 The theorem log audit now requires desktop readiness and event-loop entry, not
 just theorem banner lines. The screenshot audit parses `screen.ppm` directly and
-requires a nonblank 1024x768 desktop with the icon lane, control region, and
-primary terminal titlebar visible.
+requires a nonblank 1024x768 desktop with the icon lane, control region,
+primary terminal titlebar, and taskbar start/power controls visible.
 
 The manifest audit parses `proof-manifest.txt` and verifies the proof bundle
 against the current artifacts. It requires the QEMU backend, commit/dirty flag,
@@ -146,10 +148,13 @@ the same-machine Ubuntu baseline is captured.
 
 The ManifoldFS teleport marker is the first file-movement performance artifact.
 It proves a same-inode move from source directory to destination directory over
-8-256 source entries with bounded metadata operations. It also reports
-`persistence=write_through` and `write_through_bytes_per_move`, because current
-raw-byte persistence still touches payload bytes; full metadata-only persistence
-is not claimed yet.
+8-256 source entries with bounded metadata operations and
+`persistence_bytes_per_move=0`, so file bytes stay in place for the
+same-filesystem path.
+
+The TCP demux marker proves a packet-level stack invariant: when a listener and
+accepted socket share the same local port, `handle_tcp_packet` must route the
+payload to the accepted socket before falling back to the listener.
 
 ## Oracle VirtualBox Proof
 
@@ -268,7 +273,7 @@ win:
 
 - HFT tick-to-action latency.
 - ML tensor locality and data-movement latency.
-- ManifoldFS metadata teleport; current persistence still rewrites file bytes.
+- ManifoldFS metadata teleport with `persistence_bytes_per_move=0`.
 - Topological allocator hot path.
 - Live scheduler selection through `[BENCH] scheduler-select-next`; wake latency
   remains a separate end-to-end benchmark.

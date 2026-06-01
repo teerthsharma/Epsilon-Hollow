@@ -1,0 +1,77 @@
+name: Feature Request
+description: Propose a new topology feature, driver, app, or language extension.
+title: "[FEATURE] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea for Seal OS? We welcome proposals. Please be specific about the subsystem and motivation.
+
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Subsystem
+      description: Which subsystem would this feature touch?
+      options:
+        - Memory allocator / topology
+        - Process scheduler
+        - Drivers (PCIe / NVMe / network / display)
+        - ManifoldFS
+        - Network stack
+        - Security / Theorem gates
+        - Window manager / Graphics
+        - Aether-Lang (lexer / parser / interpreter / VM)
+        - Epsilon teleportation / context migration
+        - Build / CI / Tooling
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Who benefits?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_design
+    attributes:
+      label: Proposed design
+      description: |
+        Describe the feature in enough detail for a contributor to implement it.
+        Include API sketches, file paths, or pseudocode if relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: theorem_relevance
+    attributes:
+      label: Theorem relevance
+      description: |
+        If this touches a T1–T5 path, which theorem(s) are involved and how does the feature preserve or extend the gate?
+        See `docs/THEOREMS.md` for reference. Write "N/A" if no theorem path is affected.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Check any that apply.
+      options:
+        - label: I considered alternative designs and this is the simplest that meets the need.
+          required: false
+        - label: I am willing to implement this myself.
+          required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Links to prior art, research papers, or related issues.
+    validations:
+      required: false

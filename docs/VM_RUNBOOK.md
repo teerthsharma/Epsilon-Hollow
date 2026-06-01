@@ -68,8 +68,9 @@ Seal OS - UEFI boot complete, boot services exited
 [ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
@@ -150,9 +151,10 @@ cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --
 cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml --release -- --check-current-proof-manifest kernel\seal-os\target\x86_64-unknown-uefi\release\vbox-smoke\proof-manifest.txt .
 ```
 
-The benchmark log gate requires all four current markers:
+The benchmark log gate requires all five current markers:
 `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`,
-`[BENCH] manifold-teleport`, and `[BENCH] scheduler-select-next`.
+`[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, and
+`[BENCH] tcp-packet-demux`.
 The Aether runtime gate requires the parser/interpreter/app-host boot marker.
 
 Expected:

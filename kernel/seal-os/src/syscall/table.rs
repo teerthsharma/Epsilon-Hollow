@@ -221,6 +221,7 @@ fn fs_error_to_errno(e: FsError) -> i64 {
         FsError::NotFound => 2,       // ENOENT
         FsError::AlreadyExists => 17, // EEXIST
         FsError::NotADirectory => 20, // ENOTDIR
+        FsError::Storage => 5,        // EIO
     }
 }
 

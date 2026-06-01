@@ -75,9 +75,9 @@ pub fn stiefel_project_tangent<const N: usize, const P: usize>(
 ) -> [[f64; P]; N] {
     let mut xtz = [[0.0_f64; P]; P];
     for row in 0..N {
-        for col_x in 0..P {
-            for col_z in 0..P {
-                xtz[col_x][col_z] += x[row][col_x] * z[row][col_z];
+        for (xtz_row, x_val) in xtz.iter_mut().zip(x[row].iter()) {
+            for (xtz_val, z_val) in xtz_row.iter_mut().zip(z[row].iter()) {
+                *xtz_val += x_val * z_val;
             }
         }
     }
@@ -93,8 +93,8 @@ pub fn stiefel_project_tangent<const N: usize, const P: usize>(
     for row in 0..N {
         for col in 0..P {
             let mut correction = 0.0;
-            for mid in 0..P {
-                correction += x[row][mid] * sym[mid][col];
+            for (x_val, sym_row) in x[row].iter().zip(sym.iter()) {
+                correction += x_val * sym_row[col];
             }
             projected[row][col] -= correction;
         }
@@ -123,9 +123,9 @@ pub fn grassmann_project_tangent<const N: usize, const P: usize>(
 ) -> [[f64; P]; N] {
     let mut xtz = [[0.0_f64; P]; P];
     for row in 0..N {
-        for col_x in 0..P {
-            for col_z in 0..P {
-                xtz[col_x][col_z] += x[row][col_x] * z[row][col_z];
+        for (xtz_row, x_val) in xtz.iter_mut().zip(x[row].iter()) {
+            for (xtz_val, z_val) in xtz_row.iter_mut().zip(z[row].iter()) {
+                *xtz_val += x_val * z_val;
             }
         }
     }
@@ -134,8 +134,8 @@ pub fn grassmann_project_tangent<const N: usize, const P: usize>(
     for row in 0..N {
         for col in 0..P {
             let mut correction = 0.0;
-            for mid in 0..P {
-                correction += x[row][mid] * xtz[mid][col];
+            for (x_val, xtz_row) in x[row].iter().zip(xtz.iter()) {
+                correction += x_val * xtz_row[col];
             }
             projected[row][col] -= correction;
         }
@@ -289,8 +289,8 @@ impl<const D: usize> RiemannianAdam<D> {
         let scale = self.lr / (sqrt(v_hat) + self.eps);
 
         let mut step = [0.0_f64; D];
-        for idx in 0..D {
-            step[idx] = -scale * self.first_moment[idx] * inv_bias1;
+        for (step_val, moment) in step.iter_mut().zip(self.first_moment.iter()) {
+            *step_val = -scale * *moment * inv_bias1;
         }
 
         self.previous_point = Some(x);
@@ -329,8 +329,8 @@ fn retract_vector<const D: usize>(
         ManifoldType::Sphere => sphere_retract(x, step),
         ManifoldType::Euclidean | ManifoldType::Stiefel | ManifoldType::Grassmann => {
             let mut y = [0.0_f64; D];
-            for idx in 0..D {
-                y[idx] = x[idx] + step[idx];
+            for (y_val, (x_val, step_val)) in y.iter_mut().zip(x.iter().zip(step.iter())) {
+                *y_val = x_val + step_val;
             }
             y
         }
@@ -353,30 +353,30 @@ fn orthonormalize_columns<const N: usize, const P: usize>(mut q: [[f64; P]; N]) 
     for col in 0..P {
         for prev in 0..col {
             let mut projection = 0.0;
-            for row in 0..N {
-                projection += q[row][prev] * q[row][col];
+            for row in q.iter() {
+                projection += row[prev] * row[col];
             }
-            for row in 0..N {
-                q[row][col] -= projection * q[row][prev];
+            for row in q.iter_mut() {
+                row[col] -= projection * row[prev];
             }
         }
 
         let mut norm_sq = 0.0;
-        for row in 0..N {
-            norm_sq += q[row][col] * q[row][col];
+        for row in q.iter() {
+            norm_sq += row[col] * row[col];
         }
         let norm = sqrt(norm_sq);
 
         if norm < EPS {
-            for row in 0..N {
-                q[row][col] = 0.0;
+            for row in q.iter_mut() {
+                row[col] = 0.0;
             }
             if col < N {
                 q[col][col] = 1.0;
             }
         } else {
-            for row in 0..N {
-                q[row][col] /= norm;
+            for row in q.iter_mut() {
+                row[col] /= norm;
             }
         }
     }
@@ -385,8 +385,8 @@ fn orthonormalize_columns<const N: usize, const P: usize>(mut q: [[f64; P]; N]) 
 
 fn dot_vector<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
     let mut sum = 0.0;
-    for idx in 0..D {
-        sum += a[idx] * b[idx];
+    for (a_val, b_val) in a.iter().zip(b.iter()) {
+        sum += a_val * b_val;
     }
     sum
 }

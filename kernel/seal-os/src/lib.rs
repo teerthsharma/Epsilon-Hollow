@@ -145,7 +145,7 @@ pub const THEOREM_NAMES: [&str; THEOREM_COUNT] = [
 pub fn kernel_main(info: &BootInfo) -> ! {
     serial_println!("Seal OS v{} — The Geometrical Operating System", VERSION);
     serial_println!(
-        "OS state = topology on S^2. File moves use metadata topology; persistence rewrites bytes."
+        "OS state = topology on S^2. File moves use metadata topology; file bytes stay in place."
     );
     serial_println!("Boot: UEFI (pure Rust, zero assembly)");
     serial_println!("");
@@ -885,7 +885,7 @@ fn run_manifold_teleport_bench() {
     let mut ok = 0usize;
     let mut ticks_max = 0u64;
     let mut metadata_ops_max = 0u64;
-    let mut write_through_bytes_per_move = 0u64;
+    let mut persistence_bytes_per_move = 0u64;
     let mut payload_points = 0usize;
     let mut same_inode = 0usize;
     let mut src_gone = 0usize;
@@ -939,8 +939,7 @@ fn run_manifold_teleport_bench() {
             }
             ticks_max = ticks_max.max(result.elapsed_ticks);
             metadata_ops_max = metadata_ops_max.max(result.metadata_ops);
-            write_through_bytes_per_move =
-                write_through_bytes_per_move.max(result.persistence_bytes);
+            persistence_bytes_per_move = persistence_bytes_per_move.max(result.persistence_bytes);
             payload_points = payload_points.max(result.payload_points);
         }
     }
@@ -956,7 +955,7 @@ fn run_manifold_teleport_bench() {
     }
 
     serial_println!(
-        "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples={} ok={} same_inode={} src_gone={} dst_present={} entries_min={} entries_max={} payload_bytes={} p50_cycles={} p95_cycles={} max_cycles={} ticks_max={} metadata_ops_max={} write_through_bytes_per_move={} payload_points={}",
+        "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples={} ok={} same_inode={} src_gone={} dst_present={} entries_min={} entries_max={} payload_bytes={} p50_cycles={} p95_cycles={} max_cycles={} ticks_max={} metadata_ops_max={} persistence_bytes_per_move={} payload_points={}",
         SAMPLES,
         ok,
         same_inode,
@@ -970,7 +969,7 @@ fn run_manifold_teleport_bench() {
         samples[SAMPLES - 1],
         ticks_max,
         metadata_ops_max,
-        write_through_bytes_per_move,
+        persistence_bytes_per_move,
         payload_points
     );
 }
@@ -1355,6 +1354,7 @@ fn init_drivers() {
     }
     serial_println!("[BOOT] driver init: xhci done");
     net::init();
+    run_tcp_packet_demux_bench();
     serial_println!("[BOOT] driver init: net done");
 }
 
@@ -1362,6 +1362,33 @@ fn init_drivers() {
 fn init_usb() {
     drivers::usb::init();
     serial_println!("[USB] Subsystem initialized (xHCI host controller probe pending)");
+}
+
+#[cfg(not(test))]
+fn run_tcp_packet_demux_bench() {
+    let proof = net::tcp::packet_fixture_proof();
+    let accepted_state = match proof.accepted_state {
+        net::tcp::TcpState::Established => "established",
+        net::tcp::TcpState::Listen => "listen",
+        net::tcp::TcpState::SynReceived => "syn_received",
+        net::tcp::TcpState::SynSent => "syn_sent",
+        net::tcp::TcpState::Closed => "closed",
+        net::tcp::TcpState::FinWait1 => "fin_wait1",
+        net::tcp::TcpState::FinWait2 => "fin_wait2",
+        net::tcp::TcpState::CloseWait => "close_wait",
+        net::tcp::TcpState::Closing => "closing",
+        net::tcp::TcpState::LastAck => "last_ack",
+        net::tcp::TcpState::TimeWait => "time_wait",
+    };
+    serial_println!(
+        "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state={} ok={} listener_first={} payload_bytes={} rx_bytes={} cleanup={}",
+        accepted_state,
+        if proof.ok { 1 } else { 0 },
+        if proof.listener_first { 1 } else { 0 },
+        proof.payload_bytes,
+        proof.rx_bytes,
+        if proof.cleanup_ok { "ok" } else { "leak" }
+    );
 }
 
 #[cfg(not(test))]

@@ -1,13 +1,13 @@
 [package]
 name = "aether_verified"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Lean 4 → C → Rust verified kernels for Epsilon-Hollow"
 license = "MIT"
 authors = ["Teerth Sharma"]
 
 [dependencies]
-libm = "0.2"
+libm = { workspace = true }
 
 [dev-dependencies]
 # Pin to 1.5 to avoid pulling rand 0.9 / getrandom 0.4 which require

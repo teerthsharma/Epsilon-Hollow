@@ -183,6 +183,7 @@ qemu-proof/
 qemu-proof-runs/
 vbox-smoke/
 flamegraph*.svg
+kernel/seal-os/target-nightly-*/
 
 # --- LaTeX ---
 *.aux

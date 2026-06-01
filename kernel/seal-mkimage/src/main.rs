@@ -951,6 +951,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] alloc-frame",
         "[BENCH] manifold-teleport",
         "[BENCH] scheduler-select-next",
+        "[BENCH] tcp-packet-demux",
         "[Aether-Lang] runtime proof:",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-soak",
@@ -1044,6 +1045,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_seal_alloc_benchmark(text)?;
     parse_manifold_teleport_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
+    parse_tcp_packet_demux_benchmark(text)?;
     Ok(())
 }
 
@@ -1264,10 +1266,10 @@ fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
     let max = parse_metric(line, "max_cycles=")?;
     let _ticks_max = parse_metric(line, "ticks_max=")?;
     let metadata_ops_max = parse_metric(line, "metadata_ops_max=")?;
-    let write_through_bytes = parse_metric(line, "write_through_bytes_per_move=")?;
+    let persistence_bytes = parse_metric(line, "persistence_bytes_per_move=")?;
     let payload_points = parse_metric(line, "payload_points=")?;
 
-    if api != "teleport" || fs_mode != "ramfs" || persistence != "write_through" {
+    if api != "teleport" || fs_mode != "ramfs" || persistence != "metadata_only" {
         return Err(format!(
             "ManifoldFS teleport benchmark identifies the wrong API/path: api={api}, fs_mode={fs_mode}, persistence={persistence}"
         ));
@@ -1302,9 +1304,9 @@ fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
             "ManifoldFS teleport metadata operation bound regressed: metadata_ops_max={metadata_ops_max}"
         ));
     }
-    if write_through_bytes != payload_bytes {
+    if persistence_bytes != 0 {
         return Err(format!(
-            "ManifoldFS teleport write-through accounting mismatch: write_through_bytes_per_move={write_through_bytes}, payload_bytes={payload_bytes}"
+            "ManifoldFS teleport rewrote file bytes: persistence_bytes_per_move={persistence_bytes}, payload_bytes={payload_bytes}"
         ));
     }
     Ok(())
@@ -1383,6 +1385,36 @@ fn parse_scheduler_select_benchmark(text: &str) -> Result<(), String> {
     if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
         return Err(format!(
             "scheduler select cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tcp-packet-demux")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let accepted_state = parse_field(line, "accepted_state=")?;
+    let ok = parse_metric(line, "ok=")?;
+    let listener_first = parse_metric(line, "listener_first=")?;
+    let payload_bytes = parse_metric(line, "payload_bytes=")?;
+    let rx_bytes = parse_metric(line, "rx_bytes=")?;
+    let cleanup = parse_field(line, "cleanup=")?;
+
+    if api != "handle_tcp_packet" || fixture != "listener_first" {
+        return Err(format!(
+            "TCP packet demux benchmark identifies the wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if ok != 1 || listener_first != 1 || accepted_state != "established" || cleanup != "ok" {
+        return Err(format!(
+            "TCP packet demux benchmark failed invariants: ok={ok}, listener_first={listener_first}, accepted_state={accepted_state}, cleanup={cleanup}"
+        ));
+    }
+    if payload_bytes != 4 || rx_bytes != payload_bytes {
+        return Err(format!(
+            "TCP packet demux payload mismatch: payload_bytes={payload_bytes}, rx_bytes={rx_bytes}"
         ));
     }
 
@@ -1562,6 +1594,8 @@ fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
     match vm_target {
         "qemu" => {
             check_manifest_artifact(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
+            let screen_ppm = parent.join(require_manifest_field(&fields, "screen_ppm_path")?);
+            check_proof_screen(&screen_ppm)?;
             if fields.contains_key("screen_png_path") {
                 check_manifest_artifact(&fields, parent, "screen_png", Some("screen.png"))?;
             }
@@ -1950,8 +1984,9 @@ mod tests {
     const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 toporam_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
     const TOPORAM_ALLOC_LOG: &str = "[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=90 p95_cycles=130 max_cycles=150 target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=10 free_after=10\n";
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
-    const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=4\n";
+    const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
+    const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
@@ -1961,6 +1996,46 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("seal-mkimage-{label}-{nanos}"))
+    }
+
+    fn proof_screen_ppm() -> Vec<u8> {
+        let width = 1024usize;
+        let height = 768usize;
+        let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+        let pixels_start = ppm.len();
+        ppm.resize(pixels_start + width * height * 3, 0);
+
+        for y in 0..height {
+            for x in 0..width {
+                let (mut r, mut g, mut b) = (0u8, 0u8, 0u8);
+                if x < 1_000 && (40..140).contains(&y) {
+                    (r, g, b) = (48, 48, 48);
+                }
+                if (40..700).contains(&x) && (120..580).contains(&y) {
+                    (r, g, b) = (36, 72, 48);
+                }
+                if (48..660).contains(&x) && (132..158).contains(&y) {
+                    (r, g, b) = (48, 64, 160);
+                }
+                if y >= height - 28 {
+                    (r, g, b) = (16, 16, 24);
+                }
+                if (4..76).contains(&x) && (height - 24..height - 4).contains(&y) {
+                    (r, g, b) = (68, 136, 204);
+                }
+                if (width - 36..width - 12).contains(&x)
+                    && (height - 22..height - 6).contains(&y)
+                {
+                    (r, g, b) = (255, 68, 68);
+                }
+                let offset = pixels_start + (y * width + x) * 3;
+                ppm[offset] = r;
+                ppm[offset + 1] = g;
+                ppm[offset + 2] = b;
+            }
+        }
+
+        ppm
     }
 
     fn manifest_artifact(prefix: &str, path: &Path, data: &[u8]) -> String {
@@ -1981,14 +2056,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proof_screen_rejects_trailing_payload() {
+        let root = unique_temp_dir("proof-screen-trailing");
+        fs::create_dir_all(&root).unwrap();
+        let mut screen = proof_screen_ppm();
+        screen.extend_from_slice(b"stale trailing bytes");
+        let path = root.join("screen.ppm");
+        fs::write(&path, screen).unwrap();
+
+        assert!(check_proof_screen(&path).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_screen_rejects_missing_taskbar_controls() {
+        let root = unique_temp_dir("proof-screen-taskbar-controls");
+        fs::create_dir_all(&root).unwrap();
+        let width = 1024usize;
+        let height = 768usize;
+        let mut screen = proof_screen_ppm();
+        let pixels_start = screen
+            .windows(b"\n255\n".len())
+            .position(|window| window == b"\n255\n")
+            .map(|pos| pos + b"\n255\n".len())
+            .unwrap();
+
+        for y in height - 28..height {
+            for x in 0..width {
+                let offset = pixels_start + (y * width + x) * 3;
+                screen[offset] = 0;
+                screen[offset + 1] = 0;
+                screen[offset + 2] = 0;
+            }
+        }
+
+        let path = root.join("screen.ppm");
+        fs::write(&path, screen).unwrap();
+
+        assert!(check_proof_screen(&path).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn write_test_manifest(root: &Path) -> PathBuf {
         fs::create_dir_all(root).unwrap();
         let serial = b"serial proof log";
-        let screen = b"P6\n1 1\n255\nrgb";
+        let screen = proof_screen_ppm();
         let image = b"disk image bytes";
         let efi = b"efi image bytes";
         fs::write(root.join("serial.log"), serial).unwrap();
-        fs::write(root.join("screen.ppm"), screen).unwrap();
+        fs::write(root.join("screen.ppm"), &screen).unwrap();
         fs::write(root.join("seal-os.img"), image).unwrap();
         fs::write(root.join("seal-os.efi"), efi).unwrap();
 
@@ -2023,7 +2142,7 @@ gate_proof_screen=ok\n",
         manifest.push_str(&manifest_artifact(
             "screen_ppm",
             &root.join("screen.ppm"),
-            screen,
+            &screen,
         ));
 
         let manifest_path = root.join("proof-manifest.txt");
@@ -2087,6 +2206,7 @@ gate_benchmark_log=ok\n",
             SEAL_ALLOC_LOG,
             MANIFOLD_TELEPORT_LOG,
             SCHEDULER_SELECT_LOG,
+            TCP_PACKET_DEMUX_LOG,
         ]
         .concat()
     }
@@ -2094,11 +2214,11 @@ gate_benchmark_log=ok\n",
     fn write_test_benchmark_manifest(root: &Path, commit: &str, dirty: bool) -> PathBuf {
         fs::create_dir_all(root).unwrap();
         let serial = full_benchmark_log();
-        let screen = b"P6\n1 1\n255\nrgb";
+        let screen = proof_screen_ppm();
         let image = b"disk image bytes";
         let efi = b"efi image bytes";
         fs::write(root.join("serial.log"), serial.as_bytes()).unwrap();
-        fs::write(root.join("screen.ppm"), screen).unwrap();
+        fs::write(root.join("screen.ppm"), &screen).unwrap();
         fs::write(root.join("seal-os.img"), image).unwrap();
         fs::write(root.join("seal-os.efi"), efi).unwrap();
 
@@ -2134,7 +2254,7 @@ gate_proof_screen=ok\n",
         manifest.push_str(&manifest_artifact(
             "screen_ppm",
             &root.join("screen.ppm"),
-            screen,
+            &screen,
         ));
 
         let manifest_path = root.join("proof-manifest.txt");
@@ -2372,6 +2492,16 @@ gate_proof_screen=ok\n",
 
         let regressed = MANIFOLD_TELEPORT_LOG.replace("metadata_ops_max=7", "metadata_ops_max=9");
         assert!(parse_manifold_teleport_benchmark(&regressed).is_err());
+
+        let rewrote_bytes = MANIFOLD_TELEPORT_LOG.replace(
+            "persistence_bytes_per_move=0",
+            "persistence_bytes_per_move=64",
+        );
+        assert!(parse_manifold_teleport_benchmark(&rewrote_bytes).is_err());
+
+        let legacy_write_through =
+            MANIFOLD_TELEPORT_LOG.replace("persistence=metadata_only", "persistence=write_through");
+        assert!(parse_manifold_teleport_benchmark(&legacy_write_through).is_err());
     }
 
     #[test]
@@ -2384,13 +2514,25 @@ gate_proof_screen=ok\n",
     }
 
     #[test]
+    fn parses_tcp_packet_demux_benchmark() {
+        assert!(parse_tcp_packet_demux_benchmark(TCP_PACKET_DEMUX_LOG).is_ok());
+
+        let failed = TCP_PACKET_DEMUX_LOG.replace("ok=1", "ok=0");
+        assert!(parse_tcp_packet_demux_benchmark(&failed).is_err());
+
+        let wrong_state =
+            TCP_PACKET_DEMUX_LOG.replace("accepted_state=established", "accepted_state=listen");
+        assert!(parse_tcp_packet_demux_benchmark(&wrong_state).is_err());
+    }
+
+    #[test]
     fn doc_claim_contract_requires_ubuntu_and_benchmark_guards() {
         let readme = "\
 not a blanket victory claim
 Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists
 raw Ubuntu artifact pending
 `--check-current-benchmark-proof`
-persistent write-through bytes still counted
+persistence_bytes_per_move=0
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
@@ -3028,8 +3170,8 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
         (
             "README.md",
             readme,
-            "persistent write-through bytes still counted",
-            "README must not claim persistent ManifoldFS moves are byte-free",
+            "persistence_bytes_per_move=0",
+            "README must expose the metadata-only same-filesystem ManifoldFS proof marker",
         ),
         (
             "README.md",
@@ -3181,7 +3323,15 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
         ),
         (
             "persistent ManifoldFS moves are metadata-only",
-            "current persistent path still counts write-through bytes",
+            "metadata-only claim must stay scoped to same-filesystem proof markers",
+        ),
+        (
+            "persistent write-through bytes still counted",
+            "README must not retain stale ManifoldFS byte-rewrite wording",
+        ),
+        (
+            "persistence=write_through",
+            "README must not retain stale ManifoldFS write-through marker",
         ),
     ];
     let banned_hits: Vec<String> = banned_readme_claims
@@ -4104,11 +4254,14 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
         .checked_mul(height)
         .and_then(|px| px.checked_mul(3))
         .ok_or_else(|| String::from("PPM dimensions overflow"))?;
-    if bytes.len().saturating_sub(idx) < expected {
+    let actual = bytes.len().saturating_sub(idx);
+    if actual != expected {
         return Err(format!(
-            "PPM pixel payload is truncated: expected {expected} bytes, got {}",
-            bytes.len().saturating_sub(idx)
+            "PPM pixel payload size mismatch: expected {expected} bytes, got {actual}"
         ));
+    }
+    if width < 1_024 || height < 768 {
+        return Err(format!("proof screen is too small: {width}x{height}"));
     }
 
     let pixels = &bytes[idx..idx + expected];
@@ -4116,6 +4269,8 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
     let mut icon_region_signal = 0usize;
     let mut control_region_signal = 0usize;
     let mut primary_titlebar_signal = 0usize;
+    let mut start_button_signal = 0usize;
+    let mut power_button_signal = 0usize;
 
     for y in 0..height {
         for x in 0..width {
@@ -4135,12 +4290,25 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
             if (48..660).contains(&x) && (132..158).contains(&y) && b > 96 && g > 32 && r < 96 {
                 primary_titlebar_signal += 1;
             }
+            if (4..76).contains(&x)
+                && (height - 24..height - 4).contains(&y)
+                && b > 140
+                && g > 80
+                && r < 110
+            {
+                start_button_signal += 1;
+            }
+            if (width - 36..width - 12).contains(&x)
+                && (height - 22..height - 6).contains(&y)
+                && r > 180
+                && g < 130
+                && b < 130
+            {
+                power_button_signal += 1;
+            }
         }
     }
 
-    if width < 1_024 || height < 768 {
-        return Err(format!("proof screen is too small: {width}x{height}"));
-    }
     if non_black < 20_000 {
         return Err(format!(
             "screen is mostly blank: {non_black} non-black pixels"
@@ -4159,6 +4327,16 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
     if primary_titlebar_signal < 6_000 {
         return Err(format!(
             "primary terminal titlebar is not visible enough: {primary_titlebar_signal} signal pixels"
+        ));
+    }
+    if start_button_signal < 1_000 {
+        return Err(format!(
+            "taskbar start button is not visible enough: {start_button_signal} signal pixels"
+        ));
+    }
+    if power_button_signal < 300 {
+        return Err(format!(
+            "taskbar power button is not visible enough: {power_button_signal} signal pixels"
         ));
     }
 

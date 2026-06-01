@@ -197,16 +197,17 @@ The smoke test must verify these serial output patterns:
 | 8 | `All T1-T10 theorems VERIFIED` | Theorem summary verified |
 | 9 | `[BENCH] toporam-alloc` | Hint-biased TopoRAM target-cell hot path measured |
 | 10 | `[BENCH] alloc-frame` | Single-frame allocator hot path measured |
-| 11 | `[BENCH] manifold-teleport` | ManifoldFS same-inode metadata teleport measured, with write-through persistence explicitly accounted |
+| 11 | `[BENCH] manifold-teleport` | ManifoldFS same-inode metadata teleport measured, with file-byte rewrites forbidden |
 | 12 | `[BENCH] scheduler-select-next` | Live scheduler selector requeue hot path measured |
-| 13 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
-| 14 | `Device model: QEMU HARDDISK` | AHCI disk identified |
-| 15 | `Registered as block device 0x800` | AHCI block device registered |
-| 16 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
-| 17 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 18 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 19 | `Seal OS desktop ready.` | Desktop reached |
-| 20 | `Entering real event loop` | Event loop active |
+| 13 | `[BENCH] tcp-packet-demux` | TCP listener-first same-port demux fixture delivered payload to accepted socket |
+| 14 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
+| 15 | `Device model: QEMU HARDDISK` | AHCI disk identified |
+| 16 | `Registered as block device 0x800` | AHCI block device registered |
+| 17 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
+| 18 | `Desktop proof frame blit done` | First desktop frame blitted |
+| 19 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 20 | `Seal OS desktop ready.` | Desktop reached |
+| 21 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -218,7 +219,7 @@ Additional Rust-native audit commands run against the same OS surface:
 | `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses the `[GFX] desktop-soak` marker and requires frame count, monotonic cycle percentiles, input-events field, and full-frame dirty-pixel coverage |
-| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, and `[BENCH] scheduler-select-next`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries, bounded metadata ops, explicit write-through byte accounting, and live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches |
+| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, and `[BENCH] tcp-packet-demux`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries, bounded metadata ops, `persistence_bytes_per_move=0`, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, and listener-first TCP demux payload delivery |
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
 | `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log` | Fails unless Seal OS p50, p95, and max allocation cycles beat the validated Ubuntu artifact |

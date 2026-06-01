@@ -153,6 +153,22 @@ without switching context. End-to-end wake latency is still pending because it
 must include timer interrupt delivery, runnable transition, and return to the
 selected task.
 
+### 4.1 TCP Packet Demux Fixture
+
+Seal OS:
+
+- listener and accepted socket share one local TCP port
+- packet enters `handle_tcp_packet`
+- current boot marker:
+
+```text
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+```
+
+The marker proves same-port packet demux chooses the accepted flow before the
+listener fallback. It is not a network latency benchmark; DHCP, external RX/TX,
+and HFT packet latency remain separate artifacts.
+
 Ubuntu target:
 
 - `perf sched` or cyclictest wake latency
@@ -172,12 +188,11 @@ Seal OS:
 - current boot marker:
 
 ```text
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=write_through samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 write_through_bytes_per_move=64 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 ```
 
-- this marker proves bounded metadata surgery and same-inode movement, but it
-  explicitly labels current persistence as write-through; metadata-only disk
-  persistence remains a future gate
+- this marker proves bounded metadata surgery, same-inode movement, and
+  `persistence_bytes_per_move=0` for same-filesystem moves
 
 Ubuntu:
 
@@ -407,7 +422,8 @@ The first benchmark milestone is modest and measurable:
 3. Boot Seal OS in QEMU or VirtualBox.
 4. Capture serial log to theorem gate, desktop proof frame, desktop-ready
    sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
-   `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, and
+   `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`,
+   `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and
    `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
 6. Run `seal-mkimage --check-benchmark-log` and

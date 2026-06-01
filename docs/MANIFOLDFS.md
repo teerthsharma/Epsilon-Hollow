@@ -9,10 +9,10 @@
 ManifoldFS replaces traditional block-based filesystems with a geometry-first approach. All file content is encoded as point clouds on the 2-sphere S^2. File operations become geometric operations:
 
 - **Store** = encode content to manifold points, assign to Voronoi cell
-- **Move (teleport)** = update directory/inode metadata in O(1); current persistence still rewrites file bytes
+- **Move (teleport)** = update directory/inode metadata in O(1) without rewriting file bytes on the same filesystem
 - **Search (find)** = encode query, locate Voronoi bucket, rank by cosine similarity
 
-The key insight: by projecting file content into a fixed-dimensional geometric space, content-addressable search can narrow to a Voronoi bucket, and file moves can rewire metadata independently of file size. End-to-end persistent moves still scale with raw bytes until metadata-only persistence lands.
+The key insight: by projecting file content into a fixed-dimensional geometric space, content-addressable search can narrow to a Voronoi bucket, and same-filesystem file moves can rewire metadata independently of file size.
 
 ---
 
@@ -152,7 +152,7 @@ Search is narrowed to a single Voronoi cell (1/8 of all files by default), then 
 | Operation | ext4 / NTFS | ManifoldFS |
 |-----------|-------------|------------|
 | File move (same partition) | Rename: O(1) pointer update | O(1) metadata rewiring; persistent byte rewrite still pending |
-| File move (cross partition) | Copy + delete: O(n) in file size | Metadata teleport core; current persistence still O(file bytes) |
+| File move (same filesystem) | Rename: O(1) metadata update | Metadata teleport core; `persistence_bytes_per_move=0` |
 | Search by content | Full scan: O(N * n) | Voronoi bucket scan plus geometric ranking |
 | Content deduplication | External tools (hash comparison) | Built-in via content_hash (FNV-1a) on ManifoldPayload |
 | Predictive prefetch | OS page cache heuristics | T2/SCM spectral contraction on access state |
