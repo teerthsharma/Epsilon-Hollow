@@ -857,14 +857,27 @@ fn run_graphics_desktop_live_proof(
         launched_app_id = app_id as u64;
     }
 
-    let (post_hash, changed_samples) = compare_desktop_live_region(
+    let mut post_samples = [0u32; DESKTOP_LIVE_SAMPLE_COUNT];
+    let post_hash = sample_desktop_live_region(
         fb,
         FILES_REGION_X,
         FILES_REGION_Y,
         FILES_REGION_W,
         FILES_REGION_H,
-        &pre_samples,
+        &mut post_samples,
     );
+    let changed_samples = count_desktop_live_sample_changes(&pre_samples, &post_samples);
+    let mut vram_samples = [0u32; DESKTOP_LIVE_SAMPLE_COUNT];
+    let vram_hash = sample_desktop_live_presented_region(
+        fb,
+        FILES_REGION_X,
+        FILES_REGION_Y,
+        FILES_REGION_W,
+        FILES_REGION_H,
+        &mut vram_samples,
+    );
+    let vram_changed_samples = count_desktop_live_sample_changes(&pre_samples, &vram_samples);
+    let vram_matches_backbuffer = count_desktop_live_sample_matches(&post_samples, &vram_samples);
     let post_focused = compositor.focused_window_id();
     let icon_hit = if click_handled && launched_app_id == 3 {
         1u64
@@ -888,6 +901,10 @@ fn run_graphics_desktop_live_proof(
         && post_hash != 0
         && pre_hash != post_hash
         && changed_samples >= 32
+        && vram_hash != 0
+        && vram_hash != pre_hash
+        && vram_changed_samples >= 32
+        && vram_matches_backbuffer >= 32
         && blit == 1
     {
         "pass"
@@ -896,7 +913,7 @@ fn run_graphics_desktop_live_proof(
     };
 
     serial_println!(
-        "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled={} icon_hit={} launched_app_id={} pre_focused={} post_focused={} post_window_id={} window_count={} pre_hash={} post_hash={} changed_samples={} blit={} result={}",
+        "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled={} icon_hit={} launched_app_id={} pre_focused={} post_focused={} post_window_id={} window_count={} pre_hash={} post_hash={} changed_samples={} vram_hash={} vram_changed_samples={} vram_matches_backbuffer={} blit={} result={}",
         handled,
         icon_hit,
         launched_app_id,
@@ -907,6 +924,9 @@ fn run_graphics_desktop_live_proof(
         pre_hash,
         post_hash,
         changed_samples,
+        vram_hash,
+        vram_changed_samples,
+        vram_matches_backbuffer,
         blit,
         result
     );
@@ -943,27 +963,54 @@ fn sample_desktop_live_region(
     hash
 }
 
-fn compare_desktop_live_region(
+fn sample_desktop_live_presented_region(
     fb: &graphics::framebuffer::Framebuffer,
     x: u32,
     y: u32,
     w: u32,
     h: u32,
-    before: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
-) -> (u64, u64) {
+    out: &mut [u32; DESKTOP_LIVE_SAMPLE_COUNT],
+) -> u64 {
     let mut hash = 14_695_981_039_346_656_037u64;
-    let mut changed = 0u64;
     let mut idx = 0usize;
     while idx < DESKTOP_LIVE_SAMPLE_COUNT {
         let (sx, sy) = desktop_live_sample_point(x, y, w, h, idx);
-        let color = fb.get_pixel(sx, sy);
-        if color != before[idx] {
-            changed += 1;
-        }
+        let color = fb.get_presented_pixel(sx, sy);
+        out[idx] = color;
         hash = desktop_live_hash_push(hash, color, idx);
         idx += 1;
     }
-    (hash, changed)
+    hash
+}
+
+fn count_desktop_live_sample_changes(
+    before: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
+    after: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
+) -> u64 {
+    let mut changed = 0u64;
+    let mut idx = 0usize;
+    while idx < DESKTOP_LIVE_SAMPLE_COUNT {
+        if before[idx] != after[idx] {
+            changed += 1;
+        }
+        idx += 1;
+    }
+    changed
+}
+
+fn count_desktop_live_sample_matches(
+    left: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
+    right: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
+) -> u64 {
+    let mut matches = 0u64;
+    let mut idx = 0usize;
+    while idx < DESKTOP_LIVE_SAMPLE_COUNT {
+        if left[idx] == right[idx] {
+            matches += 1;
+        }
+        idx += 1;
+    }
+    matches
 }
 
 fn measure_graphics_desktop_proof(fb: &graphics::framebuffer::Framebuffer) -> GraphicsDesktopProof {

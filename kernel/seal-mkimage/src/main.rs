@@ -1760,9 +1760,7 @@ fn parse_alloc_bench_metrics(line: &str, label: &str) -> Result<AllocBenchMetric
 }
 
 fn find_marker_line<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> {
-    text.lines()
-        .find(|line| line.starts_with(marker))
-        .ok_or_else(|| format!("missing {marker} marker"))
+    find_unique_marker_line(text, marker)
 }
 
 fn find_unique_marker_line<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> {
@@ -1870,12 +1868,15 @@ fn parse_graphics_desktop_live_proof(text: &str) -> Result<(), String> {
     require_metric_min(line, "events=", 2, label)?;
     require_metric_min(line, "window_count=", 12, label)?;
     require_metric_min(line, "changed_samples=", 32, label)?;
+    require_metric_min(line, "vram_changed_samples=", 32, label)?;
+    require_metric_min(line, "vram_matches_backbuffer=", 32, label)?;
 
     let pre_focused = parse_metric(line, "pre_focused=")?;
     let post_focused = parse_metric(line, "post_focused=")?;
     let post_window_id = parse_metric(line, "post_window_id=")?;
     let pre_hash = parse_metric(line, "pre_hash=")?;
     let post_hash = parse_metric(line, "post_hash=")?;
+    let vram_hash = parse_metric(line, "vram_hash=")?;
 
     if pre_focused == 0 || post_focused == 0 || post_window_id == 0 {
         return Err(format!(
@@ -1900,6 +1901,14 @@ fn parse_graphics_desktop_live_proof(text: &str) -> Result<(), String> {
     if pre_hash == post_hash {
         return Err(format!(
             "{label} visible samples did not change: hash={pre_hash}"
+        ));
+    }
+    if vram_hash == 0 {
+        return Err(format!("{label} presented VRAM hash must be nonzero"));
+    }
+    if vram_hash == pre_hash {
+        return Err(format!(
+            "{label} presented VRAM samples did not change: hash={vram_hash}"
         ));
     }
 
@@ -2698,7 +2707,7 @@ mod tests {
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software hardware_dispatch=0 shader_used=0 kernels=3 passed=3 failed=0 result=pass claim=cpu_fallback_correctness_only
 ";
     const GFX_DESKTOP_PROOF_LOG: &str = "[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=4096 back_buffer=1 window_count=12 focused_window_id=1 scanned_pixels=786432 nonblack_px=300000 visible_icons=10 icon_region_signal=23040 icon_color_buckets=10 control_region_signal=282000 primary_titlebar_signal=15912 start_button_signal=1440 theorem_indicator_signal=1000 minimized_app_lane_signal=1320 power_button_signal=384 sampled_pixels=3072 nonblack_samples=2048 sample_hash=123456789 result=pass\n";
-    const GFX_DESKTOP_LIVE_PROOF_LOG: &str = "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=1 post_focused=9 post_window_id=9 window_count=12 pre_hash=111 post_hash=222 changed_samples=96 blit=1 result=pass\n";
+    const GFX_DESKTOP_LIVE_PROOF_LOG: &str = "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=1 post_focused=9 post_window_id=9 window_count=12 pre_hash=111 post_hash=222 changed_samples=96 vram_hash=333 vram_changed_samples=96 vram_matches_backbuffer=96 blit=1 result=pass\n";
     const GFX_DESKTOP_SOAK_LOG: &str = "[GFX] desktop-soak frames=24 p50_cycles=100 p95_cycles=160 max_cycles=220 missed_16ms=unscaled input_events=0 dirty_px_max=786432\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
@@ -3632,6 +3641,15 @@ with:
         let no_icon_hit = GFX_DESKTOP_LIVE_PROOF_LOG.replace("icon_hit=1", "icon_hit=0");
         let wrong_launch =
             GFX_DESKTOP_LIVE_PROOF_LOG.replace("launched_app_id=3", "launched_app_id=4");
+        let missing_vram = GFX_DESKTOP_LIVE_PROOF_LOG.replace(
+            " vram_hash=333 vram_changed_samples=96 vram_matches_backbuffer=96",
+            "",
+        );
+        let zero_vram_hash = GFX_DESKTOP_LIVE_PROOF_LOG.replace("vram_hash=333", "vram_hash=0");
+        let unchanged_vram =
+            GFX_DESKTOP_LIVE_PROOF_LOG.replace("vram_changed_samples=96", "vram_changed_samples=0");
+        let unmatched_vram = GFX_DESKTOP_LIVE_PROOF_LOG
+            .replace("vram_matches_backbuffer=96", "vram_matches_backbuffer=0");
         let duplicate = format!("{GFX_DESKTOP_LIVE_PROOF_LOG}{GFX_DESKTOP_LIVE_PROOF_LOG}");
         let pass_then_fail = format!(
             "{}{}",
@@ -3646,6 +3664,10 @@ with:
         assert!(parse_graphics_desktop_live_proof(&no_blit).is_err());
         assert!(parse_graphics_desktop_live_proof(&no_icon_hit).is_err());
         assert!(parse_graphics_desktop_live_proof(&wrong_launch).is_err());
+        assert!(parse_graphics_desktop_live_proof(&missing_vram).is_err());
+        assert!(parse_graphics_desktop_live_proof(&zero_vram_hash).is_err());
+        assert!(parse_graphics_desktop_live_proof(&unchanged_vram).is_err());
+        assert!(parse_graphics_desktop_live_proof(&unmatched_vram).is_err());
         assert!(parse_graphics_desktop_live_proof(&duplicate).is_err());
         assert!(parse_graphics_desktop_live_proof(&pass_then_fail).is_err());
     }
@@ -3811,6 +3833,15 @@ hardware `[GPU-BENCH]` artifact proves otherwise
         let bad_readme = readme.replace("raw Ubuntu artifact pending", "Ubuntu artifact captured");
         assert!(check_doc_claim_contract_text(&bad_readme, benchmark, ci, gpu_doc).is_err());
 
+        let any_vm_overclaim = format!("{readme}\nSeal OS runs on any VM.\n");
+        assert!(check_doc_claim_contract_text(&any_vm_overclaim, benchmark, ci, gpu_doc).is_err());
+
+        let ubuntu_variant_overclaim = format!("{readme}\nSeal OS surpasses Ubuntu.\n");
+        assert!(
+            check_doc_claim_contract_text(&ubuntu_variant_overclaim, benchmark, ci, gpu_doc)
+                .is_err()
+        );
+
         let gpu_overclaim = readme.replace(
             "hardware dispatch still needs a proof artifact",
             "they execute (the GPU doesn't crash)",
@@ -3840,6 +3871,17 @@ hardware `[GPU-BENCH]` artifact proves otherwise
 
         let faster_ubuntu = AllocBenchMetrics { p95: 120, ..ubuntu };
         assert!(require_seal_alloc_bench_lead(seal, faster_ubuntu).is_err());
+    }
+
+    #[test]
+    fn proof_markers_must_be_unique() {
+        let duplicate_seal_alloc = format!("{SEAL_ALLOC_LOG}{SEAL_ALLOC_LOG}");
+        let duplicate_ubuntu_alloc = format!("{UBUNTU_ALLOC_LOG}{UBUNTU_ALLOC_LOG}");
+        let duplicate_desktop_proof = format!("{GFX_DESKTOP_PROOF_LOG}{GFX_DESKTOP_PROOF_LOG}");
+
+        assert!(parse_seal_alloc_benchmark(&duplicate_seal_alloc).is_err());
+        assert!(parse_ubuntu_alloc_benchmark(&duplicate_ubuntu_alloc).is_err());
+        assert!(parse_graphics_desktop_proof(&duplicate_desktop_proof).is_err());
     }
 
     #[test]
@@ -4791,6 +4833,18 @@ fn check_doc_claim_contract_text(
         (
             "Seal OS beats Ubuntu",
             "global Ubuntu win claim needs workload and evidence",
+        ),
+        (
+            "runs on any VM",
+            "VM compatibility claim needs a concrete VM matrix and proof artifacts",
+        ),
+        (
+            "Seal OS surpasses Ubuntu",
+            "Ubuntu superiority claim needs workload and evidence",
+        ),
+        (
+            "Seal OS is better than Ubuntu",
+            "Ubuntu superiority claim needs workload and evidence",
         ),
         (
             "proper TLS 1.3 PSK handshake",

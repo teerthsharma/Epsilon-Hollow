@@ -121,7 +121,7 @@ The serial log must contain:
 [VFS] ManifoldFS mounted from disk
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
-[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> vram_hash=<n> vram_changed_samples=<n> vram_matches_backbuffer=<n> blit=1 result=pass
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
@@ -143,10 +143,11 @@ The desktop audit now has three parts. `[GFX] desktop-proof` scans the
 framebuffer/back buffer and proves nonblank desktop structure in serial CI.
 `[GFX] desktop-live-proof` routes a mouse move and click through
 `wm::desktop::handle_input`, focuses Files from the desktop icon, blits, and
-proves visible samples changed. `[GFX] desktop-soak` proves the boot path ran a
-deterministic compositor compose+blit exercise before declaring the desktop
-ready. The current soak marker reports raw cycle percentiles, not calibrated
-microseconds, so it is a readiness gate rather than a final 60 FPS proof.
+proves both back-buffer samples and presented VRAM samples changed. `[GFX]
+desktop-soak` proves the boot path ran a deterministic compositor compose+blit
+exercise before declaring the desktop ready. The current soak marker reports
+raw cycle percentiles, not calibrated microseconds, so it is a readiness gate
+rather than a final 60 FPS proof.
 
 The allocator benchmark markers are the first Seal-side performance artifacts
 for the Ubuntu comparison table. `[BENCH] toporam-alloc` proves 64 hint-biased
