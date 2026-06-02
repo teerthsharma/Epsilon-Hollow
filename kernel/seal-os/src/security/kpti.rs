@@ -107,9 +107,19 @@ pub fn init_trampoline_pt() {
     );
 }
 
+/// Return the captured kernel CR3 physical address.
+pub fn kernel_cr3() -> u64 {
+    KERNEL_CR3.load(Ordering::SeqCst)
+}
+
+/// Return the installed user shadow CR3 physical address.
+pub fn user_cr3() -> u64 {
+    USER_CR3.load(Ordering::SeqCst)
+}
+
 /// Return true if both kernel and user CR3 values have been initialized.
 pub fn has_kpti() -> bool {
-    KERNEL_CR3.load(Ordering::SeqCst) != 0 && USER_CR3.load(Ordering::SeqCst) != 0
+    kernel_cr3() != 0 && user_cr3() != 0
 }
 
 #[cfg(any(test, feature = "test-mode"))]

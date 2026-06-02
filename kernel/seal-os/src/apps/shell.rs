@@ -140,6 +140,7 @@ impl Shell {
 
             // Tensor visualization
             "tensor" => self.cmd_tensor(arg1, arg2),
+            "audit" => crate::security::audit_runtime::audit_probe(arg1),
 
             // Calculator
             "calc" => {

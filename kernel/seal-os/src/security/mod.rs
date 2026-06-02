@@ -5,6 +5,7 @@
 
 pub mod aslr;
 pub mod audit;
+pub mod audit_runtime;
 pub mod group;
 pub mod kpti;
 pub mod mac;

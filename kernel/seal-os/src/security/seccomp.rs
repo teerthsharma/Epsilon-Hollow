@@ -54,6 +54,12 @@ pub fn seccomp_unload_filter(task_id: u64) {
     map.remove(&task_id);
 }
 
+/// Return the number of loaded seccomp filters.
+pub fn filter_count() -> usize {
+    let map = TASK_FILTERS.lock();
+    map.len()
+}
+
 /// Evaluate the seccomp filter for `task_id` against `syscall_num`.
 ///
 /// Returns one of `SECCOMP_RET_*` constants.

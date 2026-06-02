@@ -37,6 +37,12 @@ pub unsafe fn enable_smap_smep() {
     }
 }
 
+/// Return true if both SMEP and SMAP are currently enabled in CR4.
+pub fn is_enabled() -> bool {
+    let cr4 = Cr4::read_raw();
+    (cr4 & (1 << 20)) != 0 && (cr4 & (1 << 21)) != 0
+}
+
 /// Validate that a pointer range lies entirely in user address space.
 fn is_user_ptr(ptr: *const u8, len: usize) -> bool {
     let addr = ptr as u64;

@@ -73,6 +73,7 @@ models/
 **/models/
 *.gguf
 *.bin
+!kernel/seal-os/src/drivers/gpu/shaders/*.bin
 *.safetensors
 *.pt
 *.pth

@@ -42,6 +42,20 @@ impl SerialPort {
             data_port.write(byte);
         }
     }
+
+    /// Try to read a single byte from the receive buffer.
+    /// Returns `Some(byte)` if data is available, `None` otherwise.
+    pub fn try_read_byte(&self) -> Option<u8> {
+        unsafe {
+            let mut status_port = Port::<u8>::new(self.base + 5);
+            if status_port.read() & 0x01 != 0 {
+                let mut data_port = Port::<u8>::new(self.base);
+                Some(data_port.read())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl fmt::Write for SerialPort {
@@ -58,6 +72,13 @@ impl fmt::Write for SerialPort {
 
 pub fn init() {
     SERIAL.lock().init();
+}
+
+/// Try to read a byte from COM1 without blocking.
+pub fn try_read() -> Option<u8> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        SERIAL.lock().try_read_byte()
+    })
 }
 
 #[macro_export]
