@@ -2090,7 +2090,8 @@ fn check_proof_manifest(manifest_path: &Path) -> Result<(), String> {
     match vm_target {
         "qemu" => {
             check_manifest_artifact(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
-            let screen_ppm = parent.join(require_manifest_field(&fields, "screen_ppm_path")?);
+            let screen_ppm =
+                manifest_artifact_resolved_path(&fields, parent, "screen_ppm", Some("screen.ppm"))?;
             check_proof_screen(&screen_ppm)?;
             if fields.contains_key("screen_png_path") {
                 check_manifest_artifact(&fields, parent, "screen_png", Some("screen.png"))?;
@@ -3464,6 +3465,53 @@ gate_proof_screen=ok\n",
             false,
         )
         .is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_manifest_accepts_relative_release_proof_paths() {
+        let root = unique_temp_dir("manifest-relative-release-proof");
+        let run_path = root.join("release-proof");
+        fs::create_dir_all(&run_path).unwrap();
+
+        let serial = b"serial proof log";
+        let screen = proof_screen_ppm();
+        let image = b"disk image bytes";
+        let efi = b"efi image bytes";
+        fs::write(run_path.join("serial.log"), serial).unwrap();
+        fs::write(run_path.join("screen.ppm"), &screen).unwrap();
+        fs::write(run_path.join("seal-os.img"), image).unwrap();
+        fs::write(run_path.join("seal-os.efi"), efi).unwrap();
+
+        let manifest = format!(
+            "\
+seal_proof_manifest_version=1
+vm_target=qemu
+qemu_backend=ci
+proof_verdict=PASS
+proof_seconds=240
+created_utc=2026-06-02T00:00:00Z
+git_commit=dddddddddddddddddddddddddddddddddddddddd
+git_dirty=false
+gate_verify=ok
+gate_vm_proof=ok
+gate_theorem_log=ok
+gate_aether_runtime=ok
+gate_desktop_soak=ok
+gate_benchmark_log=ok
+gate_proof_screen=ok
+{}{}{}{}
+",
+            manifest_artifact("image", Path::new("release-proof/seal-os.img"), image),
+            manifest_artifact("efi", Path::new("release-proof/seal-os.efi"), efi),
+            manifest_artifact("serial_log", Path::new("release-proof/serial.log"), serial),
+            manifest_artifact("screen_ppm", Path::new("release-proof/screen.ppm"), &screen),
+        );
+        let manifest_path = run_path.join("proof-manifest.txt");
+        fs::write(&manifest_path, manifest).unwrap();
+
+        assert!(check_proof_manifest(&manifest_path).is_ok());
 
         fs::remove_dir_all(root).unwrap();
     }
