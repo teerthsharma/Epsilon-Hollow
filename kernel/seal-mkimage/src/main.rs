@@ -4,6 +4,8 @@
 //! Creates bootable UEFI disk images and ISOs for Seal OS.
 //! VirtualBox-compatible: GPT + FAT32 ESP with proper boot sector.
 
+mod aether_build;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Cursor, Read, Write};
