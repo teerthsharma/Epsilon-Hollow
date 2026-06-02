@@ -15,6 +15,7 @@ use super::journal::{compute_manifold_embedding, TopologicalJournal};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
 use core::convert::TryInto;
+use spin::Mutex;
 
 const SECTOR_SIZE: usize = 512;
 const INODE_RECORD_SIZE: usize = 256;
@@ -97,7 +98,7 @@ pub enum MountError {
 
 /// In-memory mock for host testing.
 pub struct MockBackend {
-    sectors: Vec<[u8; SECTOR_SIZE]>,
+    sectors: Mutex<Vec<[u8; SECTOR_SIZE]>>,
 }
 
 impl MockBackend {
@@ -106,35 +107,32 @@ impl MockBackend {
         for _ in 0..num_sectors {
             sectors.push([0u8; SECTOR_SIZE]);
         }
-        Self { sectors }
+        Self {
+            sectors: Mutex::new(sectors),
+        }
     }
 }
 
 impl BlockStoreBackend for MockBackend {
     fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        let sectors = self.sectors.lock();
         let idx = lba as usize;
-        if idx >= self.sectors.len() || buf.len() != SECTOR_SIZE {
+        if idx >= sectors.len() || buf.len() != SECTOR_SIZE {
             return Err(BlockError::InvalidLba);
         }
-        buf.copy_from_slice(&self.sectors[idx]);
+        buf.copy_from_slice(&sectors[idx]);
         Ok(())
     }
     fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+        let mut sectors = self.sectors.lock();
         let idx = lba as usize;
-        if idx >= self.sectors.len() || buf.len() != SECTOR_SIZE {
+        if idx >= sectors.len() || buf.len() != SECTOR_SIZE {
             return Err(BlockError::InvalidLba);
         }
-        // SAFETY: idx is bounds-checked above; ptr points to valid mutable memory in Vec.
-        unsafe {
-            let ptr = self.sectors.as_ptr() as *mut [u8; SECTOR_SIZE];
-            (*ptr.add(idx)).copy_from_slice(buf);
-        }
+        sectors[idx].copy_from_slice(buf);
         Ok(())
     }
 }
-
-unsafe impl Send for MockBackend {}
-unsafe impl Sync for MockBackend {}
 
 // ── Superblock ──────────────────────────────────────────────────────────────
 
