@@ -971,6 +971,7 @@ impl BlockStore {
     pub fn write_inode(&mut self, inode: &Inode, data: &[u8]) -> Result<(), BlockError> {
         let payload = &inode.payload;
         let payload_buf = payload_to_bytes(payload);
+        let original_size = data.len() as u64;
         let total = payload_buf.len() + data.len();
         let blocks_needed = ((total + SECTOR_SIZE - 1) / SECTOR_SIZE).max(1) as u32;
         let blocks = blocks_needed.min(MAX_EXTENT_BLOCKS);
@@ -1009,7 +1010,8 @@ impl BlockStore {
             (new_lba, blocks)
         };
 
-        let record = InodeRecord::from_inode(inode, lba, blocks);
+        let mut record = InodeRecord::from_inode(inode, lba, blocks);
+        record.original_size = original_size;
         self.inode_records.insert(inode.id, record);
         self.deleted_inodes.retain(|&id| id != inode.id);
         self.mark_dirty_inode(inode.id);
@@ -1036,7 +1038,7 @@ impl BlockStore {
             data_lba: lba,
             data_blocks: blocks,
             voronoi_cell: inode.voronoi_cell as u32,
-            original_size: inode.metadata.original_size,
+            original_size,
             permissions: inode.metadata.permissions,
             _pad3: [0; 6],
             created_ms: inode.metadata.created_ms,
