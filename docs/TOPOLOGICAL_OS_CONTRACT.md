@@ -81,9 +81,10 @@ Allowed today:
   metadata ops across a small directory-load sweep in `fs_mode=mock_block`, with
   `persistence_bytes_per_move=0` proving no raw file-byte persistence for that move.
 - TCP packet demux: same-port listener and accepted sockets must resolve through
-  the exact flow-specific match before listener fallback. The
+  the bounded exact-flow index before bounded listener fallback. The
   `[BENCH] tcp-packet-demux` boot marker proves accepted-socket payload
-  delivery, same-port decoy non-delivery, and listener fallback for that fixture.
+  delivery, same-port decoy non-delivery, zero exact-flow scan, bounded index
+  probes, and listener-index fallback for that fixture.
 - TopoRAM hint allocation: `[BENCH] toporam-alloc` must show target Voronoi-cell
   hits with zero target-cell fallback, zero zone fallback, monotonic cycles, and
   no frame leak. Prefetch and fragmentation telemetry use bounded sampling, not

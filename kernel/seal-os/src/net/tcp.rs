@@ -116,6 +116,11 @@ const _FLAG_RST: u16 = 4;
 const FLAG_PSH: u16 = 8;
 const FLAG_ACK: u16 = 16;
 
+pub const TCP_FLOW_INDEX_BUCKETS: usize = 256;
+pub const TCP_FLOW_INDEX_MAX_PROBES: usize = TCP_FLOW_INDEX_BUCKETS;
+pub const TCP_LISTENER_INDEX_BUCKETS: usize = 256;
+pub const TCP_LISTENER_INDEX_MAX_PROBES: usize = TCP_LISTENER_INDEX_BUCKETS;
+
 struct RetransmitEntry {
     seq: u32,
     flags: u16,
@@ -287,8 +292,506 @@ impl TcpSocket {
 }
 
 static TCP_SOCKETS: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
+static TCP_FLOW_INDEX: Mutex<TcpFlowIndex> = Mutex::new(TcpFlowIndex::new());
+static TCP_LISTENER_INDEX: Mutex<TcpListenerIndex> = Mutex::new(TcpListenerIndex::new());
 static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(40000);
 static PENDING_SYN_QUEUE: Mutex<Vec<(u16, crate::net::IpAddr, u16, u32)>> = Mutex::new(Vec::new());
+
+#[derive(Clone, Copy, PartialEq)]
+struct TcpFlowKey {
+    local_port: u16,
+    remote_port: u16,
+    remote_ip: crate::net::IpAddr,
+}
+
+#[derive(Clone, Copy)]
+struct TcpFlowIndexEntry {
+    key: TcpFlowKey,
+    socket_idx: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TcpFlowIndexSlot {
+    entry: Option<TcpFlowIndexEntry>,
+    tombstone: bool,
+}
+
+impl TcpFlowIndexSlot {
+    const fn empty() -> Self {
+        Self {
+            entry: None,
+            tombstone: false,
+        }
+    }
+}
+
+struct TcpFlowLookup {
+    socket_idx: Option<usize>,
+    probes: usize,
+}
+
+pub struct TcpFlowIndexProof {
+    pub hit: bool,
+    pub probes: usize,
+    pub bound: usize,
+    pub capacity: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TcpListenerIndexEntry {
+    local_port: u16,
+    socket_idx: usize,
+}
+
+#[derive(Clone, Copy)]
+struct TcpListenerIndexSlot {
+    entry: Option<TcpListenerIndexEntry>,
+    tombstone: bool,
+}
+
+impl TcpListenerIndexSlot {
+    const fn empty() -> Self {
+        Self {
+            entry: None,
+            tombstone: false,
+        }
+    }
+}
+
+struct TcpListenerLookup {
+    socket_idx: Option<usize>,
+    probes: usize,
+}
+
+pub struct TcpListenerIndexProof {
+    pub hit: bool,
+    pub probes: usize,
+    pub bound: usize,
+    pub capacity: usize,
+}
+
+struct TcpFlowIndex {
+    slots: [TcpFlowIndexSlot; TCP_FLOW_INDEX_BUCKETS],
+    last_lookup_hit: bool,
+    last_lookup_probes: usize,
+}
+
+struct TcpListenerIndex {
+    slots: [TcpListenerIndexSlot; TCP_LISTENER_INDEX_BUCKETS],
+    last_lookup_hit: bool,
+    last_lookup_probes: usize,
+}
+
+impl TcpListenerIndex {
+    const fn new() -> Self {
+        Self {
+            slots: [TcpListenerIndexSlot::empty(); TCP_LISTENER_INDEX_BUCKETS],
+            last_lookup_hit: false,
+            last_lookup_probes: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.slots = [TcpListenerIndexSlot::empty(); TCP_LISTENER_INDEX_BUCKETS];
+        self.last_lookup_hit = false;
+        self.last_lookup_probes = 0;
+    }
+
+    fn insert(&mut self, local_port: u16, socket_idx: usize) -> bool {
+        let start = tcp_listener_hash(local_port) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+        let mut first_tombstone = None;
+        let mut probe = 0usize;
+        while probe < TCP_LISTENER_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+            let slot = &mut self.slots[idx];
+            match slot.entry {
+                Some(entry) if entry.local_port == local_port => {
+                    slot.entry = Some(TcpListenerIndexEntry {
+                        local_port,
+                        socket_idx,
+                    });
+                    slot.tombstone = false;
+                    return true;
+                }
+                Some(_) => {}
+                None if slot.tombstone => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
+                }
+                None => {
+                    let insert_idx = first_tombstone.unwrap_or(idx);
+                    self.slots[insert_idx] = TcpListenerIndexSlot {
+                        entry: Some(TcpListenerIndexEntry {
+                            local_port,
+                            socket_idx,
+                        }),
+                        tombstone: false,
+                    };
+                    return true;
+                }
+            }
+            probe += 1;
+        }
+        if let Some(insert_idx) = first_tombstone {
+            self.slots[insert_idx] = TcpListenerIndexSlot {
+                entry: Some(TcpListenerIndexEntry {
+                    local_port,
+                    socket_idx,
+                }),
+                tombstone: false,
+            };
+            return true;
+        }
+        false
+    }
+
+    fn remove(&mut self, local_port: u16, socket_idx: usize) {
+        let start = tcp_listener_hash(local_port) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+        let mut probe = 0usize;
+        while probe < TCP_LISTENER_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+            let slot = &mut self.slots[idx];
+            match slot.entry {
+                Some(entry) if entry.local_port == local_port && entry.socket_idx == socket_idx => {
+                    slot.entry = None;
+                    slot.tombstone = true;
+                    return;
+                }
+                Some(_) => {}
+                None if slot.tombstone => {}
+                None => return,
+            }
+            probe += 1;
+        }
+    }
+
+    fn lookup(&mut self, local_port: u16) -> TcpListenerLookup {
+        let start = tcp_listener_hash(local_port) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+        let mut probe = 0usize;
+        while probe < TCP_LISTENER_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_LISTENER_INDEX_BUCKETS - 1);
+            let slot = self.slots[idx];
+            let probes = probe + 1;
+            match slot.entry {
+                Some(entry) if entry.local_port == local_port => {
+                    self.last_lookup_hit = true;
+                    self.last_lookup_probes = probes;
+                    return TcpListenerLookup {
+                        socket_idx: Some(entry.socket_idx),
+                        probes,
+                    };
+                }
+                Some(_) => {}
+                None if slot.tombstone => {}
+                None => {
+                    self.last_lookup_hit = false;
+                    self.last_lookup_probes = probes;
+                    return TcpListenerLookup {
+                        socket_idx: None,
+                        probes,
+                    };
+                }
+            }
+            probe += 1;
+        }
+        self.last_lookup_hit = false;
+        self.last_lookup_probes = TCP_LISTENER_INDEX_MAX_PROBES;
+        TcpListenerLookup {
+            socket_idx: None,
+            probes: TCP_LISTENER_INDEX_MAX_PROBES,
+        }
+    }
+}
+
+impl TcpFlowIndex {
+    const fn new() -> Self {
+        Self {
+            slots: [TcpFlowIndexSlot::empty(); TCP_FLOW_INDEX_BUCKETS],
+            last_lookup_hit: false,
+            last_lookup_probes: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.slots = [TcpFlowIndexSlot::empty(); TCP_FLOW_INDEX_BUCKETS];
+        self.last_lookup_hit = false;
+        self.last_lookup_probes = 0;
+    }
+
+    fn insert(&mut self, key: TcpFlowKey, socket_idx: usize) -> bool {
+        let start = tcp_flow_hash(key) & (TCP_FLOW_INDEX_BUCKETS - 1);
+        let mut first_tombstone = None;
+        let mut probe = 0usize;
+        while probe < TCP_FLOW_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_FLOW_INDEX_BUCKETS - 1);
+            let slot = &mut self.slots[idx];
+            match slot.entry {
+                Some(entry) if entry.key == key => {
+                    slot.entry = Some(TcpFlowIndexEntry { key, socket_idx });
+                    slot.tombstone = false;
+                    return true;
+                }
+                Some(_) => {}
+                None if slot.tombstone => {
+                    if first_tombstone.is_none() {
+                        first_tombstone = Some(idx);
+                    }
+                }
+                None => {
+                    let insert_idx = first_tombstone.unwrap_or(idx);
+                    self.slots[insert_idx] = TcpFlowIndexSlot {
+                        entry: Some(TcpFlowIndexEntry { key, socket_idx }),
+                        tombstone: false,
+                    };
+                    return true;
+                }
+            }
+            probe += 1;
+        }
+        if let Some(insert_idx) = first_tombstone {
+            self.slots[insert_idx] = TcpFlowIndexSlot {
+                entry: Some(TcpFlowIndexEntry { key, socket_idx }),
+                tombstone: false,
+            };
+            return true;
+        }
+        false
+    }
+
+    fn remove(&mut self, key: TcpFlowKey, socket_idx: usize) {
+        let start = tcp_flow_hash(key) & (TCP_FLOW_INDEX_BUCKETS - 1);
+        let mut probe = 0usize;
+        while probe < TCP_FLOW_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_FLOW_INDEX_BUCKETS - 1);
+            let slot = &mut self.slots[idx];
+            match slot.entry {
+                Some(entry) if entry.key == key && entry.socket_idx == socket_idx => {
+                    slot.entry = None;
+                    slot.tombstone = true;
+                    return;
+                }
+                Some(_) => {}
+                None if slot.tombstone => {}
+                None => return,
+            }
+            probe += 1;
+        }
+    }
+
+    fn lookup(&mut self, key: TcpFlowKey) -> TcpFlowLookup {
+        let start = tcp_flow_hash(key) & (TCP_FLOW_INDEX_BUCKETS - 1);
+        let mut probe = 0usize;
+        while probe < TCP_FLOW_INDEX_MAX_PROBES {
+            let idx = (start + probe) & (TCP_FLOW_INDEX_BUCKETS - 1);
+            let slot = self.slots[idx];
+            let probes = probe + 1;
+            match slot.entry {
+                Some(entry) if entry.key == key => {
+                    self.last_lookup_hit = true;
+                    self.last_lookup_probes = probes;
+                    return TcpFlowLookup {
+                        socket_idx: Some(entry.socket_idx),
+                        probes,
+                    };
+                }
+                Some(_) => {}
+                None if slot.tombstone => {}
+                None => {
+                    self.last_lookup_hit = false;
+                    self.last_lookup_probes = probes;
+                    return TcpFlowLookup {
+                        socket_idx: None,
+                        probes,
+                    };
+                }
+            }
+            probe += 1;
+        }
+        self.last_lookup_hit = false;
+        self.last_lookup_probes = TCP_FLOW_INDEX_MAX_PROBES;
+        TcpFlowLookup {
+            socket_idx: None,
+            probes: TCP_FLOW_INDEX_MAX_PROBES,
+        }
+    }
+}
+
+fn tcp_flow_key(sock: &TcpSocket) -> Option<TcpFlowKey> {
+    if matches!(sock.state, TcpState::Closed | TcpState::Listen) || sock.remote_port == 0 {
+        return None;
+    }
+    Some(TcpFlowKey {
+        local_port: sock.local_port,
+        remote_port: sock.remote_port,
+        remote_ip: sock.remote_ip,
+    })
+}
+
+fn tcp_packet_flow_key(src: crate::net::IpAddr, src_port: u16, dst_port: u16) -> TcpFlowKey {
+    TcpFlowKey {
+        local_port: dst_port,
+        remote_port: src_port,
+        remote_ip: src,
+    }
+}
+
+fn tcp_flow_hash(key: TcpFlowKey) -> usize {
+    let mut hash = 0x9e37_79b9_7f4a_7c15u64;
+    hash ^= ((key.local_port as u64) << 48) ^ ((key.remote_port as u64) << 32);
+    match key.remote_ip {
+        crate::net::IpAddr::V4(addr) => {
+            hash ^= u32::from_be_bytes(addr) as u64;
+        }
+        crate::net::IpAddr::V6(addr) => {
+            let hi = u64::from_be_bytes([
+                addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+            ]);
+            let lo = u64::from_be_bytes([
+                addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14], addr[15],
+            ]);
+            hash ^= hi ^ lo.rotate_left(17);
+        }
+    }
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash as usize
+}
+
+fn tcp_listener_key(sock: &TcpSocket) -> Option<u16> {
+    if sock.state == TcpState::Listen {
+        Some(sock.local_port)
+    } else {
+        None
+    }
+}
+
+fn tcp_listener_hash(local_port: u16) -> usize {
+    let mut hash = (local_port as u64) ^ 0x517c_c1b7_2722_0a95u64;
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^= hash >> 33;
+    hash as usize
+}
+
+fn index_exact_flow_socket(idx: usize, sock: &TcpSocket) -> bool {
+    let Some(key) = tcp_flow_key(sock) else {
+        return false;
+    };
+    TCP_FLOW_INDEX.lock().insert(key, idx)
+}
+
+fn remove_exact_flow_socket(idx: usize, sock: &TcpSocket) {
+    if let Some(key) = tcp_flow_key(sock) {
+        TCP_FLOW_INDEX.lock().remove(key, idx);
+    }
+}
+
+fn refresh_exact_flow_socket(idx: usize, old_key: Option<TcpFlowKey>, sock: &TcpSocket) {
+    let new_key = tcp_flow_key(sock);
+    if old_key == new_key {
+        return;
+    }
+    let mut index = TCP_FLOW_INDEX.lock();
+    if let Some(key) = old_key {
+        index.remove(key, idx);
+    }
+    if let Some(key) = new_key {
+        index.insert(key, idx);
+    }
+}
+
+fn index_listener_socket(idx: usize, sock: &TcpSocket) -> bool {
+    let Some(local_port) = tcp_listener_key(sock) else {
+        return false;
+    };
+    TCP_LISTENER_INDEX.lock().insert(local_port, idx)
+}
+
+fn remove_listener_socket(idx: usize, sock: &TcpSocket) {
+    if let Some(local_port) = tcp_listener_key(sock) {
+        TCP_LISTENER_INDEX.lock().remove(local_port, idx);
+    }
+}
+
+fn refresh_listener_socket(idx: usize, old_key: Option<u16>, sock: &TcpSocket) {
+    let new_key = tcp_listener_key(sock);
+    if old_key == new_key {
+        return;
+    }
+    let mut index = TCP_LISTENER_INDEX.lock();
+    if let Some(local_port) = old_key {
+        index.remove(local_port, idx);
+    }
+    if let Some(local_port) = new_key {
+        index.insert(local_port, idx);
+    }
+}
+
+fn lookup_exact_flow_index(
+    sockets: &[TcpSocket],
+    src: crate::net::IpAddr,
+    src_port: u16,
+    dst_port: u16,
+) -> TcpFlowLookup {
+    let key = tcp_packet_flow_key(src, src_port, dst_port);
+    let lookup = TCP_FLOW_INDEX.lock().lookup(key);
+    let Some(idx) = lookup.socket_idx else {
+        return lookup;
+    };
+    if sockets
+        .get(idx)
+        .is_some_and(|sock| tcp_flow_key(sock) == Some(key))
+    {
+        lookup
+    } else {
+        TCP_FLOW_INDEX.lock().last_lookup_hit = false;
+        TcpFlowLookup {
+            socket_idx: None,
+            probes: lookup.probes,
+        }
+    }
+}
+
+fn lookup_listener_index(sockets: &[TcpSocket], dst_port: u16) -> TcpListenerLookup {
+    let lookup = TCP_LISTENER_INDEX.lock().lookup(dst_port);
+    let Some(idx) = lookup.socket_idx else {
+        return lookup;
+    };
+    if sockets
+        .get(idx)
+        .is_some_and(|sock| tcp_listener_key(sock) == Some(dst_port))
+    {
+        lookup
+    } else {
+        TCP_LISTENER_INDEX.lock().last_lookup_hit = false;
+        TcpListenerLookup {
+            socket_idx: None,
+            probes: lookup.probes,
+        }
+    }
+}
+
+pub fn tcp_flow_index_proof() -> TcpFlowIndexProof {
+    let index = TCP_FLOW_INDEX.lock();
+    TcpFlowIndexProof {
+        hit: index.last_lookup_hit,
+        probes: index.last_lookup_probes,
+        bound: TCP_FLOW_INDEX_MAX_PROBES,
+        capacity: TCP_FLOW_INDEX_BUCKETS,
+    }
+}
+
+pub fn tcp_listener_index_proof() -> TcpListenerIndexProof {
+    let index = TCP_LISTENER_INDEX.lock();
+    TcpListenerIndexProof {
+        hit: index.last_lookup_hit,
+        probes: index.last_lookup_probes,
+        bound: TCP_LISTENER_INDEX_MAX_PROBES,
+        capacity: TCP_LISTENER_INDEX_BUCKETS,
+    }
+}
 
 pub fn init() {}
 
@@ -296,6 +799,8 @@ pub fn init() {}
 /// Only call from benchmark fixtures — this drops every socket.
 pub fn reset_for_benchmark() {
     TCP_SOCKETS.lock().clear();
+    TCP_FLOW_INDEX.lock().clear();
+    TCP_LISTENER_INDEX.lock().clear();
     PENDING_SYN_QUEUE.lock().clear();
     *NEXT_TCP_PORT.lock() = 40000;
 }
@@ -310,20 +815,30 @@ pub fn socket() -> usize {
     };
     let idx = sockets.len();
     sockets.push(TcpSocket::new(port));
+    if let Some(sock) = sockets.get(idx) {
+        index_exact_flow_socket(idx, sock);
+    }
     idx
 }
 
 pub fn bind(idx: usize, port: u16) {
     let mut sockets = TCP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
+        remove_exact_flow_socket(idx, sock);
+        remove_listener_socket(idx, sock);
         sock.local_port = port;
+        index_exact_flow_socket(idx, sock);
+        index_listener_socket(idx, sock);
     }
 }
 
 pub fn listen(idx: usize) {
     let mut sockets = TCP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
+        remove_exact_flow_socket(idx, sock);
+        remove_listener_socket(idx, sock);
         sock.listen();
+        index_listener_socket(idx, sock);
     }
 }
 
@@ -340,7 +855,10 @@ pub fn accept(idx: usize) -> Option<usize> {
 pub fn connect(idx: usize, ip: crate::net::IpAddr, port: u16) {
     let mut sockets = TCP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
+        remove_exact_flow_socket(idx, sock);
+        remove_listener_socket(idx, sock);
         sock.connect(ip, port);
+        index_exact_flow_socket(idx, sock);
     }
 }
 
@@ -363,7 +881,11 @@ pub fn recv(idx: usize, buf: &mut [u8]) -> usize {
 pub fn close(idx: usize) {
     let mut sockets = TCP_SOCKETS.lock();
     if let Some(sock) = sockets.get_mut(idx) {
+        remove_exact_flow_socket(idx, sock);
+        remove_listener_socket(idx, sock);
         sock.close();
+        index_exact_flow_socket(idx, sock);
+        index_listener_socket(idx, sock);
     }
 }
 
@@ -380,6 +902,16 @@ pub struct TcpPacketFixtureProof {
     pub listener_fallback: bool,
     pub payload_bytes: usize,
     pub rx_bytes: usize,
+    pub o1_index: bool,
+    pub index_hit: bool,
+    pub index_lookup_probes: usize,
+    pub index_probe_bound: usize,
+    pub index_capacity: usize,
+    pub listener_index_hit: bool,
+    pub listener_lookup_probes: usize,
+    pub listener_probe_bound: usize,
+    pub listener_index_capacity: usize,
+    pub exact_scan: bool,
     pub accepted_state: TcpState,
     pub cleanup_ok: bool,
 }
@@ -402,6 +934,16 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
                 listener_fallback: false,
                 payload_bytes: PAYLOAD.len(),
                 rx_bytes: 0,
+                o1_index: false,
+                index_hit: false,
+                index_lookup_probes: 0,
+                index_probe_bound: TCP_FLOW_INDEX_MAX_PROBES,
+                index_capacity: TCP_FLOW_INDEX_BUCKETS,
+                listener_index_hit: false,
+                listener_lookup_probes: 0,
+                listener_probe_bound: TCP_LISTENER_INDEX_MAX_PROBES,
+                listener_index_capacity: TCP_LISTENER_INDEX_BUCKETS,
+                exact_scan: true,
                 accepted_state: TcpState::Closed,
                 cleanup_ok: true,
             };
@@ -431,6 +973,15 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         sockets.push(listener);
         sockets.push(decoy);
         sockets.push(accepted);
+        if let Some(sock) = sockets.get(base_len) {
+            index_listener_socket(base_len, sock);
+        }
+        if let Some(sock) = sockets.get(base_len + 1) {
+            index_exact_flow_socket(base_len + 1, sock);
+        }
+        if let Some(sock) = sockets.get(base_len + 2) {
+            index_exact_flow_socket(base_len + 2, sock);
+        }
     }
 
     let packet = make_tcp_packet(
@@ -442,6 +993,7 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         PAYLOAD,
     );
     handle_tcp_packet(remote, &packet);
+    let index_proof = tcp_flow_index_proof();
 
     let mut rx = [0u8; PAYLOAD.len()];
     let mut decoy_rx = [0u8; PAYLOAD.len()];
@@ -470,6 +1022,7 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     let syn_packet = make_tcp_packet(81, fixture_port, FLAG_SYN, 900, 0, &[]);
     handle_tcp_packet(fallback_remote, &syn_packet);
     poll();
+    let listener_index_proof = tcp_listener_index_proof();
 
     let mut sockets = TCP_SOCKETS.lock();
     let listener_fallback = sockets.get(listener_idx).is_some_and(|listener| {
@@ -483,6 +1036,14 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         })
     });
 
+    let mut idx = base_len;
+    while idx < sockets.len() {
+        if let Some(sock) = sockets.get(idx) {
+            remove_exact_flow_socket(idx, sock);
+            remove_listener_socket(idx, sock);
+        }
+        idx += 1;
+    }
     if sockets.len() >= base_len + 3 {
         sockets.truncate(base_len);
     }
@@ -492,6 +1053,10 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     let ok = listener_first
         && exact_flow
         && listener_fallback
+        && index_proof.hit
+        && index_proof.probes <= index_proof.bound
+        && listener_index_proof.hit
+        && listener_index_proof.probes <= listener_index_proof.bound
         && accepted_state == TcpState::Established
         && rx_bytes == PAYLOAD.len()
         && payload_matches
@@ -505,6 +1070,16 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         listener_fallback,
         payload_bytes: PAYLOAD.len(),
         rx_bytes,
+        o1_index: index_proof.hit && index_proof.probes <= index_proof.bound,
+        index_hit: index_proof.hit,
+        index_lookup_probes: index_proof.probes,
+        index_probe_bound: index_proof.bound,
+        index_capacity: index_proof.capacity,
+        listener_index_hit: listener_index_proof.hit,
+        listener_lookup_probes: listener_index_proof.probes,
+        listener_probe_bound: listener_index_proof.bound,
+        listener_index_capacity: listener_index_proof.capacity,
+        exact_scan: false,
         accepted_state,
         cleanup_ok,
     }
@@ -542,10 +1117,8 @@ pub fn poll() {
 
     for (dst_port, remote_ip, remote_port, seq) in pending {
         let mut sockets = TCP_SOCKETS.lock();
-        if let Some(listener_idx) = sockets
-            .iter()
-            .position(|s| s.local_port == dst_port && s.state == TcpState::Listen)
-        {
+        let listener_idx = lookup_listener_index(&sockets, dst_port).socket_idx;
+        if let Some(listener_idx) = listener_idx {
             let new_port = {
                 let mut p = NEXT_TCP_PORT.lock();
                 let port = *p;
@@ -563,6 +1136,7 @@ pub fn poll() {
             if let Some(new_sock) = sockets.get_mut(new_idx) {
                 new_sock.send_tcp_packet(FLAG_SYN | FLAG_ACK, &[]);
                 new_sock.seq_num += 1;
+                index_exact_flow_socket(new_idx, new_sock);
             }
             if let Some(listener) = sockets.get_mut(listener_idx) {
                 listener.pending_accept.push(new_idx);
@@ -600,17 +1174,17 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
     let mut pending_syn = None;
     {
         let mut sockets = TCP_SOCKETS.lock();
-        let exact_idx = sockets.iter().position(|sock| {
-            sock.local_port == dst_port
-                && sock.remote_port == src_port
-                && sock.remote_ip == src
-                && sock.state != TcpState::Listen
-        });
-        let listener_idx = sockets
-            .iter()
-            .position(|sock| sock.local_port == dst_port && sock.state == TcpState::Listen);
+        let exact_lookup = lookup_exact_flow_index(&sockets, src, src_port, dst_port);
+        let exact_idx = exact_lookup.socket_idx;
+        let listener_idx = if exact_idx.is_some() {
+            None
+        } else {
+            lookup_listener_index(&sockets, dst_port).socket_idx
+        };
         if let Some(idx) = exact_idx.or(listener_idx) {
             if let Some(sock) = sockets.get_mut(idx) {
+                let old_key = tcp_flow_key(sock);
+                let old_listener_key = tcp_listener_key(sock);
                 match sock.state {
                     TcpState::Listen => {
                         if flags & FLAG_SYN != 0 {
@@ -682,6 +1256,8 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                     }
                     _ => {}
                 }
+                refresh_exact_flow_socket(idx, old_key, sock);
+                refresh_listener_socket(idx, old_listener_key, sock);
             }
         }
     }
@@ -696,6 +1272,8 @@ mod tests {
 
     fn reset_tcp_for_test() {
         TCP_SOCKETS.lock().clear();
+        TCP_FLOW_INDEX.lock().clear();
+        TCP_LISTENER_INDEX.lock().clear();
         PENDING_SYN_QUEUE.lock().clear();
         *NEXT_TCP_PORT.lock() = 40000;
     }
@@ -890,6 +1468,18 @@ mod tests {
         assert!(proof.listener_fallback);
         assert_eq!(proof.payload_bytes, 4);
         assert_eq!(proof.rx_bytes, 4);
+        assert!(proof.o1_index);
+        assert!(proof.index_hit);
+        assert!(proof.index_lookup_probes > 0);
+        assert!(proof.index_lookup_probes <= proof.index_probe_bound);
+        assert_eq!(proof.index_probe_bound, proof.index_capacity);
+        assert_eq!(proof.index_capacity, TCP_FLOW_INDEX_BUCKETS);
+        assert!(proof.listener_index_hit);
+        assert!(proof.listener_lookup_probes > 0);
+        assert!(proof.listener_lookup_probes <= proof.listener_probe_bound);
+        assert_eq!(proof.listener_probe_bound, proof.listener_index_capacity);
+        assert_eq!(proof.listener_index_capacity, TCP_LISTENER_INDEX_BUCKETS);
+        assert!(!proof.exact_scan);
         assert_eq!(proof.accepted_state, TcpState::Established);
         assert!(proof.cleanup_ok);
         assert!(TCP_SOCKETS.lock().is_empty());

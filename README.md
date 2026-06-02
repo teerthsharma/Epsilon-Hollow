@@ -343,7 +343,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 - **TCP/IP** — wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring
 - **TCP** — listen/accept backlog, SYN queue, retransmission timer
-- **TCP demux proof** — QEMU serial proof requires `[BENCH] tcp-packet-demux` with `exact_flow=1`, `decoy_rx_bytes=0`, and `listener_fallback=1`
+- **TCP demux proof** — QEMU serial proof requires `[BENCH] tcp-packet-demux` with `exact_flow=1`, `o1_index=1`, `index_hit=1`, `listener_index_hit=1`, `exact_scan=0`, `decoy_rx_bytes=0`, and `listener_fallback=1`
 - **UDP** — query packet building
 - **DHCP** — full state machine (Init → Discover → Request → Bound), auto-sends DISCOVER on boot
 - **DNS** — proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) via UDP port 53
@@ -441,9 +441,9 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 
 ### What "Research Kernel" Does NOT Mean
 
-- **It does not mean "toy."** A toy doesn't have 256-entry IDT tables, 4-level page tables, and a working TCP stack.
+- **It does not mean "toy."** A toy doesn't have 256-entry IDT tables, 4-level page tables, and a TCP stack with boot-gated exact-flow demux. Full external TCP session coverage is still a gate, not a slogan.
 - **It does not mean "abandoned."** Code moves regularly. CI runs on every commit. Issues get responses.
-- **It does not mean "will never be useful."** The Aether-Link I/O prefetching subsystem has genuine applications in HFT and ML training pipelines. The topological memory allocator has interesting fragmentation properties.
+- **It does not mean "will never be useful."** The Aether-Link I/O prefetching subsystem targets HFT and ML training pipelines, but same-machine Ubuntu workload artifacts still decide the bragging rights. The topological memory allocator has interesting fragmentation properties.
 - **It does not mean "I don't know what I'm doing."** I know exactly what I am doing. I just chose to do something extremely weird.
 
 ### The Emotional Journey Of Using Seal OS
@@ -577,7 +577,7 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
 [BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
-[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
@@ -885,7 +885,7 @@ Okay, let's be real. That previous section was dense. If you don't have a math d
 
 **Human translation:** Imagine a library where books are shelved by color instead of alphabetically. T1 is the librarian who knows that "red books are in the east wing." It doesn't tell you exactly where the book is, but it narrows your search from a million books to a thousand.
 
-**Why it matters:** O(1) lookup. In practice, this means file operations are fast because we don't scan entire directories.
+**Why it matters:** bounded lookup targets. In practice, this means file operations should avoid full-directory scans once each bucket/cell cap is enforced by proof gates.
 
 ### T2 (SCM): The "What Next?" Theorem
 
@@ -1193,7 +1193,7 @@ Renders two equations procedurally:
 Wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring.
 
 - **TCP**: Listen/accept backlog, SYN queue, retransmission timer
-- **UDP + DHCP**: Full DHCP state machine (Init → Discover → Request → Bound)
+- **UDP + DHCP**: DHCP state-machine implementation (Init → Discover → Request → Bound); e1000 end-to-end DHCP lease proof remains a separate gate
 - **DNS**: Proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN)
 
 ### TLS 1.3 PSK
@@ -1503,7 +1503,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | TopoRAM target-cell allocation marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] toporam-alloc` with 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycle samples, and no frame leak |
 | ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode mock block-store metadata move across 8-256 directory entries with `metadata_ops_max=7`, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
 | Scheduler select benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] scheduler-select-next`, gating the live `select_next_task` requeue marker across 64 iterations with ready count preserved, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 priority-bucket scan |
-| TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes to the exact accepted flow, leaves a same-port decoy empty, and still falls back to the listener for a new SYN |
+| TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes through the bounded exact-flow index, leaves a same-port decoy empty, avoids exact-flow socket scans, and falls back through the bounded listener index for a new SYN |
 | GPU topology CPU-fallback benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires structured `[GPU-BENCH]` markers for Voronoi assignment, JL projection, and spectral contraction; current proof is `mode=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`, `mismatches=0`, and `claim=cpu_fallback_correctness_only` |
 | AHCI persistent ManifoldFS root | ✓ | ✓ | QEMU serial log shows `QEMU HARDDISK`, `Registered as block device 0x800`, `First disk readable`, and `[VFS] ManifoldFS mounted from disk` |
 | Native non-POSIX ABI | ✓ | ✗ | `seal-mkimage --check-seal-abi .` passes |
@@ -1547,7 +1547,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Package manager** | ManifoldPkg local metadata + signed `.eph` path | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
 | **Syscalls** | Seal ABI + Epsilon theorem extensions | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
 | **USB support** | Real — xHCI controller, HID boot keyboards/mice, Mass Storage SCSI BBB | Basic (xHCI) | Full | Full | Full | Full |
-| **Network stack** | Real TCP/UDP/DHCP/DNS + minimal TLS 1.3 PSK client | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
+| **Network stack** | Kernel TCP/UDP/DHCP/DNS implementations + minimal TLS 1.3 PSK client; exact-flow TCP demux is gated, full external session matrix pending | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
 | **Driver count** | 15+ | ~30 | ~9000+ | ~9000+ | ~100,000+ | ~5000+ |
 | **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
 | **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |
@@ -1602,7 +1602,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | Subsystem | Operation | Complexity | Evidence / latency |
 |-----------|-----------|-----------|----------------|
 | **Physical alloc** | `alloc_frame()` | O(1) bounded topological free-index lookup across 8 cells; max 2 L3 words and 8192 summary-backed word candidates per cell | source-gated + boot log proof marker + `[BENCH] alloc-frame` |
-| **Slab alloc** | `slab.alloc(size)` | O(1) | benchmark pending |
+| **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; size-class refill/dealloc/realloc proof pending | benchmark pending |
 | **TopoRAM alloc** | `alloc_frames(1, hint)` | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` |
 | **TopoRAM contiguous** | `alloc_frames(count > 1, hint)` | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap | source-gated by `--check-o1-allocator` |
 | **ManifoldFS lookup** | `lookup(path)` | O(path depth) + O(K) cell search | benchmark pending |
@@ -1611,8 +1611,8 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **Context switch** | `switch_context()` | O(1) — FXSAVE/FXRSTOR + CR3 swap | benchmark pending |
 | **NVMe read** | `read_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
-| **TCP demux** | `handle_tcp_packet()` | O(number of TCP sockets) current Vec scan; exact-flow correctness before listener fallback is gated; O(1) needs a bounded table/hash-index gate | `[BENCH] tcp-packet-demux` proves listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
-| **TCP round-trip** | localhost ping | O(1) stack traversal | benchmark pending |
+| **TCP demux** | `handle_tcp_packet()` | O(1) bounded exact-flow index for accepted flows plus bounded listener-port index for SYN fallback | `[BENCH] tcp-packet-demux` proves bounded exact-flow index hit, bounded listener-index hit, zero exact-flow scan, listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
+| **TCP round-trip** | localhost ping | complexity pending until full round-trip fixture and listener index land | benchmark pending |
 | **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |
 | **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | benchmark pending |
@@ -2237,7 +2237,7 @@ graph TD
 
 ### Key Algorithms
 
-- **`SphericalVoronoiIndex<K>::locate(θ, φ)`**: computes great-circle distance to all K centroids, returns nearest. O(K) with K constant = O(1) amortized. Distance: `arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ - φ₂))`.
+- **`SphericalVoronoiIndex<K>::locate(θ, φ)`**: computes great-circle distance to all K centroids, returns nearest. This is bounded only while K stays fixed by contract and proof gates. Distance: `arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ - φ₂))`.
 
 - **`GeometricGovernor::adapt(deviation)`**: PD control law `ε(t+1) = ε(t) + 0.01·e(t) + 0.05·de/dt` where `e(t) = R_target - Δ(t)/ε(t)`. Clamped to [0.001, 10.0]. Target tick rate: 1000 Hz.
 

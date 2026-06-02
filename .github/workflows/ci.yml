@@ -416,6 +416,8 @@ jobs:
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
       - name: Verify O(1) allocator hot path
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+      - name: Verify O(1) TCP demux indexes
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-network .
       - name: Inventory unsafe Rust blocks
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --unsafe-inventory .
       - name: Verify soft boot milestones

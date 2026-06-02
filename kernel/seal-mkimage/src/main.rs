@@ -199,6 +199,18 @@ fn main() {
         println!("[seal-audit] O(1) ALLOCATOR OK");
         return;
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-o1-network") {
+        let root = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_o1_network(&root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] O(1) NETWORK FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] O(1) NETWORK OK");
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--check-proof-screen") {
         let ppm = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from("../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm")
@@ -1467,6 +1479,16 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
     let listener_fallback = parse_metric(line, "listener_fallback=")?;
     let payload_bytes = parse_metric(line, "payload_bytes=")?;
     let rx_bytes = parse_metric(line, "rx_bytes=")?;
+    let o1_index = parse_metric(line, "o1_index=")?;
+    let index_hit = parse_metric(line, "index_hit=")?;
+    let index_lookup_probes = parse_metric(line, "index_lookup_probes=")?;
+    let index_probe_bound = parse_metric(line, "index_probe_bound=")?;
+    let index_capacity = parse_metric(line, "index_capacity=")?;
+    let listener_index_hit = parse_metric(line, "listener_index_hit=")?;
+    let listener_lookup_probes = parse_metric(line, "listener_lookup_probes=")?;
+    let listener_probe_bound = parse_metric(line, "listener_probe_bound=")?;
+    let listener_index_capacity = parse_metric(line, "listener_index_capacity=")?;
+    let exact_scan = parse_metric(line, "exact_scan=")?;
     let cleanup = parse_field(line, "cleanup=")?;
 
     if api != "handle_tcp_packet" || fixture != "listener_first" {
@@ -1487,6 +1509,36 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
     if payload_bytes != 4 || rx_bytes != payload_bytes {
         return Err(format!(
             "TCP packet demux payload mismatch: payload_bytes={payload_bytes}, rx_bytes={rx_bytes}"
+        ));
+    }
+    if o1_index != 1 || index_hit != 1 || exact_scan != 0 {
+        return Err(format!(
+            "TCP packet demux exact-flow path did not use the bounded index: o1_index={o1_index}, index_hit={index_hit}, exact_scan={exact_scan}"
+        ));
+    }
+    if index_capacity < 64 || index_probe_bound != index_capacity {
+        return Err(format!(
+            "TCP packet demux index proof has invalid bounds: index_capacity={index_capacity}, index_probe_bound={index_probe_bound}"
+        ));
+    }
+    if index_lookup_probes == 0 || index_lookup_probes > index_probe_bound {
+        return Err(format!(
+            "TCP packet demux index lookup exceeded bound: index_lookup_probes={index_lookup_probes}, index_probe_bound={index_probe_bound}"
+        ));
+    }
+    if listener_index_hit != 1 {
+        return Err(format!(
+            "TCP packet demux listener fallback did not use the bounded listener index: listener_index_hit={listener_index_hit}"
+        ));
+    }
+    if listener_index_capacity < 64 || listener_probe_bound != listener_index_capacity {
+        return Err(format!(
+            "TCP packet demux listener index proof has invalid bounds: listener_index_capacity={listener_index_capacity}, listener_probe_bound={listener_probe_bound}"
+        ));
+    }
+    if listener_lookup_probes == 0 || listener_lookup_probes > listener_probe_bound {
+        return Err(format!(
+            "TCP packet demux listener lookup exceeded bound: listener_lookup_probes={listener_lookup_probes}, listener_probe_bound={listener_probe_bound}"
         ));
     }
 
@@ -2698,7 +2750,7 @@ mod tests {
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
-    const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok\n";
+    const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
     const GPU_TOPOLOGY_BENCH_LOG: &str = "\
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
 [GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
@@ -3507,6 +3559,7 @@ workflow_dispatch:
     cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
     cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
     cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-network .
 - name: Stage release proof artifacts
   run: |
     mkdir -p release-proof
@@ -3782,6 +3835,27 @@ with:
         let no_listener_fallback =
             TCP_PACKET_DEMUX_LOG.replace("listener_fallback=1", "listener_fallback=0");
         assert!(parse_tcp_packet_demux_benchmark(&no_listener_fallback).is_err());
+
+        let no_o1_index = TCP_PACKET_DEMUX_LOG.replace("o1_index=1", "o1_index=0");
+        assert!(parse_tcp_packet_demux_benchmark(&no_o1_index).is_err());
+
+        let no_index_hit = TCP_PACKET_DEMUX_LOG.replace("index_hit=1", "index_hit=0");
+        assert!(parse_tcp_packet_demux_benchmark(&no_index_hit).is_err());
+
+        let unbounded_lookup =
+            TCP_PACKET_DEMUX_LOG.replace("index_lookup_probes=1", "index_lookup_probes=300");
+        assert!(parse_tcp_packet_demux_benchmark(&unbounded_lookup).is_err());
+
+        let no_listener_index =
+            TCP_PACKET_DEMUX_LOG.replace("listener_index_hit=1", "listener_index_hit=0");
+        assert!(parse_tcp_packet_demux_benchmark(&no_listener_index).is_err());
+
+        let unbounded_listener =
+            TCP_PACKET_DEMUX_LOG.replace("listener_lookup_probes=1", "listener_lookup_probes=300");
+        assert!(parse_tcp_packet_demux_benchmark(&unbounded_listener).is_err());
+
+        let used_exact_scan = TCP_PACKET_DEMUX_LOG.replace("exact_scan=0", "exact_scan=1");
+        assert!(parse_tcp_packet_demux_benchmark(&used_exact_scan).is_err());
     }
 
     #[test]
@@ -4533,6 +4607,10 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
         (
             "--check-o1-allocator .",
             "release workflow must run O(1) allocator source gate",
+        ),
+        (
+            "--check-o1-network .",
+            "release workflow must run O(1) network source gate",
         ),
         (
             "release-proof/serial.log",
@@ -5788,6 +5866,120 @@ fn check_o1_allocator(root: &Path) -> Result<(), String> {
             "Voronoi reseed must refresh a bounded frame set",
         ));
     }
+
+    Ok(())
+}
+
+fn check_o1_network(root: &Path) -> Result<(), String> {
+    let tcp = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("net")
+        .join("tcp.rs");
+    let text = fs::read_to_string(&tcp).map_err(|e| format!("read {}: {e}", tcp.display()))?;
+    let required = [
+        "pub const TCP_FLOW_INDEX_BUCKETS",
+        "pub const TCP_FLOW_INDEX_MAX_PROBES",
+        "struct TcpFlowIndex",
+        "fn lookup_exact_flow_index",
+        "fn index_exact_flow_socket",
+        "pub const TCP_LISTENER_INDEX_BUCKETS",
+        "pub const TCP_LISTENER_INDEX_MAX_PROBES",
+        "struct TcpListenerIndex",
+        "fn lookup_listener_index",
+        "fn index_listener_socket",
+        "pub fn tcp_listener_index_proof",
+        "pub fn tcp_flow_index_proof",
+        "TCP_FLOW_INDEX.lock().lookup",
+        "TCP_LISTENER_INDEX.lock().lookup",
+    ];
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|needle| !text.contains(needle))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "missing TCP O(1) demux hooks: {}",
+            missing.join(" | ")
+        ));
+    }
+
+    let handle_body = extract_between(&text, "pub fn handle_tcp_packet", "#[cfg(test)]")?;
+    if !handle_body.contains("lookup_exact_flow_index(&sockets, src, src_port, dst_port)") {
+        return Err(String::from(
+            "handle_tcp_packet must route exact TCP flows through the bounded flow index",
+        ));
+    }
+    if !handle_body.contains("lookup_listener_index(&sockets, dst_port)") {
+        return Err(String::from(
+            "handle_tcp_packet must route listener fallback through the bounded listener index",
+        ));
+    }
+    reject_patterns(
+        "handle_tcp_packet exact-flow path",
+        handle_body,
+        &[
+            "sock.remote_port == src_port",
+            "sock.remote_ip == src",
+            "sock.local_port == dst_port && sock.state == TcpState::Listen",
+            "exact_idx = sockets.iter()",
+            "exact_idx = sockets\n            .iter()",
+            "listener_idx = sockets.iter()",
+            "listener_idx = sockets\n            .iter()",
+        ],
+    )?;
+
+    let lookup_body = extract_between(
+        &text,
+        "fn lookup_exact_flow_index",
+        "pub fn tcp_flow_index_proof",
+    )?;
+    reject_patterns(
+        "lookup_exact_flow_index",
+        lookup_body,
+        &["sockets.iter()", "for sock in"],
+    )?;
+    if !lookup_body.contains("TCP_FLOW_INDEX.lock().lookup") || !lookup_body.contains(".get(idx)") {
+        return Err(String::from(
+            "lookup_exact_flow_index must use bounded index lookup plus direct socket-index validation",
+        ));
+    }
+
+    let listener_lookup_body = extract_between(
+        &text,
+        "fn lookup_listener_index",
+        "pub fn tcp_flow_index_proof",
+    )?;
+    reject_patterns(
+        "lookup_listener_index",
+        listener_lookup_body,
+        &["sockets.iter()", "for sock in"],
+    )?;
+    if !listener_lookup_body.contains("TCP_LISTENER_INDEX.lock().lookup")
+        || !listener_lookup_body.contains(".get(idx)")
+    {
+        return Err(String::from(
+            "lookup_listener_index must use bounded index lookup plus direct socket-index validation",
+        ));
+    }
+
+    let poll_body = extract_between(&text, "pub fn poll()", "pub fn handle_tcp_packet")?;
+    if !poll_body.contains("lookup_listener_index(&sockets, dst_port)") {
+        return Err(String::from(
+            "tcp::poll must resolve pending SYN listener fallback through the bounded listener index",
+        ));
+    }
+    reject_patterns(
+        "tcp::poll listener fallback",
+        poll_body,
+        &[
+            "s.local_port == dst_port",
+            "sockets.iter().position",
+            "sockets\n            .iter()\n            .position",
+        ],
+    )?;
 
     Ok(())
 }

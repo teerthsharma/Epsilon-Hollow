@@ -10,7 +10,7 @@ This is a book-scale Markdown artifact, not a completed 300-page monolith yet. T
 | --- | --- | --- |
 | QEMU headless boot proof | Proven for the current QEMU proof gate | Requires theorem, AHCI, ManifoldFS mount, desktop/event-loop, benchmark, manifest, and freshness gates |
 | ManifoldFS metadata teleport | Proven for the QEMU `fs_mode=mock_block` benchmark path | Same-inode move, source gone, destination present, bounded metadata ops, and `persistence_bytes_per_move=0` |
-| TCP exact-flow demux | Proven for the listener-first fixture | `exact_flow=1`, decoy receives zero bytes, listener fallback still accepts a fresh SYN |
+| TCP exact-flow demux | Proven for the listener-first fixture | `exact_flow=1`, `o1_index=1`, `index_hit=1`, `listener_index_hit=1`, `exact_scan=0`, decoy receives zero bytes, listener fallback still accepts a fresh SYN |
 | LAAMBA kernel app proof | Proven in QEMU and Oracle VM VirtualBox serial logs | `[LAAMBA] app proof:` shows `window=LAAMBA_Governor`, launcher/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
 | Host-script-free production runtime | Partially proven | Production roots are quarantined; legacy host wrappers may remain outside runtime |
 | Ubuntu parity | Not proven | Target milestone only; same-machine Ubuntu artifacts are required |
@@ -147,7 +147,7 @@ Seal OS can honestly say:
 
 - The QEMU headless proof path passes with hard boot, theorem, desktop, filesystem, networking, and benchmark markers.
 - ManifoldFS same-filesystem metadata teleport is proven in the mock block-store benchmark path with `fs_mode=mock_block` and zero file-byte persistence per move.
-- TCP demux has a fixture proving exact accepted-flow delivery before listener fallback, while keeping a same-port decoy empty.
+- TCP demux has a fixture proving bounded-index exact accepted-flow delivery before bounded listener-index fallback, while keeping a same-port decoy empty.
 - LAAMBA has a native bridge gate after the runtime bridge moved to Rust/native manifest commands.
 - Production OS roots are guarded against host-language drift.
 
@@ -310,13 +310,15 @@ This is not a claim that every filesystem operation is O(1). It is not a claim t
 
 ## Chapter 23: Exact Flow Before Listener Fallback
 
-The TCP demux proof protects a subtle bug class: a listener-first socket table can accidentally deliver payloads to the listener path before checking an established accepted flow.
+The TCP demux proof protects a subtle bug class: a listener-first socket table can accidentally deliver payloads to the listener path before checking an established accepted flow. The current proof also requires the exact flow to hit the bounded flow index with `exact_scan=0`, and the fresh-SYN fallback to hit the bounded listener index.
 
 The proof marker requires:
 
 - Listener-first fixture ordering.
 - Established accepted flow receives the payload.
 - Same-port decoy receives zero bytes.
+- Bounded exact-flow index hit with no exact-flow socket scan.
+- Bounded listener-index hit for fresh SYN fallback.
 - Listener fallback still accepts a fresh SYN.
 - Fixture cleanup succeeds.
 
