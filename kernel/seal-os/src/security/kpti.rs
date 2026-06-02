@@ -14,6 +14,26 @@ use x86_64::registers::control::Cr3;
 static KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
 static USER_CR3: AtomicU64 = AtomicU64::new(0);
 
+/// Runtime KPTI proof emitted at boot.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct KptiProof {
+    pub kernel_cr3: u64,
+    pub user_cr3: u64,
+    pub distinct_roots: bool,
+    pub user_lower_half_empty: bool,
+    pub kernel_upper_half_mirrored: bool,
+}
+
+impl KptiProof {
+    pub fn passes(self) -> bool {
+        self.kernel_cr3 != 0
+            && self.user_cr3 != 0
+            && self.distinct_roots
+            && self.user_lower_half_empty
+            && self.kernel_upper_half_mirrored
+    }
+}
+
 /// Initialize KPTI state.
 ///
 /// Captures the currently active kernel CR3 so that `switch_to_kernel_pt()`
@@ -120,6 +140,60 @@ pub fn user_cr3() -> u64 {
 /// Return true if both kernel and user CR3 values have been initialized.
 pub fn has_kpti() -> bool {
     kernel_cr3() != 0 && user_cr3() != 0
+}
+
+/// Verify that the installed user shadow page table has the KPTI shape:
+///
+/// - kernel and user roots exist,
+/// - the roots are distinct,
+/// - user lower-half PML4 entries are not mapped,
+/// - at least one upper-half kernel mapping is mirrored for entry/trampoline use.
+pub fn runtime_proof() -> KptiProof {
+    let kernel = kernel_cr3();
+    let user = user_cr3();
+    if kernel == 0 || user == 0 || kernel == user {
+        return KptiProof {
+            kernel_cr3: kernel,
+            user_cr3: user,
+            distinct_roots: kernel != 0 && user != 0 && kernel != user,
+            user_lower_half_empty: false,
+            kernel_upper_half_mirrored: false,
+        };
+    }
+
+    let user_pml4 = user as *const u64;
+    let kernel_pml4 = kernel as *const u64;
+    let mut lower_empty = true;
+    let mut mirrored = false;
+
+    unsafe {
+        // SAFETY: `init_trampoline_pt` creates `user` from a physical frame
+        // allocated by the kernel and the boot page tables identity-map the
+        // low physical memory that contains both PML4 roots. We only perform
+        // aligned read-only u64 loads within the 4096-byte PML4 frames.
+        for i in 0..256 {
+            if *user_pml4.add(i) != 0 {
+                lower_empty = false;
+                break;
+            }
+        }
+        for i in 256..512 {
+            let user_entry = *user_pml4.add(i);
+            let kernel_entry = *kernel_pml4.add(i);
+            if kernel_entry != 0 && user_entry == kernel_entry {
+                mirrored = true;
+                break;
+            }
+        }
+    }
+
+    KptiProof {
+        kernel_cr3: kernel,
+        user_cr3: user,
+        distinct_roots: true,
+        user_lower_half_empty: lower_empty,
+        kernel_upper_half_mirrored: mirrored,
+    }
 }
 
 #[cfg(any(test, feature = "test-mode"))]
