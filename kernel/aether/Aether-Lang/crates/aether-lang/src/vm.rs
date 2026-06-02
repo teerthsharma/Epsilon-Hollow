@@ -25,44 +25,9 @@ use std::string::String;
 use std::vec::Vec;
 
 use crate::ast::{BinaryOp, Expr, ExprKind, Literal, Program, Statement, StmtKind};
+use crate::bytecode::{BytecodeVerifier, OpCode, Peephole, TraceCache};
 use crate::interpreter::Value;
 use aether_core::memory::ManifoldHeap; // From Phase 1
-
-/// Titan Bytecode Instructions
-#[derive(Debug, Clone, Copy)]
-#[allow(non_camel_case_types)]
-pub enum OpCode {
-    /// Push constant value onto stack
-    PUSH(f64),
-    /// Push variable value
-    LOAD(usize), // Index into constant pool or variable table? Let's use register/slot index
-    /// Store top of stack to variable
-    STORE(usize),
-
-    /// Arithmetic
-    ADD,
-    SUB,
-    MUL,
-    DIV,
-
-    /// Topology / Core Logic
-    /// Embeds the top value into the manifold
-    EMBED,
-    /// Checks topological attention/neighbors
-    ATTEND,
-    /// Explicit entropy regulation point
-    PRUNE,
-
-    /// Control Flow
-    JMP(isize),
-    JMP_IF_FALSE(isize),
-
-    /// Output
-    PRINT,
-
-    /// End of program
-    HALT,
-}
 
 /// The Titan Virtual Machine
 pub struct TitanVM {
@@ -80,6 +45,9 @@ pub struct TitanVM {
 
     /// Call Frame / Locals (simplified map for now, or vector)
     locals: Vec<Value>,
+
+    /// Trace cache for hot loops
+    trace_cache: TraceCache,
 }
 
 impl Default for TitanVM {
@@ -96,6 +64,7 @@ impl TitanVM {
             stack: Vec::with_capacity(1024),
             heap: ManifoldHeap::new(),
             locals: vec![Value::Unit; 256], // Pre-alloc locals slots
+            trace_cache: TraceCache::new(),
         }
     }
 
@@ -104,8 +73,23 @@ impl TitanVM {
         self.ip = 0;
     }
 
+    /// Verify bytecode and apply peephole optimizations.
+    pub fn prepare(&mut self) -> Result<(), String> {
+        BytecodeVerifier::verify(&self.code, self.locals.len())?;
+        Peephole::run(&mut self.code);
+        // Note: compact() is not called here because it invalidates jump offsets.
+        // Callers may invoke Peephole::compact(&mut self.code) manually when safe.
+        Ok(())
+    }
+
     pub fn run(&mut self) -> Result<Value, String> {
         loop {
+            // Trace-cache fast path
+            if let Some(trace) = self.trace_cache.get_trace(self.ip).cloned() {
+                self.run_trace(&trace.ops)?;
+                continue;
+            }
+
             if self.ip >= self.code.len() {
                 break;
             }
@@ -115,6 +99,7 @@ impl TitanVM {
 
             match op {
                 OpCode::HALT => break,
+                OpCode::NOP => {}
 
                 OpCode::PUSH(v) => self.stack.push(Value::Num(v)),
 
@@ -183,12 +168,20 @@ impl TitanVM {
                 }
 
                 OpCode::JMP(offset) => {
-                    // safer pointer arithmetic
                     let next = self.ip as isize + offset;
                     if next < 0 {
                         return Err("Invalid Jump".into());
                     }
-                    self.ip = next as usize;
+                    let target = next as usize;
+                    if offset < 0 {
+                        self.trace_cache.record_jump(target);
+                        if self.trace_cache.is_hot(target)
+                            && self.trace_cache.get_trace(target).is_none()
+                        {
+                            self.trace_cache.compile_trace(&self.code, target, self.ip - 1);
+                        }
+                    }
+                    self.ip = target;
                 }
 
                 OpCode::JMP_IF_FALSE(offset) => {
@@ -204,7 +197,16 @@ impl TitanVM {
                         if next < 0 {
                             return Err("Invalid Jump".into());
                         }
-                        self.ip = next as usize;
+                        let target = next as usize;
+                        if offset < 0 {
+                            self.trace_cache.record_jump(target);
+                            if self.trace_cache.is_hot(target)
+                                && self.trace_cache.get_trace(target).is_none()
+                            {
+                                self.trace_cache.compile_trace(&self.code, target, self.ip - 1);
+                            }
+                        }
+                        self.ip = target;
                     }
                 }
 
@@ -213,6 +215,111 @@ impl TitanVM {
         }
 
         Ok(self.stack.pop().unwrap_or(Value::Unit))
+    }
+
+    /// Execute a cached trace in a tight inner loop.
+    fn run_trace(&mut self, trace: &[OpCode]) -> Result<(), String> {
+        let base_ip = self.ip;
+        let mut tip: usize = 0;
+
+        while tip < trace.len() {
+            let op = trace[tip];
+            tip += 1;
+
+            match op {
+                OpCode::HALT => break,
+                OpCode::NOP => {}
+
+                OpCode::PUSH(v) => self.stack.push(Value::Num(v)),
+
+                OpCode::ADD => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.stack.push(Value::Num(a + b));
+                }
+                OpCode::SUB => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.stack.push(Value::Num(a - b));
+                }
+                OpCode::MUL => {
+                    let b = self.pop_num()?;
+                    let a = self.pop_num()?;
+                    self.stack.push(Value::Num(a * b));
+                }
+                OpCode::DIV => {
+                    let b = self.pop_num()?;
+                    if b == 0.0 {
+                        return Err("Division by zero".into());
+                    }
+                    let a = self.pop_num()?;
+                    self.stack.push(Value::Num(a / b));
+                }
+
+                OpCode::PRINT => {
+                    let val = self.stack.pop().ok_or("Stack underflow")?;
+                    #[cfg(feature = "std")]
+                    println!("{:?}", val);
+                }
+
+                OpCode::EMBED => {
+                    let _val = self.pop_num()?;
+                }
+
+                OpCode::PRUNE => {
+                    self.heap.regulate_entropy(|_h| {});
+                }
+
+                OpCode::LOAD(idx) => {
+                    if idx < self.locals.len() {
+                        self.stack.push(self.locals[idx].clone());
+                    } else {
+                        return Err("Variable index out of bounds".into());
+                    }
+                }
+                OpCode::STORE(idx) => {
+                    let val = self.stack.pop().ok_or("Stack underflow")?;
+                    if idx >= self.locals.len() {
+                        self.locals.resize(idx + 1, Value::Unit);
+                    }
+                    self.locals[idx] = val;
+                }
+
+                OpCode::JMP(offset) => {
+                    let next = tip as isize + offset;
+                    if next >= 0 && next as usize <= trace.len() {
+                        tip = next as usize;
+                    } else {
+                        self.ip = (base_ip as isize + next) as usize;
+                        return Ok(());
+                    }
+                }
+
+                OpCode::JMP_IF_FALSE(offset) => {
+                    let val = self.stack.pop().ok_or("Stack underflow")?;
+                    let condition = match val {
+                        Value::Bool(b) => b,
+                        Value::Num(n) => n != 0.0,
+                        _ => false,
+                    };
+
+                    if !condition {
+                        let next = tip as isize + offset;
+                        if next >= 0 && next as usize <= trace.len() {
+                            tip = next as usize;
+                        } else {
+                            self.ip = (base_ip as isize + next) as usize;
+                            return Ok(());
+                        }
+                    }
+                }
+
+                _ => return Err("Unimplemented OpCode in trace".into()),
+            }
+        }
+
+        self.ip = base_ip + trace.len();
+        Ok(())
     }
 
     fn pop_num(&mut self) -> Result<f64, String> {
