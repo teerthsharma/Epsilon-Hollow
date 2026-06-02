@@ -2495,7 +2495,7 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**155,014 Rust lines** across 672 `.rs` files outside build caches | active `kernel/apps/tools/userspace`: **86,998 Rust lines** | Seal OS kernel crate: **50,847 Rust lines** | ~40 lines of inline assembly | 1,823 lines of Aether-Lang DSL
+**114756 lines of Rust** across 388 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **116579 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
