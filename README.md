@@ -2499,7 +2499,7 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**114756 lines of Rust** across 388 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **116579 total**
+**115047 lines of Rust** across 388 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **116870 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
