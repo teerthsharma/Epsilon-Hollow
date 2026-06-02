@@ -260,7 +260,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **SMP bring-up** — INIT-SIPI-SIPI trampoline, per-CPU data, IPIs (reschedule + TLB shootdown)
 - **ACPI** — RSDP parsing, MADT discovery for APIC topology
 - **Boot theorem gates** — T1-T10 all verified before scheduler start
-- **QEMU headless proof** — current proof gate reaches AHCI disk identity, persistent ManifoldFS root, desktop proof frame, desktop soak, desktop ready, event loop, and benchmark markers. This proves the current QEMU path, not every VM in the known universe. Shocking, yes.
+- **QEMU headless proof** — current proof gate reaches AHCI disk identity, persistent ManifoldFS root, desktop proof frame, live desktop input proof, desktop soak, desktop ready, event loop, and benchmark markers. This proves the current QEMU path, not every VM in the known universe. Shocking, yes.
 
 </details>
 
@@ -583,6 +583,7 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
@@ -591,10 +592,10 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8
 ```
 
-CI hard-gates selected serial sentinels from this log, including theorem status, Aether runtime proof, LAAMBA app proof, AHCI disk identity, persistent ManifoldFS root, measured serial desktop pixel proof, desktop readiness, event-loop entry, and benchmark markers. Local and pre-release proof bundles add the stronger framebuffer screenshot proof.
+CI hard-gates selected serial sentinels from this log, including theorem status, Aether runtime proof, LAAMBA app proof, AHCI disk identity, persistent ManifoldFS root, measured serial desktop pixel proof, live desktop input proof, desktop readiness, event-loop entry, and benchmark markers. Local and pre-release proof bundles add the stronger framebuffer screenshot proof.
 
 
-> **What this means in human terms:** The automated tests verify the OS boots, initializes memory, checks all ten mathematical theorems, runs Aether-Lang, proves the LAAMBA Governor kernel app launched through the Rust/native manifest path without Python, runs benchmarks, and measures nonblank desktop structure from the framebuffer before accepting the serial proof. Local proof bundles also verify the captured pixels before I claim a GUI desktop proof. If you break the gated boot log markers, CI breaks. If CI breaks, I fix it. This is how you know the project actually tests things instead of just claiming they work.
+> **What this means in human terms:** The automated tests verify the OS boots, initializes memory, checks all ten mathematical theorems, runs Aether-Lang, proves the LAAMBA Governor kernel app launched through the Rust/native manifest path without Python, runs benchmarks, measures nonblank desktop structure, then clicks the Files desktop icon through the real desktop input route and proves the visible frame changed. Local proof bundles also verify the captured pixels before I claim a GUI desktop proof. If you break the gated boot log markers, CI breaks. If CI breaks, I fix it. This is how you know the project actually tests things instead of just claiming they work.
 
 ---
 
@@ -1490,13 +1491,14 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | Capability | Seal OS state | Ubuntu 26.04 LTS baseline | Proof or next gate |
 |---|---:|---|---|
 | UEFI image build | ✓ | ✓ | `seal-mkimage --verify` passes |
-| QEMU serial desktop boot sentinels | ✓ | ✓ | `run-qemu.ps1 -HeadlessProof` plus `seal-mkimage --check-vm-proof` captures theorem gate, AHCI disk, ManifoldFS mount, desktop proof-frame serial marker, desktop soak marker, desktop ready, event loop, ManifoldFS teleport marker, and TCP demux marker |
+| QEMU serial desktop boot sentinels | ✓ | ✓ | `run-qemu.ps1 -HeadlessProof` plus `seal-mkimage --check-vm-proof` captures theorem gate, AHCI disk, ManifoldFS mount, desktop proof-frame serial marker, live desktop input marker, desktop soak marker, desktop ready, event loop, ManifoldFS teleport marker, and TCP demux marker |
 | QEMU proof bundle manifest | ✓ | N/A | Local/pre-release `run-qemu.ps1 -HeadlessProof` writes `qemu-proof\proof-manifest.txt`; `seal-mkimage --check-proof-manifest` verifies the image/EFI/log/screen byte counts, CRC32 fingerprints, SHA-256 fingerprints, QEMU backend, commit/dirty flag, and gate statuses before publishing canonical artifacts; `--check-current-proof-manifest ... .` additionally rejects stale proof bundles whose commit or dirty flag no longer match the checkout |
 | README/doc claim contract | ✓ | N/A | `seal-mkimage --check-doc-claim-contract .` enforces a limited allow/deny string contract for `README.md`, `docs/BENCHMARK_PLAN.md`, and `docs/CI.md` |
 | Additional VM proof targets | △ | ✓ | QEMU and Oracle VM VirtualBox now have separate current-manifest proof paths. VMware, Hyper-V, cloud hypervisors, and real hardware remain gated targets. Two VM wins are evidence for those two backends, not a universal "any VM, any firmware" claim. |
-| Serial desktop pixel proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` now also requires `[GFX] desktop-proof`, which scans the framebuffer/back buffer for nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, window count, and nonzero sample hash |
+| Serial desktop pixel proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` requires `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak`; this row covers the framebuffer/back-buffer scan for nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, window count, and nonzero sample hash |
+| Desktop live input proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` also requires `[GFX] desktop-live-proof`, which routes a mouse move + click through `wm::desktop::handle_input`, launches/focuses Files from the desktop icon, blits, and proves sampled pixels changed |
 | First captured desktop pixel proof | local/pre-release | N/A | `seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm` verifies nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, and taskbar start/power controls; GitHub CI uses `-nographic`, so this is not a CI framebuffer capture |
-| Desktop compositor soak marker | ✓ | △ | `seal-mkimage --check-desktop-soak ...\serial.log` requires the serial desktop pixel proof plus a deterministic 24-frame compose+blit exercise with monotonic cycle percentiles; calibrated 16.7 ms frame-pacing benchmark still pending |
+| Desktop compositor soak marker | ✓ | △ | `seal-mkimage --check-desktop-soak ...\serial.log` requires the serial desktop pixel proof and live desktop input proof plus a deterministic 24-frame compose+blit exercise with monotonic cycle percentiles; calibrated 16.7 ms frame-pacing benchmark still pending |
 | Bare-metal allocator benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] alloc-frame` with 64 successful alloc/free iterations, topological fast-path hits, zero bounded misses, no contiguous-probe drift, and no frame leak |
 | TopoRAM target-cell allocation marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] toporam-alloc` with 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycle samples, and no frame leak |
 | ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode mock block-store metadata move across 8-256 directory entries with `metadata_ops_max=7`, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
@@ -1795,7 +1797,7 @@ Every claim in this README has a supplementary document. Every document traces t
 
 | Document | What it covers |
 |----------|---------------|
-| [docs/CI.md](docs/CI.md) | All 16 CI jobs, QEMU milestones, toolchains |
+| [docs/CI.md](docs/CI.md) | All 18 CI jobs, QEMU milestones, toolchains |
 | [BENCHMARKS.md](BENCHMARKS.md) | How to run Criterion, CI regression gates |
 | [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md) | Side-by-side Ubuntu comparison plan |
 | [SECURITY.md](SECURITY.md) | Vulnerability reporting, threat model, environment variables |
@@ -2267,7 +2269,7 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 
 ## CI Pipeline
 
-16 jobs. Every push. No exceptions.
+18 CI jobs: 17 on every push, plus the manual `ubuntu-alloc-baseline` comparison lane. No exceptions.
 
 | Job | What it checks |
 |-----|---------------|
@@ -2312,9 +2314,10 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 19. Persistent ManifoldFS root mounted from disk
 20. `[GFX] desktop-proof`
 21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-soak`
-23. Desktop ready sentinel
-24. Event-loop entry sentinel
+22. `[GFX] desktop-live-proof`
+23. `[GFX] desktop-soak`
+24. Desktop ready sentinel
+25. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
@@ -2370,9 +2373,10 @@ CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what ev
 19. Persistent ManifoldFS root mounted from disk
 20. `[GFX] desktop-proof`
 21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-soak`
-23. Desktop ready sentinel
-24. Event-loop entry sentinel
+22. `[GFX] desktop-live-proof`
+23. `[GFX] desktop-soak`
+24. Desktop ready sentinel
+25. Event-loop entry sentinel
 
 If any of the hard milestone gates tracked in [docs/CI.md](docs/CI.md) fail, the entire CI run fails. No exceptions. No mercy.
 

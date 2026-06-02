@@ -159,10 +159,10 @@ impl Framebuffer {
 
     /// Copy the back buffer to VRAM.
     /// Accounts for `pitch` vs `width * bpp/8`.
-    pub fn blit(&self) {
+    pub fn blit(&self) -> bool {
         let bb = self.back_buffer.load(Ordering::Relaxed);
         if bb.is_null() || self.buffer.is_null() {
-            return;
+            return false;
         }
         let bytes_per_pixel = (self.bpp as u32) / 8;
         let row_pixels = self.width as usize;
@@ -190,6 +190,7 @@ impl Framebuffer {
                 }
             }
         }
+        true
     }
 
     pub fn buffer_ptr(&self) -> *mut u8 {

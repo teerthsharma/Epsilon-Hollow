@@ -378,6 +378,7 @@ jobs:
           check "\\[Aether-Lang\\] runtime proof" "Aether-Lang runtime proof emitted"
           check "\\[LAAMBA\\] app proof:" "LAAMBA kernel app proof emitted"
           check "\\[GFX\\] desktop-proof" "Serial desktop pixel proof emitted"
+          check "\\[GFX\\] desktop-live-proof" "Desktop live input proof emitted"
           check "\\[GFX\\] desktop-soak" "Desktop compositor soak emitted"
           check "Device model: QEMU HARDDISK" "AHCI disk identified"
           check "Registered as block device 0x800" "AHCI block device registered"

@@ -265,7 +265,7 @@ This is the current strongest operational baseline. The QEMU headless proof is e
 - AHCI disk identity and block device registration.
 - Persistent ManifoldFS root mount.
 - Aether runtime proof marker.
-- Desktop proof frame, desktop soak, desktop ready, and event loop entry.
+- Desktop proof frame, desktop live input proof, desktop soak, desktop ready, and event loop entry.
 - ManifoldFS teleport benchmark with `fs_mode=mock_block`.
 - TCP demux benchmark with exact-flow and fallback markers.
 - A proof manifest tied to the current checkout.

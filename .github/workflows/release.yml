@@ -201,7 +201,7 @@ jobs:
             Not an any-VM, GPU, or Ubuntu-superiority proof.
 
             ### Release proof
-            - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
+            - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop live input proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
             - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, and O(1) allocator hot path.
 
             ### What is in the image
@@ -210,7 +210,7 @@ jobs:
             - ManifoldFS same-filesystem metadata teleport proof marker; broad filesystem parity still requires fixtures.
             - Aether-Lang Titan VM scripting path.
             - TCP demux proof marker; production internet TLS remains limited to the documented PSK path.
-            - Software-rendered desktop with compositor soak proof marker.
+            - Software-rendered desktop with live icon-click/focus proof and compositor soak proof markers.
 
             ### Honest limits
             - VirtualBox, real hardware, GPU/VRAM, and Ubuntu-superiority claims need their own proof artifacts.
@@ -222,7 +222,7 @@ jobs:
             qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
             ```
           generate_release_notes: true
-          make_latest: false
+          make_latest: true
 
       - name: Create release from dispatch
         if: github.event_name == 'workflow_dispatch'
@@ -246,9 +246,12 @@ jobs:
             - `serial.log`
             - `proof-summary.txt`
 
+            The serial proof includes theorem, Aether runtime, LAAMBA app,
+            desktop live input, desktop soak, and benchmark gates.
+
             ### Run it
             ```bash
             qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
             ```
           prerelease: false
-          make_latest: false
+          make_latest: true

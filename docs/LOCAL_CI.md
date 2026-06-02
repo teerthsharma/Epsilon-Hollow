@@ -61,6 +61,7 @@ git push --no-verify
 | Seal ABI audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .` |
 | Language hygiene audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .` |
 | Doc claim contract audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .` |
+| Release workflow contract audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .` |
 | Aether migration audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .` |
 | O(1) allocator audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .` |
 | Runtime theorem coverage audit | `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .` |
@@ -80,7 +81,8 @@ the theorem gate, QEMU AHCI disk identity, block device `0x800`, readable disk,
 persistent ManifoldFS root, TopoRAM allocation benchmark marker, physical
 allocator benchmark marker, ManifoldFS teleport benchmark marker, scheduler
 select benchmark marker, Aether runtime proof marker, desktop proof frame,
-desktop soak marker, desktop readiness, and event loop entry. The GUI pixel proof is manual/local because it needs a captured
+desktop live input marker, desktop soak marker, desktop readiness, and event
+loop entry. The GUI pixel proof is manual/local because it needs a captured
 `kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm` from
 `run-qemu.ps1 -HeadlessProof`. After that capture, run
 `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm`.

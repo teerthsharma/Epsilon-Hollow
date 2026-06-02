@@ -99,6 +99,7 @@ Seal OS endpoint:
 
 ```text
 [BOOT] Desktop proof frame blit done
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
 [BOOT] Seal OS desktop ready.
 ```
 
@@ -427,11 +428,12 @@ The first benchmark milestone is modest and measurable:
 2. Verify image with `seal-mkimage --verify`.
 3. Boot Seal OS in QEMU or VirtualBox.
 4. Capture serial log to theorem gate, Aether runtime proof, LAAMBA app proof,
-   serial desktop pixel proof, desktop proof frame, desktop-ready sentinel,
-   `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
+   serial desktop pixel proof, live desktop input proof, desktop proof frame,
+   desktop-ready sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
    `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`,
    `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and
-   `[GFX] desktop-proof` / `[GFX] desktop-soak` markers.
+   `[GFX] desktop-proof` / `[GFX] desktop-live-proof` /
+   `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
 6. Run `seal-mkimage --check-benchmark-log` and
    `seal-mkimage --check-laamba-app-proof` and
