@@ -625,3 +625,28 @@ jobs:
         with:
           lake-package-directory: kernel/aether/aether-verified/lean
           use-mathlib-cache: true
+
+  build-ubuntu-artifact:
+    name: Build Ubuntu benchmark ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc libc6-dev linux-image-generic grub-pc-bin grub-efi-amd64-bin \
+            xorriso mtools dosfstools busybox-static cpio gzip
+      - name: Build Ubuntu benchmark ISO
+        working-directory: infrastructure/deployment/ubuntu-artifact
+        run: |
+          chmod +x build.sh
+          ./build.sh
+      - name: Upload Ubuntu benchmark ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-bench-iso
+          path: infrastructure/deployment/ubuntu-artifact/ubuntu-bench.iso
+          retention-days: 7
