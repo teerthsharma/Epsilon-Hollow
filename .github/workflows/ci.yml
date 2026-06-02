@@ -55,6 +55,8 @@ jobs:
         run: cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate
       - name: Check README/doc claim contract
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .
+      - name: Check release workflow contract
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
       - name: Check Lean proof hygiene
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-lean-proof-hygiene .
 
@@ -374,6 +376,8 @@ jobs:
           check "\\[BENCH\\] scheduler-select-next" "Scheduler selector benchmark emitted"
           check "\\[BENCH\\] tcp-packet-demux" "TCP packet demux benchmark emitted"
           check "\\[Aether-Lang\\] runtime proof" "Aether-Lang runtime proof emitted"
+          check "\\[LAAMBA\\] app proof:" "LAAMBA kernel app proof emitted"
+          check "\\[GFX\\] desktop-proof" "Serial desktop pixel proof emitted"
           check "\\[GFX\\] desktop-soak" "Desktop compositor soak emitted"
           check "Device model: QEMU HARDDISK" "AHCI disk identified"
           check "Registered as block device 0x800" "AHCI block device registered"
@@ -395,6 +399,8 @@ jobs:
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-vm-proof /tmp/seal-os.log
       - name: Verify Aether-Lang runtime proof
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime /tmp/seal-os.log
+      - name: Verify LAAMBA kernel app proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof /tmp/seal-os.log
       - name: Verify desktop compositor soak marker
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os.log
       - name: Verify benchmark proof markers

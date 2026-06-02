@@ -35,10 +35,10 @@ pub struct TcpHeader {
 
 impl TcpHeader {
     pub fn data_offset(&self) -> usize {
-        ((u16::from_be(self.data_offset_flags) >> 12) as usize) * 4
+        ((self.data_offset_flags >> 12) as usize) * 4
     }
     pub fn flags(&self) -> u16 {
-        u16::from_be(self.data_offset_flags) & 0x3F
+        self.data_offset_flags & 0x3F
     }
 
     /// Parse a TCP header from exactly 20 bytes.
@@ -201,12 +201,12 @@ impl TcpSocket {
 
     fn send_tcp_packet(&mut self, flags: u16, payload: &[u8]) {
         let mut hdr = TcpHeader {
-            src_port: self.local_port.to_be(),
-            dst_port: self.remote_port.to_be(),
-            seq: self.seq_num.to_be(),
-            ack: self.ack_num.to_be(),
-            data_offset_flags: ((5u16 << 12) | flags).to_be(),
-            window: 65535u16.to_be(),
+            src_port: self.local_port,
+            dst_port: self.remote_port,
+            seq: self.seq_num,
+            ack: self.ack_num,
+            data_offset_flags: (5u16 << 12) | flags,
+            window: 65535,
             checksum: 0,
             urgent: 0,
         };
@@ -375,6 +375,9 @@ pub fn state(idx: usize) -> TcpState {
 pub struct TcpPacketFixtureProof {
     pub ok: bool,
     pub listener_first: bool,
+    pub exact_flow: bool,
+    pub decoy_rx_bytes: usize,
+    pub listener_fallback: bool,
     pub payload_bytes: usize,
     pub rx_bytes: usize,
     pub accepted_state: TcpState,
@@ -394,6 +397,9 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
             return TcpPacketFixtureProof {
                 ok: false,
                 listener_first: false,
+                exact_flow: false,
+                decoy_rx_bytes: 0,
+                listener_fallback: false,
                 payload_bytes: PAYLOAD.len(),
                 rx_bytes: 0,
                 accepted_state: TcpState::Closed,
@@ -408,41 +414,84 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         let mut listener = TcpSocket::new(fixture_port);
         listener.listen();
 
+        let mut decoy = TcpSocket::new(fixture_port);
+        decoy.remote_ip = crate::net::IpAddr::V4([192, 0, 2, 254]);
+        decoy.remote_port = 443;
+        decoy.state = TcpState::Established;
+        decoy.seq_num = 2001;
+        decoy.ack_num = 700;
+
         let mut accepted = TcpSocket::new(fixture_port);
         accepted.remote_ip = remote;
         accepted.remote_port = remote_port;
         accepted.state = TcpState::SynReceived;
-        accepted.seq_num = 1000;
+        accepted.seq_num = 1001;
         accepted.ack_num = 501;
 
         sockets.push(listener);
+        sockets.push(decoy);
         sockets.push(accepted);
     }
 
-    let packet =
-        make_tcp_packet(remote_port, fixture_port, FLAG_ACK | FLAG_PSH, 501, 1001, PAYLOAD);
+    let packet = make_tcp_packet(
+        remote_port,
+        fixture_port,
+        FLAG_ACK | FLAG_PSH,
+        501,
+        1001,
+        PAYLOAD,
+    );
     handle_tcp_packet(remote, &packet);
 
     let mut rx = [0u8; PAYLOAD.len()];
+    let mut decoy_rx = [0u8; PAYLOAD.len()];
     let mut sockets = TCP_SOCKETS.lock();
     let listener_idx = base_len;
-    let accepted_idx = base_len + 1;
+    let decoy_idx = base_len + 1;
+    let accepted_idx = base_len + 2;
     let listener_first = sockets
         .get(listener_idx)
         .is_some_and(|sock| sock.state == TcpState::Listen)
-        && accepted_idx > listener_idx;
+        && decoy_idx > listener_idx
+        && accepted_idx > decoy_idx;
     let accepted_state = sockets
         .get(accepted_idx)
         .map_or(TcpState::Closed, |sock| sock.state);
+    let decoy_rx_bytes = sockets
+        .get_mut(decoy_idx)
+        .map_or(0, |sock| sock.recv(&mut decoy_rx));
     let rx_bytes = sockets
         .get_mut(accepted_idx)
         .map_or(0, |sock| sock.recv(&mut rx));
     let payload_matches = rx_bytes == PAYLOAD.len() && &rx[..rx_bytes] == PAYLOAD;
-    if sockets.len() >= base_len + 2 {
+    drop(sockets);
+
+    let fallback_remote = crate::net::IpAddr::V4([192, 0, 2, 99]);
+    let syn_packet = make_tcp_packet(81, fixture_port, FLAG_SYN, 900, 0, &[]);
+    handle_tcp_packet(fallback_remote, &syn_packet);
+    poll();
+
+    let mut sockets = TCP_SOCKETS.lock();
+    let listener_fallback = sockets.get(listener_idx).is_some_and(|listener| {
+        listener.pending_accept.iter().copied().any(|idx| {
+            sockets.get(idx).is_some_and(|sock| {
+                sock.local_port == fixture_port
+                    && sock.remote_ip == fallback_remote
+                    && sock.remote_port == 81
+                    && sock.state == TcpState::SynReceived
+            })
+        })
+    });
+
+    if sockets.len() >= base_len + 3 {
         sockets.truncate(base_len);
     }
     let cleanup_ok = sockets.len() == base_len;
+    let exact_flow =
+        accepted_state == TcpState::Established && payload_matches && decoy_rx_bytes == 0;
     let ok = listener_first
+        && exact_flow
+        && listener_fallback
         && accepted_state == TcpState::Established
         && rx_bytes == PAYLOAD.len()
         && payload_matches
@@ -451,6 +500,9 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     TcpPacketFixtureProof {
         ok,
         listener_first,
+        exact_flow,
+        decoy_rx_bytes,
+        listener_fallback,
         payload_bytes: PAYLOAD.len(),
         rx_bytes,
         accepted_state,
@@ -467,12 +519,12 @@ fn make_tcp_packet(
     payload: &[u8],
 ) -> Vec<u8> {
     let hdr = TcpHeader {
-        src_port: src_port.to_be(),
-        dst_port: dst_port.to_be(),
-        seq: seq.to_be(),
-        ack: ack.to_be(),
-        data_offset_flags: ((5u16 << 12) | flags).to_be(),
-        window: 65535u16.to_be(),
+        src_port,
+        dst_port,
+        seq,
+        ack,
+        data_offset_flags: (5u16 << 12) | flags,
+        window: 65535,
         checksum: 0,
         urgent: 0,
     };
@@ -531,14 +583,18 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
         return;
     }
     // SAFETY: pkt is at least 20 bytes; read_unaligned avoids UB on unaligned pointers.
-    let Some(hdr) = TcpHeader::from_bytes(&pkt[..20]) else { return; };
+    let Some(hdr) = TcpHeader::from_bytes(&pkt[..20]) else {
+        return;
+    };
     let data_offset = hdr.data_offset();
     if data_offset < 20 || pkt.len() < data_offset {
         return;
     }
     let flags = hdr.flags();
-    let dst_port = u16::from_be(hdr.dst_port);
-    let src_port = u16::from_be(hdr.src_port);
+    let dst_port = hdr.dst_port;
+    let src_port = hdr.src_port;
+    let seq = hdr.seq;
+    let ack = hdr.ack;
     let payload = &pkt[data_offset..];
 
     let mut pending_syn = None;
@@ -550,33 +606,29 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                 && sock.remote_ip == src
                 && sock.state != TcpState::Listen
         });
-        let local_active_idx = sockets
-            .iter()
-            .position(|sock| sock.local_port == dst_port && sock.state != TcpState::Listen);
         let listener_idx = sockets
             .iter()
             .position(|sock| sock.local_port == dst_port && sock.state == TcpState::Listen);
-        if let Some(idx) = exact_idx.or(local_active_idx).or(listener_idx) {
+        if let Some(idx) = exact_idx.or(listener_idx) {
             if let Some(sock) = sockets.get_mut(idx) {
                 match sock.state {
                     TcpState::Listen => {
                         if flags & FLAG_SYN != 0 {
-                            let seq = u32::from_be(hdr.seq);
                             pending_syn = Some((dst_port, src, src_port, seq));
                         }
                     }
                     TcpState::SynSent => {
                         if flags & FLAG_SYN != 0 && flags & FLAG_ACK != 0 {
-                            sock.ack_num = u32::from_be(hdr.seq) + 1;
+                            sock.ack_num = seq + 1;
                             sock.seq_num += 1;
                             sock.send_tcp_packet(FLAG_ACK, &[]);
                             sock.state = TcpState::Established;
                         }
                     }
                     TcpState::SynReceived => {
-                        if flags & FLAG_ACK != 0 {
+                        if flags & FLAG_ACK != 0 && ack == sock.seq_num && seq == sock.ack_num {
                             sock.state = TcpState::Established;
-                            sock.ack_num = u32::from_be(hdr.seq) + payload.len() as u32;
+                            sock.ack_num = seq + payload.len() as u32;
                             if !payload.is_empty() {
                                 sock.push_rx(payload);
                                 sock.send_tcp_packet(FLAG_ACK, &[]);
@@ -585,11 +637,11 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                     }
                     TcpState::Established => {
                         if flags & FLAG_FIN != 0 {
-                            sock.ack_num = u32::from_be(hdr.seq) + 1;
+                            sock.ack_num = seq + 1;
                             sock.send_tcp_packet(FLAG_ACK, &[]);
                             sock.state = TcpState::CloseWait;
                         } else if !payload.is_empty() || flags & FLAG_ACK != 0 {
-                            sock.ack_num = u32::from_be(hdr.seq) + payload.len() as u32;
+                            sock.ack_num = seq + payload.len() as u32;
                             if !payload.is_empty() {
                                 sock.push_rx(payload);
                             }
@@ -597,14 +649,13 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                                 sock.send_tcp_packet(FLAG_ACK, &[]);
                             }
                             if flags & FLAG_ACK != 0 {
-                                let ack = u32::from_be(hdr.ack);
                                 sock.purge_acked(ack);
                             }
                         }
                     }
                     TcpState::FinWait1 => {
                         if flags & FLAG_FIN != 0 && flags & FLAG_ACK != 0 {
-                            sock.ack_num = u32::from_be(hdr.seq) + 1;
+                            sock.ack_num = seq + 1;
                             sock.send_tcp_packet(FLAG_ACK, &[]);
                             sock.state = TcpState::TimeWait;
                         } else if flags & FLAG_ACK != 0 {
@@ -613,7 +664,7 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                     }
                     TcpState::FinWait2 => {
                         if flags & FLAG_FIN != 0 {
-                            sock.ack_num = u32::from_be(hdr.seq) + 1;
+                            sock.ack_num = seq + 1;
                             sock.send_tcp_packet(FLAG_ACK, &[]);
                             sock.state = TcpState::TimeWait;
                         }
@@ -651,12 +702,12 @@ mod tests {
 
     fn make_tcp_header(flags: u16, seq: u32, ack: u32, dst_port: u16) -> Vec<u8> {
         let hdr = TcpHeader {
-            src_port: 80u16.to_be(),
-            dst_port: dst_port.to_be(),
-            seq: seq.to_be(),
-            ack: ack.to_be(),
-            data_offset_flags: ((5u16 << 12) | flags).to_be(),
-            window: 65535u16.to_be(),
+            src_port: 80,
+            dst_port,
+            seq,
+            ack,
+            data_offset_flags: (5u16 << 12) | flags,
+            window: 65535,
             checksum: 0,
             urgent: 0,
         };
@@ -736,17 +787,39 @@ mod tests {
     #[test]
     fn test_tcp_header_roundtrip() {
         let hdr = TcpHeader {
-            src_port: 1234u16.to_be(),
-            dst_port: 80u16.to_be(),
-            seq: 0xABCDEF01u32.to_be(),
-            ack: 0x12345678u32.to_be(),
-            data_offset_flags: ((5u16 << 12) | FLAG_SYN | FLAG_ACK).to_be(),
-            window: 64000u16.to_be(),
-            checksum: 0xBEEFu16.to_be(),
-            urgent: 0u16.to_be(),
+            src_port: 1234,
+            dst_port: 80,
+            seq: 0xABCDEF01,
+            ack: 0x12345678,
+            data_offset_flags: (5u16 << 12) | FLAG_SYN | FLAG_ACK,
+            window: 64000,
+            checksum: 0xBEEF,
+            urgent: 0,
         };
         let bytes = hdr.to_bytes();
         let parsed = TcpHeader::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.to_bytes(), bytes);
+    }
+
+    #[test]
+    fn test_tcp_header_literal_wire_order() {
+        let bytes = [
+            0x00, 0x50, 0x1f, 0x90, 0x00, 0x00, 0x01, 0xf5, 0x00, 0x00, 0x03, 0xe9, 0x50, 0x18,
+            0xff, 0xff, 0x12, 0x34, 0x00, 0x00,
+        ];
+
+        let parsed = TcpHeader::from_bytes(&bytes).unwrap();
+        let src_port = parsed.src_port;
+        let dst_port = parsed.dst_port;
+        let seq = parsed.seq;
+        let ack = parsed.ack;
+
+        assert_eq!(src_port, 80);
+        assert_eq!(dst_port, 8080);
+        assert_eq!(seq, 501);
+        assert_eq!(ack, 1001);
+        assert_eq!(parsed.data_offset(), 20);
+        assert_eq!(parsed.flags(), FLAG_ACK | FLAG_PSH);
         assert_eq!(parsed.to_bytes(), bytes);
     }
 
@@ -812,6 +885,9 @@ mod tests {
 
         assert!(proof.ok);
         assert!(proof.listener_first);
+        assert!(proof.exact_flow);
+        assert_eq!(proof.decoy_rx_bytes, 0);
+        assert!(proof.listener_fallback);
         assert_eq!(proof.payload_bytes, 4);
         assert_eq!(proof.rx_bytes, 4);
         assert_eq!(proof.accepted_state, TcpState::Established);

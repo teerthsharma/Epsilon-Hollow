@@ -16,7 +16,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
-
 use super::fadt;
 
 // ---------------------------------------------------------------------------

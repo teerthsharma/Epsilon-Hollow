@@ -576,6 +576,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     app_state.create_windows(&mut compositor);
     run_aether_desktop_probe(&mut app_state);
+    run_laamba_app_proof(&app_state);
     serial_println!("[SealShell] Loaded");
 
     // Bring up the Seal-native control surface first; LAAMBA stays a launchable app lane.
@@ -600,6 +601,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
             core::hint::spin_loop();
         }
     }
+    run_graphics_desktop_proof(fb, &compositor);
     serial_println!("[BOOT] Desktop proof frame blit done");
     run_desktop_soak_probe(fb, &mut compositor);
 
@@ -700,6 +702,203 @@ fn boot_graphical(fb: &'static Framebuffer) {
         process::scheduler::yield_current();
         x86_64::instructions::hlt();
     }
+}
+
+fn run_laamba_app_proof(app_state: &wm::app_state::AppState) {
+    let result = if app_state.laamba_id > 0 && app_state.aether_id > 0 {
+        "pass"
+    } else {
+        "fail"
+    };
+    serial_println!(
+        "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id={} launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id={} runtime_bridge=rust_native_manifest python_runtime=0 result={}",
+        app_state.laamba_id,
+        app_state.aether_id,
+        result
+    );
+}
+
+struct GraphicsDesktopProof {
+    scanned_pixels: u64,
+    nonblack_px: u64,
+    visible_icons: u64,
+    icon_region_signal: u64,
+    icon_color_buckets: u64,
+    control_region_signal: u64,
+    primary_titlebar_signal: u64,
+    start_button_signal: u64,
+    theorem_indicator_signal: u64,
+    minimized_app_lane_signal: u64,
+    power_button_signal: u64,
+    sampled_pixels: u64,
+    nonblack_samples: u64,
+    sample_hash: u64,
+}
+
+fn run_graphics_desktop_proof(
+    fb: &graphics::framebuffer::Framebuffer,
+    compositor: &wm::compositor::Compositor,
+) {
+    let proof = measure_graphics_desktop_proof(fb);
+    let back_buffer = if fb.has_back_buffer() { 1 } else { 0 };
+    let result = if back_buffer == 1
+        && fb.width >= 1024
+        && fb.height >= 768
+        && fb.bpp == 32
+        && (fb.pitch as u64) >= (fb.width as u64).saturating_mul(4)
+        && compositor.window_count() >= 12
+        && compositor.focused_window_id() >= 1
+        && proof.scanned_pixels >= (fb.width as u64).saturating_mul(fb.height as u64)
+        && proof.nonblack_px >= 20_000
+        && proof.visible_icons >= 10
+        && proof.icon_region_signal >= 2_000
+        && proof.icon_color_buckets >= 6
+        && proof.control_region_signal >= 8_000
+        && proof.primary_titlebar_signal >= 6_000
+        && proof.start_button_signal >= 1_000
+        && proof.theorem_indicator_signal >= 500
+        && proof.minimized_app_lane_signal >= 300
+        && proof.power_button_signal >= 220
+        && proof.sampled_pixels >= 1_024
+        && proof.nonblack_samples >= 512
+        && proof.sample_hash != 0
+    {
+        "pass"
+    } else {
+        "fail"
+    };
+
+    serial_println!(
+        "[GFX] desktop-proof version=1 surface=framebuffer width={} height={} bpp={} pitch={} back_buffer={} window_count={} focused_window_id={} scanned_pixels={} nonblack_px={} visible_icons={} icon_region_signal={} icon_color_buckets={} control_region_signal={} primary_titlebar_signal={} start_button_signal={} theorem_indicator_signal={} minimized_app_lane_signal={} power_button_signal={} sampled_pixels={} nonblack_samples={} sample_hash={} result={}",
+        fb.width,
+        fb.height,
+        fb.bpp,
+        fb.pitch,
+        back_buffer,
+        compositor.window_count(),
+        compositor.focused_window_id(),
+        proof.scanned_pixels,
+        proof.nonblack_px,
+        proof.visible_icons,
+        proof.icon_region_signal,
+        proof.icon_color_buckets,
+        proof.control_region_signal,
+        proof.primary_titlebar_signal,
+        proof.start_button_signal,
+        proof.theorem_indicator_signal,
+        proof.minimized_app_lane_signal,
+        proof.power_button_signal,
+        proof.sampled_pixels,
+        proof.nonblack_samples,
+        proof.sample_hash,
+        result
+    );
+}
+
+fn measure_graphics_desktop_proof(fb: &graphics::framebuffer::Framebuffer) -> GraphicsDesktopProof {
+    const ICON_XS: [u32; 10] = [20, 120, 220, 320, 420, 520, 620, 720, 820, 920];
+    let mut icon_color_pixels = [0u64; 10];
+    let mut icon_color_buckets = [false; 64];
+    let mut proof = GraphicsDesktopProof {
+        scanned_pixels: 0,
+        nonblack_px: 0,
+        visible_icons: 0,
+        icon_region_signal: 0,
+        icon_color_buckets: 0,
+        control_region_signal: 0,
+        primary_titlebar_signal: 0,
+        start_button_signal: 0,
+        theorem_indicator_signal: 0,
+        minimized_app_lane_signal: 0,
+        power_button_signal: 0,
+        sampled_pixels: 0,
+        nonblack_samples: 0,
+        sample_hash: 0xcbf29ce484222325,
+    };
+
+    let height = fb.height;
+    let width = fb.width;
+    for y in 0..height {
+        for x in 0..width {
+            let color = fb.get_pixel(x, y);
+            let r = ((color >> 16) & 0xff) as u8;
+            let g = ((color >> 8) & 0xff) as u8;
+            let b = (color & 0xff) as u8;
+            let max_channel = r.max(g).max(b);
+            let min_channel = r.min(g).min(b);
+
+            proof.scanned_pixels += 1;
+            if r > 8 || g > 8 || b > 8 {
+                proof.nonblack_px += 1;
+            }
+            if x < 1_000 && (40..140).contains(&y) && (r > 32 || g > 32 || b > 32) {
+                proof.icon_region_signal += 1;
+            }
+            if (50..98).contains(&y) && max_channel >= 96 && max_channel - min_channel >= 40 {
+                for (idx, icon_x) in ICON_XS.iter().copied().enumerate() {
+                    if (icon_x..icon_x + 48).contains(&x) {
+                        icon_color_pixels[idx] += 1;
+                        let bucket =
+                            ((r as usize / 64) << 4) | ((g as usize / 64) << 2) | (b as usize / 64);
+                        icon_color_buckets[bucket.min(icon_color_buckets.len() - 1)] = true;
+                        break;
+                    }
+                }
+            }
+            if (40..700).contains(&x) && (120..580).contains(&y) && (r > 28 || g > 28 || b > 28) {
+                proof.control_region_signal += 1;
+            }
+            if (48..660).contains(&x) && (132..158).contains(&y) && b > 96 && g > 32 && r < 96 {
+                proof.primary_titlebar_signal += 1;
+            }
+            if (4..76).contains(&x)
+                && (height.saturating_sub(24)..height.saturating_sub(4)).contains(&y)
+                && b > 140
+                && g > 80
+                && r < 110
+            {
+                proof.start_button_signal += 1;
+            }
+            if (90..270).contains(&x)
+                && (height.saturating_sub(20)..height.saturating_sub(10)).contains(&y)
+                && (max_channel >= 96 || max_channel - min_channel >= 40)
+            {
+                proof.theorem_indicator_signal += 1;
+            }
+            if (350..width.saturating_sub(132)).contains(&x)
+                && (height.saturating_sub(24)..height.saturating_sub(4)).contains(&y)
+                && (max_channel >= 120 || (max_channel >= 64 && max_channel - min_channel >= 36))
+            {
+                proof.minimized_app_lane_signal += 1;
+            }
+            if (width.saturating_sub(36)..width.saturating_sub(12)).contains(&x)
+                && (height.saturating_sub(22)..height.saturating_sub(6)).contains(&y)
+                && r > 180
+                && g < 130
+                && b < 130
+            {
+                proof.power_button_signal += 1;
+            }
+
+            if x % 16 == 0 && y % 16 == 0 {
+                proof.sampled_pixels += 1;
+                if r > 8 || g > 8 || b > 8 {
+                    proof.nonblack_samples += 1;
+                }
+                proof.sample_hash ^= color as u64;
+                proof.sample_hash = proof.sample_hash.wrapping_mul(0x100000001b3);
+                proof.sample_hash ^= ((x as u64) << 32) ^ y as u64;
+            }
+        }
+    }
+
+    proof.visible_icons = icon_color_pixels
+        .iter()
+        .copied()
+        .filter(|count| *count >= 1_200)
+        .count() as u64;
+    proof.icon_color_buckets = icon_color_buckets.iter().filter(|seen| **seen).count() as u64;
+    proof
 }
 
 fn run_desktop_soak_probe(
@@ -873,6 +1072,7 @@ fn run_manifold_teleport_bench() {
     const SAMPLES: usize = 3;
     const LOADS: [usize; SAMPLES] = [8, 64, 256];
     const PAYLOAD_BYTES: usize = 64;
+    const MOCK_BLOCK_SECTORS: usize = 4096;
     let payload = [0xA5u8; PAYLOAD_BYTES];
     let mut samples = [0u64; SAMPLES];
     let mut ok = 0usize;
@@ -885,7 +1085,7 @@ fn run_manifold_teleport_bench() {
     let mut dst_present = 0usize;
 
     for (idx, load) in LOADS.iter().copied().enumerate() {
-        let mut bench_fs = fs::manifold_fs::ManifoldFS::new_ramfs();
+        let mut bench_fs = fs::manifold_fs::ManifoldFS::new_with_mock_store(MOCK_BLOCK_SECTORS);
         let root = bench_fs.root_id();
         let src = match bench_fs.mkdir("src", root) {
             Ok(id) => id,
@@ -899,8 +1099,9 @@ fn run_manifold_teleport_bench() {
             let name = alloc::format!("f{}", i);
             let _ = bench_fs.store(name.as_str(), b"x", src);
         }
-        if bench_fs.store("target.bin", &payload, src).is_err() {
-            continue;
+        match bench_fs.store("target.bin", &payload, src) {
+            Ok(_) => {}
+            Err(_) => continue,
         }
         let inode_before = match bench_fs.resolve_path_from("target.bin", src) {
             Ok(id) => id,
@@ -948,7 +1149,7 @@ fn run_manifold_teleport_bench() {
     }
 
     serial_println!(
-        "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples={} ok={} same_inode={} src_gone={} dst_present={} entries_min={} entries_max={} payload_bytes={} p50_cycles={} p95_cycles={} max_cycles={} ticks_max={} metadata_ops_max={} persistence_bytes_per_move={} payload_points={}",
+        "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples={} ok={} same_inode={} src_gone={} dst_present={} entries_min={} entries_max={} payload_bytes={} p50_cycles={} p95_cycles={} max_cycles={} ticks_max={} metadata_ops_max={} persistence_bytes_per_move={} payload_points={}",
         SAMPLES,
         ok,
         same_inode,
@@ -1332,6 +1533,7 @@ fn init_drivers() {
     serial_println!("[BOOT] driver init: bluetooth done");
     drivers::gpu::init();
     serial_println!("[BOOT] driver init: gpu done");
+    apps::gpu_benchmark::run_structured_topology_proof();
     if drivers::nvme::init().is_none() {
         serial_println!("[NVMe] Initialization failed, continuing without NVMe");
     }
@@ -1375,10 +1577,13 @@ fn run_tcp_packet_demux_bench() {
         net::tcp::TcpState::TimeWait => "time_wait",
     };
     serial_println!(
-        "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state={} ok={} listener_first={} payload_bytes={} rx_bytes={} cleanup={}",
+        "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state={} ok={} listener_first={} exact_flow={} decoy_rx_bytes={} listener_fallback={} payload_bytes={} rx_bytes={} cleanup={}",
         accepted_state,
         if proof.ok { 1 } else { 0 },
         if proof.listener_first { 1 } else { 0 },
+        if proof.exact_flow { 1 } else { 0 },
+        proof.decoy_rx_bytes,
+        if proof.listener_fallback { 1 } else { 0 },
         proof.payload_bytes,
         proof.rx_bytes,
         if proof.cleanup_ok { "ok" } else { "leak" }

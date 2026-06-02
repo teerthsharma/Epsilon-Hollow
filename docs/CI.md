@@ -2,6 +2,9 @@
 
 > Source: `.github/workflows/ci.yml`
 
+Seal OS is a solo-researcher topological OS, so CI acts like the second pair of
+hands I do not have: every public claim needs a gate, log marker, or artifact.
+
 Triggered on: all `push` and `pull_request` events, plus manual `workflow_dispatch`
 for the native Ubuntu 26.04 comparison lane.
 Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"`, `EXPECTED_SEAL_OS_VERSION="0.4.5"` (kernel jobs override RUSTFLAGS to `""`).
@@ -48,8 +51,8 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | Toolchain | `dtolnay/rust-toolchain@1.85` |
 | Cache | `Swatinem/rust-cache@v2` |
 | Command | `cargo test --workspace` |
-| Extra Gates | `cargo +stable check --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --no-default-features --features no_std`; `cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate`; `seal-mkimage --check-doc-claim-contract .` |
-| What It Checks | All unit and integration tests pass, Aether core still compiles in the bare-metal no_std feature path, deleted legacy theorem modules have Rust public API coverage, and README/docs claims keep Ubuntu/O(1)/ManifoldFS assertions tied to proof gates |
+| Extra Gates | `cargo +stable check --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --no-default-features --features no_std`; `cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate`; `seal-mkimage --check-doc-claim-contract .`; `seal-mkimage --check-release-workflow-contract .` |
+| What It Checks | All unit and integration tests pass, Aether core still compiles in the bare-metal no_std feature path, deleted legacy theorem modules have Rust public API coverage, README/docs claims keep Ubuntu/O(1)/ManifoldFS assertions tied to proof gates, and release publishing cannot skip explicit tags or QEMU serial proof |
 | Failure Means | Test failure in any workspace crate |
 
 ## Job 4: `bench-compile`
@@ -197,17 +200,20 @@ The smoke test must verify these serial output patterns:
 | 8 | `All T1-T10 theorems VERIFIED` | Theorem summary verified |
 | 9 | `[BENCH] toporam-alloc` | Hint-biased TopoRAM target-cell hot path measured |
 | 10 | `[BENCH] alloc-frame` | Single-frame allocator hot path measured |
-| 11 | `[BENCH] manifold-teleport` | ManifoldFS same-inode metadata teleport measured, with file-byte rewrites forbidden |
+| 11 | `[BENCH] manifold-teleport` | ManifoldFS same-inode metadata teleport measured on `fs_mode=mock_block` with `persistence_bytes_per_move=0` |
 | 12 | `[BENCH] scheduler-select-next` | Live scheduler selector requeue hot path measured |
-| 13 | `[BENCH] tcp-packet-demux` | TCP listener-first same-port demux fixture delivered payload to accepted socket |
-| 14 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
-| 15 | `Device model: QEMU HARDDISK` | AHCI disk identified |
-| 16 | `Registered as block device 0x800` | AHCI block device registered |
-| 17 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
-| 18 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 19 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 20 | `Seal OS desktop ready.` | Desktop reached |
-| 21 | `Entering real event loop` | Event loop active |
+| 13 | `[BENCH] tcp-packet-demux` | TCP listener-first same-port demux fixture delivered payload to exact accepted socket, left a decoy empty, and proved listener fallback |
+| 14 | `[GPU-BENCH] suite` | CPU fallback topology accelerator proof ran three kernels against CPU recomputation, with no hardware dispatch claimed |
+| 15 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
+| 16 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
+| 17 | `Device model: QEMU HARDDISK` | AHCI disk identified |
+| 18 | `Registered as block device 0x800` | AHCI block device registered |
+| 19 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
+| 20 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
+| 21 | `Desktop proof frame blit done` | First desktop frame blitted |
+| 22 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 23 | `Seal OS desktop ready.` | Desktop reached |
+| 24 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -215,11 +221,12 @@ Additional Rust-native audit commands run against the same OS surface:
 
 | Command | Purpose |
 |---|---|
-| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
-| `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
+| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, serial desktop pixel proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
+| `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
-| `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses the `[GFX] desktop-soak` marker and requires frame count, monotonic cycle percentiles, input-events field, and full-frame dirty-pixel coverage |
-| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, and `[BENCH] tcp-packet-demux`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries, bounded metadata ops, `persistence_bytes_per_move=0`, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, and listener-first TCP demux payload delivery |
+| `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
+| `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses `[GFX] desktop-proof` and `[GFX] desktop-soak`; requires framebuffer dimensions, back-buffer presence, full-frame scan count, nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, nonzero sample hash, frame count, monotonic cycle percentiles, and input-events field |
+| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and `[GPU-BENCH]`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries in `fs_mode=mock_block`, bounded metadata ops, `persistence_bytes_per_move=0`, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, exact-flow TCP demux payload delivery, same-port decoy non-delivery, listener fallback, and CPU-fallback topology accelerator correctness against CPU recomputation with no hardware dispatch claimed |
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
 | `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log` | Fails unless Seal OS p50, p95, and max allocation cycles beat the validated Ubuntu artifact |
@@ -245,11 +252,13 @@ and WSL kernels, boots the Seal image on that same runner, captures
 checkout, `--check-current-benchmark-proof`, then uploads the Seal log, Ubuntu
 log, and host manifest as `ubuntu-26-alloc-comparison`.
 
-The pixel and manifest gates, `seal-mkimage --check-proof-screen
-qemu-proof/screen.ppm` and `seal-mkimage --check-proof-manifest
-qemu-proof/proof-manifest.txt`, are local WSL2/QEMU proof gates because the CI
-smoke job runs with `-nographic` and does not capture a framebuffer dump. They
-must pass before claiming a GUI desktop proof.
+The serial desktop proof now scans the framebuffer/back buffer in `-nographic`
+CI, but it is still a serial counter proof, not a captured image. The captured
+pixel and manifest gates, `seal-mkimage --check-proof-screen qemu-proof/screen.ppm`
+and `seal-mkimage --check-proof-manifest qemu-proof/proof-manifest.txt`, are
+local WSL2/QEMU proof gates because the CI smoke job does not capture a
+framebuffer dump. They must pass before claiming a screenshot-backed GUI
+desktop proof.
 
 ### QEMU Soft Milestones
 

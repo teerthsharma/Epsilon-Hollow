@@ -14,6 +14,7 @@ use super::encoder::{ManifoldPayload, SpherePoint};
 use super::journal::{compute_manifold_embedding, TopologicalJournal};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
+use core::convert::TryInto;
 
 const SECTOR_SIZE: usize = 512;
 const INODE_RECORD_SIZE: usize = 256;
@@ -23,6 +24,52 @@ const VERSION: u32 = 1;
 const JOURNAL_BLOCKS: u64 = 1024;
 const NONE_ID: u64 = u64::MAX;
 const AHCI_MANIFOLD_START_LBA: u64 = 2048 + ((64 * 1024 * 1024) / SECTOR_SIZE as u64);
+const JOURNAL_NAME_OFFSET: usize = 98;
+const JOURNAL_CHECKSUM_OFFSET: usize = JOURNAL_NAME_OFFSET + 128;
+const INODE_NAME_OFFSET: usize = 90;
+const INODE_SIBLING_NEXT_OFFSET: usize = 224;
+const INODE_SIBLING_PREV_OFFSET: usize = 232;
+const INODE_DIR_FIRST_CHILD_OFFSET: usize = 240;
+
+fn put_u16(buf: &mut [u8], offset: usize, value: u16) {
+    buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u32(buf: &mut [u8], offset: usize, value: u32) {
+    buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_i32(buf: &mut [u8], offset: usize, value: i32) {
+    buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn put_u64(buf: &mut [u8], offset: usize, value: u64) {
+    buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn get_u16(buf: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        buf.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn get_u32(buf: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        buf.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn get_i32(buf: &[u8], offset: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(
+        buf.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn get_u64(buf: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        buf.get(offset..offset + 8)?.try_into().ok()?,
+    ))
+}
 
 /// Trait abstracting over real AHCI and mock block devices.
 pub trait BlockStoreBackend: Send + Sync {
@@ -197,35 +244,84 @@ struct JournalEntry {
 
 impl JournalEntry {
     fn checksum(&self) -> u32 {
-        let bytes = self.as_bytes();
+        let sector = self.encode_sector(0);
+        Self::checksum_sector(&sector)
+    }
+
+    fn checksum_sector(sector: &[u8; SECTOR_SIZE]) -> u32 {
         let mut h: u32 = 0x811c_9dc5;
-        for &b in &bytes[..SECTOR_SIZE - 4] {
+        for (idx, &b) in sector.iter().enumerate() {
+            let b = if (JOURNAL_CHECKSUM_OFFSET..JOURNAL_CHECKSUM_OFFSET + 4).contains(&idx) {
+                0
+            } else {
+                b
+            };
             h ^= b as u32;
             h = h.wrapping_mul(0x0100_0193);
         }
         h
     }
 
-    fn verify(&self) -> bool {
-        self.checksum == self.checksum()
+    fn encode_sector(&self, checksum: u32) -> [u8; SECTOR_SIZE] {
+        let mut sector = [0u8; SECTOR_SIZE];
+        put_u64(&mut sector, 0, self.seq);
+        sector[8] = self.op;
+        sector[9] = self.committed;
+        put_u64(&mut sector, 16, self.inode_id);
+        put_u64(&mut sector, 24, self.parent);
+        sector[32] = self.kind;
+        put_u64(&mut sector, 40, self.data_lba);
+        put_u32(&mut sector, 48, self.data_blocks);
+        put_u32(&mut sector, 52, self.voronoi_cell);
+        put_u64(&mut sector, 56, self.original_size);
+        put_u16(&mut sector, 64, self.permissions);
+        put_u64(&mut sector, 72, self.created_ms);
+        put_u64(&mut sector, 80, self.modified_ms);
+        put_u64(&mut sector, 88, self.content_hash);
+        put_u16(&mut sector, 96, self.name_len);
+        sector[JOURNAL_NAME_OFFSET..JOURNAL_NAME_OFFSET + 128].copy_from_slice(&self.name);
+        put_u32(&mut sector, JOURNAL_CHECKSUM_OFFSET, checksum);
+        sector
     }
 
-    fn as_bytes(&self) -> &[u8] {
-        // SAFETY: JournalEntry is repr(C) and exactly 512 bytes.
-        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    fn to_sector(&self) -> [u8; SECTOR_SIZE] {
+        let mut sector = self.encode_sector(0);
+        let checksum = Self::checksum_sector(&sector);
+        put_u32(&mut sector, JOURNAL_CHECKSUM_OFFSET, checksum);
+        sector
     }
 
-    fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < size_of::<Self>() {
+    fn from_sector(buf: &[u8]) -> Option<Self> {
+        let sector: &[u8; SECTOR_SIZE] = buf.try_into().ok()?;
+        let checksum = get_u32(sector, JOURNAL_CHECKSUM_OFFSET)?;
+        if checksum != Self::checksum_sector(sector) {
             return None;
         }
-        // SAFETY: buf has correct length.
-        let entry = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Self) };
-        if entry.verify() {
-            Some(entry)
-        } else {
-            None
-        }
+        let mut name = [0u8; 128];
+        name.copy_from_slice(&sector[JOURNAL_NAME_OFFSET..JOURNAL_NAME_OFFSET + 128]);
+        Some(Self {
+            seq: get_u64(sector, 0)?,
+            op: sector[8],
+            committed: sector[9],
+            _pad1: [0; 6],
+            inode_id: get_u64(sector, 16)?,
+            parent: get_u64(sector, 24)?,
+            kind: sector[32],
+            _pad2: [0; 7],
+            data_lba: get_u64(sector, 40)?,
+            data_blocks: get_u32(sector, 48)?,
+            voronoi_cell: get_u32(sector, 52)?,
+            original_size: get_u64(sector, 56)?,
+            permissions: get_u16(sector, 64)?,
+            _pad3: [0; 6],
+            created_ms: get_u64(sector, 72)?,
+            modified_ms: get_u64(sector, 80)?,
+            content_hash: get_u64(sector, 88)?,
+            name_len: get_u16(sector, 96)?,
+            name,
+            checksum,
+            _pad4: [0; 282],
+        })
     }
 }
 
@@ -328,9 +424,66 @@ impl InodeRecord {
         }
     }
 
-    fn as_bytes(&self) -> &[u8] {
-        // SAFETY: InodeRecord is repr(C) and exactly 256 bytes.
-        unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
+    fn to_record(&self) -> [u8; INODE_RECORD_SIZE] {
+        let mut record = [0u8; INODE_RECORD_SIZE];
+        put_u64(&mut record, 0, self.id);
+        record[8] = self.kind;
+        put_u64(&mut record, 16, self.parent);
+        put_u64(&mut record, 24, self.data_lba);
+        put_u32(&mut record, 32, self.data_blocks);
+        put_u32(&mut record, 36, self.voronoi_cell);
+        put_i32(&mut record, 40, self.cluster_id);
+        put_u64(&mut record, 48, self.original_size);
+        put_u16(&mut record, 56, self.permissions);
+        put_u64(&mut record, 64, self.created_ms);
+        put_u64(&mut record, 72, self.modified_ms);
+        put_u64(&mut record, 80, self.content_hash);
+        put_u16(&mut record, 88, self.name_len);
+        record[INODE_NAME_OFFSET..INODE_NAME_OFFSET + 128].copy_from_slice(&self.name);
+        put_u64(&mut record, INODE_SIBLING_NEXT_OFFSET, self.sibling_next);
+        put_u64(&mut record, INODE_SIBLING_PREV_OFFSET, self.sibling_prev);
+        put_u64(
+            &mut record,
+            INODE_DIR_FIRST_CHILD_OFFSET,
+            self.dir_first_child,
+        );
+        record
+    }
+
+    fn from_record(buf: &[u8]) -> Option<Self> {
+        if buf.len() < INODE_RECORD_SIZE {
+            return None;
+        }
+        let id = get_u64(buf, 0)?;
+        let kind = *buf.get(8)?;
+        let name_len = get_u16(buf, 88)?;
+        if kind > 1 || (id == 0 && name_len == 0) {
+            return None;
+        }
+        let mut name = [0u8; 128];
+        name.copy_from_slice(buf.get(INODE_NAME_OFFSET..INODE_NAME_OFFSET + 128)?);
+        Some(Self {
+            id,
+            kind,
+            _pad1: [0; 7],
+            parent: get_u64(buf, 16)?,
+            data_lba: get_u64(buf, 24)?,
+            data_blocks: get_u32(buf, 32)?,
+            voronoi_cell: get_u32(buf, 36)?,
+            cluster_id: get_i32(buf, 40)?,
+            _pad2: [0; 4],
+            original_size: get_u64(buf, 48)?,
+            permissions: get_u16(buf, 56)?,
+            _pad3: [0; 6],
+            created_ms: get_u64(buf, 64)?,
+            modified_ms: get_u64(buf, 72)?,
+            content_hash: get_u64(buf, 80)?,
+            name_len,
+            name,
+            sibling_next: get_u64(buf, INODE_SIBLING_NEXT_OFFSET)?,
+            sibling_prev: get_u64(buf, INODE_SIBLING_PREV_OFFSET)?,
+            dir_first_child: get_u64(buf, INODE_DIR_FIRST_CHILD_OFFSET)?,
+        })
     }
 }
 
@@ -345,6 +498,7 @@ pub struct BlockStore {
     payload_extents: BTreeMap<u64, ManifoldPayload>,
     freelist: Vec<u64>,
     dirty_inodes: Vec<u64>,
+    deleted_inodes: Vec<u64>,
     bitmap: Vec<u8>,
     journal_seq: u64,
     journal_pos: u64,
@@ -362,6 +516,7 @@ impl BlockStore {
             payload_extents: BTreeMap::new(),
             freelist: Vec::new(),
             dirty_inodes: Vec::new(),
+            deleted_inodes: Vec::new(),
             bitmap: Vec::new(),
             journal_seq: 0,
             journal_pos: 0,
@@ -441,6 +596,7 @@ impl BlockStore {
         self.payload_extents.clear();
         self.freelist.clear();
         self.dirty_inodes.clear();
+        self.deleted_inodes.clear();
 
         let sb = self
             .superblock
@@ -590,12 +746,9 @@ impl BlockStore {
             backend.read_sector(sb.inode_table_start + block, &mut sector)?;
             for rec in 0..records_per_sector {
                 let offset = rec * INODE_RECORD_SIZE;
-                // SAFETY: offset is within sector; InodeRecord is 256 bytes.
-                let record = unsafe {
-                    core::ptr::read_unaligned(sector.as_ptr().add(offset) as *const InodeRecord)
-                };
-                let is_valid = record.kind <= 1 && (record.id != 0 || record.name_len > 0);
-                if is_valid {
+                if let Some(record) =
+                    InodeRecord::from_record(&sector[offset..offset + INODE_RECORD_SIZE])
+                {
                     self.inode_records.insert(record.id, record);
                 }
             }
@@ -617,9 +770,21 @@ impl BlockStore {
                 let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
                 backend.read_sector(sb.journal_start + i, &mut buf)?;
             }
-            if let Some(entry) = JournalEntry::from_bytes(&buf) {
+            if let Some(entry) = JournalEntry::from_sector(&buf) {
                 if entry.committed != 0 && entry.seq > max_seq {
                     max_seq = entry.seq;
+                    if entry.op == 2 {
+                        self.inode_records.remove(&entry.inode_id);
+                        if entry.data_lba != 0 && entry.data_blocks > 0 {
+                            self.data_extents.remove(&entry.data_lba);
+                            self.payload_extents.remove(&entry.data_lba);
+                            let _ = self.mark_free(entry.data_lba, entry.data_blocks as u64);
+                        }
+                        continue;
+                    }
+                    if entry.op != 1 {
+                        continue;
+                    }
                     let payload = if entry.data_blocks > 0 && entry.data_lba != 0 {
                         match self.read_data_extent(entry.data_lba, entry.data_blocks as usize) {
                             Ok(ref buf) => {
@@ -702,6 +867,19 @@ impl BlockStore {
         Ok(())
     }
 
+    fn mark_dirty_inode(&mut self, inode_id: u64) {
+        if !self.dirty_inodes.contains(&inode_id) {
+            self.dirty_inodes.push(inode_id);
+        }
+    }
+
+    fn mark_deleted_inode(&mut self, inode_id: u64) {
+        self.dirty_inodes.retain(|&id| id != inode_id);
+        if !self.deleted_inodes.contains(&inode_id) {
+            self.deleted_inodes.push(inode_id);
+        }
+    }
+
     fn write_journal_entry(&mut self, entry: &JournalEntry) -> Result<(), BlockError> {
         let sb = self
             .superblock
@@ -710,7 +888,8 @@ impl BlockStore {
             .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let lba = sb.journal_start + (self.journal_pos % sb.journal_blocks);
-        backend.write_sector(lba, entry.as_bytes())?;
+        let sector = entry.to_sector();
+        backend.write_sector(lba, &sector)?;
         self.journal_pos = (self.journal_pos + 1) % sb.journal_blocks;
         Ok(())
     }
@@ -726,11 +905,12 @@ impl BlockStore {
 
         for i in 0..sb.journal_blocks {
             backend.read_sector(sb.journal_start + i, &mut buf)?;
-            if let Some(mut entry) = JournalEntry::from_bytes(&buf) {
+            if let Some(mut entry) = JournalEntry::from_sector(&buf) {
                 if entry.committed == 0 {
                     entry.committed = 1;
                     entry.checksum = entry.checksum();
-                    backend.write_sector(sb.journal_start + i, entry.as_bytes())?;
+                    let sector = entry.to_sector();
+                    backend.write_sector(sb.journal_start + i, &sector)?;
                 }
             }
         }
@@ -833,7 +1013,8 @@ impl BlockStore {
 
         let record = InodeRecord::from_inode(inode, lba, blocks);
         self.inode_records.insert(inode.id, record);
-        self.dirty_inodes.push(inode.id);
+        self.deleted_inodes.retain(|&id| id != inode.id);
+        self.mark_dirty_inode(inode.id);
 
         // WAL: write journal entry before metadata is durable.
         self.journal_seq += 1;
@@ -874,6 +1055,60 @@ impl BlockStore {
         Ok(())
     }
 
+    pub fn delete_inode(&mut self, inode: &Inode) -> Result<(), BlockError> {
+        let Some(old) = self.inode_records.get(&inode.id).copied() else {
+            return if self.backend.is_none() {
+                Ok(())
+            } else {
+                Err(BlockError::InvalidLba)
+            };
+        };
+
+        self.journal_seq += 1;
+        let mut name = [0u8; 128];
+        let name_bytes = inode.name.as_bytes();
+        let name_len = name_bytes.len().min(128);
+        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+
+        let mut entry = JournalEntry {
+            seq: self.journal_seq,
+            op: 2,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: inode.id,
+            parent: inode.parent,
+            kind: match inode.kind {
+                InodeKind::File => 0,
+                InodeKind::Directory => 1,
+            },
+            _pad2: [0; 7],
+            data_lba: old.data_lba,
+            data_blocks: old.data_blocks,
+            voronoi_cell: inode.voronoi_cell as u32,
+            original_size: inode.metadata.original_size,
+            permissions: inode.metadata.permissions,
+            _pad3: [0; 6],
+            created_ms: inode.metadata.created_ms,
+            modified_ms: inode.metadata.modified_ms,
+            content_hash: inode.payload.content_hash,
+            name_len: name_len as u16,
+            name,
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        entry.checksum = entry.checksum();
+        self.write_journal_entry(&entry)?;
+
+        self.inode_records.remove(&inode.id);
+        if old.data_lba != 0 && old.data_blocks > 0 {
+            self.data_extents.remove(&old.data_lba);
+            self.payload_extents.remove(&old.data_lba);
+            self.free_blocks(old.data_lba, old.data_blocks)?;
+        }
+        self.mark_deleted_inode(inode.id);
+        Ok(())
+    }
+
     pub fn update_inode_metadata(&mut self, inode: &Inode) -> Result<(), BlockError> {
         let Some(old) = self.inode_records.get(&inode.id).copied() else {
             return if self.backend.is_none() {
@@ -884,7 +1119,8 @@ impl BlockStore {
         };
         let record = InodeRecord::from_inode(inode, old.data_lba, old.data_blocks);
         self.inode_records.insert(inode.id, record);
-        self.dirty_inodes.push(inode.id);
+        self.deleted_inodes.retain(|&id| id != inode.id);
+        self.mark_dirty_inode(inode.id);
 
         self.journal_seq += 1;
         let mut name = [0u8; 128];
@@ -948,6 +1184,18 @@ impl BlockStore {
             Some(r) => r,
             None => return Ok(()),
         };
+        self.write_inode_record_to_table(inode_id, &record.to_record())
+    }
+
+    fn clear_inode(&mut self, inode_id: u64) -> Result<(), BlockError> {
+        self.write_inode_record_to_table(inode_id, &[0u8; INODE_RECORD_SIZE])
+    }
+
+    fn write_inode_record_to_table(
+        &mut self,
+        inode_id: u64,
+        record: &[u8; INODE_RECORD_SIZE],
+    ) -> Result<(), BlockError> {
         let sb = self
             .superblock
             .as_ref()
@@ -955,8 +1203,9 @@ impl BlockStore {
             .clone();
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
-        let block = inode_id / (records_per_sector as u64);
-        let rec = (inode_id % (records_per_sector as u64)) as usize;
+        let table_idx = inode_id & 0xFFFF_FFFF;
+        let block = table_idx / (records_per_sector as u64);
+        let rec = (table_idx % (records_per_sector as u64)) as usize;
         if block >= sb.inode_table_blocks {
             return Err(BlockError::InvalidLba);
         }
@@ -964,7 +1213,7 @@ impl BlockStore {
         let mut sector = [0u8; SECTOR_SIZE];
         backend.read_sector(lba, &mut sector)?;
         let offset = rec * INODE_RECORD_SIZE;
-        sector[offset..offset + INODE_RECORD_SIZE].copy_from_slice(record.as_bytes());
+        sector[offset..offset + INODE_RECORD_SIZE].copy_from_slice(record);
         backend.write_sector(lba, &sector)?;
         Ok(())
     }
@@ -981,10 +1230,16 @@ impl BlockStore {
             }
         }
 
-        let dirty: Vec<u64> = self.dirty_inodes.drain(..).collect();
+        let dirty = self.dirty_inodes.clone();
         for id in &dirty {
             self.flush_inode(*id)?;
         }
+        let deleted = self.deleted_inodes.clone();
+        for id in &deleted {
+            self.clear_inode(*id)?;
+        }
+        self.dirty_inodes.clear();
+        self.deleted_inodes.clear();
         self.commit_journal()?;
         self.write_bitmap()?;
         if let Some(ref sb) = self.superblock {
@@ -1003,30 +1258,43 @@ impl BlockStore {
         self.superblock.is_some()
     }
 
-    pub fn load_inodes(&self) -> Vec<Inode> {
+    pub fn load_inodes(&mut self) -> Vec<Inode> {
         let mut inodes = Vec::new();
-        for (&_id, record) in &self.inode_records {
+        let records: Vec<InodeRecord> = self.inode_records.values().copied().collect();
+        for record in records {
             let payload = match self.payload_extents.get(&record.data_lba) {
                 Some(p) => p.clone(),
-                None => ManifoldPayload {
-                    points: vec![SpherePoint::zero()],
-                    point_count: 1,
-                    betti_0: 1,
-                    original_size: record.original_size,
-                    content_hash: record.content_hash,
-                },
+                None => self
+                    .read_data_extent(record.data_lba, record.data_blocks as usize)
+                    .ok()
+                    .and_then(|extent| bytes_to_payload(&extent))
+                    .unwrap_or_else(|| ManifoldPayload {
+                        points: vec![SpherePoint::zero()],
+                        point_count: 1,
+                        betti_0: 1,
+                        original_size: record.original_size,
+                        content_hash: record.content_hash,
+                    }),
             };
-            let data = if let Some(extent) = self.data_extents.get(&record.data_lba) {
-                let pbytes = payload_bytes(&payload);
-                if extent.len() > pbytes && record.original_size > 0 {
-                    let end = (pbytes + record.original_size as usize).min(extent.len());
-                    extent[pbytes..end].to_vec()
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            };
+            let extent = self
+                .data_extents
+                .get(&record.data_lba)
+                .cloned()
+                .or_else(|| {
+                    self.read_data_extent(record.data_lba, record.data_blocks as usize)
+                        .ok()
+                });
+            let data = extent
+                .map(|extent| {
+                    let pbytes = payload_bytes(&payload);
+                    if extent.len() > pbytes && record.original_size > 0 {
+                        let end = (pbytes + record.original_size as usize).min(extent.len());
+                        extent[pbytes..end].to_vec()
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .unwrap_or_default();
             inodes.push(record.to_inode(payload, data));
         }
         inodes
@@ -1127,7 +1395,144 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_journal_sector_roundtrip() -> TestResult {
+        let mut entry = JournalEntry {
+            seq: 7,
+            op: 1,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: 0x1_0000_0001,
+            parent: 0x1_0000_0000,
+            kind: 0,
+            _pad2: [0; 7],
+            data_lba: 2048,
+            data_blocks: 2,
+            voronoi_cell: 3,
+            original_size: 11,
+            permissions: 0o644,
+            _pad3: [0; 6],
+            created_ms: 1,
+            modified_ms: 2,
+            content_hash: 0xAA55,
+            name_len: 8,
+            name: [0; 128],
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        entry.name[..8].copy_from_slice(b"test.bin");
+        entry.checksum = entry.checksum();
+        let sector = entry.to_sector();
+        test_assert_eq!(sector.len(), SECTOR_SIZE);
+        let parsed = match JournalEntry::from_sector(&sector) {
+            Some(parsed) => parsed,
+            None => return TestResult::Fail("journal sector did not round-trip"),
+        };
+        test_assert_eq!(parsed.inode_id, entry.inode_id);
+        test_assert_eq!(parsed.parent, entry.parent);
+        test_assert_eq!(parsed.name_len, entry.name_len);
+
+        let mut tampered = sector;
+        tampered[0] ^= 0x80;
+        test_assert!(
+            JournalEntry::from_sector(&tampered).is_none(),
+            "tampered journal sector should fail checksum"
+        );
+        TestResult::Pass
+    }
+
+    fn test_generational_inode_flush() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        let inode = dummy_inode(0x1_0000_0001, "gen");
+        if store.write_inode(&inode, b"payload").is_err() {
+            return TestResult::Fail("write_inode failed for generational inode");
+        }
+        if store.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed for generational inode");
+        }
+        let backend = store.backend.take();
+        let mut remounted = BlockStore::new();
+        remounted.backend = backend;
+        if remounted.read_superblock().is_err() {
+            return TestResult::Fail("remount read_superblock failed");
+        }
+        if remounted.read_bitmap().is_err() {
+            return TestResult::Fail("remount read_bitmap failed");
+        }
+        if remounted.read_inode_table().is_err() {
+            return TestResult::Fail("remount read_inode_table failed");
+        }
+        if remounted.replay_journal().is_err() {
+            return TestResult::Fail("remount replay_journal failed");
+        }
+        let inodes = remounted.load_inodes();
+        let Some(inode) = inodes.iter().find(|inode| inode.id == 0x1_0000_0001) else {
+            return TestResult::Fail("generational inode missing after remount");
+        };
+        test_assert_eq!(inode.name, "gen");
+        test_assert_eq!(inode.data, b"payload");
+        TestResult::Pass
+    }
+
+    fn test_cold_inode_table_load_restores_data_without_journal() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        let inode = dummy_inode(0x1_0000_0002, "cold");
+        if store.write_inode(&inode, b"durable bytes").is_err() {
+            return TestResult::Fail("write_inode failed");
+        }
+        if store.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed");
+        }
+
+        let Some(sb) = store.superblock else {
+            return TestResult::Fail("missing superblock");
+        };
+        let zero = [0u8; SECTOR_SIZE];
+        let Some(backend) = store.backend.as_ref() else {
+            return TestResult::Fail("missing backend");
+        };
+        for i in 0..sb.journal_blocks {
+            if backend.write_sector(sb.journal_start + i, &zero).is_err() {
+                return TestResult::Fail("journal wipe failed");
+            }
+        }
+
+        let backend = store.backend.take();
+        let mut remounted = BlockStore::new();
+        remounted.backend = backend;
+        if remounted.read_superblock().is_err() {
+            return TestResult::Fail("remount read_superblock failed");
+        }
+        if remounted.read_bitmap().is_err() {
+            return TestResult::Fail("remount read_bitmap failed");
+        }
+        if remounted.read_inode_table().is_err() {
+            return TestResult::Fail("remount read_inode_table failed");
+        }
+        if remounted.replay_journal().is_err() {
+            return TestResult::Fail("remount replay_journal failed");
+        }
+        let inodes = remounted.load_inodes();
+        let Some(inode) = inodes.iter().find(|inode| inode.id == 0x1_0000_0002) else {
+            return TestResult::Fail("cold inode missing after remount");
+        };
+        test_assert_eq!(inode.name, "cold");
+        test_assert_eq!(inode.data, b"durable bytes");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("block_store::roundtrip", test_roundtrip);
+        crate::testing::register_test(
+            "block_store::journal_sector_roundtrip",
+            test_journal_sector_roundtrip,
+        );
+        crate::testing::register_test(
+            "block_store::generational_inode_flush",
+            test_generational_inode_flush,
+        );
+        crate::testing::register_test(
+            "block_store::cold_inode_table_load_restores_data_without_journal",
+            test_cold_inode_table_load_restores_data_without_journal,
+        );
     }
 }

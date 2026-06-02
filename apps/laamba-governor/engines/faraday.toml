@@ -6,8 +6,8 @@ color = "#FF6B35"
 description = "God Tensor via Banach fixed-point E<->H coupling"
 
 [engine.entry]
-type = "python"
-command = "python engines/wrappers/faraday_wrapper.py"
+type = "native"
+command = "laamba-native faraday"
 working_dir = "~/repos/faraday"
 
 [engine.inputs]

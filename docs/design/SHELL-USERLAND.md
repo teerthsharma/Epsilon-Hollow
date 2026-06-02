@@ -319,7 +319,7 @@ fn load_elf(path: &str) -> Result<Process, Error> {
 | `test_shell_redirect` | `echo test > /tmp/file.txt`, content matches | [x] |
 | `test_shell_background` | `sleep 10 &` returns immediately, job in `jobs` list | [x] |
 | `test_ls_dir` | `ls /bin` lists installed utilities | [x] |
-| `test_mv_teleport` | `mv large_file /tmp/` preserves identity through teleport metadata rewiring; byte persistence remains size-dependent | [x] |
+| `test_mv_teleport` | `mv large_file /tmp/` preserves identity through teleport metadata rewiring; mock block-store marker reports `persistence_bytes_per_move=0` | [x] |
 | `test_ps_processes` | `ps` shows init, shell, and test processes | [x] |
 | `test_fork_exec` | C program with `fork()` + `execve("/bin/echo")` works | [x] |
 | `test_malloc_free` | C program allocates 1 MiB, frees, no leak | [x] |

@@ -100,9 +100,9 @@ The serial log must contain:
 [ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=<n> ready_after=<n> cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
-[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
@@ -114,18 +114,22 @@ The serial log must contain:
 [THEOREM] T9/CMA VERIFIED
 [THEOREM] T10/WPHB VERIFIED
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
+[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [AHCI] Registered as block device 0x800
 [disk::ahci] First disk readable (sector 0 OK)
 [VFS] ManifoldFS mounted from disk
+[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
 ```
 
-The theorem log audit now requires desktop readiness and event-loop entry, not
-just theorem banner lines. The screenshot audit parses `screen.ppm` directly and
-requires a nonblank 1024x768 desktop with the icon lane, control region,
+The theorem log audit now requires Aether runtime proof, LAAMBA kernel app
+proof, serial desktop pixel proof, desktop readiness, and event-loop entry, not
+just theorem banner lines. The screenshot audit parses `screen.ppm` directly
+and requires a nonblank 1024x768 desktop with the icon lane, control region,
 primary terminal titlebar, and taskbar start/power controls visible.
 
 The manifest audit parses `proof-manifest.txt` and verifies the proof bundle
@@ -133,10 +137,12 @@ against the current artifacts. It requires the QEMU backend, commit/dirty flag,
 image and EFI fingerprints, serial/screen fingerprints, and every hard gate
 status to be recorded as `ok`.
 
-The desktop soak marker is the first anti-jank gate. It proves the boot path ran
-a deterministic compositor compose+blit exercise before declaring the desktop
-ready. The current marker reports raw cycle percentiles, not calibrated
-microseconds, so it is a readiness gate rather than a final 60 FPS proof.
+The desktop audit now has two parts. `[GFX] desktop-proof` scans the
+framebuffer/back buffer and proves nonblank desktop structure in serial CI.
+`[GFX] desktop-soak` proves the boot path ran a deterministic compositor
+compose+blit exercise before declaring the desktop ready. The current soak
+marker reports raw cycle percentiles, not calibrated microseconds, so it is a
+readiness gate rather than a final 60 FPS proof.
 
 The allocator benchmark markers are the first Seal-side performance artifacts
 for the Ubuntu comparison table. `[BENCH] toporam-alloc` proves 64 hint-biased
@@ -148,13 +154,14 @@ the same-machine Ubuntu baseline is captured.
 
 The ManifoldFS teleport marker is the first file-movement performance artifact.
 It proves a same-inode move from source directory to destination directory over
-8-256 source entries with bounded metadata operations and
-`persistence_bytes_per_move=0`, so file bytes stay in place for the
-same-filesystem path.
+8-256 source entries in `fs_mode=mock_block` with bounded metadata operations
+and `persistence_bytes_per_move=0`, so the same-filesystem mock block-store move
+does not rewrite raw file bytes.
 
 The TCP demux marker proves a packet-level stack invariant: when a listener and
 accepted socket share the same local port, `handle_tcp_packet` must route the
-payload to the accepted socket before falling back to the listener.
+payload to the exact accepted flow, leave a same-port decoy socket empty, and
+still fall back to the listener for a fresh SYN.
 
 ## Oracle VirtualBox Proof
 
@@ -180,9 +187,10 @@ T1-T10 theorem proof, and the VM does not hang during driver init.
 Current workspace status: Oracle VirtualBox is green for the current 0.4.5
 image when the VDI is rebuilt from the current raw image. `smoke-vbox.ps1
 -Seconds 240` reached the theorem gate, `VBOX HARDDISK`, block device `0x800`,
-readable sector 0, persistent ManifoldFS, current allocator markers, desktop
-proof-frame blit, Aether runtime proof marker, desktop readiness, and
-event-loop entry. The smoke script also writes `vbox-smoke\proof-manifest.txt`
+readable sector 0, persistent ManifoldFS, current allocator markers, Aether
+runtime proof marker, LAAMBA app proof marker, desktop proof-frame blit,
+desktop readiness, and event-loop entry. The smoke script also writes
+`vbox-smoke\proof-manifest.txt`
 and verifies it with `seal-mkimage --check-proof-manifest`; the manifest records
 the proof VDI copy, EFI snapshot, serial log, screenshot PNG, commit, dirty flag,
 and Oracle gate statuses without claiming QEMU-style PPM pixel parity.
@@ -273,7 +281,7 @@ win:
 
 - HFT tick-to-action latency.
 - ML tensor locality and data-movement latency.
-- ManifoldFS metadata teleport with `persistence_bytes_per_move=0`.
+- ManifoldFS metadata teleport in `fs_mode=mock_block` with `persistence_bytes_per_move=0`.
 - Topological allocator hot path.
 - Live scheduler selection through `[BENCH] scheduler-select-next`; wake latency
   remains a separate end-to-end benchmark.
@@ -292,10 +300,13 @@ Current passed baseline on this workspace:
 - VM proof: `powershell -NoProfile -ExecutionPolicy Bypass -File .\run-qemu.ps1 -HeadlessProof -ProofSeconds 240`
 - Full serial proof gate: `seal-mkimage --check-vm-proof`
 - Aether runtime gate: `seal-mkimage --check-aether-runtime`
+- LAAMBA app gate: `seal-mkimage --check-laamba-app-proof`
 - Serial proof: T1-T10 verified, desktop proof frame blitted, desktop ready,
   event loop active
 - Aether proof: boot log contains
   `[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok`
+- LAAMBA proof: boot log contains
+  `[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor ... runtime_bridge=rust_native_manifest python_runtime=0 result=pass`
 - Storage proof: AHCI finds `QEMU HARDDISK`, registers block device `0x800`, reads
   sector 0, and mounts ManifoldFS from disk instead of ramfs
 - Oracle proof: AHCI finds `VBOX HARDDISK`, registers block device `0x800`,

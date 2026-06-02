@@ -6,8 +6,8 @@ color = "#FF6B35"
 description = "N-body EM coupling via tensor product Hilbert space"
 
 [engine.entry]
-type = "python"
-command = "python engines/wrappers/hamliton_wrapper.py"
+type = "native"
+command = "laamba-native hamilton"
 working_dir = "~/repos/hamilton"
 
 [engine.inputs]

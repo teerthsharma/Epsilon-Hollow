@@ -6,8 +6,8 @@ color = "#FF4081"
 description = "82M-param neural TTS running 100% in browser"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py neuralwhisper"
+type = "native"
+command = "laamba-native neuralwhisper"
 working_dir = "~/repos/neuralwhisper"
 
 [engine.inputs]

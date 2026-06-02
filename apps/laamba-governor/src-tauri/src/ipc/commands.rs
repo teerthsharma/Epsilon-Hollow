@@ -1,10 +1,10 @@
 use crate::engine::manifest::EngineManifest;
+use crate::native;
 use crate::pipeline::graph::{PipelineGraph, ValidationResult};
 use crate::state::AppState;
 use crate::timeline::history::Experiment;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::process::Stdio;
 use tauri::State;
 
 fn project_root() -> PathBuf {
@@ -44,35 +44,16 @@ fn file_mtime(path: &std::path::Path) -> Option<u64> {
 }
 
 async fn run_cli(args: &[&str]) -> Result<Value, String> {
-    let root = project_root();
-    let cli_path = root.join("cli").join("governor_cli.py");
+    native::command(args)
+}
 
-    let output = tokio::process::Command::new("python")
-        .arg(&cli_path)
-        .args(args)
-        .current_dir(&root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run CLI: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() {
-        return Err(format!("CLI failed: {}\n{}", stdout.trim(), stderr.trim()));
+fn native_engine_id(command: &str) -> Option<&str> {
+    let mut parts = command.split_whitespace();
+    if parts.next()? == "laamba-native" {
+        parts.next()
+    } else {
+        None
     }
-
-    // Parse the last non-empty JSON line from stdout
-    let json_line = stdout
-        .lines()
-        .filter(|l| l.starts_with('{'))
-        .last()
-        .ok_or_else(|| format!("No JSON output from CLI. stderr: {}", stderr.trim()))?;
-
-    serde_json::from_str(json_line)
-        .map_err(|e| format!("Invalid JSON from CLI: {} — raw: {}", e, json_line))
 }
 
 // ── Engine commands ──
@@ -100,10 +81,17 @@ pub async fn engine_start(
 ) -> Result<String, String> {
     let registry = state.engine_registry.lock().await;
     let manifest = registry.get(&id).ok_or("Engine not found")?;
+    if let Some(engine_id) = native_engine_id(&manifest.entry.command) {
+        return Ok(format!("native:{engine_id}"));
+    }
     let child = crate::engine::manager::EngineManager::start(manifest, params, None).await?;
     let pid = format!("{}", child.id().unwrap_or(0));
     drop(registry);
-    state.running_processes.lock().await.insert(pid.clone(), child);
+    state
+        .running_processes
+        .lock()
+        .await
+        .insert(pid.clone(), child);
     Ok(pid)
 }
 
@@ -135,10 +123,17 @@ pub async fn run_engine(
 ) -> Result<Value, String> {
     let registry = state.engine_registry.lock().await;
     let manifest = registry.get(&id).ok_or("Engine not found")?;
+    if let Some(engine_id) = native_engine_id(&manifest.entry.command) {
+        return Ok(native::engine_command(engine_id, Some(&path), params));
+    }
     let child = crate::engine::manager::EngineManager::start(manifest, params, Some(&path)).await?;
     let pid = format!("{}", child.id().unwrap_or(0));
     drop(registry);
-    state.running_processes.lock().await.insert(pid.clone(), child);
+    state
+        .running_processes
+        .lock()
+        .await
+        .insert(pid.clone(), child);
     Ok(json!({ "pid": pid, "status": "started" }))
 }
 
@@ -253,7 +248,13 @@ pub async fn run_classify(path: String, target: Option<i32>) -> Result<Value, St
 
 #[tauri::command]
 pub async fn create_engine(name: String, task: String, topology: String) -> Result<Value, String> {
-    run_cli(&["create_engine", &name, &format!("--task={}", task), &format!("--topology={}", topology)]).await
+    run_cli(&[
+        "create_engine",
+        &name,
+        &format!("--task={}", task),
+        &format!("--topology={}", topology),
+    ])
+    .await
 }
 
 #[tauri::command]
@@ -262,7 +263,12 @@ pub async fn run_formula(path: String, source: String) -> Result<Value, String> 
     let root = project_root();
     let tmp = root.join(".formula_tmp.txt");
     std::fs::write(&tmp, source).map_err(|e| e.to_string())?;
-    let result = run_cli(&["formula", &path, &format!("--source={}", tmp.to_string_lossy())]).await;
+    let result = run_cli(&[
+        "formula",
+        &path,
+        &format!("--source={}", tmp.to_string_lossy()),
+    ])
+    .await;
     let _ = std::fs::remove_file(&tmp);
     result
 }
@@ -272,7 +278,12 @@ pub async fn formula_build(name: String, source: String) -> Result<Value, String
     let root = project_root();
     let tmp = root.join(".formula_tmp.txt");
     std::fs::write(&tmp, source).map_err(|e| e.to_string())?;
-    let result = run_cli(&["formula_build", &name, &format!("--source={}", tmp.to_string_lossy())]).await;
+    let result = run_cli(&[
+        "formula_build",
+        &name,
+        &format!("--source={}", tmp.to_string_lossy()),
+    ])
+    .await;
     let _ = std::fs::remove_file(&tmp);
     result
 }
@@ -328,13 +339,19 @@ pub async fn experiments_list(state: State<'_, AppState>) -> Result<Vec<Experime
 }
 
 #[tauri::command]
-pub async fn experiment_get(id: String, state: State<'_, AppState>) -> Result<Option<Experiment>, String> {
+pub async fn experiment_get(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<Experiment>, String> {
     let hist = state.experiments.lock().await;
     Ok(hist.get(&id).cloned())
 }
 
 #[tauri::command]
-pub async fn experiment_save(exp: Experiment, state: State<'_, AppState>) -> Result<String, String> {
+pub async fn experiment_save(
+    exp: Experiment,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let mut hist = state.experiments.lock().await;
     hist.save(exp);
     Ok("saved".to_string())

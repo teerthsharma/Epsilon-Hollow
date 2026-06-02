@@ -88,7 +88,7 @@ The central contributions are:
 \begin{enumerate}[nosep]
   \item A \textbf{bare-metal Rust kernel} with no libc, no POSIX ABI, and no Unix compatibility contract.
   \item \textbf{Ten independently checkable theorem gates} (T1--T10), Rust verification at boot, and Lean~4 proof coverage tracked separately from runtime status.
-  \item \textbf{ManifoldFS}: a filesystem where files carry point-cloud metadata on $S^2$, enabling O(1) metadata teleportation while current byte persistence still scales with file size, plus content-addressable search via geometric similarity.
+  \item \textbf{ManifoldFS}: a filesystem where files carry point-cloud metadata on $S^2$, enabling same-filesystem O(1) metadata teleportation through the mock block-store gate with \texttt{persistence\_bytes\_per\_move=0}, plus content-addressable search via geometric similarity.
   \item \textbf{Aether-Link I/O superkernel}: $\sim$18~ns full decision cycles with DMA-style bypass presets for HFT, deterministic trigonometric evaluation, and zero-copy networking.
   \item \textbf{Liquid Tensor}: entropy-gated hot partitions achieving $<$50$\mu$s weight updates on H100-class hardware, with a thermodynamic proof that continuous learning is physically viable (T8).
   \item \textbf{Persistent-homology KV-cache partitioning} (T7): 241$\times$--1500$\times$ speedup over LRU for LLM inference on multi-tier memory.

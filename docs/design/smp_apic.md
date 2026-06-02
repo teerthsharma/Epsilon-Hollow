@@ -1,7 +1,7 @@
 # SMP / Multi-Core APIC Support Design Document
 
 > **Phase X Task**: CX-002
-> **Priority**: HIGH (required for Ubuntu parity)
+> **Priority**: HIGH (required for Linux-class SMP comparison)
 > **Estimated Effort**: 2 months
 
 ---

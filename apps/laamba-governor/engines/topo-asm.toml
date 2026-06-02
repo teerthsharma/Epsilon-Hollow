@@ -6,8 +6,8 @@ color = "#AA00FF"
 description = "AVX-512 persistent homology in x86_64 assembly"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py topo-asm"
+type = "native"
+command = "laamba-native topo-asm"
 working_dir = "~/repos/topo-asm"
 
 [engine.inputs]

@@ -6,8 +6,8 @@ color = "#AA00FF"
 description = "TDA memory system with ripser + FAISS"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py lambda-topo"
+type = "native"
+command = "laamba-native lambda-topo"
 working_dir = "~/repos/lambda-topo"
 
 [engine.inputs]

@@ -192,7 +192,13 @@ fn scan_amd(dev: &PciDevice) -> GpuFirmwareCaps {
     }
 
     if !rom_enabled {
-        pci::pci_write32(dev.bus, dev.device, dev.function, PCI_ROM_BAR, rom_bar_raw | 1);
+        pci::pci_write32(
+            dev.bus,
+            dev.device,
+            dev.function,
+            PCI_ROM_BAR,
+            rom_bar_raw | 1,
+        );
     }
 
     // Safety: identity map covers low memory; ROM BAR is within first 16 GiB.
@@ -210,11 +216,12 @@ fn scan_amd(dev: &PciDevice) -> GpuFirmwareCaps {
 
     // Parse ATOM BIOS Data Table to find VRAM info.
     // Offset 0x48 in ROM header points to master data table.
-    let master_table_off = unsafe { core::ptr::read_volatile((rom_addr + 0x48) as *const u16) } as u64;
+    let master_table_off =
+        unsafe { core::ptr::read_volatile((rom_addr + 0x48) as *const u16) } as u64;
     if master_table_off > 0 && master_table_off < 0x10000 {
-        let vram_table_ptr = unsafe {
-            core::ptr::read_volatile((rom_addr + master_table_off + 0x14) as *const u16)
-        } as u64;
+        let vram_table_ptr =
+            unsafe { core::ptr::read_volatile((rom_addr + master_table_off + 0x14) as *const u16) }
+                as u64;
         if vram_table_ptr > 0 && vram_table_ptr < 0x10000 {
             // VRAM info block starts with u16 struct size.
             let vram_size_mb_raw = unsafe {
@@ -250,22 +257,28 @@ fn scan_amd(dev: &PciDevice) -> GpuFirmwareCaps {
     // GCN1+ and RDNA all support PM4 compute queues.
     caps.has_compute_queue = matches!(
         arch_family,
-        AmdArchFamily::GCN1 | AmdArchFamily::GCN2 | AmdArchFamily::GCN3 |
-        AmdArchFamily::GCN4 | AmdArchFamily::GCN5 | AmdArchFamily::RDNA1 |
-        AmdArchFamily::RDNA2 | AmdArchFamily::RDNA3
+        AmdArchFamily::GCN1
+            | AmdArchFamily::GCN2
+            | AmdArchFamily::GCN3
+            | AmdArchFamily::GCN4
+            | AmdArchFamily::GCN5
+            | AmdArchFamily::RDNA1
+            | AmdArchFamily::RDNA2
+            | AmdArchFamily::RDNA3
     );
 
     // SDMA available on GCN1.2+ (Tonga/Fiji and later).
     caps.has_sdma = matches!(
         arch_family,
-        AmdArchFamily::GCN3 | AmdArchFamily::GCN4 | AmdArchFamily::GCN5 |
-        AmdArchFamily::RDNA1 | AmdArchFamily::RDNA2 | AmdArchFamily::RDNA3
+        AmdArchFamily::GCN3
+            | AmdArchFamily::GCN4
+            | AmdArchFamily::GCN5
+            | AmdArchFamily::RDNA1
+            | AmdArchFamily::RDNA2
+            | AmdArchFamily::RDNA3
     );
 
-    caps.has_display_engine = matches!(
-        arch_family,
-        AmdArchFamily::RDNA2 | AmdArchFamily::RDNA3
-    );
+    caps.has_display_engine = matches!(arch_family, AmdArchFamily::RDNA2 | AmdArchFamily::RDNA3);
 
     // Load firmware blob if present.
     caps.firmware_blob_loaded = load_amd_firmware_blob(dev, arch_family);
@@ -282,7 +295,7 @@ fn scan_amd(dev: &PciDevice) -> GpuFirmwareCaps {
             TopologyKernelMask::VORONOI_ASSIGN
                 | TopologyKernelMask::JL_PROJECT
                 | TopologyKernelMask::SPECTRAL_STEP
-                | TopologyKernelMask::S2_DISTANCE
+                | TopologyKernelMask::S2_DISTANCE,
         );
     }
 
@@ -399,16 +412,17 @@ fn scan_nvidia(dev: &PciDevice) -> GpuFirmwareCaps {
             serial_println!("[FWSCAN] RTX 4060 family detected (Ada Lovelace). GSP firmware required for compute.");
             serial_println!("[FWSCAN]   To test: boot Seal OS with GPU passthrough or use tools/nv-4060-probe from Linux host.");
         } else {
-            serial_println!("[FWSCAN] NVIDIA Turing+ requires GSP blob at /lib/firmware/nvidia/gsp.bin");
+            serial_println!(
+                "[FWSCAN] NVIDIA Turing+ requires GSP blob at /lib/firmware/nvidia/gsp.bin"
+            );
         }
         return caps;
     }
 
     if caps.firmware_blob_loaded {
         caps.has_compute_queue = true;
-        caps.topology_kernels_supported = TopologyKernelMask(
-            TopologyKernelMask::VORONOI_ASSIGN | TopologyKernelMask::JL_PROJECT
-        );
+        caps.topology_kernels_supported =
+            TopologyKernelMask(TopologyKernelMask::VORONOI_ASSIGN | TopologyKernelMask::JL_PROJECT);
         caps.fallback_reason = None;
     }
 
@@ -447,9 +461,8 @@ fn scan_intel(dev: &PciDevice) -> GpuFirmwareCaps {
     // If GuC is loaded, compute contexts are available.
     caps.has_compute_queue = true;
     caps.has_sdma = false; // Intel uses blitter / media engines differently.
-    caps.topology_kernels_supported = TopologyKernelMask(
-        TopologyKernelMask::VORONOI_ASSIGN | TopologyKernelMask::S2_DISTANCE
-    );
+    caps.topology_kernels_supported =
+        TopologyKernelMask(TopologyKernelMask::VORONOI_ASSIGN | TopologyKernelMask::S2_DISTANCE);
     caps.fallback_reason = None;
     caps
 }
@@ -500,8 +513,14 @@ pub fn print_report(caps: &GpuFirmwareCaps) {
     serial_println!("[FWSCAN] SDMA: {}", caps.has_sdma);
     serial_println!("[FWSCAN] VBIOS present: {}", caps.vbios_present);
     serial_println!("[FWSCAN] VBIOS checksum OK: {}", caps.vbios_checksum_ok);
-    serial_println!("[FWSCAN] Firmware blob loaded: {}", caps.firmware_blob_loaded);
-    serial_println!("[FWSCAN] Topology kernels: {:08b}", caps.topology_kernels_supported.0);
+    serial_println!(
+        "[FWSCAN] Firmware blob loaded: {}",
+        caps.firmware_blob_loaded
+    );
+    serial_println!(
+        "[FWSCAN] Topology kernels: {:08b}",
+        caps.topology_kernels_supported.0
+    );
     if let Some(reason) = caps.fallback_reason {
         serial_println!("[FWSCAN] Fallback reason: {:?}", reason);
     } else {

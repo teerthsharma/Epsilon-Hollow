@@ -6,8 +6,8 @@ color = "#00E676"
 description = "Topology programming language with Lean 4 verified kernel"
 
 [engine.entry]
-type = "python"
-command = "python engines/wrappers/aether_wrapper.py"
+type = "native"
+command = "laamba-native aether-lang"
 working_dir = "~/repos/Aether-Lang"
 
 [engine.inputs]

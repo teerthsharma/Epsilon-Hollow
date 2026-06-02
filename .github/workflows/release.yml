@@ -3,12 +3,12 @@ name: Release UEFI Image
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0-alpha)'
-        required: false
+        description: "Existing release tag to publish, e.g. v0.4.5"
+        required: true
 
 permissions:
   contents: write
@@ -22,6 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Validate dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ github.event.inputs.tag }}" in
+            v*) ;;
+            *)
+              echo "Release tag must start with v"
+              exit 1
+              ;;
+          esac
+          git rev-parse --verify "${{ github.event.inputs.tag }}"
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -44,16 +60,18 @@ jobs:
           retention-days: 1
 
   release:
-    name: Build Seal OS UEFI Image and Release
+    name: Build, prove, and release Seal OS image
     runs-on: ubuntu-latest
     needs: build-kernel
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install ISO tools
-        run: sudo apt-get update && sudo apt-get install -y xorriso
+      - name: Install QEMU and OVMF
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xorriso qemu-system-x86 ovmf
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -76,6 +94,81 @@ jobs:
           chmod +x scripts/build_iso.sh
           scripts/build_iso.sh
 
+      - name: Check release workflow contract
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
+
+      - name: Verify release disk image
+        working-directory: kernel/seal-mkimage
+        run: |
+          cargo +stable run --release -- --verify \
+            ../seal-os/target/x86_64-unknown-uefi/release/seal-os.img \
+            ../seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
+
+      - name: Boot release image in QEMU and capture serial output
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 240 qemu-system-x86_64 \
+            -machine q35 \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -device ahci,id=seal_sata \
+            -drive if=none,id=seal_disk,file=kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img,format=raw,media=disk \
+            -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
+            -nographic \
+            -m 4G \
+            -no-reboot \
+            -no-shutdown 2>&1 | tee /tmp/seal-os-release.log
+          QEMU_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "FAIL: QEMU exited with status $QEMU_STATUS"
+            exit "$QEMU_STATUS"
+          fi
+
+      - name: Verify release VM proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-vm-proof /tmp/seal-os-release.log
+
+      - name: Verify release theorem proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log /tmp/seal-os-release.log
+
+      - name: Verify release Aether proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime /tmp/seal-os-release.log
+
+      - name: Verify release LAAMBA app proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof /tmp/seal-os-release.log
+
+      - name: Verify release desktop soak
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os-release.log
+
+      - name: Verify release benchmark proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os-release.log
+
+      - name: Verify release source proof gates
+        run: |
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+
+      - name: Stage release proof artifacts
+        run: |
+          mkdir -p release-proof
+          cp /tmp/seal-os-release.log release-proof/serial.log
+          {
+            echo "QEMU serial proof passed for this release image."
+            echo "Not an any-VM, GPU, or Ubuntu-superiority proof."
+            echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, and O(1) allocator."
+          } > release-proof/proof-summary.txt
+
+      - name: Upload release proof artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: seal-os-release-proof
+          path: release-proof/
+
       - name: Report sizes
         working-directory: kernel/seal-os
         run: |
@@ -89,6 +182,8 @@ jobs:
           path: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
+            release-proof/serial.log
+            release-proof/proof-summary.txt
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -97,64 +192,63 @@ jobs:
           files: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
+            release-proof/serial.log
+            release-proof/proof-summary.txt
           body: |
             ## Seal OS ${{ github.ref_name }}
 
-            **The Geometrical Operating System** — all data is geometry on S², file moves are O(1) topological surgery.
+            QEMU serial proof passed for this release image.
+            Not an any-VM, GPU, or Ubuntu-superiority proof.
 
-            ### What's in the image
-            - Bare-metal x86_64 UEFI kernel (pure Rust, zero assembly, zero GNU dependencies)
-            - **SealShell**: 30+ English-first commands (type `help` for handbook)
-            - **ManifoldFS**: files as 64-point clouds on S², O(1) teleport
-            - **ManifoldPkg**: native package manager with Voronoi dependency resolution
-            - **Aether-Lang**: Titan bytecode VM scripting language
-            - **Drivers**: PCI enumeration, USB xHCI (HID + Mass Storage), NVMe, AHCI SATA, Intel e1000, Intel HDA audio
-            - **Network stack**: TCP/UDP/DHCP/DNS/HTTP/TLS 1.3 + HTTPS client
-            - **Aether-Link**: predictive I/O prefetch (~18ns/decision)
-            - **Async runtime**: single-threaded waker-based executor
-            - **Calculator**: scientific calculator with expression parsing
-            - **SealPlayer**: media player (WAV/PCM playback)
-            - **Games**: Snake, Breakout, Warp Racer
-            - **Desktop**: compositing WM with themes (dark/light/seal/matrix)
-            - T1-T10 theorem gate verified at boot; T1-T5 active in kernel runtime paths
+            ### Release proof
+            - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
+            - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, and O(1) allocator hot path.
+
+            ### What is in the image
+            - Bare-metal x86_64 UEFI research kernel.
+            - SealShell native command surface.
+            - ManifoldFS same-filesystem metadata teleport proof marker; broad filesystem parity still requires fixtures.
+            - Aether-Lang Titan VM scripting path.
+            - TCP demux proof marker; production internet TLS remains limited to the documented PSK path.
+            - Software-rendered desktop with compositor soak proof marker.
 
             ### Honest limits
-            - **WiFi / Bluetooth**: Simulated state machines with deterministic scan/connect/pair. Real firmware blobs are vendor IP, out of scope.
-            - **GPU**: Software rendering only. 3D acceleration requires vendor firmware.
-            - **FAT + ext2**: Full read-write drivers included.
+            - VirtualBox, real hardware, GPU/VRAM, and Ubuntu-superiority claims need their own proof artifacts.
+            - WiFi and Bluetooth paths remain simulated unless hardware firmware support lands.
+            - Filesystem parity, production TLS, and long-haul reliability remain gated work.
 
             ### Run it
             ```bash
-            # QEMU with UEFI firmware
             qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
-
-            # Real UEFI hardware
-            dd if=seal-os.img of=/dev/sdX bs=4M status=progress
             ```
           generate_release_notes: true
+          make_latest: false
 
       - name: Create release from dispatch
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || 'latest' }}
+          tag_name: ${{ github.event.inputs.tag }}
           files: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
+            release-proof/serial.log
+            release-proof/proof-summary.txt
           body: |
-            ## Seal OS ${{ github.event.inputs.tag || 'latest' }}
+            ## Seal OS ${{ github.event.inputs.tag }}
 
-            Built from `main` branch at ${{ github.sha }}.
+            QEMU serial proof passed for this release image.
+            Not an any-VM, GPU, or Ubuntu-superiority proof.
+
+            Built from `${{ github.sha }}`.
+
+            Attached proof artifacts:
+            - `serial.log`
+            - `proof-summary.txt`
 
             ### Run it
             ```bash
-            # QEMU with UEFI firmware
             qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive file=seal-os.img,format=raw -serial stdio -m 4G -vga std
-
-            # VirtualBox
-            VBoxManage convertfromraw --format VDI seal-os.img seal-os.vdi
-            # Create VM: Other/Unknown (64-bit), EFI enabled, SATA/AHCI, attach seal-os.vdi
-            # Or boot from seal-os.iso as UEFI optical media.
             ```
           prerelease: false
-          make_latest: true
+          make_latest: false

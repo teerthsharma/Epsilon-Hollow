@@ -6,8 +6,8 @@ color = "#00B0FF"
 description = "Bare-metal topological scheduling microkernel"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py hollow-asm"
+type = "native"
+command = "laamba-native hollow-asm"
 working_dir = "~/repos/hollow-asm"
 
 [engine.inputs]

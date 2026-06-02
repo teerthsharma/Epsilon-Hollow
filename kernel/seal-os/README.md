@@ -1,6 +1,6 @@
 # Seal OS v0.4.5
 
-**The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves have an O(1) metadata-surgery core. Persistent ManifoldFS writes still account for raw bytes until metadata-only persistence lands.
+**The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves have an O(1) metadata-surgery core. The boot benchmark proves that core through a persistent mock block-store path with `persistence_bytes_per_move=0`.
 
 Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are source-gated against T1-T5, captured VM proofs pass the T1-T10 theorem gate through the `aether_verified` no_std crate, and Aether-Lang is the native OS language layer above the Rust kernel.
 
@@ -130,7 +130,7 @@ The filesystem where files keep raw bytes for faithful reads/writes and also car
 
 ```
 Write: data -> trigram hash -> JL project -> L2 normalize -> 64 pts on S^2 (1,536 bytes)
-Move:  metadata topology surgery -> same inode; current persistent path still writes bytes
+Move:  metadata topology surgery -> same inode; mock block-store persistence -> no raw file-byte rewrite
 Find:  encode query -> Voronoi cell -> O(bucket size) content-addressable search
 ```
 
@@ -141,7 +141,7 @@ seal:/$ help
 look [path]   — list directory (shows Voronoi cells, payload points)
 create <name> — create directory
 write <name> <content> — create file (encodes to S² geometry)
-move <src> <dst>       — metadata teleport; disk persistence still accounts for bytes
+move <src> <dst>       — metadata teleport; same-filesystem mock block-store path reports persistence_bytes_per_move=0
 search <query> — content-addressable search via T1 Voronoi
 open <path>   — change directory
 seal          — show T1-T10 theorem status
@@ -158,11 +158,11 @@ seal:/$ race 2000000000
 Race: 2GB transfer
 ========================
 Traditional copy: <measured>
-Manifold teleport: <measured> metadata core, write-through bytes reported
+Manifold teleport: <measured> metadata core, raw file bytes stay in place
 Speedup: pending raw artifact
 
 Payload: 64 pts * 3 coords * 8 bytes = 1,536 bytes
-Current boot gate: [BENCH] manifold-teleport ... metadata_ops_max=7 write_through_bytes_per_move=<payload_bytes>
+Current boot gate: [BENCH] manifold-teleport ... fs_mode=mock_block metadata_ops_max=7 persistence_bytes_per_move=0
 ```
 
 ## Built-in Applications

@@ -6,8 +6,8 @@ color = "#00B0FF"
 description = "Seal OS microkernel with topological scheduling"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py epsilon-hollow"
+type = "native"
+command = "laamba-native epsilon-hollow"
 working_dir = "~/repos/Epsilon-Hollow"
 
 [engine.inputs]
