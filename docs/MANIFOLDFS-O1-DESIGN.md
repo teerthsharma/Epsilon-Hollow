@@ -206,7 +206,8 @@ Call sites in `manifold_fs.rs` update mechanically. Existing `host_tests` and th
 6. path_cache.bump_generation()    // O(1)
 7. store.write_inode_record(id)    // one AHCI cmd — O(1)
 ```
-Six O(1) ops + one AHCI command. Topological surgery, literally.
+Target shape: six bounded metadata ops plus one AHCI command. Topological surgery,
+but still a claim until the load-sweep gate proves flat ticks.
 
 ### Claims 5 / 6 — `file lookup O(1)`, `O(1) retrieval via Voronoi`
 
@@ -228,7 +229,11 @@ Six O(1) ops + one AHCI command. Topological surgery, literally.
 
 ### Claims 9 / 10 — 50 µs teleport, size-independent
 
-`teleport` writes at most three sectors (one inode record + two dir-entry records). At 30 µs per AHCI command on SATA-3: ≤ 90 µs cold, ≤ 50 µs warm. The `race` benchmark sweeps file size (1 KB → 2 GB) and asserts teleport time stays ≤ 50 µs warm regardless. The 20 000× speedup is measured against a 2 GB byte copy at 0.5 ns/byte = 1 s vs. 50 µs.
+`teleport` targets at most three sector writes (one inode record + two dir-entry
+records). At 30 µs per AHCI command on SATA-3, the design target is ≤ 90 µs
+cold and ≤ 50 µs warm. The `race` benchmark still needs to sweep file size
+(1 KB → 2 GB) and assert warm teleport time stays flat before any 20 000×
+speedup sentence is allowed to leave the cave.
 
 ### Claim 1 — Every byte on disk is a point cloud on the unit sphere
 

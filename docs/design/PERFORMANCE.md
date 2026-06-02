@@ -252,7 +252,7 @@ For single-writer, many-reader data (jiffies, ticks, statistics).
 | Preemption | 100 µs wake latency | < 1 µs | [x] |
 | AHCI NCQ | Throughput X MB/s | 2× on rotational | [x] |
 | Block I/O scheduler | Random IOPS X | +30% via merging | [x] |
-| Zero-copy networking | Throughput X Mbps | 90% line rate | [x] |
+| Zero-copy networking | Throughput pending | 90% line rate needs e1000/virtio-net artifact | [ ] |
 | MCS locks | Max wait 10× mean | Max < 2× mean | [x] |
 | RCU VFS lookups | Rwlock read path | Lock-free reads | [x] |
 | Seqlock ticks | Spinlock overhead | 2 loads + compare | [x] |

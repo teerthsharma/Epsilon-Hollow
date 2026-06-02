@@ -41,8 +41,8 @@ Traditional OS kernels treat memory, files, and scheduling as separate 1D proble
 
 ## Use Cases
 
-- **ML model training pipelines** — tensor locality and data-movement latency optimized by geometry
-- **High-frequency trading I/O** — bounded allocator hot-path, theorem-gated world-model bounds (T6–T10)
+- **ML model training pipelines** — target workload for tensor-locality benchmarks; same-machine Ubuntu artifacts still required
+- **High-frequency trading I/O** — target workload for bounded allocator/network-latency benchmarks; theorem-gated world-model bounds (T6–T10) are not yet an HFT win proof
 - **Research** — geometry-driven computation, formal methods in OS design, topology-as-abi
 
 ## Team & Ask

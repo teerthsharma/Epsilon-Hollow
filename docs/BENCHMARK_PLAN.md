@@ -166,13 +166,14 @@ Seal OS:
 - current boot marker:
 
 ```text
-[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
 ```
 
-The marker proves same-port packet demux chooses the exact accepted flow before
-the listener fallback, leaves a same-port decoy socket empty, and still routes
-a fresh SYN to the listener. It is not a network latency benchmark; DHCP,
-external RX/TX, and HFT packet latency remain separate artifacts.
+The marker proves same-port packet demux chooses the exact accepted flow through
+the bounded flow index before listener fallback, leaves a same-port decoy socket
+empty, and routes a fresh SYN through the bounded listener-port index. It is not
+a network latency benchmark; DHCP, external RX/TX, and HFT packet latency remain
+separate artifacts.
 
 Ubuntu target:
 

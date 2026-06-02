@@ -152,6 +152,7 @@ jobs:
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-network .
 
       - name: Stage release proof artifacts
         run: |
@@ -160,7 +161,7 @@ jobs:
           {
             echo "QEMU serial proof passed for this release image."
             echo "Not an any-VM, GPU, or Ubuntu-superiority proof."
-            echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, and O(1) allocator."
+            echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, O(1) allocator, and O(1) TCP demux indexes."
           } > release-proof/proof-summary.txt
 
       - name: Upload release proof artifacts
@@ -202,14 +203,14 @@ jobs:
 
             ### Release proof
             - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop live input proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
-            - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, and O(1) allocator hot path.
+            - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, O(1) allocator hot path, and O(1) TCP demux indexes.
 
             ### What is in the image
             - Bare-metal x86_64 UEFI research kernel.
             - SealShell native command surface.
             - ManifoldFS same-filesystem metadata teleport proof marker; broad filesystem parity still requires fixtures.
             - Aether-Lang Titan VM scripting path.
-            - TCP demux proof marker; production internet TLS remains limited to the documented PSK path.
+            - TCP demux proof marker with bounded exact-flow and listener indexes; production internet TLS remains limited to the documented PSK path.
             - Software-rendered desktop with live icon-click/focus proof and compositor soak proof markers.
 
             ### Honest limits

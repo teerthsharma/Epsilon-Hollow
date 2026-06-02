@@ -1795,7 +1795,7 @@ fn run_tcp_packet_demux_bench() {
         net::tcp::TcpState::TimeWait => "time_wait",
     };
     serial_println!(
-        "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state={} ok={} listener_first={} exact_flow={} decoy_rx_bytes={} listener_fallback={} payload_bytes={} rx_bytes={} cleanup={}",
+        "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state={} ok={} listener_first={} exact_flow={} decoy_rx_bytes={} listener_fallback={} payload_bytes={} rx_bytes={} o1_index={} index_hit={} index_lookup_probes={} index_probe_bound={} index_capacity={} listener_index_hit={} listener_lookup_probes={} listener_probe_bound={} listener_index_capacity={} exact_scan={} cleanup={}",
         accepted_state,
         if proof.ok { 1 } else { 0 },
         if proof.listener_first { 1 } else { 0 },
@@ -1804,6 +1804,16 @@ fn run_tcp_packet_demux_bench() {
         if proof.listener_fallback { 1 } else { 0 },
         proof.payload_bytes,
         proof.rx_bytes,
+        if proof.o1_index { 1 } else { 0 },
+        if proof.index_hit { 1 } else { 0 },
+        proof.index_lookup_probes,
+        proof.index_probe_bound,
+        proof.index_capacity,
+        if proof.listener_index_hit { 1 } else { 0 },
+        proof.listener_lookup_probes,
+        proof.listener_probe_bound,
+        proof.listener_index_capacity,
+        if proof.exact_scan { 1 } else { 0 },
         if proof.cleanup_ok { "ok" } else { "leak" }
     );
 }
