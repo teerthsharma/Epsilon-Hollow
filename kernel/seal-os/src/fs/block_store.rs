@@ -1117,7 +1117,8 @@ impl BlockStore {
                 Err(BlockError::InvalidLba)
             };
         };
-        let record = InodeRecord::from_inode(inode, old.data_lba, old.data_blocks);
+        let mut record = InodeRecord::from_inode(inode, old.data_lba, old.data_blocks);
+        record.original_size = old.original_size;
         self.inode_records.insert(inode.id, record);
         self.deleted_inodes.retain(|&id| id != inode.id);
         self.mark_dirty_inode(inode.id);
@@ -1143,7 +1144,7 @@ impl BlockStore {
             data_lba: old.data_lba,
             data_blocks: old.data_blocks,
             voronoi_cell: inode.voronoi_cell as u32,
-            original_size: inode.metadata.original_size,
+            original_size: old.original_size,
             permissions: inode.metadata.permissions,
             _pad3: [0; 6],
             created_ms: inode.metadata.created_ms,

@@ -201,6 +201,21 @@ impl TopologicalJournal {
         self.entries.len()
     }
 
+    fn image_sector_count(bytes: usize) -> u64 {
+        ((bytes as u64).saturating_add(511)) / 512
+    }
+
+    fn required_journal_sectors(&self) -> u64 {
+        let mut sectors = 1u64; // journal header
+        for entry in &self.entries {
+            sectors = sectors
+                .saturating_add(1) // entry header
+                .saturating_add(Self::image_sector_count(entry.before_image.len()))
+                .saturating_add(Self::image_sector_count(entry.after_image.len()));
+        }
+        sectors
+    }
+
     /// Commit all pending entries to the dedicated journal area on disk.
     ///
     /// Writes an uncommitted header first, then all entries, then re-writes the header
@@ -209,10 +224,13 @@ impl TopologicalJournal {
         &mut self,
         backend: &dyn BlockStoreBackend,
         journal_start: u64,
-        _journal_blocks: u64,
+        journal_blocks: u64,
     ) -> Result<(), BlockError> {
         if self.entries.is_empty() {
             return Ok(());
+        }
+        if journal_blocks == 0 || self.required_journal_sectors() > journal_blocks {
+            return Err(BlockError::InvalidLba);
         }
 
         let header = JournalHeader {
@@ -270,8 +288,11 @@ impl TopologicalJournal {
         &mut self,
         backend: &dyn BlockStoreBackend,
         journal_start: u64,
-        _journal_blocks: u64,
+        journal_blocks: u64,
     ) -> Result<(), BlockError> {
+        if journal_blocks == 0 {
+            return Err(BlockError::InvalidLba);
+        }
         let mut buf = [0u8; 512];
         backend.read_sector(journal_start, &mut buf)?;
 
@@ -290,20 +311,30 @@ impl TopologicalJournal {
 
         // Uncommitted — replay after_images.
         let mut lba = journal_start + 1;
+        let mut consumed = 1u64;
         for _ in 0..header.entry_count {
+            if consumed >= journal_blocks {
+                return Err(BlockError::InvalidLba);
+            }
             backend.read_sector(lba, &mut buf)?;
             let eh =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const JournalEntryHeader) };
             lba += 1;
+            consumed = consumed.saturating_add(1);
 
             let before_sectors = ((eh.before_len as usize) + 511) / 512;
             let after_sectors = ((eh.after_len as usize) + 511) / 512;
+            let image_sectors = (before_sectors as u64).saturating_add(after_sectors as u64);
+            if consumed.saturating_add(image_sectors) > journal_blocks {
+                return Err(BlockError::InvalidLba);
+            }
 
             let mut before = Vec::new();
             for _ in 0..before_sectors {
                 backend.read_sector(lba, &mut buf)?;
                 before.extend_from_slice(&buf);
                 lba += 1;
+                consumed = consumed.saturating_add(1);
             }
             before.truncate(eh.before_len as usize);
 
@@ -312,6 +343,7 @@ impl TopologicalJournal {
                 backend.read_sector(lba, &mut buf)?;
                 after.extend_from_slice(&buf);
                 lba += 1;
+                consumed = consumed.saturating_add(1);
             }
             after.truncate(eh.after_len as usize);
 
@@ -319,7 +351,7 @@ impl TopologicalJournal {
             for (i, chunk) in after.chunks(512).enumerate() {
                 let mut sector = [0u8; 512];
                 sector[..chunk.len()].copy_from_slice(chunk);
-                let _ = backend.write_sector(eh.block_num as u64 + i as u64, &sector);
+                backend.write_sector(eh.block_num as u64 + i as u64, &sector)?;
             }
 
             self.entries.push(JournalEntry {
