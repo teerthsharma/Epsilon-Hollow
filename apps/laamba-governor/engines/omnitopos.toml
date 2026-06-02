@@ -6,8 +6,8 @@ color = "#FF6B35"
 description = "Cosmological phase sequence from persistent homology"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py omnitopos"
+type = "native"
+command = "laamba-native omnitopos"
 working_dir = "~/repos/charlie"
 
 [engine.inputs]

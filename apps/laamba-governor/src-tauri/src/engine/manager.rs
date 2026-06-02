@@ -17,13 +17,30 @@ impl EngineManager {
             return Err("Empty command in engine manifest".to_string());
         }
 
-        let mut cmd = tokio::process::Command::new(parts[0].clone());
-        if parts.len() > 1 {
-            cmd.args(&parts[1..]);
-        }
+        let is_native = parts[0] == "laamba-native";
+        let mut cmd = if is_native {
+            let mut cmd =
+                tokio::process::Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+            cmd.arg("--laamba-native-engine");
+            if parts.len() > 1 {
+                cmd.args(&parts[1..]);
+            }
+            cmd
+        } else {
+            let mut cmd = tokio::process::Command::new(parts[0].clone());
+            if parts.len() > 1 {
+                cmd.args(&parts[1..]);
+            }
+            cmd
+        };
 
         if let Some(wd) = &manifest.entry.working_dir {
-            cmd.current_dir(wd);
+            if is_native {
+                // Native engines run in this binary; legacy manifest working dirs
+                // must not send the self-hosted child into a missing source tree.
+            } else {
+                cmd.current_dir(wd);
+            }
         }
 
         if let Some(p) = path {

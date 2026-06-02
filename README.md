@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>OS state is topology on S².</strong><br>
-  Bare-metal x86_64. Pure Rust. Minimal inline assembly (AP trampoline, CPU-idle). No POSIX. No libc.<br>
+  Bare-metal x86_64. Rust-first `no_std` kernel with minimal assembly (AP trampoline, CPU-idle). No POSIX. No libc.<br>
   Memory, files, and scheduler decisions are embedded as point clouds on the unit sphere.
 </p>
 
@@ -39,7 +39,7 @@
 
 - [Before You Read This](#before-you-read-this)
 - [The 30-Second Pitch](#the-30-second-pitch)
-- [Why We Did This To Ourselves](#why-we-did-this-to-ourselves)
+- [Why I Did This To Myself](#why-i-did-this-to-myself)
 - [The FAQ Nobody Asked For](#the-faq-nobody-asked-for)
 - [Honest Status Dashboard](#honest-status-dashboard)
 - [Real Talk: What "Research Kernel" Actually Means](#real-talk-what-research-kernel-actually-means)
@@ -62,12 +62,12 @@
   - [Epsilon — Context Teleportation](#epsilon--context-teleportation)
   - [Aether-Link — I/O Superkernel](#aether-link--io-superkernel)
 - [Feature Matrix vs The World](#feature-matrix-vs-the-world)
-- [Where We Actually Stand (Brutal Honesty Edition)](#where-we-actually-stand-brutal-honesty-edition)
+- [Where This Actually Stands (Brutal Honesty Edition)](#where-this-actually-stands-brutal-honesty-edition)
 - [Performance Characteristics](#performance-characteristics)
 - [Benchmarks: Or, How We Learned To Stop Worrying](#benchmarks-or-how-we-learned-to-stop-worrying)
 - [Build and Run](#build-and-run)
 - [Documentation Index](#documentation-index)
-- [How To Read Our Docs Without Crying](#how-to-read-our-docs-without-crying)
+- [How To Read These Docs Without Crying](#how-to-read-these-docs-without-crying)
 - [Repository Map](#repository-map)
 - [How To Navigate This Repo (Survival Guide)](#how-to-navigate-this-repo-survival-guide)
 - [Contributing & Community](#contributing--community)
@@ -79,11 +79,11 @@
 - [aether-core — Math Foundation](#aether-core--math-foundation)
 - [Lean 4 Proofs](#lean-4-proofs)
 - [CI Pipeline](#ci-pipeline)
-- [The CI Pipeline: Our Digital Torture Chamber](#the-ci-pipeline-our-digital-torture-chamber)
+- [CI Proof Pipeline](#ci-proof-pipeline)
 - [Acknowledgements](#acknowledgements)
-- [People We Blame For This](#people-we-blame-for-this)
+- [People I Blame For This](#people-i-blame-for-this)
 - [Contact](#contact)
-- [Glossary of Words We Made Up](#glossary-of-words-we-made-up)
+- [Glossary of Words I Made Up](#glossary-of-words-i-made-up)
 - [A Day In The Life Of A Seal OS Developer](#a-day-in-the-life-of-a-seal-os-developer)
 
 ---
@@ -92,22 +92,24 @@
 
 > **⚠️ Content Warning:** This README contains strong opinions about geometry, operating systems, and the general state of software engineering. If you believe filesystems should be trees, memory should be arrays, and scheduling should be queues, you may find the following content disturbing. Reader discretion is advised.
 
-Welcome. You have discovered what is possibly the most over-engineered, under-resourced, mathematically-obsessed operating system README on GitHub. We are not sorry. We are, however, exhausted.
+Welcome. You found what is probably the most over-engineered, under-resourced, mathematically-obsessed operating system README on GitHub. I am not sorry. I am, however, tired in ways GitHub does not provide a badge for.
 
-Seal OS is the result of asking: "What if we treated every OS subsystem like a differential geometry problem?" Spoiler: it works better than you would think, but the learning curve is vertical and the documentation is... well, you are looking at it.
+Seal OS is what happened when I asked: "What if every OS subsystem was a differential geometry problem?" Spoiler: it works better than it has any right to, but the learning curve is vertical and the documentation is... well, you are looking at it.
+
+I am an independent researcher building this as a one-person war room: bare-metal Rust, Aether-Lang, Lean proofs, VM gates, graphics, filesystem, scheduler, drivers, and all the embarrassing footnotes. Large organizations need meetings to move a few thousand lines of Rust without stepping on themselves. This checkout currently has **86,998 active Rust lines across kernel/apps/tools/userspace**, with **50,847 Rust lines in the Seal OS kernel crate alone**. Lmao, but also: the receipts are below.
 
 **What this README promises:**
-- Technical honesty. We will tell you what breaks.
-- Sarcasm. We have spent too many nights debugging APIC timer interrupts to be polite.
+- Technical honesty. I will tell you what breaks.
+- Sarcasm. I have spent too many nights debugging APIC timer interrupts to be polite.
 - Depth. Every claim traces to code. Every "O(1)" has a proof gate.
 - Occasional existential despair. You try writing a TLS stack in `#![no_std]` and stay chipper.
 
 **What this README does NOT promise:**
-- Brevity. You wanted the biggest README ever. Here it is.
+- Brevity Here it is.
 - A clear business case. There isn't one. This is art.
-- POSIX compatibility. We said what we said.
+- POSIX compatibility. I said what I said.
 
-Grab a beverage. Settle in. We are going on a journey through 111,000 lines of Rust, ten mathematical theorems, and one developer's questionable life choices.
+Grab a beverage. Settle in. You are going on a journey through 102,073 lines of Rust, ten mathematical theorems, and one developer's questionable life choices.
 
 ---
 
@@ -115,7 +117,7 @@ Grab a beverage. Settle in. We are going on a journey through 111,000 lines of R
 
 **What if operating system decisions were literally geometry problems?**
 
-Seal OS is a bare-metal x86_64 research kernel written in 100% Rust. It is not Linux, not Unix, not POSIX, and not a libc target. Every kernel subsystem — memory allocation, file metadata, process scheduling, graphics prefetch — is expressed as topology on the unit sphere S².
+Seal OS is a bare-metal x86_64 research kernel written as Rust-first `no_std` code with a small assembly footprint for hardware bring-up. It is not Linux, not Unix, not POSIX, and not a libc target. The core proof-gated runtime paths — memory allocation, file metadata, process scheduling, graphics prefetch — are expressed as topology on the unit sphere S².
 
 ### Why S²?
 
@@ -145,7 +147,7 @@ Kernel Rust owns hardware, memory, drivers, scheduling, and theorem gates. Aethe
 | Capability | Seal OS | Linux | Redox |
 |---|---|---|---|
 | Geometry-native kernel | ✅ | ❌ | ❌ |
-| O(1) metadata file teleport | ✅ | ❌ (same-FS rename only) | ❌ |
+| Topology-gated same-filesystem metadata teleport proof | ✅ | same-FS rename is O(1), but not a topology proof | same-FS rename is O(1), but not a topology proof |
 | Content-addressable geometric lookup | ✅ | ❌ | ❌ |
 | Voronoi-based scheduling | ✅ | ❌ | ❌ |
 | Spectral prefetch prediction | ✅ | ❌ | ❌ |
@@ -153,42 +155,42 @@ Kernel Rust owns hardware, memory, drivers, scheduling, and theorem gates. Aethe
 | Theorem-gated boot (T1-T10) | ✅ | ❌ | ❌ |
 | Formal proofs (Lean 4) | 🚧 | ❌ | 🚧 |
 | Native topological language | ✅ | ❌ | ❌ |
-| Zero assembly | ✅ | ❌ | ❌ |
+| Minimal assembly footprint | ~40 lines | ❌ | ❌ |
 
 
 ---
 
-## Why We Did This To Ourselves
+## Why I Did This To Myself
 
 *(A brief, slightly unhinged history)*
 
 Once upon a time, a developer looked at Linux and thought: "This is fine, but what if the scheduler knew about Ricci curvature?"
 
-That developer was not okay. That developer is us.
+That developer was not okay. That developer was me. Excellent life choice, allegedly.
 
 ### The Origin Story (With Regrets)
 
 Seal OS started as a question: "Can you build an OS where every data structure is a manifold?" The answer, it turns out, is "yes, but you will not sleep."
 
-The first commit was a UEFI bootloader that printed "Hello, Geometry!" It took three weeks. Not because UEFI is hard (it is), but because we insisted on embedding the boot banner as a spherical harmonic decomposition. It looked identical to ASCII text. We are not always smart.
+The first commit was a UEFI bootloader that printed "Hello, Geometry!" It took three weeks. Not because UEFI is hard (it is), but because I insisted on embedding the boot banner as a spherical harmonic decomposition. It looked identical to ASCII text. I am not always smart.
 
 ### Why Not Linux?
 
 Linux is a triumph of engineering. It runs on toasters, Mars rovers, and 99% of the world's supercomputers. It is also 30 million lines of C, most of which were written before people understood buffer overflows were bad.
 
-We wanted something smaller. Something where you could read every line and understand why it was there. Something where a single developer could hold the entire design in working memory.
+I wanted something smaller. Something where I could read every line and understand why it was there. Something one researcher could hold in working memory without a steering committee, a quarterly planning ritual, and six people arguing about the color of a backlog ticket.
 
-Also, Linux doesn't have a Voronoi-based scheduler, and we think that's a missed opportunity.
+Also, Linux doesn't have a Voronoi-based scheduler, and I think that's a missed opportunity.
 
 ### Why Not Redox?
 
-Redox OS is the cool older sibling who went to art school. It's a microkernel in Rust, it's well-designed, and it actually has working networking. We love Redox. We just wanted to go weirder.
+Redox OS is the cool older sibling who went to art school. It's a microkernel in Rust, it's well-designed, and it actually has working networking. I respect Redox. I just wanted to go weirder.
 
-Where Redox asked "What if a microkernel, but in Rust?" we asked "What if the entire OS were a topological space?" These are different questions. One of them is more employable.
+Where Redox asked "What if a microkernel, but in Rust?" I asked "What if the entire OS were a topological space?" These are different questions. One of them is more employable.
 
 ### The Mathematical Obsession
 
-At some point, we realized that every OS problem maps to geometry:
+At some point, I realized that every OS problem maps to geometry:
 
 | OS Problem | Geometry Analogue | How It Helps |
 |---|---|---|
@@ -200,45 +202,45 @@ At some point, we realized that every OS problem maps to geometry:
 
 Is this overkill? Absolutely. Does it work? Sometimes. Is it fun? You have no idea.
 
-### The Naming Convention (We're Sorry)
+### The Naming Convention (I Am Sorry)
 
-Our naming scheme is inconsistent and borderline unhinged:
+The naming scheme is inconsistent and borderline unhinged:
 - **Seal OS**: Because seals are cute and geometrically efficient.
 - **Aether-Lang**: Because "programming language" was too boring.
-- **ManifoldFS**: Because someone said "just call it ext5" and we laughed.
+- **ManifoldFS**: Because someone said "just call it ext5" and I laughed.
 - **Aether-Link**: Because "I/O scheduler" doesn't sound mystical enough.
-- **LAAMBA Governor**: We don't remember what LAAMBA stands for. We think it was a typo that stuck.
+- **LAAMBA Governor**: I don't remember what LAAMBA stands for. I think it was a typo that stuck.
 
 ---
 
 ## The FAQ Nobody Asked For
 
 ### Q: Is this a real operating system?
-**A:** It boots on real hardware (and QEMU). It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
+**A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
 
 ### Q: Can I use this as my daily driver?
-**A:** You *can*. You would be miserable. We do not recommend it. The browser is "planned." The GPU drivers are "stubs." The WiFi is "simulated." Your therapist will bill you hourly.
+**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." The GPU drivers are "stubs." The WiFi is "simulated." Your therapist will bill you hourly.
 
-### Q: Why S² and not S³?
-**A:** S³ is for cowards who can't commit to two dimensions. Also, we couldn't figure out how to visualize it on a 1024×768 framebuffer.
+### Q: Why S2 and not S3?
+**A:** S3 is for cowards who can't commit to two dimensions. Also, I couldn't figure out how to visualize it on a 1024x768 framebuffer.
 
 ### Q: What's with all the theorems?
-**A:** We believe that if you can't prove your scheduler is mathematically sound, you have no business scheduling. Also, it scares away junior developers, which keeps our issue tracker manageable.
+**A:** I believe that if you can't prove your scheduler is mathematically sound, you have no business scheduling. Also, it scares away junior developers, which keeps the issue tracker manageable.
 
 ### Q: Is this a TempleOS clone?
-**A:** Terry A. Davis proved that one person can write an entire OS with a native language. We are inspired by that energy. We are not, however, divinely inspired. Our language is called Aether-Lang, not HolyC, and our god is the unit sphere.
+**A:** Terry A. Davis proved that one person can write an entire OS with a native language. I am inspired by that energy. I am not, however, divinely inspired. My language is called Aether-Lang, not HolyC, and my god is the unit sphere.
 
 ### Q: Why is the README so long?
-**A:** You asked for this. Literally. You said "biggest then ever." We are but humble servants of your terrible ideas.
+**A:** You asked for this. Literally. You said "biggest then ever." I am but the sleep-deprived servant of your terrible ideas.
 
 ### Q: Does it run Doom?
 **A:** No. It has Snake, Breakout, and Warp Racer. Doom requires a working GPU renderer and we are not there yet. Check back in v0.9.0, probably.
 
 ### Q: What's the deal with the assembly correction?
-**A:** We claimed "zero assembly" for months because we forgot about the AP trampoline. A trampoline is ~30 lines of assembly that wakes up secondary CPUs. Without it, you get one CPU. With it, you get multiple CPUs and a dent in your pride. We chose CPUs.
+**A:** I claimed "zero assembly" for months because I forgot about the AP trampoline. A trampoline is ~30 lines of assembly that wakes up secondary CPUs. Without it, you get one CPU. With it, you get multiple CPUs and a dent in your pride. I chose CPUs.
 
 ### Q: Who maintains this?
-**A:** Primarily one person with occasional contributions from people who looked at the code, said "huh," and then quietly left. We treasure those contributors.
+**A:** Primarily one person, with occasional contributions from people who looked at the code, said "huh," and then quietly left. I treasure those contributors.
 
 ### Q: Is this production-ready?
 **A:** Define "production." If you mean "runs in a VM and passes CI gates," yes. If you mean "I would bet my company's infrastructure on it," absolutely not. If you mean "could I demo it at a conference and look smart," definitely yes.
@@ -247,7 +249,7 @@ Our naming scheme is inconsistent and borderline unhinged:
 
 ## Honest Status Dashboard
 
-Seal OS is a research kernel. We do not hide behind timelines or excuses. Here is what is real today versus what remains pending.
+Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide behind proof gates like a civilized maniac. Here is what is real today versus what remains pending.
 
 ### ✅ Real — Running Today
 
@@ -258,6 +260,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 - **SMP bring-up** — INIT-SIPI-SIPI trampoline, per-CPU data, IPIs (reschedule + TLB shootdown)
 - **ACPI** — RSDP parsing, MADT discovery for APIC topology
 - **Boot theorem gates** — T1-T10 all verified before scheduler start
+- **QEMU headless proof** — current proof gate reaches AHCI disk identity, persistent ManifoldFS root, desktop proof frame, desktop soak, desktop ready, event loop, and benchmark markers. This proves the current QEMU path, not every VM in the known universe. Shocking, yes.
 
 </details>
 
@@ -280,6 +283,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 <summary><strong>Filesystem</strong></summary>
 
 - **ManifoldFS** — in-memory with Voronoi indexing, metadata teleport, bucketed content search
+- **ManifoldFS teleport proof** — QEMU serial proof requires `[BENCH] manifold-teleport` with `fs_mode=mock_block`, same-inode move, source gone, destination present, bounded metadata ops, and `persistence_bytes_per_move=0`
 - **FAT12/16/32** — read/write/create/mkdir/unlink/rmdir/rename, cluster allocation, directory growth
 - **ext2** — direct/single/double/triple indirect blocks, cross-directory rename with `..` fixup, `mknod`
 - **PipeFS** — in-memory pipe filesystem with 64KB ring buffers
@@ -339,6 +343,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 
 - **TCP/IP** — wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring
 - **TCP** — listen/accept backlog, SYN queue, retransmission timer
+- **TCP demux proof** — QEMU serial proof requires `[BENCH] tcp-packet-demux` with `exact_flow=1`, `decoy_rx_bytes=0`, and `listener_fallback=1`
 - **UDP** — query packet building
 - **DHCP** — full state machine (Init → Discover → Request → Bound), auto-sends DISCOVER on boot
 - **DNS** — proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) via UDP port 53
@@ -367,6 +372,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 - **VM (Titan Mode)** — bytecode execution
 - **Stdlib** — `math` (pi, e), `fs` (read/write/exists/mkdir/teleport), `process` (pid, exit, spawn), `net` (local_ip, has_nic, status), `theorem` (status)
 - **Kernel bridge** — Aether-Lang wired directly into Seal ABI syscalls; runtime proof gate is `seal-mkimage --check-aether-runtime`
+- **LAAMBA native bridge gate** — the runtime bridge is now Rust/native-manifest driven; the native bridge gate exists and passes. Remaining legacy wrappers are host-side baggage unless a newer doc proves otherwise. Please do not mistake baggage for the flight deck.
 
 </details>
 
@@ -398,7 +404,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 
 | Feature | Limitation | Path to Full |
 |---|---|---|
-| **GPU** | PM4 compute ring infrastructure is real (MMIO, packet builder, fence polling). AMD firmware scanner parses VBIOS and identifies architecture families. GCN shader binaries are honest stubs with correct ABI — they execute but don't yet compute full topology. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Compile real OpenCL C → GCN ISA and replace stub arrays |
+| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. GCN shader binaries are honest ABI stubs with placeholder logic; they do not compute full topology, and hardware dispatch still needs a proof artifact. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Compile real OpenCL C → GCN ISA, replace stub arrays, and add a hardware `[GPU-BENCH]` proof |
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
 | **Package Manager** | Local extraction + signed verification path exist. remote registry fixture and signed package gate are pending. | Build registry + fixture |
@@ -412,7 +418,7 @@ Seal OS is a research kernel. We do not hide behind timelines or excuses. Here i
 | Feature | Why | When |
 |---|---|---|
 | **GPU drivers (i915/nouveau)** | Proprietary firmware blobs required, out of scope for research kernel | Never (vendor IP) |
-| **AMD GPU full compute** | PM4 ring + VBIOS parsing works. Signed SMU firmware not loaded (not required for compute). Shader stubs need real compiled ISA for correct results. | Rebuild shader binaries from OpenCL C source |
+| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. Shader stubs need real compiled ISA and an AMD hardware proof for correct results. | Rebuild shader binaries from OpenCL C source and gate with `[GPU-BENCH]` |
 | **Full internet TLS** | X.509/PKI/ECDHE not implemented | Post-1.0 |
 | **Self-hosting** | Aether-Lang needs more stdlib before it can build itself | Roadmap phase 4 |
 
@@ -428,7 +434,7 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 1. **It boots.** This is genuinely impressive. You would be shocked how many OS projects never reach the "prints to serial" stage.
 2. **It has real drivers.** Not mock drivers. Real e1000 TX/RX rings. Real NVMe admin queues. Real xHCI port enumeration. These are not stubs that return `Ok(())`.
 3. **It has a window manager.** With double buffering. And anti-aliased text. And a taskbar. Written from scratch in software rendering. On a framebuffer. In 2026.
-4. **It will panic if you look at it wrong.** The COW fork path has a known double-free under memory pressure. The GPU shader stubs return mathematically incorrect results. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
+4. **It will panic if you look at it wrong.** The COW fork path has a known double-free under memory pressure. The GPU shader stubs are placeholder logic and are not a proven hardware compute path. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
 5. **It is not Linux.** You cannot `apt install` things. There is no `bash`. The shell speaks English-first commands like `look` and `peek`. This is a feature, not a bug, but it is also inconvenient.
 6. **One person wrote most of it.** With occasional help from AI agents, contributors, and sheer stubbornness. This means design coherence is high, but bus factor is catastrophic.
 7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that some of our core claims hold. This is not decoration.
@@ -436,9 +442,9 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 ### What "Research Kernel" Does NOT Mean
 
 - **It does not mean "toy."** A toy doesn't have 256-entry IDT tables, 4-level page tables, and a working TCP stack.
-- **It does not mean "abandoned."** We push code regularly. CI runs on every commit. Issues get responses.
+- **It does not mean "abandoned."** Code moves regularly. CI runs on every commit. Issues get responses.
 - **It does not mean "will never be useful."** The Aether-Link I/O prefetching subsystem has genuine applications in HFT and ML training pipelines. The topological memory allocator has interesting fragmentation properties.
-- **It does not mean "we don't know what we're doing."** We know exactly what we're doing. We just chose to do something extremely weird.
+- **It does not mean "I don't know what I'm doing."** I know exactly what I am doing. I just chose to do something extremely weird.
 
 ### The Emotional Journey Of Using Seal OS
 
@@ -466,7 +472,7 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 | OVMF/EDK2 | any | UEFI firmware for QEMU |
 
 
-> **Pro tip:** If you don't have nightly installed, run `rustup toolchain install nightly --component rust-src,llvm-tools-preview`. If this fails, complain to the Rust compiler team, not us. We have enough problems.
+> **Pro tip:** If you don't have nightly installed, run `rustup toolchain install nightly --component rust-src,llvm-tools-preview`. If this fails, complain to the Rust compiler team, not me. I have enough problems.
 
 ### 1. Clone & Build Workspace
 
@@ -487,7 +493,7 @@ cargo +nightly build --release
 ```
 
 
-> **Fun fact:** The first time we built this, it took 45 minutes because we accidentally compiled debug mode. Don't be us. Use `--release`.
+> **Fun fact:** The first time I built this, it took 45 minutes because I accidentally compiled debug mode. Don't be me. Use `--release`.
 
 ### 3. Create UEFI Disk Image
 
@@ -559,7 +565,7 @@ VM settings: Type=Other, Version=Other/Unknown (64-bit), Enable EFI, RAM=4096 MB
 
 ```
 Seal OS v0.4.5 — The Geometrical Operating System
-OS state = topology on S². File moves use metadata topology; byte persistence still scales with file size.
+OS state = topology on S². Same-filesystem file moves use metadata topology; the mock block-store path reports zero file-byte persistence per move.
 
 [BOOT] Heap initialized (16 MB)
 [BOOT] IDT + PIC initialized
@@ -569,34 +575,36 @@ OS state = topology on S². File moves use metadata topology; byte persistence s
 [ALLOC] runtime counters: fast_hits=1, bounded_misses=0, max_contiguous_probes_seen=0
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
-[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
+[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
+[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
-[ManifoldFS] Teleported 'hello.txt' metadata in 1 ticks; persistent bytes verified separately
+[ManifoldFS] Teleported 'hello.txt' metadata in 1 ticks; persistence_bytes_per_move=0 on mock block-store path
 [Scheduler] 3 tasks, running 'idle', epsilon=0.1000
 [Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8
 ```
 
-Every line in this log is a **hard gate** in CI. If any line is missing, the build fails.
+CI hard-gates selected serial sentinels from this log, including theorem status, Aether runtime proof, LAAMBA app proof, AHCI disk identity, persistent ManifoldFS root, measured serial desktop pixel proof, desktop readiness, event-loop entry, and benchmark markers. Local and pre-release proof bundles add the stronger framebuffer screenshot proof.
 
 
-> **What this means in human terms:** We have automated tests that verify the OS boots, initializes memory, checks all ten mathematical theorems, runs benchmarks, and displays a desktop — every single time someone pushes code. If you break the boot log, CI breaks. If CI breaks, we fix it. This is how you know we actually test things instead of just claiming they work.
+> **What this means in human terms:** The automated tests verify the OS boots, initializes memory, checks all ten mathematical theorems, runs Aether-Lang, proves the LAAMBA Governor kernel app launched through the Rust/native manifest path without Python, runs benchmarks, and measures nonblank desktop structure from the framebuffer before accepting the serial proof. Local proof bundles also verify the captured pixels before I claim a GUI desktop proof. If you break the gated boot log markers, CI breaks. If CI breaks, I fix it. This is how you know the project actually tests things instead of just claiming they work.
 
 ---
 
 ## Architecture
 
-Seal OS is organised into 11 layers, from UEFI boot to user applications. Every runtime layer above Layer 0 is driven by T1-T5, and every boot must pass the T1-T10 theorem gate.
+Seal OS is organised into 11 layers, from UEFI boot to user applications. The proof-gated runtime callsites above Layer 0 are driven by T1-T5, and every boot must pass the T1-T10 theorem gate.
 
 ```mermaid
 graph TB
-    subgraph SG1["Layer 10 — Applications"]
+    subgraph SG1["Layer 10 - Applications"]
         TERM["Terminal Emulator"]
         IDE["Seal IDE"]
         FMGR["File Manager"]
@@ -606,45 +614,45 @@ graph TB
         GAMES["Snake / Breakout / Warp Racer"]
     end
 
-    subgraph SG2["Layer 9 — Desktop"]
+    subgraph SG2["Layer 9 - Desktop"]
         WALL["Wallpaper<br/>Schwarzschild metric + Faraday tensor"]
         TBAR["Taskbar<br/>T1-T10 status strip<br/>epsilon=0.042"]
     end
 
-    subgraph SG3["Layer 8 — Window Manager"]
+    subgraph SG3["Layer 8 - Window Manager"]
         COMP["Compositor<br/>double-buffered, dirty-rect tracking"]
         WIN["Window Manager<br/>z-order, decorations, cursor"]
-        EVT["Event Dispatch<br/>keyboard/mouse → focused window"]
+        EVT["Event Dispatch<br/>keyboard/mouse to focused window"]
     end
 
-    subgraph SG4["Layer 7 — Shell"]
+    subgraph SG4["Layer 7 - Shell"]
         SHELL["SealShell<br/>look, peek, move, search,<br/>tasks, seal, race, stats"]
     end
 
-    subgraph SG5["Layer 6 — Syscalls"]
+    subgraph SG5["Layer 6 - Syscalls"]
         ABI["Seal ABI: native syscalls<br/>fork/exec/pipe/dup/brk/signal/ioctl<br/>gettimeofday/getrandom/kmsg"]
         EPSILON_SYS["Epsilon: manifold_query,<br/>teleport, theorem_status,<br/>pkg_install, setting_get/set"]
     end
 
-    subgraph SG6["Layer 5 — Process Scheduler"]
+    subgraph SG6["Layer 5 - Process Scheduler"]
         SCHED["ManifoldScheduler<br/>T1 Voronoi task groups<br/>T4 adaptive timeslice<br/>T2 predict next runnable"]
     end
 
-    subgraph SG7["Layer 4 — ManifoldFS"]
-        MFS["ManifoldFS<br/>raw bytes + 64-point S² payloads<br/>metadata teleport via topological surgery<br/>bucketed search via Voronoi"]
-        ENC["Encoder Pipeline<br/>trigram hash → JL project → L2 normalize"]
+    subgraph SG7["Layer 4 - ManifoldFS"]
+        MFS["ManifoldFS<br/>raw bytes + 64-point S2 payloads<br/>metadata teleport via topological surgery<br/>bucketed search via Voronoi"]
+        ENC["Encoder Pipeline<br/>trigram hash to JL project to L2 normalize"]
     end
 
-    subgraph SG8["Layer 3 — Graphics"]
-        FB["Framebuffer<br/>1024×768×32bpp, double-buffered"]
-        FONT["8×16 Bitmap Font + High-Tech Engine"]
+    subgraph SG8["Layer 3 - Graphics"]
+        FB["Framebuffer<br/>1024x768x32bpp, double-buffered"]
+        FONT["8x16 Bitmap Font + High-Tech Engine"]
         SPLASH["Boot Splash<br/>ASCII seal art + progress bar"]
-        HTEK["htek.rs — AA text, gradients,<br/>rounded rects, glow, alpha blend"]
-        TOPO3D["topo_render.rs —<br/>Voronoi tiles + spectral LOD +<br/>hyperboloid projection"]
+        HTEK["htek.rs - AA text, gradients,<br/>rounded rects, glow, alpha blend"]
+        TOPO3D["topo_render.rs -<br/>Voronoi tiles + spectral LOD +<br/>hyperboloid projection"]
     end
 
-    subgraph SG9["Layer 2 — Interrupts & Drivers"]
-        IDT["IDT — 256 entries"]
+    subgraph SG9["Layer 2 - Interrupts and Drivers"]
+        IDT["IDT - 256 entries"]
         APIC["Local APIC + I/O APIC"]
         TIMER["APIC Timer<br/>per-CPU + watchdog"]
         KBD["PS/2 Keyboard<br/>IRQ1"]
@@ -654,12 +662,12 @@ graph TB
         ACPIDRV["ACPI (RSDP, MADT)"]
     end
 
-    subgraph SG10["Layer 1 — Memory"]
+    subgraph SG10["Layer 1 - Memory"]
         HEAP["Slab Allocator (64B-2048B)<br/>+ Page Allocator + VMM<br/>+ Topological Free Index"]
-        TOPORAM["topo_ram.rs —<br/>Voronoi + spectral + entropy +<br/>hyperbolic lifetime classification"]
+        TOPORAM["topo_ram.rs -<br/>Voronoi + spectral + entropy +<br/>hyperbolic lifetime classification"]
     end
 
-    subgraph SG11["Layer 0 — Boot"]
+    subgraph SG11["Layer 0 - Boot"]
         UEFIBOOT["UEFI Entry<br/>PE/COFF, 64-bit long mode"]
         GOP["GOP Framebuffer Query"]
         SMP["SMP Bring-up<br/>INIT-SIPI-SIPI"]
@@ -715,7 +723,7 @@ sequenceDiagram
     participant kernel_main
 
     UEFI->>UEFI: Load PE/COFF binary in 64-bit long mode
-    UEFI->>efi_main: #[entry] fn efi_main() → Status
+    UEFI->>efi_main: #[entry] fn efi_main() returns Status
     efi_main->>uefi_entry: uefi_entry::run()
 
     uefi_entry->>uefi_entry: Serial init (COM1 @ 115200)
@@ -723,14 +731,14 @@ sequenceDiagram
     uefi_entry->>uefi_entry: Search config tables for ACPI 2.0 RSDP
     uefi_entry->>uefi_entry: Query GOP for framebuffer
     uefi_entry->>uefi_entry: Get LoadedImage (kernel base/size)
-    uefi_entry->>uefi_entry: exit_boot_services() — UEFI is gone
-    uefi_entry->>uefi_entry: Copy memory map → BootInfo
+    uefi_entry->>uefi_entry: exit_boot_services(), UEFI is gone
+    uefi_entry->>uefi_entry: Copy memory map to BootInfo
 
     uefi_entry->>kernel_main: kernel_main(&boot_info)
     kernel_main->>kernel_main: Memory init (phys bitmap + slab + VMM + GDT)
     kernel_main->>kernel_main: topo_ram::init()
     kernel_main->>kernel_main: SMP bring-up (INIT-SIPI-SIPI for APs)
-    kernel_main->>kernel_main: ACPI parse (RSDP → MADT → APIC topology)
+    kernel_main->>kernel_main: ACPI parse (RSDP to MADT to APIC topology)
     kernel_main->>kernel_main: Security init (SMAP/SMEP + MAC + audit)
     kernel_main->>kernel_main: IDT init (256 entries, APIC vectors)
     kernel_main->>kernel_main: APIC init (Local + I/O APIC + timer)
@@ -741,9 +749,9 @@ sequenceDiagram
     kernel_main->>kernel_main: NVMe + xHCI + HDA init
     kernel_main->>kernel_main: Framebuffer init + topo_render::init()
     alt Framebuffer available
-        kernel_main->>kernel_main: Graphical boot (login → splash → theorems → desktop)
+        kernel_main->>kernel_main: Graphical boot (login to splash to theorems to desktop)
     else No framebuffer
-        kernel_main->>kernel_main: Serial-only boot (theorems → shell)
+        kernel_main->>kernel_main: Serial-only boot (theorems to shell)
     end
     kernel_main->>kernel_main: Scheduler spawn + HLT loop
 ```
@@ -755,29 +763,29 @@ sequenceDiagram
 ---
 
 
-> **Assembly confession:** The AP trampoline lives in `src/boot/ap_trampoline.rs` and contains approximately 40 lines of inline assembly. This wakes up secondary CPUs via INIT-SIPI-SIPI. Without it, you're running on one core like it's 1995. We tried to do it in pure Rust. The borrow checker said no.
+> **Assembly confession:** The AP trampoline lives in `src/boot/ap_trampoline.rs` and contains approximately 40 lines of inline assembly. This wakes up secondary CPUs via INIT-SIPI-SIPI. Without it, you're running on one core like it's 1995. I tried to do it in pure Rust. The borrow checker said no.
 
 ---
 
 ## Design Decisions That Seemed Good At 3 AM
 
-Every OS has design decisions. Ours were made at ungodly hours by a sleep-deprived developer mainlining topology papers. Here are the ones that stuck, and why.
+Every OS has design decisions. Mine were made at ungodly hours by a sleep-deprived developer mainlining topology papers. Here are the ones that stuck, and why.
 
 ### Decision 1: The Unit Sphere As Universal Data Structure
 
-**What we did:** Every kernel object — files, memory frames, tasks — gets an embedding on S².
+**What I did:** Every kernel object — files, memory frames, tasks — gets an embedding on S².
 
 **Why it seemed good:** Spheres have no boundary. No edge cases. Natural metric. Beautiful symmetry.
 
-**Why it was painful:** Computing `arccos(sin θ₁ sin θ₂ + cos θ₁ cos θ₂ cos(φ₁ - φ₂))` for every file lookup is expensive. We spent months optimizing the hot path. The Voronoi index caches centroids. The lookup is O(K) where K=8. But still. Arccos. In a kernel.
+**Why it was painful:** Computing `arccos(sin theta1 sin theta2 + cos theta1 cos theta2 cos(phi1 - phi2))` for every file lookup is expensive. I spent months optimizing the hot path. The Voronoi index caches centroids. The lookup is O(K) where K=8. But still. Arccos. In a kernel.
 
 **Verdict:** Would do again, but with more coffee.
 
 ### Decision 2: A Custom Programming Language Inside The Kernel
 
-**What we did:** Aether-Lang — lexer, parser, AST, interpreter, and VM — all in `no_std` kernel space.
+**What I did:** Aether-Lang — lexer, parser, AST, interpreter, and VM — all in `no_std` kernel space.
 
-**Why it seemed good:** TempleOS proved it's possible. We wanted a native scripting language.
+**Why it seemed good:** TempleOS proved it's possible. I wanted a native scripting language.
 
 **Why it was painful:** Writing a parser without `std::collections::HashMap` means using `BTreeMap` for symbol tables. Writing a VM without `Box` means careful manual memory management. Debugging a language inside a kernel means you can't just `println!` — you have to write to the serial port.
 
@@ -785,43 +793,43 @@ Every OS has design decisions. Ours were made at ungodly hours by a sleep-depriv
 
 ### Decision 3: Theorem-Gated Boot
 
-**What we did:** Ten mathematical theorems must be verified before the scheduler starts. T1-T5 are active in runtime paths.
+**What I did:** Ten mathematical theorems must be verified before the scheduler starts. T1-T5 are active in runtime paths.
 
 **Why it seemed good:** Mathematical rigor! Proof-carrying code! Formal verification!
 
 **Why it was painful:** Lean 4 proofs take time to write. The `sorry` tactic is tempting. Maintaining proof strength while changing kernel code is like juggling torches while riding a unicycle.
 
-**Verdict:** Zero `sorry` tactics. We are proud. We are also tired.
+**Verdict:** Zero `sorry` tactics. I am proud. I am also tired.
 
 ### Decision 4: Software Rendering For Everything
 
-**What we did:** No GPU acceleration for the desktop. Everything is rasterized in software on a 1024×768 framebuffer.
+**What I did:** No GPU acceleration for the desktop. Everything is rasterized in software on a 1024x768 framebuffer.
 
 **Why it seemed good:** Portability. No vendor drivers. Works on any hardware with a framebuffer.
 
 **Why it was painful:** Anti-aliased text rendering in software is slow. Glow effects require multiple blur passes. The Schwarzschild metric wallpaper looks cool but eats CPU cycles.
 
-**Verdict:** The desktop looks amazing. The CPU usage is concerning. We have plans for GPU offload (PM4 rings, shader stubs), but they're not ready yet.
+**Verdict:** The desktop looks amazing. The CPU usage is concerning. I have GPU offload plans (PM4 rings, shader stubs), but they are not ready yet.
 
 ### Decision 5: No POSIX
 
-**What we did:** Seal ABI is native. No `open()`, `read()`, `write()` semantics inherited from Unix.
+**What I did:** Seal ABI is native. No `open()`, `read()`, `write()` semantics inherited from Unix.
 
-**Why it seemed good:** POSIX is 50 years of accumulated baggage. We wanted clean semantics.
+**Why it seemed good:** POSIX is 50 years of accumulated baggage. I wanted clean semantics.
 
 **Why it was painful:** Every programmer knows POSIX. Nobody knows Seal ABI. Porting tools is impossible. Writing a shell from scratch is hard.
 
-**Verdict:** Correct decision, but our user base is approximately 12 people, and 8 of them are us.
+**Verdict:** Correct decision, but the user base is approximately 12 people, and 8 of them are probably me in different emotional states.
 
 ### Decision 6: The "Zero Assembly" Marketing Claim
 
-**What we did:** For months, we claimed "zero assembly" on our comparison table.
+**What I did:** For months, I claimed "zero assembly" on the comparison table.
 
-**Why it seemed good:** It was true for the boot path. UEFI loads us in long mode. We never touch `asm!` in `main.rs`.
+**Why it seemed good:** It was true for the boot path. UEFI loads the kernel in long mode. `main.rs` never touches `asm!`.
 
-**Why it was painful:** We forgot about the AP trampoline. And CPU idle loops. And GDT loading. About 40 lines total. Someone on Reddit called us out.
+**Why it was painful:** I forgot about the AP trampoline. And CPU idle loops. And GDT loading. About 40 lines total. Someone on Reddit called it out.
 
-**Verdict:** We fixed it. We now say "minimal inline assembly." The Reddit thread was actually helpful. Thanks, person whose username we forgot.
+**Verdict:** I fixed it. The README now says "minimal inline assembly." The Reddit thread was actually helpful. Thanks, person whose username I forgot.
 
 ## The Ten Theorems
 
@@ -936,8 +944,8 @@ graph TD
         PHYS["Physical Frame Allocator<br/>topological free index + bitmap truth<br/>supports up to 16 GiB RAM"]
     end
 
-    GLOBAL -->|"2048 B or less"| SLAB
-    GLOBAL -->|"greater than 2048 B"| PAGE
+    GLOBAL -->|2048 B or less| SLAB
+    GLOBAL -->|greater than 2048 B| PAGE
     SLAB --> PHYS
     PAGE --> PHYS
 ```
@@ -966,14 +974,14 @@ The hybrid gives us: small objects → slab (fast, no external fragmentation). S
 ```mermaid
 flowchart TB
     subgraph SG14["Userspace (Ring 3)"]
-        U_TEXT[".text — code"]
-        U_DATA[".data/.bss — globals"]
-        U_HEAP["Heap — brk / mmap"]
+        U_TEXT[".text - code"]
+        U_DATA[".data/.bss - globals"]
+        U_HEAP["Heap - brk / mmap"]
         U_STACK["Stack"]
     end
 
     subgraph SG15["Kernel Space (Ring 0)"]
-        K_SLAB["Slab Allocator<br/>64B–2048B, 6 classes"]
+        K_SLAB["Slab Allocator<br/>64B-2048B, 6 classes"]
         K_PAGE["Page Allocator + VMM<br/>4-level PML4 on-demand"]
         K_PHYS["Physical Frame Allocator<br/>topological free index<br/>bitmap truth store"]
         K_TOPO["TopoRAM<br/>Voronoi cells + spectral prefetch +<br/>entropy governor + hyperbolic lifetime"]
@@ -1020,22 +1028,22 @@ Store as ManifoldPayload
 
 ### Metadata Teleport
 
-Moving a file between directories uses O(1) metadata surgery for directory/inode rewiring because the ManifoldPayload identity does not change. The persistent path updates inode/directory metadata without rewriting raw file bytes; the boot marker requires `persistence_bytes_per_move=0`.
+Moving a file between directories on the same filesystem uses O(1) metadata surgery for directory/inode rewiring because the ManifoldPayload identity does not change. The boot benchmark exercises the persistent mock block-store path and requires `fs_mode=mock_block` plus `persistence_bytes_per_move=0`, proving that move does not rewrite raw file bytes.
 
 ```mermaid
 graph TD
     subgraph SG26["Storage"]
-        PAYLOAD["ManifoldPayload<br/>64 SpherePoints (θ, φ)<br/>Betti-0 via Union-Find (ε²=0.25)<br/>FNV-1a content hash"]
+        PAYLOAD["ManifoldPayload<br/>64 SpherePoints (theta, phi)<br/>Betti-0 via Union-Find (epsilon^2=0.25)<br/>FNV-1a content hash"]
         INODE["Inode<br/>name, kind, payload, metadata<br/>voronoi_cell, cluster_id, parent"]
         VORONOI["T1: Voronoi cell assignment<br/>SphericalVoronoiIndex&lt;8&gt;"]
-        BTREE["BTreeMap&lt;InodeId, Inode&gt;<br/>(no_std — no HashMap)"]
+        BTREE["BTreeMap&lt;InodeId, Inode&gt;<br/>(no_std - no HashMap)"]
     end
 
     subgraph SG27["Teleport Metadata Move"]
-        SRC["Source dir"] -->|"1. Remove from src.dir_entries"| SURGERY["Topological Surgery"]
-        SURGERY -->|"2. Insert into dst.dir_entries"| DST["Dest dir"]
-        SURGERY -->|"3. Update inode.parent"| GOV["T4: Governor adapts epsilon"]
-        GOV -->|"4. Check entropy"| MERGE["T3: If Betti-0 > threshold<br/>merge smallest cells"]
+        SRC["Source dir"] -->|1. Remove from src.dir_entries| SURGERY["Topological Surgery"]
+        SURGERY -->|2. Insert into dst.dir_entries| DST["Dest dir"]
+        SURGERY -->|3. Update inode.parent| GOV["T4: Governor adapts epsilon"]
+        GOV -->|4. Check entropy| MERGE["T3: If Betti-0 > threshold<br/>merge smallest cells"]
     end
 
     PAYLOAD --> INODE
@@ -1063,8 +1071,8 @@ The ManifoldScheduler maintains 8 Voronoi cells. Each task's manifold embedding 
 graph TD
     subgraph SG29["ManifoldScheduler"]
         TASKS["Task Queue<br/>Vec&lt;Task&gt;"]
-        VOR["T1: SphericalVoronoiIndex&lt;8&gt;<br/>8 Voronoi cells on S²"]
-        GOV["T4: GeometricGovernor<br/>ε(t+1) = ε(t) + α·e(t) + β·de/dt<br/>α=0.01, β=0.05, ε₀=0.1"]
+        VOR["T1: SphericalVoronoiIndex&lt;8&gt;<br/>8 Voronoi cells on S2"]
+        GOV["T4: GeometricGovernor<br/>epsilon(t+1) = epsilon(t) + alpha*e(t) + beta*de/dt<br/>alpha=0.01, beta=0.05, epsilon0=0.1"]
         PRED["T2: SpectralContractionOperator&lt;8&gt;<br/>predict next runnable task"]
     end
 
@@ -1072,7 +1080,7 @@ graph TD
         TICK["Timer tick (IRQ0)"] --> CHECK["Check deviation greater than epsilon?"]
         CHECK -->|yes| PREDICT["T2: Predict next cell"]
         PREDICT --> CELL["T1: Select task from Voronoi cell"]
-        CELL --> TIMESLICE["T4: Compute timeslice<br/>epsilon < 0.5 → scale=2.0 (stable)<br/>epsilon ≥ 0.5 → scale=0.5 (volatile)"]
+        CELL --> TIMESLICE["T4: Compute timeslice<br/>epsilon &lt; 0.5 -> scale=2.0 (stable)<br/>epsilon &gt;= 0.5 -> scale=0.5 (volatile)"]
         CHECK -->|no| CONTINUE["Continue current task"]
     end
 
@@ -1123,7 +1131,7 @@ The scheduler lock is released **before** context switch, preventing deadlock wh
 **RTC + Watchdog**: CMOS real-time clock (ports 0x70/0x71) with BCD/binary detection. APIC timer watchdog — pets via `SYS_WATCHDOG`, triggers keyboard-controller reset on 5-second hang.
 
 
-> **Driver confession:** Our GPU driver is mostly stubs. The PM4 ring infrastructure is real, but the shaders don't actually compute topology yet. They execute (the GPU doesn't crash), but the results are mathematically wrong. This is documented. This is honest. We are working on it. Please stop emailing us about it.
+> **Driver confession:** Our GPU driver is mostly stubs. The PM4 ring infrastructure is real code, but the current proof does not show a real GPU dispatch. The shaders don't compute topology yet; they are placeholder ABI scaffolds until a hardware `[GPU-BENCH]` run proves otherwise. This is documented. This is honest. We are working on it. Please stop emailing us about it.
 
 </details>
 
@@ -1145,14 +1153,14 @@ Seal OS uses a custom software rendering engine that produces modern, high-tech 
 
 ```mermaid
 flowchart LR
-    Mesh["TopoMesh<br/>vertices + S² embedding"] --> T5["T5 Hyperbolic<br/>Projection<br/>sinh/cosh fisheye"]
+    Mesh["TopoMesh<br/>vertices + S2 embedding"] --> T5["T5 Hyperbolic<br/>Projection<br/>sinh/cosh fisheye"]
     T5 --> T2["T2 Spectral LOD<br/>degree centrality +<br/>screen-space area"]
     T2 --> T3["T3 Betti-1<br/>Integrity Check<br/>reject hole creation"]
-    T3 --> T1["T1 Voronoi<br/>8×8 Screen Tiles"]
+    T3 --> T1["T1 Voronoi<br/>8x8 Screen Tiles"]
     T1 --> Raster["Rasterize<br/>flat / gouraud / phong"]
     Raster --> Depth["Per-Pixel Depth<br/>1/z perspective-correct"]
-    Depth --> T4["T4 Governor<br/>adaptive quality<br/>0=wireframe → 4=phong+AA"]
-    T4 --> Blit["blit() → VRAM"]
+    Depth --> T4["T4 Governor<br/>adaptive quality<br/>0=wireframe -> 4=phong+AA"]
+    T4 --> Blit["blit() -> VRAM"]
 
     style T5 fill:#1a1a2e,stroke:#e94560,color:#fff
     style T2 fill:#1a1a2e,stroke:#0f3460,color:#fff
@@ -1282,7 +1290,7 @@ See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for full details. In scope: ker
 
 ## How To Break This OS (A Hacker's Guide To Our Pain)
 
-We believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for us.
+I believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for me.
 
 ### 🔴 Critical (Please Don't)
 
@@ -1293,21 +1301,21 @@ We believe in full disclosure. Here are known ways to break Seal OS, ranked by h
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path executes shader binaries that are stubs. They return zeros or garbage. If you depend on GPU-accelerated topology computation, you get wrong answers.
+5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
 7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. We fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
 
-### 🟢 Theoretical (We Think These Exist But Haven't Proven)
+### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
-10. **APIC Timer Race:** There might be a race between the scheduler lock release and context switch. We haven't observed it in practice, but the window exists.
-11. **Voronoi Index Overflow:** If you create more than 2^32 files, the inode generation counter wraps. This is theoretical because we haven't tested with 4 billion files.
+10. **APIC Timer Race:** There might be a race between the scheduler lock release and context switch. I haven't observed it in practice, but the window exists.
+11. **Voronoi Index Overflow:** If you create more than 2^32 files, the inode generation counter wraps. This is theoretical because I haven't tested with 4 billion files.
 
-> **If you find a new vulnerability:** Please report it privately. We will fix it, credit you, and add it to this section with appropriate self-deprecating commentary.
+> **If you find a new vulnerability:** Please report it privately. I will fix it, credit you, and add it to this section with appropriate self-deprecating commentary.
 
 </details>
 
@@ -1419,11 +1427,11 @@ Design target: bounded context transfer between agents via topological surgery o
 ```mermaid
 graph TD
     subgraph SG59["Teleportation Stack"]
-        BRIDGE["EmbeddingBridge<br/>ℝ^E → S² via JL projection<br/>seeded Gaussian matrix"]
+        BRIDGE["EmbeddingBridge<br/>R^E to S2 via JL projection<br/>seeded Gaussian matrix"]
         TELEPORT["sys_teleport_context()<br/>orchestration syscall"]
-        HOLLOW["HollowCubeManifold<br/>S² void receptacle<br/>Void(M_recv) = secure injection"]
-        SURGERY_GOV["SurgeryGovernor<br/>PD control + clutch<br/>SurgeryPermit (one-shot lock)<br/>prevents de/dt → ∞ oscillation"]
-        LIVENESS["LivenessAnchor<br/>inherited Chebyshev k-σ bounds<br/>prevents immediate GC eviction"]
+        HOLLOW["HollowCubeManifold<br/>S2 void receptacle<br/>Void(M_recv) = secure injection"]
+        SURGERY_GOV["SurgeryGovernor<br/>PD control + clutch<br/>SurgeryPermit (one-shot lock)<br/>prevents de/dt runaway oscillation"]
+        LIVENESS["LivenessAnchor<br/>inherited Chebyshev k-sigma bounds<br/>prevents immediate GC eviction"]
         PAYLOAD["ManifoldPayload<br/>verified payload unit"]
     end
 
@@ -1451,8 +1459,8 @@ graph LR
     LBA["LBA Stream<br/>(disk block addresses)"] --> FEAT["Feature Extraction<br/>6D telemetry vector"]
     FEAT --> ENCODE["State Encoding<br/>arctan angle mapping"]
     ENCODE --> DECIDE["Adaptive Threshold<br/>prefetch trigger"]
-    DECIDE -->|"yes"| PREFETCH["Issue Prefetch"]
-    DECIDE -->|"no"| SKIP["Skip"]
+    DECIDE -->|yes| PREFETCH["Issue Prefetch"]
+    DECIDE -->|no| SKIP["Skip"]
 ```
 
 **Use cases**: HFT (high-frequency trading I/O), ML model training (sequential CSV/parquet prefetch), DirectStorage (game asset streaming).
@@ -1475,24 +1483,26 @@ Benchmark: `io_cycle_8_lbas` median ~18 ns/cycle on desktop x86_64. CI regressio
 
 How does a geometry-native research kernel compare to production operating systems? This table is a capability map for Seal OS v0.4.5, not a blanket victory claim. Seal OS aims to beat Ubuntu on the benchmark set in [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md); the claim becomes true only for rows with fresh Seal OS and Ubuntu measurements under the same constraints.
 
-### Ubuntu Parity and Lead Sheet
+### Ubuntu Comparison Evidence Sheet
 
 Legend: ✓ = code/proof gate exists in this repo, △ = design or partial implementation, ✗ = not implemented. Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists.
 
 | Capability | Seal OS state | Ubuntu 26.04 LTS baseline | Proof or next gate |
 |---|---:|---|---|
 | UEFI image build | ✓ | ✓ | `seal-mkimage --verify` passes |
-| VM desktop boot proof | ✓ | ✓ | `run-qemu.ps1 -HeadlessProof` plus `seal-mkimage --check-vm-proof` captures theorem gate, AHCI disk, ManifoldFS mount, desktop proof frame, desktop soak marker, desktop ready, and event loop |
-| QEMU proof bundle manifest | ✓ | N/A | `run-qemu.ps1 -HeadlessProof` writes `qemu-proof\proof-manifest.txt`; `seal-mkimage --check-proof-manifest` verifies the image/EFI/log/screen byte counts, CRC32 fingerprints, SHA-256 fingerprints, QEMU backend, commit/dirty flag, and gate statuses before publishing canonical artifacts; `--check-current-proof-manifest ... .` additionally rejects stale proof bundles whose commit or dirty flag no longer match the checkout |
+| QEMU serial desktop boot sentinels | ✓ | ✓ | `run-qemu.ps1 -HeadlessProof` plus `seal-mkimage --check-vm-proof` captures theorem gate, AHCI disk, ManifoldFS mount, desktop proof-frame serial marker, desktop soak marker, desktop ready, event loop, ManifoldFS teleport marker, and TCP demux marker |
+| QEMU proof bundle manifest | ✓ | N/A | Local/pre-release `run-qemu.ps1 -HeadlessProof` writes `qemu-proof\proof-manifest.txt`; `seal-mkimage --check-proof-manifest` verifies the image/EFI/log/screen byte counts, CRC32 fingerprints, SHA-256 fingerprints, QEMU backend, commit/dirty flag, and gate statuses before publishing canonical artifacts; `--check-current-proof-manifest ... .` additionally rejects stale proof bundles whose commit or dirty flag no longer match the checkout |
 | README/doc claim contract | ✓ | N/A | `seal-mkimage --check-doc-claim-contract .` enforces a limited allow/deny string contract for `README.md`, `docs/BENCHMARK_PLAN.md`, and `docs/CI.md` |
-| Oracle VirtualBox automated smoke | ✓ | ✓ | Fresh `smoke-vbox.ps1 -Seconds 240` rebuilds the VDI, then runs `--verify`, `--check-vbox-proof`, theorem/Aether/desktop/benchmark gates, `--check-proof-manifest`, and `--check-current-proof-manifest` against `vbox-smoke\proof-manifest.txt` |
-| First desktop pixel proof | ✓ | N/A | `seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm` verifies nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, and taskbar start/power controls |
-| Desktop compositor soak marker | ✓ | △ | `seal-mkimage --check-desktop-soak ...\serial.log` requires a deterministic 24-frame compose+blit exercise with monotonic cycle percentiles; calibrated 16.7 ms frame-pacing benchmark still pending |
+| Additional VM proof targets | △ | ✓ | QEMU and Oracle VM VirtualBox now have separate current-manifest proof paths. VMware, Hyper-V, cloud hypervisors, and real hardware remain gated targets. Two VM wins are evidence for those two backends, not a universal "any VM, any firmware" claim. |
+| Serial desktop pixel proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` now also requires `[GFX] desktop-proof`, which scans the framebuffer/back buffer for nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, window count, and nonzero sample hash |
+| First captured desktop pixel proof | local/pre-release | N/A | `seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm` verifies nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, and taskbar start/power controls; GitHub CI uses `-nographic`, so this is not a CI framebuffer capture |
+| Desktop compositor soak marker | ✓ | △ | `seal-mkimage --check-desktop-soak ...\serial.log` requires the serial desktop pixel proof plus a deterministic 24-frame compose+blit exercise with monotonic cycle percentiles; calibrated 16.7 ms frame-pacing benchmark still pending |
 | Bare-metal allocator benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] alloc-frame` with 64 successful alloc/free iterations, topological fast-path hits, zero bounded misses, no contiguous-probe drift, and no frame leak |
 | TopoRAM target-cell allocation marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] toporam-alloc` with 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycle samples, and no frame leak |
-| ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode ramfs metadata move across 8-256 directory entries with `metadata_ops_max=7` and `persistence_bytes_per_move=0` |
+| ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode mock block-store metadata move across 8-256 directory entries with `metadata_ops_max=7`, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
 | Scheduler select benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] scheduler-select-next`, gating the live `select_next_task` requeue marker across 64 iterations with ready count preserved, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 priority-bucket scan |
-| TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes to the accepted socket |
+| TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes to the exact accepted flow, leaves a same-port decoy empty, and still falls back to the listener for a new SYN |
+| GPU topology CPU-fallback benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires structured `[GPU-BENCH]` markers for Voronoi assignment, JL projection, and spectral contraction; current proof is `mode=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`, `mismatches=0`, and `claim=cpu_fallback_correctness_only` |
 | AHCI persistent ManifoldFS root | ✓ | ✓ | QEMU serial log shows `QEMU HARDDISK`, `Registered as block device 0x800`, `First disk readable`, and `[VFS] ManifoldFS mounted from disk` |
 | Native non-POSIX ABI | ✓ | ✗ | `seal-mkimage --check-seal-abi .` passes |
 | T1-T10 theorem-gated boot | ✓ | ✗ | Rust theorem-log checker requires all ten VERIFIED lines |
@@ -1503,14 +1513,15 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | Content-addressable geometric lookup | △ | △ | Voronoi narrows lookup to a bucket; current find is O(bucket size) plus sorting until bucket occupancy is hard-capped |
 | GPU/VRAM topology fast path | △ | CUDA/ROCm userspace, not topology fast path | design contract exists; vendor GPU driver and peer-DMA proof pending |
 | Aether-Lang native OS language | ✓ | ✗ | lexer/parser/interpreter/VM are in kernel runtime |
-| Legacy host-language-free Seal OS surface | △ | ✓ | `--check-language-hygiene` bans host scripts from production OS/Rust roots |
+| LAAMBA kernel app proof | ✓ | N/A | boot serial log now carries `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, launcher/start-menu evidence, Aether host window id, `runtime_bridge=rust_native_manifest`, `python_runtime=0`, and `result=pass`; legacy wrappers may remain only as non-runtime prototype baggage under the host-language quarantine |
+| Legacy host-language-free Seal OS surface | △ | ✓ | `--check-language-hygiene` bans host scripts from production OS/Rust roots; remaining legacy scaffolding, examples, wrappers, or tests stay quarantined until replaced by Rust/Aether gates |
 | HFT/ML benchmark comparison vs Ubuntu | △ | ✓ | allocator comparison harness exists; full benchmark matrix still requires fresh side-by-side Ubuntu numbers; raw Ubuntu artifact pending; current proof manifest is `--check-current-benchmark-proof` |
 
 ### Seal OS vs Redox OS vs Ubuntu vs Debian vs Windows vs macOS
 
 | Feature | **Seal OS v0.4.5** | **Redox OS 0.9.0** | **Ubuntu 26.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
 |---|---|---|---|---|---|---|
-| **Language** | Rust (100%, `no_std`) | Rust (microkernel) | C (Linux kernel) | C (Linux kernel) | C/C++ (NT kernel) | C/C++/Obj-C (XNU) |
+| **Language** | Rust-first `no_std` + small assembly | Rust (microkernel) | C (Linux kernel) | C (Linux kernel) | C/C++ (NT kernel) | C/C++/Obj-C (XNU) |
 | **Architecture** | Monolithic | Microkernel | Monolithic + modules | Monolithic + modules | Hybrid | Hybrid (Mach + BSD) |
 | **Kernel size** | ~260 KB | ~1 MB | ~12 MB (vmlinuz) | ~8 MB (vmlinuz) | ~30 MB (ntoskrnl) | ~25 MB (kernel.release) |
 | **ISO size** | < 10 MB | ~70 MB | ~5 GB | ~650 MB (netinst) | ~5.5 GB | ~13 GB (IPSW) |
@@ -1526,7 +1537,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Math-driven kernel** | Yes (T1-T5 active, T6-T10 boot-checked) | No | No | No | No | No |
 | **Topological data analysis** | Runtime-gated markers and Betti/Voronoi | No | Userspace only | Userspace only | No | No |
 | **Predictive prefetch** | T2 spectral contraction mechanism | No | readahead heuristic | readahead heuristic | Superfetch/SysMain | Speculative prefetch |
-| **GPU offload ready** | PM4 compute ring + CPU fallback real; shaders are stubs | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
+| **GPU offload scaffold** | PM4/firmware scaffolding + CPU fallback; hardware dispatch proof pending | No | CUDA/ROCm userspace | CUDA/ROCm userspace | DirectCompute | Metal |
 | **Display** | 1024x768x32 framebuffer | 1920x1080 (orbital) | Wayland/X11 | Wayland/X11 | DWM | Quartz |
 | **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
@@ -1539,7 +1550,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Self-hosted** | No | Partial | Yes | Yes | Yes | Yes |
 | **License** | MIT | MIT | GPL-2.0 (kernel) | DFSG-free | Proprietary | Proprietary (+ open source parts) |
 | **Theorem count** | 10 boot-gated; T1-T5 active in runtime paths | 0 | 0 | 0 | 0 | 0 |
-| **Teleportation** | Metadata topology move; persistent byte rewrite still pending | No | No | No | No | No |
+| **Teleportation** | Same-filesystem metadata topology move; mock block-store gate requires `persistence_bytes_per_move=0` | No | No | No | No | No |
 
 **Where Seal OS is distinctive as a design**: mathematical kernel primitives, topological data embeddings, content-addressable ManifoldFS metadata, theorem-gated boot, adaptive governor, and gated O(1) metadata-move/select/allocation markers.
 
@@ -1552,33 +1563,35 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 
 ---
 
-## Where We Actually Stand (Brutal Honesty Edition)
+## Where This Actually Stands (Brutal Honesty Edition)
 
 Let's strip away the marketing and talk about where Seal OS actually is, in terms that would make a product manager cry.
 
-### What We Can Honestly Claim Today
+### What I Can Honestly Claim Today
 
-1. **We boot.** On QEMU. On VirtualBox. On some real hardware (tested on a ThinkPad T480 and a custom desktop).
-2. **We have a desktop.** It has a taskbar, a start menu, a calculator, a file manager, and games. It looks like something from the early 2000s, but it works.
-3. **Our memory allocator is O(1).** For single-frame allocations. With bounded probes. Under specific conditions. We have proof gates that verify this on every boot. This is real.
-4. **Our file moves are O(1).** For metadata-only moves within the same filesystem. The bytes don't move, the pointers do. We verify `persistence_bytes_per_move=0` in CI.
-5. **We have mathematical theorems.** Ten of them. Five are active in runtime. Zero `sorry` tactics in Lean. This is not common in OS development.
-6. **We have real drivers.** Not mocks. Real NVMe queue creation. Real e1000 descriptor rings. Real xHCI enumeration. Real HDA audio playback.
+1. **Seal OS boots.** In the current QEMU headless proof path and Oracle VM VirtualBox smoke path, with serial proof markers and manifests. Other hypervisors and real hardware remain separate targets until they get their own gates.
+2. **Seal OS has a desktop.** It has a taskbar, a start menu, a calculator, a file manager, and games, plus serial framebuffer proof and QEMU pixel proof that the desktop is nonblank and structured.
+3. **The memory allocator is O(1).** For single-frame allocations. With bounded probes. Under specific conditions. Proof gates verify this on every boot. This is real.
+4. **Same-filesystem file moves are O(1).** For metadata-only moves within the same filesystem. The bytes don't move, the pointers do. CI verifies `persistence_bytes_per_move=0`.
+5. **The math is not decorative.** Ten theorems. Five active in runtime. Zero `sorry` tactics in Lean. Huge organizations ship kernels without this. I put it in a research OS because apparently I enjoy making my own life harder.
+6. **LAAMBA is now a kernel app proof, not just a host wrapper hope.** The boot log proves `LAAMBA_Governor` launches as a kernel/native-manifest app through the Aether host path with `python_runtime=0`.
+7. **There are real drivers.** Not mocks. Real NVMe queue creation. Real e1000 descriptor rings. Real xHCI enumeration. Real HDA audio playback.
 
-### What We Cannot Honestly Claim Yet
+### What I Cannot Honestly Claim Yet
 
-1. **We are faster than Linux.** For most workloads, Linux is faster. We haven't done the side-by-side benchmarks yet. The harness exists. The Ubuntu artifact is pending. Until then, we don't claim victory.
-2. **We are secure.** We have scaffolding. We have ASLR and seccomp. We do NOT have full KPTI, production TLS, or a security audit. Do not use this for sensitive data.
-3. **We have a GPU driver.** We have GPU infrastructure. We can talk to AMD GPUs. The shaders are stubs. They execute but produce wrong results. This is documented.
-4. **We have a browser.** We do not have a browser. We have an HTTP/HTTPS client. You can fetch raw HTML. You cannot render it. You cannot run JavaScript. There is no DOM.
-5. **We are self-hosting.** We cannot build Seal OS using Seal OS. We need Linux (or Windows, or macOS) to compile the kernel. Aether-Lang is not yet powerful enough to build itself.
-6. **We have users.** Our user base is approximately: 1 primary developer, 2 occasional contributors, 5 people who starred the repo and never cloned it, and 3 people who cloned it, said "huh," and moved on.
+1. **Seal OS is not globally faster than Linux yet.** For most workloads, Linux is faster. The side-by-side benchmark harness exists. The Ubuntu artifact is pending. I am not claiming victory until the Ubuntu artifact exists.
+2. **Seal OS is not production-secure.** It has scaffolding. It has ASLR and seccomp. It does NOT have full KPTI, production TLS, or a security audit. Do not use this for sensitive data.
+3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact. The shaders are stubs. Annoying, but better than lying.
+4. **There is no browser.** There is an HTTP/HTTPS client. You can fetch raw HTML. You cannot render it. You cannot run JavaScript. There is no DOM.
+5. **It is not self-hosting.** Seal OS still needs Linux, Windows, or macOS to compile the kernel. Aether-Lang is not yet powerful enough to build itself.
+6. **Every legacy host wrapper is not gone yet.** Production OS roots are quarantined away from host-script runtime drift, and LAAMBA's runtime bridge has a native gate. Legacy wrappers and research scripts may still exist outside the runtime path until Rust/Aether replacements prove they can carry the weight.
+7. **The user base is tiny.** Roughly: 1 primary developer, 2 occasional contributors, 5 people who starred the repo and never cloned it, and 3 people who cloned it, said "huh," and moved on.
 
-### The "△" Symbol Is Our Friend
+### The "△" Symbol Is My Friend
 
-Look at the feature matrix. See all those △ symbols? Those mean "partial" or "pending." We use △ a lot. We are not ashamed of △. △ is honesty. △ is "we're working on it." △ is better than ✗ because it means progress.
+Look at the feature matrix. See all those △ symbols? Those mean "partial" or "pending." I use △ a lot. I am not ashamed of △. △ is honesty. △ is "this is being worked on." △ is better than ✗ because it means progress.
 
-If we wanted to lie, we could replace every △ with ✓ and claim full implementation. But then someone would try to use it, it would break, and they'd open an issue. We'd rather be honest upfront and have fewer disappointed users.
+If I wanted to lie, I could replace every △ with ✓ and claim full implementation. Then someone would try to use it, it would break, and they would open an issue. I would rather be honest upfront and have fewer disappointed users.
 
 ---
 
@@ -1591,16 +1604,16 @@ If we wanted to lie, we could replace every △ with ✓ and claim full implemen
 | **TopoRAM alloc** | `alloc_frames(1, hint)` | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` |
 | **TopoRAM contiguous** | `alloc_frames(count > 1, hint)` | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap | source-gated by `--check-o1-allocator` |
 | **ManifoldFS lookup** | `lookup(path)` | O(path depth) + O(K) cell search | benchmark pending |
-| **ManifoldFS teleport** | move file | O(1) metadata rewiring with same-inode directory topology move; persistent metadata updates do not rewrite file bytes | `[BENCH] manifold-teleport` gate proves same inode, source removal, destination presence, bounded metadata ops, and `persistence_bytes_per_move=0` |
+| **ManifoldFS teleport** | move file | O(1) metadata rewiring with same-inode directory topology move on the same filesystem; mock block-store persistence does not rewrite file bytes | `[BENCH] manifold-teleport` gate proves same inode, source removal, destination presence, bounded metadata ops, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
 | **Scheduler select** | `select_next_task()` | O(1) — one predicted-cell check plus bounded fallback across 8 cells and 256 priority buckets | `[BENCH] scheduler-select-next` gate proves 64 live requeue selections, ready count preservation, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 bucket scan |
 | **Context switch** | `switch_context()` | O(1) — FXSAVE/FXRSTOR + CR3 swap | benchmark pending |
 | **NVMe read** | `read_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
-| **TCP demux** | `handle_tcp_packet()` | O(1) flow match before listener fallback | `[BENCH] tcp-packet-demux` proves listener-first socket order, same-port accepted socket delivery, 4-byte payload receipt, established-state transition, and fixture cleanup |
+| **TCP demux** | `handle_tcp_packet()` | O(1) exact flow match before listener fallback | `[BENCH] tcp-packet-demux` proves listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
 | **TCP round-trip** | localhost ping | O(1) stack traversal | benchmark pending |
 | **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |
-| **Tensor render** | 100×100 CSV → mesh | O(N) SVD + O(N) mesh gen + raster | benchmark pending |
+| **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | benchmark pending |
 
 *Note: complexity rows are code/proof claims. Latency rows stay pending until the benchmark plan records raw artifacts and side-by-side Ubuntu runs.*
 
@@ -1733,6 +1746,7 @@ Every claim in this README has a supplementary document. Every document traces t
 |----------|---------------|
 | [Quick Start](#quick-start--boot-in-5-minutes) (this README) | 5-minute boot guide |
 | [docs/SEAL_OS_GUIDE.md](docs/SEAL_OS_GUIDE.md) | Practical build, VM proof, audit gates, allocator contract, benchmark runbook |
+| [docs/SEAL_OS_GUIDEBOOK.md](docs/SEAL_OS_GUIDEBOOK.md) | Book-scale Linux-inspired guide with proof-status ledgers, architecture tours, and ruthless honesty about unfinished parts |
 | [docs/BUILD_SYSTEM.md](docs/BUILD_SYSTEM.md) | Workspace structure, toolchains, dependency policy, common errors |
 | [kernel/seal-os/README.md](kernel/seal-os/README.md) | Kernel overview, quick start, concepts |
 
@@ -1824,9 +1838,9 @@ Every claim in this README has a supplementary document. Every document traces t
 
 ---
 
-## How To Read Our Docs Without Crying
+## How To Read These Docs Without Crying
 
-Our documentation is extensive. Here's a survival guide:
+This documentation is extensive. Here is the survival guide:
 
 1. **Start with this README.** It's long but comprehensive. Use Ctrl+F.
 2. **Read `docs/SEAL_OS_GUIDE.md` next.** It's the practical "how do I make this work" document.
@@ -1917,14 +1931,14 @@ Epsilon-Hollow/
 
 1. **Want to fix a bug?** Check `tests/` and `kernel/seal-os/src/` for the relevant subsystem.
 2. **Want to add a feature?** Read `.agents/` for the subsystem plan, then implement.
-3. **Want to change the README?** Make sure you don't break `--check-doc-claim-contract`. We CI our README.
+3. **Want to change the README?** Make sure you don't break `--check-doc-claim-contract`. Even the README has CI because apparently I enjoy pain with line numbers.
 4. **Want to add a theorem?** Talk to us first. Theorems have a high bar.
 5. **Want to add a driver?** Godspeed. Read `kernel/seal-os/src/drivers/` for examples.
 
 ### Directory Smells
 
 - `kernel/seal-os/src/lib.rs` is 800+ lines of module declarations. It's fine. Don't refactor it unless you want 47 merge conflicts.
-- `kernel/seal-os/src/apps/` contains both shell commands and full applications. The boundary is fuzzy. We know.
+- `kernel/seal-os/src/apps/` contains both shell commands and full applications. The boundary is fuzzy. I know.
 - `docs/` has both `.md` files and subdirectories with more `.md` files. The nesting is organic, not planned.
 - `.agents/` contains prompts for AI agents. If you're a human, read them for context. If you're an AI, follow them.
 
@@ -1932,7 +1946,7 @@ Epsilon-Hollow/
 
 ## Contributing & Community
 
-We welcome contributions from systems programmers, mathematicians, language designers, and researchers.
+I welcome contributions from systems programmers, mathematicians, language designers, and researchers.
 
 ### Quick Start for Contributors
 
@@ -1973,7 +1987,7 @@ So you want to contribute to Seal OS. Bless your heart. Here's what you're signi
 - The codebase is smaller than Linux. Much smaller. You can read all of it in a week.
 - It's all Rust. If you know Rust, you know 90% of what you need.
 - The build system is just Cargo. No autotools. No CMake. No Makefile mysteries.
-- We have CI that catches most mistakes before they hit main.
+- CI catches most mistakes before they hit main.
 
 ### The Bad News
 
@@ -1984,7 +1998,7 @@ So you want to contribute to Seal OS. Bless your heart. Here's what you're signi
 
 ### What Makes A Good Contribution
 
-1. **Bug fixes with tests.** We love these. They make CI greener.
+1. **Bug fixes with tests.** I love these. They make CI greener.
 2. **Documentation improvements.** Especially if they explain math in human terms.
 3. **Benchmarks.** Especially side-by-side comparisons with Linux.
 4. **Driver improvements.** Real hardware testing is gold.
@@ -1992,10 +2006,10 @@ So you want to contribute to Seal OS. Bless your heart. Here's what you're signi
 
 ### What Makes A Bad Contribution
 
-1. **"Why not use Linux instead?"** We know Linux exists. We chose not to use it. This is not a bug.
+1. **"Why not use Linux instead?"** I know Linux exists. I chose not to use it. This is not a bug.
 2. **"This is overkill."** Yes. That's the point.
 3. **"You should rewrite it in Zig."** No.
-4. **PRs that break CI without explanation.** Our CI is sacred. Breaking it is a cardinal sin.
+4. **PRs that break CI without explanation.** CI is sacred. Breaking it is a cardinal sin.
 5. **Removing theorems to simplify things.** The theorems stay. They are non-negotiable.
 
 ---
@@ -2031,7 +2045,7 @@ We believe in full disclosure. Here are known ways to break Seal OS, ranked by h
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path executes shader binaries that are stubs. They return zeros or garbage. If you depend on GPU-accelerated topology computation, you get wrong answers.
+5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
@@ -2191,24 +2205,24 @@ graph TD
         TSS["tss.rs<br/>SphericalVoronoiIndex&lt;K&gt;<br/>great_circle_distance()"]
         SCM["scm.rs<br/>SpectralContractionOperator&lt;D&gt;<br/>LatentPredictor"]
         TOPO["topology.rs<br/>compute_betti_0(), compute_betti_1()<br/>TopologicalShape, verify_shape()"]
-        GOV["governor.rs<br/>GeometricGovernor<br/>α=0.01, β=0.05, ε₀=0.1"]
+        GOV["governor.rs<br/>GeometricGovernor<br/>alpha=0.01, beta=0.05, epsilon0=0.1"]
         MAN["manifold.rs<br/>ManifoldPoint&lt;D&gt;<br/>SparseAttentionGraph<br/>TimeDelayEmbedder<br/>TopologicalPipeline"]
-        STATE["state.rs — state tracking"]
-        OS["os.rs — page tables, CPU context"]
-        MEM["memory.rs — Chebyshev liveness bounds"]
-        AETHER["aether.rs — BlockMetadata,<br/>DriftDetector, HierarchicalBlockTree"]
+        STATE["state.rs - state tracking"]
+        OS["os.rs - page tables, CPU context"]
+        MEM["memory.rs - Chebyshev liveness bounds"]
+        AETHER["aether.rs - BlockMetadata,<br/>DriftDetector, HierarchicalBlockTree"]
     end
 
     subgraph SG58["ml/"]
-        TENSOR["tensor.rs — N-dim tensor ops"]
-        AUTOGRAD["autograd.rs — backpropagation"]
-        NEURAL["neural.rs — Dense, Conv, Activation"]
-        CLUSTER["clustering.rs — Betti-0 semantic clustering"]
-        LINALG["linalg.rs — matrix ops, SVD, eigen"]
-        CONV["convolution.rs — manifold-aware conv"]
+        TENSOR["tensor.rs - N-dim tensor ops"]
+        AUTOGRAD["autograd.rs - backpropagation"]
+        NEURAL["neural.rs - Dense, Conv, Activation"]
+        CLUSTER["clustering.rs - Betti-0 semantic clustering"]
+        LINALG["linalg.rs - matrix ops, SVD, eigen"]
+        CONV["convolution.rs - manifold-aware conv"]
         CLASS["classification.rs"]
         REG["regression.rs"]
-        GOSSIP["gossip.rs — distributed learning"]
+        GOSSIP["gossip.rs - distributed learning"]
     end
 
     TSS --> TOPO
@@ -2280,48 +2294,57 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 1. UEFI entry and Seal OS banner
 2. Heap initialized
 3. IDT + PIC initialized
-4. T4 governor online
-5. T1 Voronoi index reports 8 cells
-6. All ten theorem lines `[THEOREM] Tn/... VERIFIED`
-7. QEMU AHCI disk identity
-8. Block device `0x800` registered
-9. Persistent ManifoldFS root mounted from disk
-10. Desktop proof frame blit sentinel
-11. Desktop ready sentinel
-12. Event-loop entry sentinel
-13. Scheduler started
-14. SYSCALL/SYSRET MSRs programmed
-15. Aether runtime proof marker
+4. SYSCALL/SYSRET MSRs programmed
+5. T4 governor online
+6. T1 Voronoi index reports 8 cells
+7. All ten theorem lines `[THEOREM] Tn/... VERIFIED`
+8. Theorem summary line
+9. `[BENCH] toporam-alloc`
+10. `[BENCH] alloc-frame`
+11. `[BENCH] manifold-teleport`
+12. `[BENCH] scheduler-select-next`
+13. `[BENCH] tcp-packet-demux`
+14. `[GPU-BENCH] suite`
+15. `[Aether-Lang] runtime proof`
+16. `[LAAMBA] app proof:`
+17. QEMU AHCI disk identity
+18. Block device `0x800` registered
+19. Persistent ManifoldFS root mounted from disk
+20. `[GFX] desktop-proof`
+21. Desktop proof frame blit sentinel
+22. `[GFX] desktop-soak`
+23. Desktop ready sentinel
+24. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
 
 ---
 
-## The CI Pipeline: Our Digital Torture Chamber
+## CI Proof Pipeline
 
-Our CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what every push goes through.
+CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what every push goes through.
 
 ### The Jobs
 
-| Job | What it checks | Our feelings about it |
+| Job | What it checks | My feelings about it |
 |-----|---------------|----------------------|
 | `fmt` | `cargo fmt --check` across all files | Boring but necessary. Like brushing your teeth. |
 | `build` | `cargo build --workspace` | If this fails, nothing else matters. |
-| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Clippy is a pedant. We love it and hate it. |
+| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` | Clippy is a pedant. I love it and hate it. |
 | `test` | `cargo test --workspace` + `no_std` feature check + doc claim contract + Lean hygiene | The big one. Break this, go to jail. |
 | `bench-compile` | `cargo bench --workspace --no-run` | Ensures benchmarks still compile. |
 | `miri` | Miri UB detection on `aether-core` state, OS, and proptest | Miri finds things we didn't know were wrong. It's spooky. |
 | `bench-regression` | Criterion `io_cycle_8_lbas` < 120 ns median gate | Performance must not regress. Period. |
 | `audit` | `cargo audit` for known vulnerabilities | Security scanning. Important. |
-| `deny` | `cargo deny check` for license/dependency policy | We take licensing seriously. |
+| `deny` | `cargo deny check` for license/dependency policy | I take licensing seriously. |
 | `docs` | `cargo doc --workspace --no-deps` with `-D warnings` | Documentation must build. |
 | `bom` | UTF-8 BOM check on all source files | Because BOMs are evil. |
 | `kernel-build` | Seal OS kernel build on nightly, PE/COFF header verification | The kernel must build. |
 | `kernel-image` | UEFI disk image creation, `seal-mkimage --verify`, ISO build | The image must be valid. |
 | `kernel-qemu-smoke` | 240-second QEMU boot with 20+ hard milestone gates | The OS must actually boot. |
 | `kernel-clippy` | Kernel-specific clippy on nightly | Extra pedantry for kernel code. |
-| `laamba-governor-check` | LAAMBA Governor Rust backend check | Our Tauri app must compile. |
+| `laamba-governor-check` | LAAMBA Governor Rust backend check | The Tauri app must compile. |
 | `lean` | Lean 4 package build with Mathlib cache | Math must be right. |
 
 ### QEMU Smoke Test Hard Gates
@@ -2329,22 +2352,31 @@ Our CI is not a suggestion. It is a law. Break it, and your PR dies. Here is wha
 1. UEFI entry and Seal OS banner
 2. Heap initialized
 3. IDT + PIC initialized
-4. T4 governor online
-5. T1 Voronoi index reports 8 cells
-6. All ten theorem lines `[THEOREM] Tn/... VERIFIED`
-7. QEMU AHCI disk identity
-8. Block device `0x800` registered
-9. Persistent ManifoldFS root mounted from disk
-10. Desktop proof frame blit sentinel
-11. Desktop ready sentinel
-12. Event-loop entry sentinel
-13. Scheduler started
-14. SYSCALL/SYSRET MSRs programmed
-15. Aether runtime proof marker
+4. SYSCALL/SYSRET MSRs programmed
+5. T4 governor online
+6. T1 Voronoi index reports 8 cells
+7. All ten theorem lines `[THEOREM] Tn/... VERIFIED`
+8. Theorem summary line
+9. `[BENCH] toporam-alloc`
+10. `[BENCH] alloc-frame`
+11. `[BENCH] manifold-teleport`
+12. `[BENCH] scheduler-select-next`
+13. `[BENCH] tcp-packet-demux`
+14. `[GPU-BENCH] suite`
+15. `[Aether-Lang] runtime proof`
+16. `[LAAMBA] app proof:`
+17. QEMU AHCI disk identity
+18. Block device `0x800` registered
+19. Persistent ManifoldFS root mounted from disk
+20. `[GFX] desktop-proof`
+21. Desktop proof frame blit sentinel
+22. `[GFX] desktop-soak`
+23. Desktop ready sentinel
+24. Event-loop entry sentinel
 
-If any of these 15 gates fail, the entire CI run fails. No exceptions. No mercy.
+If any of the hard milestone gates tracked in [docs/CI.md](docs/CI.md) fail, the entire CI run fails. No exceptions. No mercy.
 
-> **CI story:** Once, we pushed a change that broke the desktop soak marker because we changed the font rendering and the pixel colors shifted by 1. CI caught it. We fixed it. This is why we have CI.
+> **CI story:** Once, I pushed a change that broke the desktop soak marker after a rendering change. CI caught the serial sentinel drift. I fixed it. Local pixel proof covers the framebuffer details before GUI proof artifacts get published. This is why CI exists.
 
 ---
 
@@ -2361,18 +2393,18 @@ Seal OS stands on the shoulders of:
 
 ---
 
-## People We Blame For This
+## People I Blame For This
 
 *(An expanded acknowledgements section with personality)*
 
-- **The Rust community** — for `no_std`, `core`, `alloc`, and the borrow checker. Without you, we'd be writing C and having buffer overflow nightmares.
-- **The Lean community** — for formal proof infrastructure and Mathlib. You make us look smarter than we are.
+- **The Rust community** — for `no_std`, `core`, `alloc`, and the borrow checker. Without you, I would be writing C and having buffer overflow nightmares.
+- **The Lean community** — for formal proof infrastructure and Mathlib. You make me look smarter than I am.
 - **TempleOS (Terry A. Davis)** — for proving that a single person can write an entire operating system with a native language. Rest in peace, Terry. Your spirit lives in every `~` terminator.
-- **Redox OS** — for demonstrating Rust bare-metal OS viability. You're the cool older sibling we aspire to annoy.
-- **Topology and geometry researchers** — for the mathematical primitives that make this design possible. We read your papers at 3 AM and made questionable life choices because of them.
-- **QEMU developers** — for the emulator that lets us test without bricking real hardware. You are the unsung heroes of OS development.
+- **Redox OS** — for demonstrating Rust bare-metal OS viability. You're the cool older sibling I aspire to annoy.
+- **Topology and geometry researchers** — for the mathematical primitives that make this design possible. I read your papers at 3 AM and made questionable life choices because of them.
+- **QEMU developers** — for the emulator that lets me test without bricking real hardware. You are the unsung heroes of OS development.
 - **The person who invented coffee** — without you, none of this would exist.
-- **Our future therapists** — you're going to have so much material.
+- **My future therapist** — you're going to have so much material.
 
 ---
 
@@ -2386,7 +2418,7 @@ Seal OS stands on the shoulders of:
 
 ---
 
-## Glossary of Words We Made Up
+## Glossary of Words I Made Up
 
 | Word | Definition |
 |------|------------|
@@ -2394,13 +2426,13 @@ Seal OS stands on the shoulders of:
 | **Aether-Lang** | A programming language with `~` terminators. Pronounced "ether lang." Not related to Ethereum. |
 | **Teleport** | Moving a file by rewiring metadata pointers. No actual quantum mechanics involved. |
 | **TopoRAM** | Memory with spherical coordinates. Because flat RAM was too boring. |
-| **Betti-0** | The number of connected components in a topological space. In our OS, it measures fragmentation. In conversation, it makes you sound smart. |
+| **Betti-0** | The number of connected components in a topological space. In Seal OS, it measures fragmentation. In conversation, it makes you sound smart. |
 | **Governor epsilon** | A PD control parameter that adapts scheduling timeslices. Named after the Greek letter because Greek letters make things look official. |
 | **Spectral Contraction** | A mathematical operation that shrinks prediction states. Not related to ghosts or music. |
-| **Hyperbolic Curvature** | A measure of how "tree-like" a structure is. In our OS, it classifies file lifetimes. In normal life, it's a phrase that ends conversations at parties. |
-| **Voronoi Cell** | A region of space closer to one point than any other. We use them for scheduling, memory, and files. They are the Swiss Army knife of our OS. |
+| **Hyperbolic Curvature** | A measure of how "tree-like" a structure is. In Seal OS, it classifies file lifetimes. In normal life, it's a phrase that ends conversations at parties. |
+| **Voronoi Cell** | A region of space closer to one point than any other. Seal OS uses them for scheduling, memory, and files. They are the Swiss Army knife of the design. |
 | **Seal OS** | This operating system. Named after seals. Not Navy SEALs. The cute kind that balance balls on their noses. |
-| **LAAMBA** | We still don't know. If you figure it out, open an issue. |
+| **LAAMBA** | I still don't know. If you figure it out, open an issue. |
 
 ---
 
@@ -2448,9 +2480,9 @@ Seal OS stands on the shoulders of:
 
 ## Final Words
 
-If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know our strengths, our weaknesses, our jokes, and our regrets.
+If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
 
-Seal OS is not a product. It is not a startup. It is not a revolution. It is one person's obsession with geometry, expressed as 111,000 lines of Rust and a dream of a world where operating systems think in spheres.
+Seal OS is not a product. It is not a startup. It is not a revolution. It is one person's obsession with geometry, expressed as **102,073 lines of Rust across 388 files** and a dream of a world where operating systems think in spheres.
 
 If that sounds interesting to you, welcome aboard. If it sounds insane, you're not wrong. But insanity is just genius that hasn't been understood yet.
 
@@ -2463,7 +2495,7 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**111183 lines of Rust** across 387 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **113006 total**
+**155,014 Rust lines** across 672 `.rs` files outside build caches | active `kernel/apps/tools/userspace`: **86,998 Rust lines** | Seal OS kernel crate: **50,847 Rust lines** | ~40 lines of inline assembly | 1,823 lines of Aether-Lang DSL
 <!-- RUST_LINE_COUNT_END -->
 
 </p>

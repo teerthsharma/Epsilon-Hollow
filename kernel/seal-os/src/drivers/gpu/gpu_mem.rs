@@ -9,8 +9,8 @@
 //! from the standard physical frame allocator and rely on the identity map
 //! (first 4 GiB) being reachable by the GPU via 32-bit DMA.
 
-use alloc::vec::Vec;
 use crate::memory::phys::alloc_frames_contiguous;
+use alloc::vec::Vec;
 
 /// A buffer allocated in GPU-visible memory.
 pub struct GpuBuffer {
@@ -32,11 +32,7 @@ impl GpuBuffer {
         unsafe {
             core::ptr::write_bytes(phys as *mut u8, 0, frames * 4096);
         }
-        Some(Self {
-            phys,
-            size,
-            frames,
-        })
+        Some(Self { phys, size, frames })
     }
 
     /// Free the buffer back to the physical allocator.
@@ -44,10 +40,11 @@ impl GpuBuffer {
         let frame_size = 4096u64;
         for i in 0..self.frames {
             let addr = x86_64::PhysAddr::new(self.phys + (i as u64) * frame_size);
-            unsafe { crate::memory::phys::free_frame(addr); }
+            unsafe {
+                crate::memory::phys::free_frame(addr);
+            }
         }
     }
-
 
     /// Return a mutable byte slice for CPU access.
     ///

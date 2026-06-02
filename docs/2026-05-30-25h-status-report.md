@@ -184,12 +184,12 @@ What is currently supported by gates:
 - contiguous DMA allocation is bounded by fixed candidate probes and a 64-page run cap
 - TopoRAM single-frame benchmark marker exists
 - allocator boot markers are checked by `seal-mkimage --check-benchmark-log`
-- ManifoldFS teleport marker proves bounded metadata movement and same-inode RAMFS behavior
+- ManifoldFS teleport marker proves bounded metadata movement and same-inode mock block-store behavior
 
 What is not fully proven:
 
 - all physical allocation paths in every condition
-- end-to-end persistent file teleport without byte write-through cost
+- AHCI-backed, power-loss-safe file teleport persistence beyond the mock block-store gate
 - VRAM-backed file/data teleportation
 - GPU-native data movement
 - HFT tick-to-action latency

@@ -6,8 +6,8 @@ color = "#00B0FF"
 description = "x86_64 paging in pure NASM assembly"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py pgtable-asm"
+type = "native"
+command = "laamba-native pgtable-asm"
 working_dir = "~/repos/pgtable-asm"
 
 [engine.inputs]

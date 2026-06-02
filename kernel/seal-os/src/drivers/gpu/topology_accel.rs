@@ -9,7 +9,7 @@
 
 use super::compute_queue::{ComputeRing, GpuFence};
 use super::firmware_scanner::{FallbackReason, GpuFirmwareCaps};
-use super::gpu_mem::{GpuBuffer, upload, download};
+use super::gpu_mem::{download, upload, GpuBuffer};
 use super::shader_binaries::{find_kernel, KernelMeta};
 use crate::drivers::gpu::amd::AmdGpu;
 use crate::drivers::pci::PciDevice;
@@ -143,7 +143,10 @@ impl AmdTopologyAccelerator {
     unsafe fn upload_kernel(&mut self, meta: &KernelMeta) -> Result<u64, GpuError> {
         let code_bytes = meta.code_size_bytes;
         let code_buf = GpuBuffer::alloc(code_bytes).ok_or(GpuError::OutOfMemory)?;
-        upload(&code_buf, super::shader_binaries::kernel_as_bytes(meta.binary));
+        upload(
+            &code_buf,
+            super::shader_binaries::kernel_as_bytes(meta.binary),
+        );
         Ok(code_buf.phys)
     }
 }
@@ -196,12 +199,16 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
     }
 
     fn upload(&mut self, dst: &GpuBuffer, src: &[u8]) -> Result<(), GpuError> {
-        unsafe { upload(dst, src); }
+        unsafe {
+            upload(dst, src);
+        }
         Ok(())
     }
 
     fn download(&mut self, dst: &mut [u8], src: &GpuBuffer) -> Result<(), GpuError> {
-        unsafe { download(dst, src); }
+        unsafe {
+            download(dst, src);
+        }
         Ok(())
     }
 
@@ -230,16 +237,19 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
             ring.set_num_threads(64, 1, 1);
             // Set user data: argument buffer layout.
             // s4-s5: points, s6-s7: centroids, s8-s9: cell_ids, s10: n_points, s11: n_cells
-            ring.set_user_data(0, &[
-                (points.phys & 0xFFFFFFFF) as u32,
-                ((points.phys >> 32) & 0xFFFFFFFF) as u32,
-                (centroids.phys & 0xFFFFFFFF) as u32,
-                ((centroids.phys >> 32) & 0xFFFFFFFF) as u32,
-                (cell_ids.phys & 0xFFFFFFFF) as u32,
-                ((cell_ids.phys >> 32) & 0xFFFFFFFF) as u32,
-                n_points as u32,
-                n_cells as u32,
-            ]);
+            ring.set_user_data(
+                0,
+                &[
+                    (points.phys & 0xFFFFFFFF) as u32,
+                    ((points.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (centroids.phys & 0xFFFFFFFF) as u32,
+                    ((centroids.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (cell_ids.phys & 0xFFFFFFFF) as u32,
+                    ((cell_ids.phys >> 32) & 0xFFFFFFFF) as u32,
+                    n_points as u32,
+                    n_cells as u32,
+                ],
+            );
             ring.dispatch_direct(grid_x, 1, 1);
             Ok(ring.submit(fence_phys))
         }
@@ -264,14 +274,17 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
             ring.set_compute_pgm(shader_phys);
             let grid_x = ((n_vectors + 63) / 64) as u32;
             ring.set_num_threads(64, 1, 1);
-            ring.set_user_data(0, &[
-                (input.phys & 0xFFFFFFFF) as u32,
-                ((input.phys >> 32) & 0xFFFFFFFF) as u32,
-                (output.phys & 0xFFFFFFFF) as u32,
-                ((output.phys >> 32) & 0xFFFFFFFF) as u32,
-                n_vectors as u32,
-                seed,
-            ]);
+            ring.set_user_data(
+                0,
+                &[
+                    (input.phys & 0xFFFFFFFF) as u32,
+                    ((input.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (output.phys & 0xFFFFFFFF) as u32,
+                    ((output.phys >> 32) & 0xFFFFFFFF) as u32,
+                    n_vectors as u32,
+                    seed,
+                ],
+            );
             ring.dispatch_direct(grid_x, 1, 1);
             Ok(ring.submit(fence_phys))
         }
@@ -297,15 +310,18 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
             ring.set_compute_pgm(shader_phys);
             let grid_x = ((dim + 63) / 64) as u32;
             ring.set_num_threads(64, 1, 1);
-            ring.set_user_data(0, &[
-                (state.phys & 0xFFFFFFFF) as u32,
-                ((state.phys >> 32) & 0xFFFFFFFF) as u32,
-                (output.phys & 0xFFFFFFFF) as u32,
-                ((output.phys >> 32) & 0xFFFFFFFF) as u32,
-                dim as u32,
-                alpha_bits as u32,
-                (alpha_bits >> 32) as u32,
-            ]);
+            ring.set_user_data(
+                0,
+                &[
+                    (state.phys & 0xFFFFFFFF) as u32,
+                    ((state.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (output.phys & 0xFFFFFFFF) as u32,
+                    ((output.phys >> 32) & 0xFFFFFFFF) as u32,
+                    dim as u32,
+                    alpha_bits as u32,
+                    (alpha_bits >> 32) as u32,
+                ],
+            );
             ring.dispatch_direct(grid_x, 1, 1);
             Ok(ring.submit(fence_phys))
         }
@@ -332,16 +348,19 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
             let grid_x = ((n_a + 7) / 8) as u32;
             let grid_y = ((n_b + 7) / 8) as u32;
             ring.set_num_threads(8, 8, 1);
-            ring.set_user_data(0, &[
-                (points_a.phys & 0xFFFFFFFF) as u32,
-                ((points_a.phys >> 32) & 0xFFFFFFFF) as u32,
-                (points_b.phys & 0xFFFFFFFF) as u32,
-                ((points_b.phys >> 32) & 0xFFFFFFFF) as u32,
-                (out.phys & 0xFFFFFFFF) as u32,
-                ((out.phys >> 32) & 0xFFFFFFFF) as u32,
-                n_a as u32,
-                n_b as u32,
-            ]);
+            ring.set_user_data(
+                0,
+                &[
+                    (points_a.phys & 0xFFFFFFFF) as u32,
+                    ((points_a.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (points_b.phys & 0xFFFFFFFF) as u32,
+                    ((points_b.phys >> 32) & 0xFFFFFFFF) as u32,
+                    (out.phys & 0xFFFFFFFF) as u32,
+                    ((out.phys >> 32) & 0xFFFFFFFF) as u32,
+                    n_a as u32,
+                    n_b as u32,
+                ],
+            );
             ring.dispatch_direct(grid_x, grid_y, 1);
             Ok(ring.submit(fence_phys))
         }
@@ -385,7 +404,11 @@ fn hash_f64(seed: u32, a: usize, b: usize) -> f64 {
 }
 
 impl TopologyAccelerator for CpuFallbackAccelerator {
-    unsafe fn init(&mut self, _pci_dev: &PciDevice, _caps: &GpuFirmwareCaps) -> Result<(), GpuError> {
+    unsafe fn init(
+        &mut self,
+        _pci_dev: &PciDevice,
+        _caps: &GpuFirmwareCaps,
+    ) -> Result<(), GpuError> {
         Ok(())
     }
 
@@ -398,12 +421,16 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
     }
 
     fn upload(&mut self, dst: &GpuBuffer, src: &[u8]) -> Result<(), GpuError> {
-        unsafe { super::gpu_mem::upload(dst, src); }
+        unsafe {
+            super::gpu_mem::upload(dst, src);
+        }
         Ok(())
     }
 
     fn download(&mut self, dst: &mut [u8], src: &GpuBuffer) -> Result<(), GpuError> {
-        unsafe { super::gpu_mem::download(dst, src); }
+        unsafe {
+            super::gpu_mem::download(dst, src);
+        }
         Ok(())
     }
 
@@ -415,9 +442,14 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
         n_points: usize,
         n_cells: usize,
     ) -> Result<GpuFence, GpuError> {
-        let pts = unsafe { core::slice::from_raw_parts(points.phys as *const f64, points.size / 8) };
-        let ctr = unsafe { core::slice::from_raw_parts(centroids.phys as *const f64, centroids.size / 8) };
-        let out = unsafe { core::slice::from_raw_parts_mut(cell_ids.phys as *mut u32, cell_ids.size / 4) };
+        let pts =
+            unsafe { core::slice::from_raw_parts(points.phys as *const f64, points.size / 8) };
+        let ctr = unsafe {
+            core::slice::from_raw_parts(centroids.phys as *const f64, centroids.size / 8)
+        };
+        let out = unsafe {
+            core::slice::from_raw_parts_mut(cell_ids.phys as *mut u32, cell_ids.size / 4)
+        };
 
         for p in 0..n_points {
             let p_theta = pts[p * 2];
@@ -437,7 +469,10 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
             }
             out[p] = best_cell;
         }
-        Ok(GpuFence { wptr_at_submit: 0, eop_addr: 0 })
+        Ok(GpuFence {
+            wptr_at_submit: 0,
+            eop_addr: 0,
+        })
     }
 
     fn dispatch_jl_project(
@@ -450,7 +485,8 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
         const DIM_IN: usize = 128;
         const DIM_OUT: usize = 3;
         let inp = unsafe { core::slice::from_raw_parts(input.phys as *const f64, input.size / 8) };
-        let out = unsafe { core::slice::from_raw_parts_mut(output.phys as *mut f64, output.size / 8) };
+        let out =
+            unsafe { core::slice::from_raw_parts_mut(output.phys as *mut f64, output.size / 8) };
 
         for v in 0..n_vectors {
             for d in 0..DIM_OUT {
@@ -461,7 +497,10 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
                 out[v * DIM_OUT + d] = sum / libm::sqrt(DIM_IN as f64);
             }
         }
-        Ok(GpuFence { wptr_at_submit: 0, eop_addr: 0 })
+        Ok(GpuFence {
+            wptr_at_submit: 0,
+            eop_addr: 0,
+        })
     }
 
     fn dispatch_spectral_step(
@@ -472,13 +511,17 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
         alpha: f64,
     ) -> Result<GpuFence, GpuError> {
         let st = unsafe { core::slice::from_raw_parts(state.phys as *const f64, state.size / 8) };
-        let out = unsafe { core::slice::from_raw_parts_mut(output.phys as *mut f64, output.size / 8) };
+        let out =
+            unsafe { core::slice::from_raw_parts_mut(output.phys as *mut f64, output.size / 8) };
         let one_minus_alpha = 1.0 - alpha;
         for i in 0..dim {
             // Damped relaxation step: x' = (1-α)*x
             out[i] = st[i] * one_minus_alpha;
         }
-        Ok(GpuFence { wptr_at_submit: 0, eop_addr: 0 })
+        Ok(GpuFence {
+            wptr_at_submit: 0,
+            eop_addr: 0,
+        })
     }
 
     fn dispatch_s2_distance(
@@ -489,8 +532,10 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
         n_a: usize,
         n_b: usize,
     ) -> Result<GpuFence, GpuError> {
-        let a = unsafe { core::slice::from_raw_parts(points_a.phys as *const f64, points_a.size / 8) };
-        let b = unsafe { core::slice::from_raw_parts(points_b.phys as *const f64, points_b.size / 8) };
+        let a =
+            unsafe { core::slice::from_raw_parts(points_a.phys as *const f64, points_a.size / 8) };
+        let b =
+            unsafe { core::slice::from_raw_parts(points_b.phys as *const f64, points_b.size / 8) };
         let o = unsafe { core::slice::from_raw_parts_mut(out.phys as *mut f64, out.size / 8) };
         for i in 0..n_a {
             let a_theta = a[i * 2];
@@ -503,7 +548,10 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
                 o[i * n_b + j] = libm::acos(cos_dist.clamp(-1.0, 1.0));
             }
         }
-        Ok(GpuFence { wptr_at_submit: 0, eop_addr: 0 })
+        Ok(GpuFence {
+            wptr_at_submit: 0,
+            eop_addr: 0,
+        })
     }
 
     fn wait_fence(&mut self, _fence: &GpuFence, _timeout_ms: u32) -> Result<(), GpuError> {
@@ -532,7 +580,8 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
 
 use spin::Mutex;
 
-static ACCELERATOR: Mutex<Option<alloc::boxed::Box<dyn TopologyAccelerator + Send>>> = Mutex::new(None);
+static ACCELERATOR: Mutex<Option<alloc::boxed::Box<dyn TopologyAccelerator + Send>>> =
+    Mutex::new(None);
 
 /// Initialise the best available topology accelerator.
 /// Called during kernel boot after PCI enumeration.

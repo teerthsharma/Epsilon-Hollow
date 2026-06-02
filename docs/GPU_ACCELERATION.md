@@ -2,20 +2,20 @@
 
 ## Overview
 
-Seal OS offloads topological computations to discrete GPUs via vendor firmware interfaces. This document describes the architecture, driver model, and verification strategy.
+Seal OS is building a GPU acceleration path for topological computation via vendor firmware interfaces. The current QEMU proof uses the CPU fallback; no current proof artifact establishes real GPU execution, VRAM residency, SDMA, peer-DMA, or shader correctness.
 
 ## Design Philosophy
 
 - **Firmware-first**: We interact with GPU firmware (VBIOS/ATOM BIOS for AMD, GSP for NVIDIA, GuC for Intel) to discover capabilities and load microcode, not to rely on closed-source userspace drivers.
 - **Unified abstraction**: All GPU vendors expose a common `TopologyAccelerator` trait. Kernel subsystems (scheduler, ManifoldFS, TopoRAM) call this trait without knowing the vendor.
 - **CPU fallback**: Every GPU-accelerated operation has a deterministic CPU path. If the GPU driver fails to load or the firmware is missing, the system degrades gracefully to software topology.
-- **Security**: Firmware blobs are scanned, checksum-verified, and loaded into isolated GPU memory. The kernel never trusts GPU-generated topology results without a CPU spot-check on the first dispatch.
+- **Security target**: Firmware blobs must be scanned, checksum-verified, and loaded into isolated GPU memory before any production GPU path is trusted. The current verified path stays on deterministic CPU topology.
 
 ## Hardware Targets
 
 | Vendor | Target Family | Firmware Interface | Status |
 |--------|---------------|-------------------|--------|
-| AMD | GCN 1.0–RDNA 3 | ATOM BIOS + PM4 compute | **Infrastructure ready** — PM4 ring, MMIO, firmware scan, and CPU fallback are real. GCN shader binaries are honest stubs (correct ABI, placeholder logic). |
+| AMD | GCN 1.0–RDNA 3 | ATOM BIOS + PM4 compute | **Partial infrastructure** — PM4 packet/ring code, MMIO scaffolding, firmware scan, and CPU fallback exist. Current proof does not establish hardware dispatch. GCN shader binaries are ABI stubs with placeholder logic. |
 | NVIDIA | Turing–Ada | GSP-RM firmware | Stub + blueprint |
 | Intel | Gen 12+ Xe | GuC + HuC firmware | Stub + blueprint |
 
@@ -103,7 +103,7 @@ PM4 (Packet Type 4) is the native command format for GCN. A compute dispatch req
 
 ### Topology GPU Kernels (Embedded ISA)
 
-Kernel binaries are embedded in `drivers/gpu/shader_binaries.rs` as `&[u32]` slices. Each kernel follows the AMD GCN compute ABI (kernel descriptor, SGPR layout, `flat_store` encoding) but contains **honest placeholder logic** — they execute on the GPU without crashing but do not yet perform the full topological computation. This is documented explicitly in source comments.
+Kernel binaries are embedded in `drivers/gpu/shader_binaries.rs` as `&[u32]` slices. Each kernel is an ABI scaffold (kernel descriptor, SGPR layout, `flat_store` encoding) with **honest placeholder logic**. The current QEMU proof does not prove these stubs execute on real GPU hardware, and they do not perform the full topological computation.
 
 Replacing stubs with real compiled ISA is a matter of running the OpenCL C source (provided in comments) through `clang -target amdgcn-amd-amdhsa` and pasting the resulting binary words into the arrays.
 
@@ -118,7 +118,7 @@ Available kernels:
 
 ### Memory Model
 
-GPU-visible memory is allocated through a **GART (Graphics Address Remapping Table)** or **P2P PCIe BAR mapping**. Seal OS allocates physically contiguous pages and maps them into the GPU's PCIe aperture so the GPU can DMA directly to/from kernel buffers.
+Production GPU-visible memory is intended to use a **GART (Graphics Address Remapping Table)** or **P2P PCIe BAR mapping**. The current implementation allocates physically contiguous pages and models GPU-visible buffers, but a machine-checked proof for VRAM residency, aperture mapping, and DMA correctness is still pending.
 
 ```
 CPU side:        Kernel heap page ( TopoRAM metadata, ManifoldPayload )
@@ -218,23 +218,35 @@ pub trait TopologyAccelerator {
 ### TopoRAM (`memory/topo_ram.rs`)
 
 When initialising TopoRAM, the kernel checks `TopologyAccelerator::is_ready()`. If ready:
-- `alloc_frames()` uses GPU-accelerated Voronoi cell assignment for bulk allocations.
-- Spectral prefetch hints are computed on GPU before the CPU prefetch path runs.
+- `alloc_frames()` is a target integration point for GPU-assisted Voronoi cell assignment on bulk allocations.
+- Spectral prefetch hints remain CPU-proven today; GPU refresh is a future fast path.
 
 ### ManifoldFS (`fs/manifold_fs.rs`)
 
-- `store()` — JL projection and L2 normalization for the 64-block payload can be offloaded.
-- `find()` — content-addressable lookup uses GPU S² distance matrix computation for batch queries.
+- `store()` — JL projection and L2 normalization for the 64-block payload are candidates for offload.
+- `find()` — content-addressable lookup can use a future GPU distance-matrix path for batch queries.
 
 ### Scheduler (`process/scheduler.rs`)
 
-- `select_next_task()` — T2 prediction (spectral contraction) runs a GPU kernel every N ticks to refresh the prediction state, while the CPU hot path uses cached results.
+- `select_next_task()` — T2 prediction is currently CPU-proven; a future GPU kernel can refresh prediction state while the CPU hot path uses cached results.
 
 ### aether-core Bridge
 
-`drivers/gpu/topo_accel.rs` implements a bridge crate that mirrors `aether-core` APIs but dispatches to GPU when batch size exceeds a threshold (e.g., > 64 points).
+`drivers/gpu/topology_accel.rs` is the bridge point for topology accelerator APIs. Current proof must treat it as CPU fallback unless a hardware `[GPU-BENCH]` artifact proves otherwise.
 
 ## Verification Strategy
+
+### Boot Proof Marker (`[GPU-BENCH]`)
+
+The QEMU proof now emits structured `[GPU-BENCH]` markers during driver bring-up. Current accepted mode is CPU fallback only:
+
+- `mode=cpu_fallback`
+- `backend=software`
+- `hardware_dispatch=0`
+- `shader_used=0`
+- `claim=cpu_fallback_correctness_only`
+
+The gate requires Voronoi assignment, JL projection, and spectral contraction to pass CPU recomputation with `mismatches=0`. This proves the topology accelerator API fallback path is correct in the current VM proof. It still does **not** prove real GPU hardware execution.
 
 ### In-Kernel Benchmark (`apps/gpu_benchmark.rs`)
 
@@ -244,19 +256,19 @@ Run from SealShell:
 gpu_benchmark
 ```
 
-The benchmark:
+The interactive benchmark:
 
 1. Detects the active accelerator (AMD GPU or CPU fallback).
 2. Allocates test buffers (spherical point clouds, JL vectors, spectral state).
 3. Uploads data, runs warmup, then times 32 iterations via `rdtsc`.
-4. Downloads results and verifies correctness:
+4. Downloads results and reports correctness checks:
    - **Voronoi**: every cell ID is in `[0, n_cells)`.
    - **JL projection**: output values are finite.
    - **Spectral step**: output matches expected damping `state * (1 - alpha)`.
 5. Reports average cycles per iteration.
 
-When running on the **CPU fallback**, the benchmark measures real software topology execution time.
-When running on **AMD hardware**, it measures PM4 ring submission + GPU execution + fence polling time.
+When running on the **CPU fallback**, the boot proof marker measures real software topology execution time and checks it against CPU recomputation. The shell benchmark is still useful for exploratory timing, but the hard audit gate is the structured boot marker.
+When a future **AMD hardware** proof exists, it should measure PM4 ring submission + GPU execution + fence polling time and compare outputs against the CPU oracle.
 
 ### Firmware Scanner Test
 
@@ -305,7 +317,7 @@ cd kernel/seal-os
 cargo +nightly build --release
 ```
 
-The GPU driver subsystem is built by default. There is no separate feature flag — the firmware scanner probes at boot and falls back to software if no supported GPU is found.
+The GPU driver subsystem is built by default. There is no separate feature flag — the firmware scanner probes at boot and the verified path falls back to software when no supported/proven GPU path is available.
 
 ## Performance Targets
 
@@ -320,7 +332,7 @@ These are design targets based on theoretical throughput (GCN compute units @ 1.
 1. Real AMD GCN/RDNA hardware (not available in QEMU).
 2. Production shader binaries replacing the current stubs.
 
-The CPU fallback path is fully functional and provides a verified baseline for comparison once GPU kernels are compiled.
+The CPU fallback path is functional and provides the verified baseline for comparison once GPU kernels are compiled and a hardware proof gate exists.
 
 ---
 

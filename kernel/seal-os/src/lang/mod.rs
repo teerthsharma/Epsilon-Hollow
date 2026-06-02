@@ -13,7 +13,6 @@ use alloc::vec::Vec;
 use core::slice;
 use spin::Mutex;
 
-
 pub struct AetherRuntime {
     interpreter: aether_lang::Interpreter,
 }

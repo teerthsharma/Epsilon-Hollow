@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod ipc;
+pub mod native;
 pub mod pipeline;
 pub mod sample;
 pub mod state;
@@ -41,7 +42,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let state = handle.state::<state::AppState>();
                 let mut registry = state.engine_registry.lock().await;
-                let engines_dir = handle.path().app_data_dir().unwrap_or_default().join("engines");
+                let engines_dir = handle
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_default()
+                    .join("engines");
                 let _ = registry.scan_directory(&engines_dir);
             });
             Ok(())

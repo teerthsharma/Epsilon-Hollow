@@ -105,6 +105,18 @@ fn main() {
         println!("[seal-audit] DOC CLAIM CONTRACT OK");
         return;
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-release-workflow-contract") {
+        let root = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_release_workflow_contract(&root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] RELEASE WORKFLOW CONTRACT FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] RELEASE WORKFLOW CONTRACT OK");
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--check-lean-proof-hygiene") {
         let root = args
             .get(2)
@@ -138,6 +150,29 @@ fn main() {
             std::process::exit(1);
         });
         println!("[seal-audit] AETHER RUNTIME OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-laamba-app-proof") {
+        let log_path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
+            PathBuf::from("../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log")
+        });
+        check_laamba_app_proof_log(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] LAAMBA APP PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] LAAMBA APP PROOF OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-laamba-native-bridge") {
+        let root = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_laamba_native_bridge(&root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] LAAMBA NATIVE BRIDGE FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] LAAMBA NATIVE BRIDGE OK");
         return;
     }
     if args.get(1).map(|s| s.as_str()) == Some("--check-runtime-theorems") {
@@ -952,8 +987,11 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] manifold-teleport",
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
+        "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
+        "[LAAMBA] app proof:",
         "[BOOT] Desktop proof frame blit done",
+        "[GFX] desktop-proof",
         "[GFX] desktop-soak",
         "[BOOT] Seal OS desktop ready.",
         "[EVENT] Entering real event loop",
@@ -997,6 +1035,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_desktop_soak_text(&text)?;
     check_benchmark_text(&text)?;
     check_aether_runtime_text(&text)?;
+    check_laamba_app_proof_text(&text)?;
     Ok(())
 }
 
@@ -1033,6 +1072,29 @@ fn check_aether_runtime_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn check_laamba_app_proof_log(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_laamba_app_proof_text(&text)
+}
+
+fn check_laamba_app_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[LAAMBA] app proof:")?;
+    let label = "LAAMBA app proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "native_app=", "kernel", label)?;
+    require_field_eq(line, "window=", "LAAMBA_Governor", label)?;
+    require_field_eq(line, "runtime_bridge=", "rust_native_manifest", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    require_metric_eq(line, "launcher_id=", 10, label)?;
+    require_metric_eq(line, "desktop_icon=", 1, label)?;
+    require_metric_eq(line, "start_menu=", 1, label)?;
+    require_metric_eq(line, "python_runtime=", 0, label)?;
+    require_metric_min(line, "window_id=", 1, label)?;
+    require_metric_min(line, "aether_host_window_id=", 1, label)?;
+    Ok(())
+}
+
 fn check_benchmark_log(log_path: &Path) -> Result<(), String> {
     let text =
         fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
@@ -1046,6 +1108,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_manifold_teleport_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
+    parse_gpu_topology_benchmark(text)?;
     Ok(())
 }
 
@@ -1269,7 +1332,7 @@ fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
     let persistence_bytes = parse_metric(line, "persistence_bytes_per_move=")?;
     let payload_points = parse_metric(line, "payload_points=")?;
 
-    if api != "teleport" || fs_mode != "ramfs" || persistence != "metadata_only" {
+    if api != "teleport" || fs_mode != "mock_block" || persistence != "metadata_only" {
         return Err(format!(
             "ManifoldFS teleport benchmark identifies the wrong API/path: api={api}, fs_mode={fs_mode}, persistence={persistence}"
         ));
@@ -1398,6 +1461,9 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
     let accepted_state = parse_field(line, "accepted_state=")?;
     let ok = parse_metric(line, "ok=")?;
     let listener_first = parse_metric(line, "listener_first=")?;
+    let exact_flow = parse_metric(line, "exact_flow=")?;
+    let decoy_rx_bytes = parse_metric(line, "decoy_rx_bytes=")?;
+    let listener_fallback = parse_metric(line, "listener_fallback=")?;
     let payload_bytes = parse_metric(line, "payload_bytes=")?;
     let rx_bytes = parse_metric(line, "rx_bytes=")?;
     let cleanup = parse_field(line, "cleanup=")?;
@@ -1412,10 +1478,219 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
             "TCP packet demux benchmark failed invariants: ok={ok}, listener_first={listener_first}, accepted_state={accepted_state}, cleanup={cleanup}"
         ));
     }
+    if exact_flow != 1 || decoy_rx_bytes != 0 || listener_fallback != 1 {
+        return Err(format!(
+            "TCP packet demux did not prove exact-flow before decoy/listener fallback: exact_flow={exact_flow}, decoy_rx_bytes={decoy_rx_bytes}, listener_fallback={listener_fallback}"
+        ));
+    }
     if payload_bytes != 4 || rx_bytes != payload_bytes {
         return Err(format!(
             "TCP packet demux payload mismatch: payload_bytes={payload_bytes}, rx_bytes={rx_bytes}"
         ));
+    }
+
+    Ok(())
+}
+
+fn parse_gpu_topology_benchmark(text: &str) -> Result<(), String> {
+    let begin = find_line_matching(text, "[GPU-BENCH] suite", "status=begin")?;
+    require_field_eq(begin, "version=", "1", "GPU topology benchmark begin")?;
+    require_field_eq(
+        begin,
+        "mode=",
+        "cpu_fallback",
+        "GPU topology benchmark begin",
+    )?;
+    require_field_eq(
+        begin,
+        "backend=",
+        "software",
+        "GPU topology benchmark begin",
+    )?;
+    require_field_eq(
+        begin,
+        "accelerator=",
+        "cpu_fallback",
+        "GPU topology benchmark begin",
+    )?;
+    require_metric_eq(
+        begin,
+        "hardware_dispatch=",
+        0,
+        "GPU topology benchmark begin",
+    )?;
+    require_metric_eq(begin, "shader_used=", 0, "GPU topology benchmark begin")?;
+    require_field_eq(
+        begin,
+        "shader_status=",
+        "placeholder_ok_not_claimed",
+        "GPU topology benchmark begin",
+    )?;
+    let warmup = parse_metric(begin, "warmup=")?;
+    let iterations = parse_metric(begin, "iterations=")?;
+    require_metric_eq(begin, "kernels=", 3, "GPU topology benchmark begin")?;
+    if warmup != 4 || iterations != 32 {
+        return Err(format!(
+            "GPU topology benchmark fixture changed: warmup={warmup}, iterations={iterations}"
+        ));
+    }
+
+    parse_gpu_kernel_benchmark(
+        text,
+        GpuKernelBenchSpec {
+            name: "voronoi_assign",
+            warmup,
+            iterations,
+            checked: 64,
+            upload_ok: 2,
+            download_ok: 1,
+            finite: None,
+        },
+    )?;
+    parse_gpu_kernel_benchmark(
+        text,
+        GpuKernelBenchSpec {
+            name: "jl_project",
+            warmup,
+            iterations,
+            checked: 12,
+            upload_ok: 1,
+            download_ok: 1,
+            finite: Some(12),
+        },
+    )?;
+    parse_gpu_kernel_benchmark(
+        text,
+        GpuKernelBenchSpec {
+            name: "spectral_step",
+            warmup,
+            iterations,
+            checked: 512,
+            upload_ok: 1,
+            download_ok: 1,
+            finite: Some(512),
+        },
+    )?;
+
+    let final_line = find_line_matching(text, "[GPU-BENCH] suite", "result=pass")?;
+    require_field_eq(final_line, "version=", "1", "GPU topology benchmark final")?;
+    require_field_eq(
+        final_line,
+        "mode=",
+        "cpu_fallback",
+        "GPU topology benchmark final",
+    )?;
+    require_field_eq(
+        final_line,
+        "backend=",
+        "software",
+        "GPU topology benchmark final",
+    )?;
+    require_metric_eq(
+        final_line,
+        "hardware_dispatch=",
+        0,
+        "GPU topology benchmark final",
+    )?;
+    require_metric_eq(
+        final_line,
+        "shader_used=",
+        0,
+        "GPU topology benchmark final",
+    )?;
+    require_metric_eq(final_line, "kernels=", 3, "GPU topology benchmark final")?;
+    require_metric_eq(final_line, "passed=", 3, "GPU topology benchmark final")?;
+    require_metric_eq(final_line, "failed=", 0, "GPU topology benchmark final")?;
+    require_field_eq(
+        final_line,
+        "result=",
+        "pass",
+        "GPU topology benchmark final",
+    )?;
+    require_field_eq(
+        final_line,
+        "claim=",
+        "cpu_fallback_correctness_only",
+        "GPU topology benchmark final",
+    )?;
+
+    let kernel_lines = text
+        .lines()
+        .filter(|line| line.starts_with("[GPU-BENCH] kernel="))
+        .count();
+    if kernel_lines != 3 {
+        return Err(format!(
+            "GPU topology benchmark must emit exactly 3 kernel markers, got {kernel_lines}"
+        ));
+    }
+
+    Ok(())
+}
+
+struct GpuKernelBenchSpec {
+    name: &'static str,
+    warmup: u64,
+    iterations: u64,
+    checked: u64,
+    upload_ok: u64,
+    download_ok: u64,
+    finite: Option<u64>,
+}
+
+fn parse_gpu_kernel_benchmark(text: &str, spec: GpuKernelBenchSpec) -> Result<(), String> {
+    let needle = format!("kernel={}", spec.name);
+    let line = find_line_matching(text, "[GPU-BENCH] kernel=", &needle)?;
+    let label = format!("GPU topology kernel {}", spec.name);
+    require_field_eq(line, "mode=", "cpu_fallback", &label)?;
+    require_field_eq(line, "backend=", "software", &label)?;
+    require_field_eq(line, "dispatch_path=", "cpu_sync", &label)?;
+    require_metric_eq(line, "hardware_dispatch=", 0, &label)?;
+    require_metric_eq(line, "shader_used=", 0, &label)?;
+    require_metric_eq(line, "warmup=", spec.warmup, &label)?;
+    require_metric_eq(line, "iterations=", spec.iterations, &label)?;
+    let total_runs = spec.warmup + spec.iterations;
+    require_metric_eq(line, "dispatch_ok=", total_runs, &label)?;
+    require_metric_eq(line, "wait_ok=", total_runs, &label)?;
+    require_metric_eq(line, "upload_ok=", spec.upload_ok, &label)?;
+    require_metric_eq(line, "download_ok=", spec.download_ok, &label)?;
+    require_field_eq(line, "verify=", "pass", &label)?;
+    require_field_eq(line, "reference=", "cpu_recompute", &label)?;
+    require_metric_eq(line, "checked=", spec.checked, &label)?;
+    require_metric_eq(line, "mismatches=", 0, &label)?;
+    let checksum = parse_metric(line, "checksum=")?;
+    let avg_cycles = parse_metric(line, "avg_cycles=")?;
+    if checksum == 0 || avg_cycles == 0 {
+        return Err(format!(
+            "{label} must have nonzero checksum and cycle counter: checksum={checksum}, avg_cycles={avg_cycles}"
+        ));
+    }
+
+    match spec.name {
+        "voronoi_assign" => {
+            require_metric_eq(line, "n_points=", 64, &label)?;
+            require_metric_eq(line, "n_cells=", 8, &label)?;
+            require_metric_eq(line, "invalid_ids=", 0, &label)?;
+            let first_cell = parse_metric(line, "first_cell=")?;
+            if first_cell >= 8 {
+                return Err(format!("{label} first_cell out of range: {first_cell}"));
+            }
+        }
+        "jl_project" => {
+            require_metric_eq(line, "n_vectors=", 4, &label)?;
+            require_metric_eq(line, "dim_in=", 128, &label)?;
+            require_metric_eq(line, "dim_out=", 3, &label)?;
+            require_field_eq(line, "seed=", "0xE95110A7", &label)?;
+            require_metric_eq(line, "max_abs_diff_scaled=", 0, &label)?;
+        }
+        "spectral_step" => {
+            require_metric_eq(line, "dim=", 512, &label)?;
+            require_metric_eq(line, "alpha_ppm=", 300000, &label)?;
+            require_metric_eq(line, "max_abs_diff_scaled=", 0, &label)?;
+        }
+        _ => unreachable!(),
+    }
+    if let Some(finite) = spec.finite {
+        require_metric_eq(line, "finite=", finite, &label)?;
     }
 
     Ok(())
@@ -1489,6 +1764,36 @@ fn find_marker_line<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> 
         .ok_or_else(|| format!("missing {marker} marker"))
 }
 
+fn find_line_matching<'a>(text: &'a str, marker: &str, needle: &str) -> Result<&'a str, String> {
+    text.lines()
+        .find(|line| line.starts_with(marker) && line.contains(needle))
+        .ok_or_else(|| format!("missing {marker} marker containing `{needle}`"))
+}
+
+fn require_metric_eq(line: &str, key: &str, expected: u64, label: &str) -> Result<(), String> {
+    let got = parse_metric(line, key)?;
+    if got != expected {
+        return Err(format!("{label} expected {key}{expected}, got {key}{got}"));
+    }
+    Ok(())
+}
+
+fn require_metric_min(line: &str, key: &str, min: u64, label: &str) -> Result<u64, String> {
+    let got = parse_metric(line, key)?;
+    if got < min {
+        return Err(format!("{label} expected {key}>= {min}, got {key}{got}"));
+    }
+    Ok(got)
+}
+
+fn require_field_eq(line: &str, key: &str, expected: &str, label: &str) -> Result<(), String> {
+    let got = parse_field(line, key)?;
+    if got != expected {
+        return Err(format!("{label} expected {key}{expected}, got {key}{got}"));
+    }
+    Ok(())
+}
+
 fn check_desktop_soak(log_path: &Path) -> Result<(), String> {
     let text =
         fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
@@ -1496,6 +1801,8 @@ fn check_desktop_soak(log_path: &Path) -> Result<(), String> {
 }
 
 fn check_desktop_soak_text(text: &str) -> Result<(), String> {
+    parse_graphics_desktop_proof(text)?;
+
     let line = text
         .lines()
         .find(|line| line.starts_with("[GFX] desktop-soak"))
@@ -1524,6 +1831,62 @@ fn check_desktop_soak_text(text: &str) -> Result<(), String> {
     if !line.contains("input_events=") {
         return Err(String::from("desktop soak missing input_events field"));
     }
+    Ok(())
+}
+
+fn parse_graphics_desktop_proof(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[GFX] desktop-proof")?;
+    let label = "graphics desktop proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "surface=", "framebuffer", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    require_metric_eq(line, "bpp=", 32, label)?;
+    require_metric_eq(line, "back_buffer=", 1, label)?;
+
+    let width = parse_metric(line, "width=")?;
+    let height = parse_metric(line, "height=")?;
+    let pitch = parse_metric(line, "pitch=")?;
+    if width < 1024 || height < 768 {
+        return Err(format!("{label} framebuffer too small: {width}x{height}"));
+    }
+    if pitch < width.saturating_mul(4) {
+        return Err(format!(
+            "{label} pitch too small for 32bpp framebuffer: pitch={pitch}, width={width}"
+        ));
+    }
+
+    let scanned_pixels = parse_metric(line, "scanned_pixels=")?;
+    let expected_pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| String::from("graphics desktop proof dimensions overflow"))?;
+    if scanned_pixels < expected_pixels {
+        return Err(format!(
+            "{label} did not scan full framebuffer: scanned_pixels={scanned_pixels}, expected={expected_pixels}"
+        ));
+    }
+
+    require_metric_min(line, "window_count=", 12, label)?;
+    require_metric_min(line, "focused_window_id=", 1, label)?;
+    require_metric_min(line, "nonblack_px=", 20_000, label)?;
+    require_metric_min(line, "visible_icons=", 10, label)?;
+    require_metric_min(line, "icon_region_signal=", 2_000, label)?;
+    require_metric_min(line, "icon_color_buckets=", 6, label)?;
+    require_metric_min(line, "control_region_signal=", 8_000, label)?;
+    require_metric_min(line, "primary_titlebar_signal=", 6_000, label)?;
+    require_metric_min(line, "start_button_signal=", 1_000, label)?;
+    require_metric_min(line, "theorem_indicator_signal=", 500, label)?;
+    require_metric_min(line, "minimized_app_lane_signal=", 300, label)?;
+    require_metric_min(line, "power_button_signal=", 220, label)?;
+    require_metric_min(line, "sampled_pixels=", 1_024, label)?;
+    require_metric_min(line, "nonblack_samples=", 512, label)?;
+
+    let sample_hash = parse_metric(line, "sample_hash=")?;
+    if sample_hash == 0 {
+        return Err(String::from(
+            "graphics desktop proof sample_hash must be nonzero",
+        ));
+    }
+
     Ok(())
 }
 
@@ -1971,6 +2334,274 @@ fn parse_field<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
     Ok(value.trim_end_matches(','))
 }
 
+fn check_laamba_native_bridge(root: &Path) -> Result<(), String> {
+    let laamba_app = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("laamba_governor.rs");
+    require_existing_file(&laamba_app)?;
+
+    require_file_patterns(
+        root,
+        &root
+            .join("kernel")
+            .join("seal-os")
+            .join("src")
+            .join("apps")
+            .join("mod.rs"),
+        &["pub mod laamba_governor;"],
+    )?;
+    require_file_patterns(
+        root,
+        &root
+            .join("kernel")
+            .join("seal-os")
+            .join("src")
+            .join("wm")
+            .join("app_state.rs"),
+        &[
+            "use crate::apps::laamba_governor::LaambaGovernor;",
+            "pub laamba: LaambaGovernor",
+            "pub laamba_id: u32",
+            "LaambaGovernor::new()",
+            "compositor.create_window(\"LAAMBA Governor\"",
+            "self.laamba_id",
+        ],
+    )?;
+    require_file_patterns(
+        root,
+        &root
+            .join("kernel")
+            .join("seal-os")
+            .join("src")
+            .join("wm")
+            .join("app_launcher.rs"),
+        &["10 => crate::apps::laamba_governor::main"],
+    )?;
+    require_file_patterns(
+        root,
+        &root
+            .join("kernel")
+            .join("seal-os")
+            .join("src")
+            .join("wm")
+            .join("start_menu.rs"),
+        &["name: \"LAAMBA Governor\"", "app_id: 10"],
+    )?;
+    require_file_patterns(
+        root,
+        &root
+            .join("kernel")
+            .join("seal-os")
+            .join("src")
+            .join("wm")
+            .join("desktop.rs"),
+        &["name: \"LAAMBA\"", "app_id: 10"],
+    )?;
+
+    require_existing_file(
+        &root
+            .join("apps")
+            .join("laamba-governor")
+            .join("native")
+            .join("governor.aether"),
+    )?;
+
+    let src_tauri = root.join("apps").join("laamba-governor").join("src-tauri");
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("native.rs"),
+        &[
+            "pub fn command(",
+            "pub fn engine_command(",
+            "\"aether-native\"",
+        ],
+    )?;
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("lib.rs"),
+        &["pub mod native;"],
+    )?;
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("ipc").join("commands.rs"),
+        &["use crate::native;", "native::command(args)"],
+    )?;
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("pipeline").join("executor.rs"),
+        &["use crate::native;", "native::command(args)"],
+    )?;
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("engine").join("manager.rs"),
+        &["parts[0] == \"laamba-native\"", "--laamba-native-engine"],
+    )?;
+    require_file_patterns(
+        root,
+        &src_tauri.join("src").join("main.rs"),
+        &[
+            "--laamba-native-engine",
+            "laamba_governor::native::engine_command",
+        ],
+    )?;
+    require_engine_manifests_native(root)?;
+    reject_laamba_python_bridge(root)
+}
+
+fn require_existing_file(path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("missing required file {}", path.display()))
+    }
+}
+
+fn require_file_patterns(root: &Path, path: &Path, required: &[&str]) -> Result<(), String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|needle| !text.contains(needle))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        Err(format!(
+            "{} missing LAAMBA native wiring: {}",
+            rel.display(),
+            missing.join(" | ")
+        ))
+    }
+}
+
+fn reject_laamba_python_bridge(root: &Path) -> Result<(), String> {
+    let app_root = root.join("apps").join("laamba-governor");
+    let mut scan_files = Vec::new();
+    collect_files_recursive_skip_target(&app_root.join("src-tauri"), &mut scan_files)?;
+    collect_direct_files_with_extension(&app_root.join("engines"), "toml", &mut scan_files)?;
+    for rel in ["run.bat", "run.sh"] {
+        let path = app_root.join(rel);
+        if path.exists() {
+            scan_files.push(path);
+        }
+    }
+
+    let banned = [
+        "python",
+        "python3",
+        "type = \"python\"",
+        "command = \"python",
+    ];
+    let mut findings = Vec::new();
+    for path in scan_files {
+        let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let text = String::from_utf8_lossy(&bytes);
+        for (idx, line) in text.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            let hits: Vec<&str> = banned
+                .iter()
+                .copied()
+                .filter(|needle| lower.contains(needle))
+                .collect();
+            if !hits.is_empty() {
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                findings.push(format!(
+                    "{}:{}: runtime Python bridge marker(s) `{}`: {}",
+                    rel.display(),
+                    idx + 1,
+                    hits.join(" | "),
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn require_engine_manifests_native(root: &Path) -> Result<(), String> {
+    let engines_dir = root.join("apps").join("laamba-governor").join("engines");
+    let mut manifests = Vec::new();
+    collect_direct_files_with_extension(&engines_dir, "toml", &mut manifests)?;
+    if manifests.is_empty() {
+        return Err(format!(
+            "no engine manifests found in {}",
+            engines_dir.display()
+        ));
+    }
+
+    let mut findings = Vec::new();
+    for path in manifests {
+        let text =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if !text.contains("type = \"native\"") {
+            findings.push(format!(
+                "{} missing `type = \"native\"`",
+                path.strip_prefix(root).unwrap_or(&path).display()
+            ));
+        }
+        if !text.contains("command = \"laamba-native ") {
+            findings.push(format!(
+                "{} missing `command = \"laamba-native ...\"`",
+                path.strip_prefix(root).unwrap_or(&path).display()
+            ));
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn collect_files_recursive_skip_target(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read_dir entry {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|s| s.to_str()) == Some("target") {
+                continue;
+            }
+            collect_files_recursive_skip_target(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn collect_direct_files_with_extension(
+    dir: &Path,
+    extension: &str,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read_dir entry {}: {e}", dir.display()))?;
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some(extension) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Copy, Clone)]
 enum VmProofTarget {
     Qemu,
@@ -1984,10 +2615,20 @@ mod tests {
     const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 toporam_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
     const TOPORAM_ALLOC_LOG: &str = "[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=90 p95_cycles=130 max_cycles=150 target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=10 free_after=10\n";
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
-    const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
+    const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
-    const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok\n";
+    const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok\n";
+    const GPU_TOPOLOGY_BENCH_LOG: &str = "\
+[GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
+[GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
+[GPU-BENCH] kernel=jl_project mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_vectors=4 dim_in=128 dim_out=3 seed=0xE95110A7 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=1 download_ok=1 verify=pass reference=cpu_recompute checked=12 mismatches=0 finite=12 checksum=23456 max_abs_diff_scaled=0 avg_cycles=200
+[GPU-BENCH] kernel=spectral_step mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 dim=512 alpha_ppm=300000 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=1 download_ok=1 verify=pass reference=cpu_recompute checked=512 mismatches=0 finite=512 checksum=34567 max_abs_diff_scaled=0 avg_cycles=300
+[GPU-BENCH] suite version=1 mode=cpu_fallback backend=software hardware_dispatch=0 shader_used=0 kernels=3 passed=3 failed=0 result=pass claim=cpu_fallback_correctness_only
+";
+    const GFX_DESKTOP_PROOF_LOG: &str = "[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=4096 back_buffer=1 window_count=12 focused_window_id=1 scanned_pixels=786432 nonblack_px=300000 visible_icons=10 icon_region_signal=23040 icon_color_buckets=10 control_region_signal=282000 primary_titlebar_signal=15912 start_button_signal=1440 theorem_indicator_signal=1000 minimized_app_lane_signal=1320 power_button_signal=384 sampled_pixels=3072 nonblack_samples=2048 sample_hash=123456789 result=pass\n";
+    const GFX_DESKTOP_SOAK_LOG: &str = "[GFX] desktop-soak frames=24 p50_cycles=100 p95_cycles=160 max_cycles=220 missed_16ms=unscaled input_events=0 dirty_px_max=786432\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
+    const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -1999,6 +2640,80 @@ mod tests {
     }
 
     fn proof_screen_ppm() -> Vec<u8> {
+        let width = 1024usize;
+        let height = 768usize;
+        let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+        let pixels_start = ppm.len();
+        ppm.resize(pixels_start + width * height * 3, 0);
+
+        for y in 0..height {
+            for x in 0..width {
+                let (mut r, mut g, mut b) = (0u8, 0u8, 0u8);
+                if x < 1_000 && (40..140).contains(&y) {
+                    (r, g, b) = (48, 48, 48);
+                }
+                for icon_x in [20usize, 120, 220, 320, 420, 520, 620, 720, 820, 920] {
+                    if (icon_x..icon_x + 48).contains(&x) && (50..98).contains(&y) {
+                        let color = match icon_x {
+                            20 => (255, 170, 68),
+                            120 => (68, 204, 68),
+                            220 => (68, 68, 204),
+                            320 => (204, 204, 68),
+                            420 => (204, 136, 68),
+                            520 => (136, 68, 204),
+                            620 => (204, 68, 68),
+                            720 => (68, 204, 204),
+                            820 => (204, 68, 204),
+                            _ => (166, 227, 161),
+                        };
+                        (r, g, b) = color;
+                    }
+                }
+                if (40..700).contains(&x) && (120..580).contains(&y) {
+                    (r, g, b) = (36, 72, 48);
+                }
+                if (48..660).contains(&x) && (132..158).contains(&y) {
+                    (r, g, b) = (48, 64, 160);
+                }
+                if y >= height - 28 {
+                    (r, g, b) = (16, 16, 24);
+                }
+                if (4..76).contains(&x) && (height - 24..height - 4).contains(&y) {
+                    (r, g, b) = (68, 136, 204);
+                }
+                for theorem_x in [90usize, 108, 126, 144, 162, 180, 198, 216, 234, 252] {
+                    if (theorem_x..theorem_x + 10).contains(&x)
+                        && (height - 20..height - 10).contains(&y)
+                    {
+                        (r, g, b) = (68, 136, 204);
+                    }
+                }
+                for button_x in [350usize, 434, 518, 602, 686, 770] {
+                    if (button_x..button_x + 80).contains(&x)
+                        && (height - 24..height - 4).contains(&y)
+                    {
+                        (r, g, b) = (24, 32, 40);
+                    }
+                    if (button_x..button_x + 3).contains(&x)
+                        && (height - 24..height - 4).contains(&y)
+                    {
+                        (r, g, b) = (68, 136, 204);
+                    }
+                }
+                if (width - 36..width - 12).contains(&x) && (height - 22..height - 6).contains(&y) {
+                    (r, g, b) = (255, 68, 68);
+                }
+                let offset = pixels_start + (y * width + x) * 3;
+                ppm[offset] = r;
+                ppm[offset + 1] = g;
+                ppm[offset + 2] = b;
+            }
+        }
+
+        ppm
+    }
+
+    fn weak_single_terminal_proof_screen_ppm() -> Vec<u8> {
         let width = 1024usize;
         let height = 768usize;
         let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
@@ -2023,9 +2738,7 @@ mod tests {
                 if (4..76).contains(&x) && (height - 24..height - 4).contains(&y) {
                     (r, g, b) = (68, 136, 204);
                 }
-                if (width - 36..width - 12).contains(&x)
-                    && (height - 22..height - 6).contains(&y)
-                {
+                if (width - 36..width - 12).contains(&x) && (height - 22..height - 6).contains(&y) {
                     (r, g, b) = (255, 68, 68);
                 }
                 let offset = pixels_start + (y * width + x) * 3;
@@ -2046,6 +2759,223 @@ mod tests {
             crc32(data),
             sha256_hex(data)
         )
+    }
+
+    fn write_laamba_native_fixture(root: &Path) {
+        fs::create_dir_all(root.join("kernel").join("seal-os").join("src").join("apps")).unwrap();
+        fs::create_dir_all(root.join("kernel").join("seal-os").join("src").join("wm")).unwrap();
+        fs::create_dir_all(root.join("apps").join("laamba-governor").join("native")).unwrap();
+        fs::create_dir_all(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("ipc"),
+        )
+        .unwrap();
+        fs::create_dir_all(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("pipeline"),
+        )
+        .unwrap();
+        fs::create_dir_all(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("engine"),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("apps").join("laamba-governor").join("engines")).unwrap();
+
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("apps")
+                .join("laamba_governor.rs"),
+            "pub fn main() {}\npub struct LaambaGovernor;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("apps")
+                .join("mod.rs"),
+            "pub mod laamba_governor;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("wm")
+                .join("app_state.rs"),
+            "\
+use crate::apps::laamba_governor::LaambaGovernor;
+pub struct AppState { pub laamba: LaambaGovernor, pub laamba_id: u32 }
+impl AppState {
+    pub fn new() -> Self {
+        let laamba = LaambaGovernor::new();
+        Self { laamba, laamba_id: 0 }
+    }
+    pub fn create_windows(&mut self, compositor: &mut Compositor) {
+        self.laamba_id = compositor.create_window(\"LAAMBA Governor\", 80, 40, 900, 650);
+    }
+}
+",
+        )
+        .unwrap();
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("wm")
+                .join("app_launcher.rs"),
+            "10 => crate::apps::laamba_governor::main,\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("wm")
+                .join("start_menu.rs"),
+            "MenuItem { name: \"LAAMBA Governor\", app_id: 10 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("kernel")
+                .join("seal-os")
+                .join("src")
+                .join("wm")
+                .join("desktop.rs"),
+            "DesktopIcon { name: \"LAAMBA\", app_id: 10 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("native")
+                .join("governor.aether"),
+            "// native LAAMBA governor script\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("Cargo.toml"),
+            "[package]\nname = \"laamba-governor\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("native.rs"),
+            "pub fn command() {}\npub fn engine_command() {}\nlet runtime = \"aether-native\";\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("lib.rs"),
+            "pub mod native;\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("ipc")
+                .join("commands.rs"),
+            "use crate::native;\nfn run(args: &[&str]) { native::command(args); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("pipeline")
+                .join("executor.rs"),
+            "use crate::native;\nfn run(args: &[&str]) { native::command(args); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("engine")
+                .join("manager.rs"),
+            "if parts[0] == \"laamba-native\" { cmd.arg(\"--laamba-native-engine\"); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("src-tauri")
+                .join("src")
+                .join("main.rs"),
+            "if arg == \"--laamba-native-engine\" { laamba_governor::native::engine_command(); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("engines")
+                .join("native.toml"),
+            "type = \"native\"\ncommand = \"laamba-native demo\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps").join("laamba-governor").join("run.bat"),
+            "@echo off\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("apps").join("laamba-governor").join("run.sh"),
+            "#!/usr/bin/env sh\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn laamba_native_bridge_accepts_minimal_native_fixture() {
+        let root = unique_temp_dir("laamba-native-ok");
+        write_laamba_native_fixture(&root);
+
+        assert!(check_laamba_native_bridge(&root).is_ok());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn laamba_native_bridge_rejects_python_runtime_bridge() {
+        let root = unique_temp_dir("laamba-native-python");
+        write_laamba_native_fixture(&root);
+        fs::write(
+            root.join("apps")
+                .join("laamba-governor")
+                .join("engines")
+                .join("native.toml"),
+            "type = \"python\"\ncommand = \"python3\"\n",
+        )
+        .unwrap();
+
+        assert!(check_laamba_native_bridge(&root).is_err());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2096,6 +3026,30 @@ mod tests {
         fs::write(&path, screen).unwrap();
 
         assert!(check_proof_screen(&path).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_screen_rejects_flat_single_window_without_desktop_structure() {
+        let root = unique_temp_dir("proof-screen-flat-window");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("screen.ppm");
+        fs::write(&path, weak_single_terminal_proof_screen_ppm()).unwrap();
+
+        assert!(check_proof_screen(&path).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn proof_screen_accepts_icon_row_and_minimized_app_lane() {
+        let root = unique_temp_dir("proof-screen-desktop-structure");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("screen.ppm");
+        fs::write(&path, proof_screen_ppm()).unwrap();
+
+        assert!(check_proof_screen(&path).is_ok());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2207,6 +3161,7 @@ gate_benchmark_log=ok\n",
             MANIFOLD_TELEPORT_LOG,
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
+            GPU_TOPOLOGY_BENCH_LOG,
         ]
         .concat()
     }
@@ -2351,8 +3306,9 @@ gate_proof_screen=ok\n",
     fn writes_qemu_proof_manifest_with_real_hashes() {
         let root = unique_temp_dir("manifest-writer");
         fs::create_dir_all(&root).unwrap();
+        let screen = proof_screen_ppm();
         fs::write(root.join("serial.log"), b"serial proof log").unwrap();
-        fs::write(root.join("screen.ppm"), b"P6\n1 1\n255\nrgb").unwrap();
+        fs::write(root.join("screen.ppm"), &screen).unwrap();
         fs::write(root.join("screen.png"), b"png bytes").unwrap();
         fs::write(root.join("seal-os.img"), b"disk image bytes").unwrap();
         fs::write(root.join("seal-os.efi"), b"efi image bytes").unwrap();
@@ -2404,6 +3360,112 @@ gate_proof_screen=ok\n",
     }
 
     #[test]
+    fn vbox_smoke_waits_for_full_hard_serial_proof_markers() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let vbox_script = fs::read_to_string(
+            repo_root
+                .join("kernel")
+                .join("seal-os")
+                .join("smoke-vbox.ps1"),
+        )
+        .unwrap();
+
+        for marker in [
+            r"\[BENCH\] toporam-alloc",
+            r"\[BENCH\] alloc-frame",
+            r"\[BENCH\] manifold-teleport",
+            r"\[BENCH\] scheduler-select-next",
+            r"\[BENCH\] tcp-packet-demux",
+            r"\[GPU-BENCH\] suite",
+            r"\[Aether-Lang\] runtime proof:",
+            r"\[LAAMBA\] app proof:",
+            r"\[GFX\] desktop-proof",
+            r"\[GFX\] desktop-soak",
+        ] {
+            assert!(
+                vbox_script.contains(marker),
+                "VirtualBox smoke success patterns must wait for {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_workflow_contract_requires_proof_preflight_and_tag_discipline() {
+        let good = "\
+workflow_dispatch:
+  inputs:
+    tag:
+      required: true
+- name: Check release workflow contract
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
+- name: Install QEMU and OVMF
+- name: Boot release image in QEMU and capture serial output
+  run: |
+    qemu-system-x86_64 -nographic | tee /tmp/seal-os-release.log
+- name: Verify release VM proof
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-vm-proof /tmp/seal-os-release.log
+- name: Verify release theorem proof
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log /tmp/seal-os-release.log
+- name: Verify release Aether proof
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime /tmp/seal-os-release.log
+- name: Verify release LAAMBA app proof
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof /tmp/seal-os-release.log
+- name: Verify release desktop soak
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os-release.log
+- name: Verify release benchmark proof
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os-release.log
+- name: Verify release source proof gates
+  run: |
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
+- name: Stage release proof artifacts
+  run: |
+    mkdir -p release-proof
+    cp /tmp/seal-os-release.log release-proof/serial.log
+    printf 'QEMU serial proof only; not any-VM/GPU/Ubuntu proof\\n' > release-proof/proof-summary.txt
+- name: Upload release proof artifacts
+  uses: actions/upload-artifact@v4
+  with:
+    name: seal-os-release-proof
+    path: release-proof/
+uses: softprops/action-gh-release@v2
+with:
+  tag_name: ${{ github.event.inputs.tag }}
+  files: |
+    kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+    seal-os.iso
+    release-proof/serial.log
+    release-proof/proof-summary.txt
+  body: |
+    QEMU serial proof passed.
+    Not an any-VM, GPU, or Ubuntu-superiority proof.
+";
+
+        assert!(check_release_workflow_contract_text(good).is_ok());
+
+        let stale_tag = good.replace("required: true", "required: false");
+        assert!(check_release_workflow_contract_text(&stale_tag).is_err());
+
+        let latest_fallback = good.replace(
+            "tag_name: ${{ github.event.inputs.tag }}",
+            "tag_name: ${{ github.event.inputs.tag || 'latest' }}",
+        );
+        assert!(check_release_workflow_contract_text(&latest_fallback).is_err());
+
+        let no_vm_proof = good.replace("--check-vm-proof /tmp/seal-os-release.log", "echo yep");
+        assert!(check_release_workflow_contract_text(&no_vm_proof).is_err());
+
+        let no_proof_asset = good.replace("release-proof/serial.log", "release-proof/missing.log");
+        assert!(check_release_workflow_contract_text(&no_proof_asset).is_err());
+    }
+
+    #[test]
     fn proof_manifest_rejects_vbox_ppm_parity_claim() {
         let root = unique_temp_dir("manifest-vbox-ppm");
         let manifest = write_test_vbox_manifest(&root);
@@ -2435,6 +3497,49 @@ gate_proof_screen=ok\n",
     }
 
     #[test]
+    fn benchmark_log_requires_gpu_topology_proof() {
+        let no_gpu = format!(
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}"
+        );
+
+        assert!(check_benchmark_text(&no_gpu).is_err());
+
+        let with_gpu = format!("{no_gpu}{GPU_TOPOLOGY_BENCH_LOG}");
+        assert!(check_benchmark_text(&with_gpu).is_ok());
+    }
+
+    #[test]
+    fn benchmark_log_rejects_fake_gpu_hardware_marker() {
+        let fake_hardware = GPU_TOPOLOGY_BENCH_LOG.replace(
+            "mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0",
+            "mode=hardware backend=amd_gcn dispatch_path=hardware hardware_dispatch=1 shader_used=1",
+        );
+        let log = format!(
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{fake_hardware}"
+        );
+
+        assert!(check_benchmark_text(&log).is_err());
+    }
+
+    #[test]
+    fn desktop_soak_requires_serial_graphics_desktop_proof() {
+        assert!(check_desktop_soak_text(GFX_DESKTOP_SOAK_LOG).is_err());
+
+        let log = format!("{GFX_DESKTOP_PROOF_LOG}{GFX_DESKTOP_SOAK_LOG}");
+        assert!(check_desktop_soak_text(&log).is_ok());
+    }
+
+    #[test]
+    fn desktop_proof_rejects_blank_or_weak_framebuffer_claims() {
+        let zero_hash = GFX_DESKTOP_PROOF_LOG.replace("sample_hash=123456789", "sample_hash=0");
+        let weak_terminal = GFX_DESKTOP_PROOF_LOG
+            .replace("control_region_signal=282000", "control_region_signal=7999");
+
+        assert!(parse_graphics_desktop_proof(&zero_hash).is_err());
+        assert!(parse_graphics_desktop_proof(&weak_terminal).is_err());
+    }
+
+    #[test]
     fn allocator_o1_proof_requires_matching_toporam_run_cap() {
         let missing = ALLOC_PROOF_LOG.replace(" toporam_max_run_pages=64", "");
         assert!(parse_alloc_o1_proof(&missing).is_err());
@@ -2460,6 +3565,16 @@ gate_proof_screen=ok\n",
 
         let missing_app_host = AETHER_RUNTIME_LOG.replace("app_host=ok", "app_host=missing");
         assert!(check_aether_runtime_text(&missing_app_host).is_err());
+    }
+
+    #[test]
+    fn parses_laamba_boot_app_proof() {
+        assert!(check_laamba_app_proof_text(LAAMBA_APP_PROOF_LOG).is_ok());
+
+        let python_runtime = LAAMBA_APP_PROOF_LOG.replace("python_runtime=0", "python_runtime=1");
+        let missing_window = LAAMBA_APP_PROOF_LOG.replace("window_id=11", "window_id=0");
+        assert!(check_laamba_app_proof_text(&python_runtime).is_err());
+        assert!(check_laamba_app_proof_text(&missing_window).is_err());
     }
 
     #[test]
@@ -2502,6 +3617,10 @@ gate_proof_screen=ok\n",
         let legacy_write_through =
             MANIFOLD_TELEPORT_LOG.replace("persistence=metadata_only", "persistence=write_through");
         assert!(parse_manifold_teleport_benchmark(&legacy_write_through).is_err());
+
+        let weak_ramfs_marker =
+            MANIFOLD_TELEPORT_LOG.replace("fs_mode=mock_block", "fs_mode=ramfs");
+        assert!(parse_manifold_teleport_benchmark(&weak_ramfs_marker).is_err());
     }
 
     #[test]
@@ -2523,6 +3642,13 @@ gate_proof_screen=ok\n",
         let wrong_state =
             TCP_PACKET_DEMUX_LOG.replace("accepted_state=established", "accepted_state=listen");
         assert!(parse_tcp_packet_demux_benchmark(&wrong_state).is_err());
+
+        let decoy_hit = TCP_PACKET_DEMUX_LOG.replace("decoy_rx_bytes=0", "decoy_rx_bytes=4");
+        assert!(parse_tcp_packet_demux_benchmark(&decoy_hit).is_err());
+
+        let no_listener_fallback =
+            TCP_PACKET_DEMUX_LOG.replace("listener_fallback=1", "listener_fallback=0");
+        assert!(parse_tcp_packet_demux_benchmark(&no_listener_fallback).is_err());
     }
 
     #[test]
@@ -2533,6 +3659,7 @@ Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark
 raw Ubuntu artifact pending
 `--check-current-benchmark-proof`
 persistence_bytes_per_move=0
+fs_mode=mock_block
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
@@ -2541,7 +3668,9 @@ fixture gate pending before \"full filesystem parity\" claims
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
 `seal-mkimage --check-aether-runtime
+[LAAMBA] app proof:
 `seal-mkimage --check-benchmark-log
+hardware dispatch still needs a proof artifact
 ";
         let benchmark = "\
 That claim is not
@@ -2550,18 +3679,45 @@ Ubuntu comparison numbers are still pending, so no global Ubuntu win is claimed
 [UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=<native-kernel>
 WSL is rejected for benchmark evidence
 The second gate is the claim gate
+fs_mode=mock_block
+LAAMBA app proof
 ";
         let ci = "\
 `seal-mkimage --check-aether-runtime /tmp/seal-os.log`
+`seal-mkimage --check-laamba-app-proof /tmp/seal-os.log`
 `seal-mkimage --check-benchmark-log /tmp/seal-os.log`
 `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log`
 `seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .`
 ";
+        let gpu_doc = "\
+The current QEMU proof uses the CPU fallback
+no current proof artifact establishes real GPU execution
+hardware `[GPU-BENCH]` artifact proves otherwise
+";
 
-        assert!(check_doc_claim_contract_text(readme, benchmark, ci).is_ok());
+        assert!(check_doc_claim_contract_text(readme, benchmark, ci, gpu_doc).is_ok());
 
         let bad_readme = readme.replace("raw Ubuntu artifact pending", "Ubuntu artifact captured");
-        assert!(check_doc_claim_contract_text(&bad_readme, benchmark, ci).is_err());
+        assert!(check_doc_claim_contract_text(&bad_readme, benchmark, ci, gpu_doc).is_err());
+
+        let gpu_overclaim = readme.replace(
+            "hardware dispatch still needs a proof artifact",
+            "they execute (the GPU doesn't crash)",
+        );
+        assert!(check_doc_claim_contract_text(&gpu_overclaim, benchmark, ci, gpu_doc).is_err());
+
+        let amd_shader_overclaim = format!(
+            "{readme}\nThe AMD GPU compute path executes shader binaries that are stubs.\n"
+        );
+        assert!(
+            check_doc_claim_contract_text(&amd_shader_overclaim, benchmark, ci, gpu_doc).is_err()
+        );
+
+        let gpu_doc_overclaim = gpu_doc.replace(
+            "no current proof artifact establishes real GPU execution",
+            "Seal OS offloads topological computations to discrete GPUs",
+        );
+        assert!(check_doc_claim_contract_text(readme, benchmark, ci, &gpu_doc_overclaim).is_err());
     }
 
     #[test]
@@ -3132,16 +4288,182 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     let readme_path = root.join("README.md");
     let benchmark_path = root.join("docs").join("BENCHMARK_PLAN.md");
     let ci_path = root.join("docs").join("CI.md");
+    let gpu_path = root.join("docs").join("GPU_ACCELERATION.md");
     let readme = fs::read_to_string(&readme_path)
         .map_err(|e| format!("read {}: {e}", readme_path.display()))?;
     let benchmark = fs::read_to_string(&benchmark_path)
         .map_err(|e| format!("read {}: {e}", benchmark_path.display()))?;
     let ci =
         fs::read_to_string(&ci_path).map_err(|e| format!("read {}: {e}", ci_path.display()))?;
-    check_doc_claim_contract_text(&readme, &benchmark, &ci)
+    let gpu =
+        fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
+    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)
 }
 
-fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Result<(), String> {
+fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
+    let workflow_path = root.join(".github").join("workflows").join("release.yml");
+    let workflow = fs::read_to_string(&workflow_path)
+        .map_err(|e| format!("read {}: {e}", workflow_path.display()))?;
+    check_release_workflow_contract_text(&workflow)
+}
+
+fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
+    let required = [
+        (
+            "workflow_dispatch:",
+            "release workflow must support explicit manual release dispatch",
+        ),
+        (
+            "required: true",
+            "manual release tag must be explicitly required",
+        ),
+        (
+            "--check-release-workflow-contract .",
+            "release workflow must self-check this contract before publishing",
+        ),
+        (
+            "Install QEMU and OVMF",
+            "release workflow must install VM proof dependencies",
+        ),
+        (
+            "Boot release image in QEMU and capture serial output",
+            "release workflow must boot the release image before publishing",
+        ),
+        (
+            "/tmp/seal-os-release.log",
+            "release workflow must capture a release serial proof log",
+        ),
+        (
+            "--check-vm-proof /tmp/seal-os-release.log",
+            "release workflow must run the VM proof gate",
+        ),
+        (
+            "--check-theorem-log /tmp/seal-os-release.log",
+            "release workflow must run theorem proof gate",
+        ),
+        (
+            "--check-aether-runtime /tmp/seal-os-release.log",
+            "release workflow must run Aether runtime proof gate",
+        ),
+        (
+            "--check-laamba-app-proof /tmp/seal-os-release.log",
+            "release workflow must run LAAMBA boot app proof gate",
+        ),
+        (
+            "--check-desktop-soak /tmp/seal-os-release.log",
+            "release workflow must run desktop soak proof gate",
+        ),
+        (
+            "--check-benchmark-log /tmp/seal-os-release.log",
+            "release workflow must run benchmark proof gate",
+        ),
+        (
+            "--check-doc-claim-contract .",
+            "release workflow must run doc claim contract",
+        ),
+        (
+            "--check-runtime-theorems .",
+            "release workflow must run runtime theorem source gate",
+        ),
+        (
+            "--check-seal-abi .",
+            "release workflow must run no-POSIX ABI source gate",
+        ),
+        (
+            "--check-language-hygiene .",
+            "release workflow must run host-language hygiene gate",
+        ),
+        (
+            "--check-aether-migration .",
+            "release workflow must run Aether migration gate",
+        ),
+        (
+            "--check-o1-allocator .",
+            "release workflow must run O(1) allocator source gate",
+        ),
+        (
+            "release-proof/serial.log",
+            "release workflow must stage serial proof as release artifact",
+        ),
+        (
+            "release-proof/proof-summary.txt",
+            "release workflow must stage honest proof summary as release artifact",
+        ),
+        (
+            "seal-os-release-proof",
+            "release workflow must upload release proof artifacts",
+        ),
+        (
+            "tag_name: ${{ github.event.inputs.tag }}",
+            "manual release must publish exactly the explicit tag input",
+        ),
+        (
+            "QEMU serial proof passed",
+            "release body must state the proof that actually ran",
+        ),
+        (
+            "Not an any-VM, GPU, or Ubuntu-superiority proof",
+            "release body must deny broad unproven claims",
+        ),
+    ];
+
+    let mut findings: Vec<String> = required
+        .iter()
+        .filter(|(needle, _)| !workflow.contains(needle))
+        .map(|(needle, reason)| format!("missing `{needle}` ({reason})"))
+        .collect();
+
+    let banned = [
+        ("required: false", "manual release tag must not be optional"),
+        (
+            "github.event.inputs.tag || 'latest'",
+            "release workflow must not fall back to the mutable latest tag",
+        ),
+        (
+            "github.event.inputs.tag || \"latest\"",
+            "release workflow must not fall back to the mutable latest tag",
+        ),
+        (
+            "tag_name: latest",
+            "release workflow must not publish a mutable latest tag directly",
+        ),
+        (
+            "O(1) topological surgery",
+            "release body must scope filesystem O(1) claims to proof markers",
+        ),
+        (
+            "~18ns/decision",
+            "release body must not ship stale Aether-Link benchmark marketing",
+        ),
+        (
+            "Full read-write drivers included",
+            "release body must not claim full filesystem parity without fixtures",
+        ),
+        (
+            "pure Rust, zero assembly",
+            "release body must not make broad zero-assembly marketing claims",
+        ),
+    ];
+    findings.extend(
+        banned
+            .iter()
+            .filter(|(needle, _)| workflow.contains(needle))
+            .map(|(needle, reason)| format!("banned `{needle}` ({reason})")),
+    );
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_doc_claim_contract_text(
+    readme: &str,
+    benchmark: &str,
+    ci: &str,
+    gpu_doc: &str,
+) -> Result<(), String> {
     let required = [
         (
             "README.md",
@@ -3172,6 +4494,12 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             readme,
             "persistence_bytes_per_move=0",
             "README must expose the metadata-only same-filesystem ManifoldFS proof marker",
+        ),
+        (
+            "README.md",
+            readme,
+            "fs_mode=mock_block",
+            "README must prove ManifoldFS teleport against the persistent mock block-store path",
         ),
         (
             "README.md",
@@ -3224,8 +4552,20 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
         (
             "README.md",
             readme,
+            "[LAAMBA] app proof:",
+            "README must expose the LAAMBA kernel app proof marker",
+        ),
+        (
+            "README.md",
+            readme,
             "`seal-mkimage --check-benchmark-log",
             "README must point benchmark claims at the audit gate",
+        ),
+        (
+            "README.md",
+            readme,
+            "hardware dispatch still needs a proof artifact",
+            "README must keep GPU acceleration scoped to unproven hardware dispatch",
         ),
         (
             "docs/BENCHMARK_PLAN.md",
@@ -3258,10 +4598,28 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             "benchmark plan must identify current benchmark proof as the claim gate",
         ),
         (
+            "docs/BENCHMARK_PLAN.md",
+            benchmark,
+            "fs_mode=mock_block",
+            "benchmark plan must require the persistent mock block-store ManifoldFS proof marker",
+        ),
+        (
+            "docs/BENCHMARK_PLAN.md",
+            benchmark,
+            "LAAMBA app proof",
+            "benchmark plan must include LAAMBA boot app proof in the first milestone",
+        ),
+        (
             "docs/CI.md",
             ci,
             "`seal-mkimage --check-aether-runtime /tmp/seal-os.log`",
             "CI docs must include the Aether runtime gate",
+        ),
+        (
+            "docs/CI.md",
+            ci,
+            "`seal-mkimage --check-laamba-app-proof /tmp/seal-os.log`",
+            "CI docs must include the LAAMBA app proof gate",
         ),
         (
             "docs/CI.md",
@@ -3280,6 +4638,24 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             ci,
             "`seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .`",
             "CI docs must include the current benchmark proof gate",
+        ),
+        (
+            "docs/GPU_ACCELERATION.md",
+            gpu_doc,
+            "The current QEMU proof uses the CPU fallback",
+            "GPU docs must bind current proof to CPU fallback",
+        ),
+        (
+            "docs/GPU_ACCELERATION.md",
+            gpu_doc,
+            "no current proof artifact establishes real GPU execution",
+            "GPU docs must deny current hardware execution proof",
+        ),
+        (
+            "docs/GPU_ACCELERATION.md",
+            gpu_doc,
+            "hardware `[GPU-BENCH]` artifact proves otherwise",
+            "GPU docs must require hardware benchmark proof before GPU acceleration claims",
         ),
     ];
 
@@ -3333,6 +4709,26 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
             "persistence=write_through",
             "README must not retain stale ManifoldFS write-through marker",
         ),
+        (
+            "fs_mode=ramfs",
+            "README ManifoldFS benchmark must not fall back to ramfs-only proof",
+        ),
+        (
+            "they execute (the GPU doesn't crash)",
+            "GPU hardware execution needs a real hardware proof artifact",
+        ),
+        (
+            "GPU offload ready",
+            "GPU offload must stay scoped to scaffold until hardware proof exists",
+        ),
+        (
+            "We can talk to AMD GPUs",
+            "AMD GPU communication must not be claimed without hardware proof",
+        ),
+        (
+            "The AMD GPU compute path executes shader binaries",
+            "AMD shader execution must not be claimed without hardware proof",
+        ),
     ];
     let banned_hits: Vec<String> = banned_readme_claims
         .iter()
@@ -3341,6 +4737,33 @@ fn check_doc_claim_contract_text(readme: &str, benchmark: &str, ci: &str) -> Res
         .collect();
     if !banned_hits.is_empty() {
         return Err(banned_hits.join("\n"));
+    }
+
+    let banned_gpu_claims = [
+        (
+            "Seal OS offloads topological computations to discrete GPUs",
+            "GPU offload is a target until hardware proof exists",
+        ),
+        (
+            "they execute on the GPU without crashing",
+            "GPU shader execution needs hardware proof",
+        ),
+        (
+            "dispatches to GPU when batch size exceeds",
+            "automatic GPU dispatch is not currently proven",
+        ),
+        (
+            "runs a GPU kernel every N ticks",
+            "scheduler GPU refresh is a future fast path",
+        ),
+    ];
+    let banned_gpu_hits: Vec<String> = banned_gpu_claims
+        .iter()
+        .filter(|(needle, _)| gpu_doc.contains(needle))
+        .map(|(needle, reason)| format!("docs/GPU_ACCELERATION.md: banned `{needle}` ({reason})"))
+        .collect();
+    if !banned_gpu_hits.is_empty() {
+        return Err(banned_gpu_hits.join("\n"));
     }
 
     Ok(())
@@ -4270,7 +5693,12 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
     let mut control_region_signal = 0usize;
     let mut primary_titlebar_signal = 0usize;
     let mut start_button_signal = 0usize;
+    let mut theorem_indicator_signal = 0usize;
+    let mut minimized_app_lane_signal = 0usize;
     let mut power_button_signal = 0usize;
+    let mut icon_color_pixels = [0usize; 10];
+    let mut icon_color_buckets = [false; 64];
+    let icon_xs = [20usize, 120, 220, 320, 420, 520, 620, 720, 820, 920];
 
     for y in 0..height {
         for x in 0..width {
@@ -4278,11 +5706,24 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
             let r = pixels[p];
             let g = pixels[p + 1];
             let b = pixels[p + 2];
+            let max_channel = r.max(g).max(b);
+            let min_channel = r.min(g).min(b);
             if r > 8 || g > 8 || b > 8 {
                 non_black += 1;
             }
             if x < 1_000 && (40..140).contains(&y) && (r > 32 || g > 32 || b > 32) {
                 icon_region_signal += 1;
+            }
+            if (50..98).contains(&y) && max_channel >= 96 && max_channel - min_channel >= 40 {
+                for (idx, icon_x) in icon_xs.iter().copied().enumerate() {
+                    if (icon_x..icon_x + 48).contains(&x) {
+                        icon_color_pixels[idx] += 1;
+                        let bucket =
+                            ((r as usize / 64) << 4) | ((g as usize / 64) << 2) | (b as usize / 64);
+                        icon_color_buckets[bucket.min(icon_color_buckets.len() - 1)] = true;
+                        break;
+                    }
+                }
             }
             if (40..700).contains(&x) && (120..580).contains(&y) && (r > 28 || g > 28 || b > 28) {
                 control_region_signal += 1;
@@ -4297,6 +5738,18 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
                 && r < 110
             {
                 start_button_signal += 1;
+            }
+            if (90..270).contains(&x)
+                && (height - 20..height - 10).contains(&y)
+                && (max_channel >= 96 || max_channel - min_channel >= 40)
+            {
+                theorem_indicator_signal += 1;
+            }
+            if (350..width.saturating_sub(132)).contains(&x)
+                && (height - 24..height - 4).contains(&y)
+                && (max_channel >= 120 || (max_channel >= 64 && max_channel - min_channel >= 36))
+            {
+                minimized_app_lane_signal += 1;
             }
             if (width - 36..width - 12).contains(&x)
                 && (height - 22..height - 6).contains(&y)
@@ -4319,6 +5772,22 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
             "desktop icons are not visible enough: {icon_region_signal} signal pixels"
         ));
     }
+    let visible_icons = icon_color_pixels
+        .iter()
+        .copied()
+        .filter(|count| *count >= 1_200)
+        .count();
+    if visible_icons < 8 {
+        return Err(format!(
+            "desktop app icon row is not structured enough: {visible_icons} visible icons"
+        ));
+    }
+    let icon_color_bucket_count = icon_color_buckets.iter().filter(|seen| **seen).count();
+    if icon_color_bucket_count < 6 {
+        return Err(format!(
+            "desktop app icon row lacks color diversity: {icon_color_bucket_count} color buckets"
+        ));
+    }
     if control_region_signal < 8_000 {
         return Err(format!(
             "primary terminal/control region is not visible enough: {control_region_signal} signal pixels"
@@ -4334,7 +5803,17 @@ fn check_proof_screen(path: &Path) -> Result<(), String> {
             "taskbar start button is not visible enough: {start_button_signal} signal pixels"
         ));
     }
-    if power_button_signal < 300 {
+    if theorem_indicator_signal < 500 {
+        return Err(format!(
+            "taskbar theorem indicators are not visible enough: {theorem_indicator_signal} signal pixels"
+        ));
+    }
+    if minimized_app_lane_signal < 300 {
+        return Err(format!(
+            "taskbar minimized-app lane is not visible enough: {minimized_app_lane_signal} signal pixels"
+        ));
+    }
+    if power_button_signal < 220 {
         return Err(format!(
             "taskbar power button is not visible enough: {power_button_signal} signal pixels"
         ));
@@ -4421,6 +5900,9 @@ fn language_line_allowed(line: &str) -> bool {
         || line.contains("host-runner")
         || line.contains("host runner")
         || line.contains("host ci")
+        || line.contains("python_runtime=0")
+        || line.contains("without python")
+        || line.contains("rejects python-backed")
 }
 
 fn strip_allowed_comment(line: &str) -> &str {

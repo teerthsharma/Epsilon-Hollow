@@ -6,7 +6,7 @@
 
 ## Design Philosophy
 
-ManifoldFS replaces traditional block-based filesystems with a geometry-first approach. All file content is encoded as point clouds on the 2-sphere S^2. File operations become geometric operations:
+ManifoldFS layers a geometry-first model over the current block-store path. File content keeps faithful raw bytes for reads/writes and also carries point-cloud metadata on the 2-sphere S^2. File operations use that geometric metadata where it is proven:
 
 - **Store** = encode content to manifold points, assign to Voronoi cell
 - **Move (teleport)** = update directory/inode metadata in O(1) without rewriting file bytes on the same filesystem
@@ -99,7 +99,7 @@ The filesystem uses `BTreeMap<u64, Inode>` for inode storage and `BTreeMap<u64, 
 
 Source: `manifold_fs.rs` lines 187-255, function `teleport()`
 
-Traditional filesystems (ext4, NTFS) implement file move as copy+delete: the entire file content is read from the source location, written to the destination, then the source is removed. This is O(n) in file size.
+Traditional filesystems use metadata-only rename on the same filesystem and copy+delete across filesystems. The fair comparison for the current Seal marker is same-filesystem metadata movement.
 
 ManifoldFS teleport has an O(1) metadata core:
 
@@ -114,7 +114,7 @@ ManifoldFS teleport has an O(1) metadata core:
 9. **Log event**: Tagged `"T1/TSS+T4/AGCR"` (line 234)
 10. **Entropy check**: `check_entropy_and_merge()` -- T3/GMC rebalancing (line 242)
 
-The current in-memory metadata surgery does not need to change the ManifoldPayload. The persistent path still clones/rewrites raw bytes, so end-to-end teleport is O(file bytes) until metadata-only persistence is implemented.
+The current boot benchmark runs this surgery through the persistent mock block-store path (`fs_mode=mock_block`). It proves same inode, source removal, destination presence, bounded metadata operations, and `persistence_bytes_per_move=0` for that same-filesystem move. It does not prove AHCI device latency, cross-filesystem moves, or all VM backends.
 
 ---
 
@@ -138,7 +138,7 @@ Search is narrowed to a single Voronoi cell (1/8 of all files by default), then 
 | Operation | Theorem(s) | Function | What It Does |
 |-----------|-----------|----------|-------------|
 | `store()` | T1/TSS, T4/AGCR | `assign_voronoi_cell()`, `governor_tick()` | Places file in nearest Voronoi cell; adapts governor |
-| `teleport()` | T1/TSS, T4/AGCR, T3/GMC | `governor_tick()`, `check_entropy_and_merge()` | O(1) metadata rewiring; persistent byte rewrite still pending |
+| `teleport()` | T1/TSS, T4/AGCR, T3/GMC | `governor_tick()`, `check_entropy_and_merge()` | O(1) metadata rewiring on the same filesystem; mock block-store gate requires `persistence_bytes_per_move=0` |
 | `find()` | T1/TSS, T2/SCM | `assign_voronoi_cell()`, `update_prefetch_state()` | Cell-scoped search; SCM predicts next access |
 | `mkdir()` | T5/HCS | `update_hyperbolic_ratio()` | Tracks hyperbolic capacity growth with depth |
 | prefetch | T2/SCM | `scm.apply()` | Predicts next file access from access history |
@@ -151,11 +151,11 @@ Search is narrowed to a single Voronoi cell (1/8 of all files by default), then 
 
 | Operation | ext4 / NTFS | ManifoldFS |
 |-----------|-------------|------------|
-| File move (same partition) | Rename: O(1) pointer update | O(1) metadata rewiring; persistent byte rewrite still pending |
-| File move (same filesystem) | Rename: O(1) metadata update | Metadata teleport core; `persistence_bytes_per_move=0` |
+| File move (same filesystem) | Rename: O(1) metadata update | O(1) metadata rewiring; mock block-store gate requires `persistence_bytes_per_move=0` |
+| File move (cross filesystem) | Copy+delete: O(file bytes) | Not covered by the teleport marker |
 | Search by content | Full scan: O(N * n) | Voronoi bucket scan plus geometric ranking |
 | Content deduplication | External tools (hash comparison) | Built-in via content_hash (FNV-1a) on ManifoldPayload |
 | Predictive prefetch | OS page cache heuristics | T2/SCM spectral contraction on access state |
 | Adaptive scheduling | None (fixed I/O scheduler) | T4/AGCR governor adapts to workload |
 
-Key architectural difference: ManifoldFS has no concept of physical blocks or partitions. All data exists as geometry on S^2. The Voronoi index with K=8 cells (`VORONOI_CELLS` constant, line 20) provides spatial locality. The 8 centroids are evenly distributed at theta = pi/2, phi = i * 2*pi/8 (lines 129-137).
+Key architectural difference: ManifoldFS is geometry-first even though the persistent path uses a block-store backend. The ManifoldPayload drives Voronoi locality while raw bytes remain available for faithful reads and writes. The Voronoi index with K=8 cells (`VORONOI_CELLS` constant, line 20) provides spatial locality. The 8 centroids are evenly distributed at theta = pi/2, phi = i * 2*pi/8 (lines 129-137).

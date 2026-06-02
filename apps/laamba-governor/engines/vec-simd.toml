@@ -6,8 +6,8 @@ color = "#00B0FF"
 description = "Hand-written AVX-512 SIMD math library"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py vec-simd"
+type = "native"
+command = "laamba-native vec-simd"
 working_dir = "~/repos/vec-simd"
 
 [engine.inputs]

@@ -6,8 +6,8 @@ color = "#FFD600"
 description = "IBM Quantum homology transfer with verified certificates"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py topobridge-q"
+type = "native"
+command = "laamba-native topobridge-q"
 working_dir = "~/repos/topobridge-q"
 
 [engine.inputs]

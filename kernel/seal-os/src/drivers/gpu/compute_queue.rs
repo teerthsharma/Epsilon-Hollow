@@ -150,7 +150,10 @@ impl ComputeRing {
     /// cause GPU hangs, memory corruption, or system instability.
     pub unsafe fn new(bar0: u64, base: *mut u32, size_dw: u32, phys_addr: u64) -> Option<Self> {
         if size_dw.count_ones() != 1 || size_dw < 256 {
-            serial_println!("[COMPUTE] Ring buffer size {} is not a power of two or < 256", size_dw);
+            serial_println!(
+                "[COMPUTE] Ring buffer size {} is not a power of two or < 256",
+                size_dw
+            );
             return None;
         }
 
@@ -202,7 +205,9 @@ impl ComputeRing {
     /// Write a single DWord to the ring, wrapping as necessary.
     fn write_dw(&mut self, dw: u32) {
         let idx = self.wptr & (self.size_dw - 1);
-        unsafe { core::ptr::write_volatile(self.base.add(idx as usize), dw); }
+        unsafe {
+            core::ptr::write_volatile(self.base.add(idx as usize), dw);
+        }
         self.wptr = self.wptr.wrapping_add(1);
     }
 
@@ -300,12 +305,7 @@ impl ComputeRing {
     /// with at least `size_bytes` of accessible memory. The regions must not
     /// overlap. Incorrect addresses can cause DMA to invalid memory, data
     /// corruption, or system instability.
-    pub unsafe fn dma_data(
-        &mut self,
-        dst_phys: u64,
-        src_phys: u64,
-        size_bytes: u32,
-    ) {
+    pub unsafe fn dma_data(&mut self, dst_phys: u64, src_phys: u64, size_bytes: u32) {
         let need = 7;
         self.wait_free(need);
         self.packet3(PM4_DMA_DATA, 6);
@@ -394,7 +394,9 @@ pub struct CommandBuffer {
 
 impl CommandBuffer {
     pub fn new() -> Self {
-        Self { cmds: Vec::with_capacity(256) }
+        Self {
+            cmds: Vec::with_capacity(256),
+        }
     }
 
     pub fn clear(&mut self) {

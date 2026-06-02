@@ -6,8 +6,8 @@ color = "#AA00FF"
 description = "3D persistent homology landscape visualization"
 
 [engine.entry]
-type = "cli"
-command = "python engines/wrappers/builtin_wrapper.py topoflow"
+type = "native"
+command = "laamba-native topoflow"
 working_dir = "~/repos/agentic-dream-topoflow"
 
 [engine.inputs]

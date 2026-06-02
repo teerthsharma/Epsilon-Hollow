@@ -3,6 +3,9 @@
 Seal OS aims to surpass Ubuntu for selected HFT/ML workloads. That claim is not
 global and not automatic. It becomes true only for benchmark rows where fresh
 Seal OS measurements beat fresh Ubuntu measurements under the same constraints.
+I am building this as an independent researcher, so the plan is deliberately
+artifact-heavy: no team-size aura, no blanket victory claim, only reproducible
+rows.
 
 ## Baseline Rule
 
@@ -162,12 +165,13 @@ Seal OS:
 - current boot marker:
 
 ```text
-[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 payload_bytes=4 rx_bytes=4 cleanup=ok
+[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 cleanup=ok
 ```
 
-The marker proves same-port packet demux chooses the accepted flow before the
-listener fallback. It is not a network latency benchmark; DHCP, external RX/TX,
-and HFT packet latency remain separate artifacts.
+The marker proves same-port packet demux chooses the exact accepted flow before
+the listener fallback, leaves a same-port decoy socket empty, and still routes
+a fresh SYN to the listener. It is not a network latency benchmark; DHCP,
+external RX/TX, and HFT packet latency remain separate artifacts.
 
 Ubuntu target:
 
@@ -183,16 +187,18 @@ Output:
 
 Seal OS:
 
-- same-filesystem `teleport`
+- same-filesystem `teleport` over the persistent mock block-store path
 - move 1 KB, 1 MB, 100 MB, 1 GB logical files where image size allows
 - current boot marker:
 
 ```text
-[BENCH] manifold-teleport api=teleport fs_mode=ramfs persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
 ```
 
-- this marker proves bounded metadata surgery, same-inode movement, and
-  `persistence_bytes_per_move=0` for same-filesystem moves
+- this marker proves bounded metadata surgery through the persistent mock
+  block-store path, same-inode movement, and `persistence_bytes_per_move=0`
+  for same-filesystem moves in `fs_mode=mock_block`; it is not an AHCI latency
+  or any-VM proof
 
 Ubuntu:
 
@@ -420,13 +426,15 @@ The first benchmark milestone is modest and measurable:
 1. Build Seal OS image.
 2. Verify image with `seal-mkimage --verify`.
 3. Boot Seal OS in QEMU or VirtualBox.
-4. Capture serial log to theorem gate, desktop proof frame, desktop-ready
-   sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
+4. Capture serial log to theorem gate, Aether runtime proof, LAAMBA app proof,
+   serial desktop pixel proof, desktop proof frame, desktop-ready sentinel,
+   `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
    `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`,
    `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and
-   `[GFX] desktop-soak` markers.
+   `[GFX] desktop-proof` / `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
 6. Run `seal-mkimage --check-benchmark-log` and
+   `seal-mkimage --check-laamba-app-proof` and
    `seal-mkimage --check-desktop-soak` against the serial log.
 7. Boot Ubuntu 26.04 LTS with same vCPU/RAM/disk class.
 8. Run `tools/ubuntu-alloc-bench` on Ubuntu and validate it with

@@ -91,16 +91,24 @@ impl PipelineGraph {
     }
 
     pub fn topological_order(&self) -> Result<Vec<&PipelineNode>, String> {
-        let mut in_degree: HashMap<&str, usize> = self.nodes.iter().map(|n| (n.id.as_str(), 0)).collect();
+        let mut in_degree: HashMap<&str, usize> =
+            self.nodes.iter().map(|n| (n.id.as_str(), 0)).collect();
         let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
         for edge in &self.edges {
-            adj.entry(edge.source.as_str()).or_default().push(edge.target.as_str());
+            adj.entry(edge.source.as_str())
+                .or_default()
+                .push(edge.target.as_str());
             *in_degree.entry(edge.target.as_str()).or_insert(0) += 1;
         }
 
-        let mut queue: Vec<&str> = in_degree.iter().filter(|(_, &d)| d == 0).map(|(&k, _)| k).collect();
+        let mut queue: Vec<&str> = in_degree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(&k, _)| k)
+            .collect();
         let mut order = Vec::new();
-        let node_map: HashMap<&str, &PipelineNode> = self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let node_map: HashMap<&str, &PipelineNode> =
+            self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
         while let Some(id) = queue.pop() {
             order.push(node_map[id]);

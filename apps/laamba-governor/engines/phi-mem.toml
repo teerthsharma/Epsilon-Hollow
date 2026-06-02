@@ -6,8 +6,8 @@ color = "#B0BEC5"
 description = "Barcode-signature content-addressable storage"
 
 [engine.entry]
-type = "python"
-command = "python engines/wrappers/phi_mem_wrapper.py"
+type = "native"
+command = "laamba-native phi-mem"
 working_dir = "~/repos/phi-mem"
 
 [engine.inputs]

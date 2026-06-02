@@ -167,7 +167,7 @@ impl ManifoldFS {
         }
     }
 
-    fn init_with_store(store: BlockStore) -> Self {
+    fn init_with_store(mut store: BlockStore) -> Self {
         let inodes = store.load_inodes();
         if inodes.iter().any(|i| i.name == "/") {
             return Self::from_store(store, inodes);
@@ -370,10 +370,19 @@ impl ManifoldFS {
             Some(i) => &i.payload,
             None => return Err(FsError::NotFound),
         };
-        let (cell, _subcell) = self.voronoi.insert(id, payload_ref);
+        let (cell, subcell) = self.voronoi.insert(id, payload_ref);
         if let Some(ino) = self.inodes.get_mut(id) {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
+        }
+
+        if let Some(ino) = self.inodes.get(id).cloned() {
+            let write_result = self.store.write_inode(&ino, data);
+            if self.store.is_mounted() && write_result.is_err() {
+                self.voronoi.remove(id, cell, subcell);
+                self.inodes.free(id);
+                return Err(FsError::Storage);
+            }
         }
 
         self.dirs.insert(parent_id, name, id);
@@ -382,9 +391,6 @@ impl ManifoldFS {
         self.update_entropy();
         self.governor_tick(1.0);
         self.path_cache.bump_generation();
-        if let Some(ino) = self.inodes.get(id) {
-            let _ = self.store.write_inode(ino, data);
-        }
         // Persist raw bytes to ext2 backend for faithful read/write.
         self.persist_raw_to_ext2(id, data);
         self.log_event("T1/TSS", format!("stored '{}' -> cell {}", name, cell));
@@ -573,10 +579,6 @@ impl ManifoldFS {
         let payload = encoder::encode_text(name);
 
         let depth = self.compute_depth(parent_id) + 1;
-        if depth > self.max_depth {
-            self.max_depth = depth;
-            self.update_hyperbolic_ratio(depth);
-        }
 
         let inode = Inode {
             id: 0,
@@ -599,11 +601,22 @@ impl ManifoldFS {
         };
 
         let id = self.inodes.alloc(inode);
+        if let Some(ino) = self.inodes.get(id).cloned() {
+            let write_result = self.store.write_inode(&ino, &[]);
+            if self.store.is_mounted() && write_result.is_err() {
+                self.inodes.free(id);
+                return Err(FsError::Storage);
+            }
+        }
         self.dirs.insert(parent_id, name, id);
         self.link_child(parent_id, id);
         self.dirs.insert(id, ".", id);
         self.dirs.insert(id, "..", parent_id);
 
+        if depth > self.max_depth {
+            self.max_depth = depth;
+            self.update_hyperbolic_ratio(depth);
+        }
         self.path_cache.bump_generation();
         self.log_event(
             "T5/HCS",
@@ -838,8 +851,16 @@ impl ManifoldFS {
 
     pub fn delete(&mut self, name: &str, dir_id: u64) -> Result<(), FsError> {
         let inode_id = self.dirs.lookup(dir_id, name).ok_or(FsError::NotFound)?;
+        let inode = self
+            .inodes
+            .get(inode_id)
+            .cloned()
+            .ok_or(FsError::NotFound)?;
+        self.store
+            .delete_inode(&inode)
+            .map_err(|_| FsError::Storage)?;
 
-        if let Some(inode) = self.inodes.get(inode_id) {
+        {
             let cell = inode.voronoi_cell;
             self.voronoi.remove(inode_id, cell, 0);
             if self.cluster_sizes[cell] > 0 {
@@ -866,9 +887,22 @@ impl ManifoldFS {
             return Err(FsError::AlreadyExists);
         }
 
+        let old_inode = self
+            .inodes
+            .get(inode_id)
+            .cloned()
+            .ok_or(FsError::NotFound)?;
         if let Some(inode) = self.inodes.get_mut(inode_id) {
             inode.name = String::from(new);
             inode.metadata.modified_ms = now_ms();
+        }
+        if let Some(updated) = self.inodes.get(inode_id).cloned() {
+            if let Err(_err) = self.store.update_inode_metadata(&updated) {
+                if let Some(inode) = self.inodes.get_mut(inode_id) {
+                    *inode = old_inode;
+                }
+                return Err(FsError::Storage);
+            }
         }
 
         self.dirs.remove(dir_id, old);
@@ -889,8 +923,6 @@ impl ManifoldFS {
         }
 
         let src_inode = self.inodes.get(src_id).ok_or(FsError::NotFound)?.clone();
-        let cell = src_inode.voronoi_cell;
-
         let new_inode = Inode {
             id: 0,
             name: String::from(name),
@@ -903,7 +935,7 @@ impl ManifoldFS {
                 original_size: src_inode.metadata.original_size,
                 permissions: src_inode.metadata.permissions,
             },
-            voronoi_cell: cell,
+            voronoi_cell: src_inode.voronoi_cell,
             cluster_id: src_inode.cluster_id,
             parent: dst_dir,
             sibling_next: None,
@@ -916,7 +948,19 @@ impl ManifoldFS {
             Some(i) => &i.payload,
             None => return Err(FsError::NotFound),
         };
-        self.voronoi.insert(id, payload_ref);
+        let (cell, subcell) = self.voronoi.insert(id, payload_ref);
+        if let Some(ino) = self.inodes.get_mut(id) {
+            ino.voronoi_cell = cell;
+            ino.cluster_id = cell as i32;
+        }
+        if let Some(ino) = self.inodes.get(id).cloned() {
+            let write_result = self.store.write_inode(&ino, &ino.data);
+            if self.store.is_mounted() && write_result.is_err() {
+                self.voronoi.remove(id, cell, subcell);
+                self.inodes.free(id);
+                return Err(FsError::Storage);
+            }
+        }
         self.dirs.insert(dst_dir, name, id);
         self.link_child(dst_dir, id);
         self.cluster_sizes[cell] += 1;
@@ -1056,19 +1100,33 @@ impl FileSystem for ManifoldFS {
     }
 
     fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
-        let inode = self
+        let old_inode = self
             .inodes
-            .get_mut(handle.inode)
+            .get(handle.inode)
+            .cloned()
             .ok_or(VfsError::NotFound)?;
-        if !matches!(inode.kind, InodeKind::File) {
+        if !matches!(old_inode.kind, InodeKind::File) {
             return Err(VfsError::InvalidOperation);
         }
-        inode.payload = encoder::encode_data(buf);
-        inode.data = Vec::from(buf);
-        inode.metadata.original_size = buf.len() as u64;
-        inode.metadata.modified_ms = now_ms();
-        let data = inode.data.clone();
-        let _ = self.store.write_inode(inode, &data);
+        if let Some(inode) = self.inodes.get_mut(handle.inode) {
+            inode.payload = encoder::encode_data(buf);
+            inode.data = Vec::from(buf);
+            inode.metadata.original_size = buf.len() as u64;
+            inode.metadata.modified_ms = now_ms();
+        }
+        let updated = self
+            .inodes
+            .get(handle.inode)
+            .cloned()
+            .ok_or(VfsError::NotFound)?;
+        if let Err(_err) = self.store.write_inode(&updated, buf) {
+            if self.store.is_mounted() {
+                if let Some(inode) = self.inodes.get_mut(handle.inode) {
+                    *inode = old_inode;
+                }
+                return Err(VfsError::IoError);
+            }
+        }
         self.persist_raw_to_ext2(handle.inode, buf);
         Ok(buf.len())
     }
@@ -1124,14 +1182,30 @@ impl FileSystem for ManifoldFS {
             if self.dirs.lookup(new_dir_id, new_name).is_some() {
                 return Err(VfsError::AlreadyExists);
             }
-            self.unlink_child(old_dir_id, inode_id);
-            self.dirs.remove(old_dir_id, old_name);
-            self.dirs.insert(new_dir_id, new_name, inode_id);
+            let old_inode = self
+                .inodes
+                .get(inode_id)
+                .cloned()
+                .ok_or(VfsError::NotFound)?;
             if let Some(inode) = self.inodes.get_mut(inode_id) {
                 inode.name = String::from(new_name);
                 inode.parent = new_dir_id;
                 inode.metadata.modified_ms = now_ms();
             }
+            let updated = self
+                .inodes
+                .get(inode_id)
+                .cloned()
+                .ok_or(VfsError::NotFound)?;
+            if let Err(_err) = self.store.update_inode_metadata(&updated) {
+                if let Some(inode) = self.inodes.get_mut(inode_id) {
+                    *inode = old_inode;
+                }
+                return Err(VfsError::IoError);
+            }
+            self.unlink_child(old_dir_id, inode_id);
+            self.dirs.remove(old_dir_id, old_name);
+            self.dirs.insert(new_dir_id, new_name, inode_id);
             self.link_child(new_dir_id, inode_id);
             self.path_cache.bump_generation();
             Ok(())
@@ -1234,6 +1308,14 @@ impl FileSystem for ManifoldFS {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
         }
+        if let Some(ino) = self.inodes.get(id).cloned() {
+            let write_result = self.store.write_inode(&ino, &[]);
+            if self.store.is_mounted() && write_result.is_err() {
+                self.voronoi.remove(id, cell, _subcell);
+                self.inodes.free(id);
+                return Err(VfsError::IoError);
+            }
+        }
         self.dirs.insert(dir_id, name, id);
         self.link_child(dir_id, id);
         self.cluster_sizes[cell] += 1;
@@ -1250,9 +1332,11 @@ impl FileSystem for ManifoldFS {
 
     fn sync(&mut self) -> Result<(), VfsError> {
         // Flush BlockStore persistence layer (journal + bitmap + inode table).
-        let _ = self.store.sync();
+        if self.store.is_mounted() {
+            self.store.sync().map_err(|_| VfsError::IoError)?;
+        }
         if let Some(ref ext2) = self.ext2_backend {
-            let _ = ext2.lock().sync();
+            ext2.lock().sync()?;
         }
         Ok(())
     }
@@ -1260,7 +1344,9 @@ impl FileSystem for ManifoldFS {
     fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
         // ManifoldFS writes through on every operation;
         // fsync delegates to the global store flush.
-        let _ = self.store.sync();
+        if self.store.is_mounted() {
+            self.store.sync().map_err(|_| VfsError::IoError)?;
+        }
         Ok(())
     }
 }
@@ -1444,6 +1530,48 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn remount_mock_fs(mut fs: ManifoldFS) -> Result<ManifoldFS, &'static str> {
+        if fs.store.sync().is_err() {
+            return Err("sync before remount failed");
+        }
+        let store = core::mem::replace(&mut fs.store, BlockStore::new());
+        Ok(ManifoldFS::init_with_store(store))
+    }
+
+    fn test_mock_store_remount_keeps_rename_and_delete() -> TestResult {
+        let mut fs = ManifoldFS::new_with_mock_store(4096);
+        let root = fs.root_id();
+        let docs = fs.mkdir("docs", root).unwrap();
+        fs.store_text("old.txt", "data", docs).unwrap();
+        fs.rename("old.txt", "new.txt", docs).unwrap();
+
+        let mut fs = match remount_mock_fs(fs) {
+            Ok(fs) => fs,
+            Err(err) => return TestResult::Fail(err),
+        };
+        let docs = match fs.resolve_path("/docs") {
+            Ok(id) => id,
+            Err(_) => return TestResult::Fail("docs missing after rename remount"),
+        };
+        test_assert_eq!(fs.exists("old.txt", docs), false);
+        test_assert_eq!(fs.exists("new.txt", docs), true);
+
+        if fs.delete("new.txt", docs).is_err() {
+            return TestResult::Fail("delete failed after rename remount");
+        }
+        let fs = match remount_mock_fs(fs) {
+            Ok(fs) => fs,
+            Err(err) => return TestResult::Fail(err),
+        };
+        let docs = match fs.resolve_path("/docs") {
+            Ok(id) => id,
+            Err(_) => return TestResult::Fail("docs missing after delete remount"),
+        };
+        test_assert_eq!(fs.exists("old.txt", docs), false);
+        test_assert_eq!(fs.exists("new.txt", docs), false);
+        TestResult::Pass
+    }
+
     fn test_duplicate() -> TestResult {
         let mut fs = ManifoldFS::new();
         let root = fs.root_id();
@@ -1488,6 +1616,10 @@ pub mod tests {
             test_resolve_path_from_relative,
         );
         crate::testing::register_test("filesystem::delete_and_rename", test_delete_and_rename);
+        crate::testing::register_test(
+            "filesystem::mock_store_remount_keeps_rename_and_delete",
+            test_mock_store_remount_keeps_rename_and_delete,
+        );
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
     }
