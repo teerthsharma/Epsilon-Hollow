@@ -51,6 +51,22 @@ impl ParseError {
             column,
         }
     }
+
+    /// Skip tokens until the next statement boundary (`~`, `\n`, `;`, `}`, or EOF)
+    /// and leave the parser positioned after the boundary so parsing can continue.
+    pub fn recover(parser: &mut Parser) {
+        while !parser.is_at_end() {
+            if parser.check_statement_terminator() {
+                parser.advance();
+                break;
+            }
+            // Also treat closing brace as a boundary we can stop at
+            if parser.check(TokenKind::RBrace) {
+                break;
+            }
+            parser.advance();
+        }
+    }
 }
 
 /// AEGIS Parser
@@ -73,9 +89,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse entire program
+    /// Parse entire program (fails fast on first error).
     pub fn parse(&mut self) -> Result<Program, ParseError> {
+        let (program, errors) = self.parse_recoverable();
+        if let Some(first) = errors.into_iter().next() {
+            Err(first)
+        } else {
+            Ok(program)
+        }
+    }
+
+    /// Parse entire program, recovering from errors at statement boundaries.
+    /// Returns the successfully parsed statements and any recovered errors.
+    pub fn parse_recoverable(&mut self) -> (Program, Vec<ParseError>) {
         let mut program = Program::new();
+        let mut errors = Vec::new();
 
         while !self.is_at_end() {
             self.consume_statement_terminators();
@@ -84,15 +112,21 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            let stmt = self.parse_statement()?;
-            self.consume_statement_terminators();
-            // We only push non-empty statements
-            if !matches!(stmt.node, StmtKind::Empty) {
-                program.push(stmt);
+            match self.parse_statement() {
+                Ok(stmt) => {
+                    self.consume_statement_terminators();
+                    if !matches!(stmt.node, StmtKind::Empty) {
+                        program.push(stmt);
+                    }
+                }
+                Err(err) => {
+                    ParseError::recover(self);
+                    errors.push(err);
+                }
             }
         }
 
-        Ok(program)
+        (program, errors)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1161,5 +1195,68 @@ fn render() {
         let program = parser.parse().expect("windowed app host script parses");
         assert_eq!(program.statements.len(), 7);
         assert!(matches!(program.statements[6].node, StmtKind::Fn(_)));
+    }
+
+    #[test]
+    fn test_incremental_lexer_iterator() {
+        let source = "let x = 1~\nlet y = 2~";
+        let lexer = Lexer::new_incremental(source);
+        let tokens: Vec<Token> = lexer.collect();
+        // Should have 10 tokens: let, x, =, 1, ~, \n, let, y, =, 2, ~
+        // But wait, newlines are tokens. Let me count:
+        // let, x, =, 1, ~, \n, let, y, =, 2, ~ = 11 tokens
+        assert_eq!(tokens.len(), 11);
+        assert!(matches!(tokens[0].kind, TokenKind::Let));
+        assert!(matches!(tokens[6].kind, TokenKind::Let));
+    }
+
+    #[test]
+    fn test_parser_error_recovery() {
+        // Second statement has a syntax error (missing =), parser should recover
+        let source = "let x = 1~\nlet y 2~\nlet z = 3~";
+        let mut parser = Parser::new(source);
+        let (program, errors) = parser.parse_recoverable();
+
+        // Should have recovered x and z
+        assert_eq!(program.statements.len(), 2);
+        assert_eq!(errors.len(), 1);
+        // Ensure the error message mentions the problematic token
+        assert!(errors[0].message.contains("unexpected") || errors[0].message.contains("expected"));
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn benchmark_parse_10k_lines() {
+        use std::time::Instant;
+
+        let mut source = String::new();
+        for i in 0..10_000 {
+            // Mix of statement types to exercise the parser
+            match i % 5 {
+                0 => source.push_str(&format!("let var_{} = {}~\n", i, i)),
+                1 => source.push_str(&format!("manifold M_{} = embed(data, dim={})~\n", i, i % 10 + 1)),
+                2 => source.push_str(&format!("fn f_{}() {{ return {}~ }}~\n", i, i)),
+                3 => source.push_str(&format!("block B_{} = M_{}.cluster(0:{})~\n", i, i, i)),
+                4 => source.push_str(&format!("if var_{} > 0 {{ render M_{}~ }}~\n", i, i)),
+                _ => unreachable!(),
+            }
+        }
+
+        let start = Instant::now();
+        let mut parser = Parser::new(&source);
+        let (program, errors) = parser.parse_recoverable();
+        let elapsed = start.elapsed();
+
+        assert!(errors.is_empty(), "10k benchmark should parse without errors: {:?}", errors);
+        assert!(
+            program.statements.len() >= 9_000,
+            "expected most statements to parse, got {}",
+            program.statements.len()
+        );
+        assert!(
+            elapsed.as_millis() < 100,
+            "parsing 10,000 lines took {}ms, expected <100ms",
+            elapsed.as_millis()
+        );
     }
 }
