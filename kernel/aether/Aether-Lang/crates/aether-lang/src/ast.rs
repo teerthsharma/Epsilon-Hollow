@@ -110,6 +110,27 @@ pub enum UnaryOp {
 /// AEGIS Expression wrapped with source span
 pub type Expr = Spanned<ExprKind>;
 
+/// Types for the Hindley-Milner type system
+#[derive(Debug, Clone, PartialEq)]
+pub enum Type {
+    /// Type variable (for inference)
+    Var(String),
+    /// Integer
+    Int,
+    /// Floating-point number
+    Float,
+    /// Boolean
+    Bool,
+    /// String
+    Str,
+    /// Unit / void
+    Unit,
+    /// List of elements
+    List(Box<Type>),
+    /// Function type: params -> return
+    Fun(Vec<Type>, Box<Type>),
+}
+
 /// Expression kinds in AEGIS
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
@@ -152,6 +173,13 @@ pub enum ExprKind {
 
     /// List literal: [1, 2, 3]
     List(Vec<Expr>),
+
+    /// Let binding with optional type annotation: let x: float = 5.0
+    Let {
+        name: Ident,
+        ty: Option<Type>,
+        value: Box<Expr>,
+    },
 }
 
 /// Literals

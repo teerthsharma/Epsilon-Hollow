@@ -85,12 +85,17 @@ fn compute_salt(username: &str, uid: u32) -> [u8; 8] {
 /// T5 anchors the credential hash in the hyperbolic trust hierarchy via
 /// the global topological seed, ensuring all password verification is
 /// manifold-bound.
-fn compute_hash(password: &str, salt: &[u8; 8], seed: &[u8]) -> [u8; 32] {
+fn compute_hash(password: &str, salt: &[u8; 8], seed: &[u8], rounds: u32) -> [u8; 32] {
     let mut data = Vec::new();
     data.extend_from_slice(password.as_bytes());
     data.extend_from_slice(salt);
     data.extend_from_slice(seed);
-    sha256(&data)
+    
+    let mut current = sha256(&data);
+    for _ in 1..rounds {
+        current = sha256(&current);
+    }
+    current
 }
 
 fn read_shadow_file() -> Vec<u8> {
@@ -176,7 +181,7 @@ pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
         }
         return None;
     }
-    let computed = compute_hash(password, &entry.salt, &*seed);
+    let computed = compute_hash(password, &entry.salt, &*seed, entry.rounds);
     if constant_time_eq(&computed, &entry.hash) {
         crate::security::passwd::get_user(username)
     } else {
@@ -188,7 +193,7 @@ pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
 pub fn make_shadow_line(username: &str, password: &str, uid: u32) -> String {
     let salt = compute_salt(username, uid);
     let seed = TOPO_SEED.lock();
-    let hash = compute_hash(password, &salt, &*seed);
+    let hash = compute_hash(password, &salt, &*seed, 5000);
     let salt_hex = hex_encode(&salt);
     let hash_hex = hex_encode(&hash);
     format!("{}:$topo$5000${}${}\n", username, salt_hex, hash_hex)

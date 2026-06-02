@@ -145,7 +145,7 @@ impl AmdTopologyAccelerator {
         let code_buf = GpuBuffer::alloc(code_bytes).ok_or(GpuError::OutOfMemory)?;
         upload(
             &code_buf,
-            super::shader_binaries::kernel_as_bytes(meta.binary),
+            meta.binary,
         );
         Ok(code_buf.phys)
     }

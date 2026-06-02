@@ -1935,6 +1935,11 @@ impl Interpreter {
                     Err(format!("Manifold '{}' not found", object).into())
                 }
             }
+            ExprKind::Let { name, ty: _, value } => {
+                let val = self.evaluate_expr(value)?;
+                self.variables.insert(name.clone(), val.clone());
+                Ok(val)
+            }
             ExprKind::Config(_) => {
                 Err(String::from("Raw config blocks cannot be evaluated as expressions").into())
             }

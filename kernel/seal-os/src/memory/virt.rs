@@ -431,15 +431,19 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
                     if page_entry.is_unused() {
                         continue;
                     }
-                    let mut new_flags = page_entry.flags();
-                    // T5: Writable user pages are short-lived → COW.
-                    // Read-only pages are long-lived → truly shared.
-                    if new_flags.contains(PageTableFlags::WRITABLE)
-                        && new_flags.contains(PageTableFlags::USER_ACCESSIBLE)
-                    {
-                        new_flags.remove(PageTableFlags::WRITABLE);
+                    let new_flags = page_entry.flags();
+                    // Deep copy all user-accessible pages to prevent double-free
+                    if new_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                        let new_frame = crate::memory::phys::alloc_frame()?;
+                        core::ptr::copy_nonoverlapping(
+                            page_entry.addr().as_u64() as *const u8,
+                            new_frame.as_u64() as *mut u8,
+                            4096,
+                        );
+                        new_pt[pt_idx].set_addr(new_frame, new_flags);
+                    } else {
+                        new_pt[pt_idx].set_addr(page_entry.addr(), new_flags);
                     }
-                    new_pt[pt_idx].set_addr(page_entry.addr(), new_flags);
                 }
             }
         }
