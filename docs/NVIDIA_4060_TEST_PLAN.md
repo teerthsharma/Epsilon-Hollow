@@ -207,4 +207,4 @@ Steps 1–4 are documented in `kernel/seal-os/src/drivers/gpu/nvidia.rs` as stub
 ---
 
 *Last updated: 2026-06-01*  
-*Seal OS v0.4.5 — honest about what works and what doesn't*
+*Seal OS v0.4.6 — honest about what works and what doesn't*

@@ -1,6 +1,6 @@
 # Seal OS Threat Model
 
-**Version:** 0.4.5  
+**Version:** 0.4.6
 **Scope:** Bare-metal x86_64 kernel, drivers, network stack, and FastAPI backend.  
 **Assumption:** The machine is physically controlled by the operator unless noted otherwise.
 

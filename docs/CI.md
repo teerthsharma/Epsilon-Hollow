@@ -7,7 +7,7 @@ hands I do not have: every public claim needs a gate, log marker, or artifact.
 
 Triggered on: all `push` and `pull_request` events, plus manual `workflow_dispatch`
 for the native Ubuntu 26.04 comparison lane.
-Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"`, `EXPECTED_SEAL_OS_VERSION="0.4.5"` (kernel jobs override RUSTFLAGS to `""`).
+Global env: `CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"`, `EXPECTED_SEAL_OS_VERSION="0.4.6"` (kernel jobs override RUSTFLAGS to `""`).
 
 > 💡 **Run these checks locally before pushing:** see [`docs/LOCAL_CI.md`](LOCAL_CI.md).
 > To use the `git push-ci` alias, run: `git config --local include.path ../.gitconfig.local`
@@ -202,7 +202,7 @@ The smoke test must verify these serial output patterns:
 
 | # | Pattern | Milestone |
 |---|---------|-----------|
-| 1 | `Seal OS v0.4.5` | Exact release banner printed |
+| 1 | `Seal OS v0.4.6` | Exact release banner printed |
 | 2 | `Heap initialized` | Heap initialized |
 | 3 | `IDT + PIC initialized` | Interrupts configured |
 | 4 | `SYSCALL/SYSRET MSRs programmed` | Syscall entry configured |

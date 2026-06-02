@@ -3642,6 +3642,89 @@ with:
     }
 
     #[test]
+    fn release_046_public_version_surfaces_are_aligned() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let version = "0.4.6";
+        let version_tag = "v0.4.6";
+        let files = [
+            (
+                repo_root.join("kernel").join("seal-os").join("Cargo.toml"),
+                format!("version = \"{version}\""),
+            ),
+            (
+                repo_root
+                    .join("kernel")
+                    .join("seal-os")
+                    .join("src")
+                    .join("lib.rs"),
+                format!("pub const VERSION: &str = \"{version}\""),
+            ),
+            (
+                repo_root
+                    .join("kernel")
+                    .join("seal-os")
+                    .join("src")
+                    .join("graphics")
+                    .join("splash.rs"),
+                format!("                    {version_tag}"),
+            ),
+            (
+                repo_root
+                    .join("kernel")
+                    .join("seal-os")
+                    .join("src")
+                    .join("wm")
+                    .join("welcome.rs"),
+                format!("Welcome to Seal OS {version_tag}"),
+            ),
+            (
+                repo_root.join("README.md"),
+                format!("Seal OS {version_tag}"),
+            ),
+            (
+                repo_root.join("docs").join("CI.md"),
+                format!("EXPECTED_SEAL_OS_VERSION=\"{version}\""),
+            ),
+            (
+                repo_root.join("docs").join("CI.md"),
+                format!("`Seal OS {version_tag}`"),
+            ),
+            (
+                repo_root
+                    .join("kernel")
+                    .join("seal-os")
+                    .join("src")
+                    .join("drivers")
+                    .join("net")
+                    .join("http.rs"),
+                String::from("User-Agent: SealOS/{}"),
+            ),
+            (
+                repo_root
+                    .join("kernel")
+                    .join("seal-os")
+                    .join("src")
+                    .join("drivers")
+                    .join("net")
+                    .join("http.rs"),
+                String::from("crate::VERSION"),
+            ),
+        ];
+
+        for (path, needle) in files {
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains(&needle),
+                "{} missing `{}`",
+                path.display(),
+                needle
+            );
+        }
+    }
+
+    #[test]
     fn proof_manifest_rejects_vbox_ppm_parity_claim() {
         let root = unique_temp_dir("manifest-vbox-ppm");
         let manifest = write_test_vbox_manifest(&root);
