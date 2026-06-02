@@ -170,6 +170,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Create an incremental lexer for streaming tokenization.
+    /// Yields tokens via `Iterator` without requiring full `Vec` collection.
+    pub fn new_incremental(source: &'a str) -> Self {
+        Self::new(source)
+    }
+
     /// Advance to next character
     fn advance(&mut self) -> Option<char> {
         let c = self.chars.next()?;
@@ -480,6 +486,19 @@ impl<'a> Lexer<'a> {
         }
 
         tokens
+    }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Token;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let token = self.next_token();
+        if matches!(token.kind, TokenKind::Eof) {
+            None
+        } else {
+            Some(token)
+        }
     }
 }
 
