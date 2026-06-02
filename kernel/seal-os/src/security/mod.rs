@@ -30,6 +30,32 @@ pub fn init_security() {
     audit::init_audit_log();
     kpti::init();
     retpoline::init();
+    emit_hardening_proof();
+}
+
+fn emit_hardening_proof() {
+    let kpti = kpti::runtime_proof();
+    let smap_supported = smap_smep::has_smep_smap();
+    let smap_enabled = smap_smep::is_enabled();
+    let smap_ok = !smap_supported || smap_enabled;
+    let result = if kpti.passes() && smap_ok {
+        "pass"
+    } else {
+        "fail"
+    };
+    crate::serial_println!(
+        "[SECURITY] hardening proof version=1 kpti={} kernel_cr3={:#x} user_cr3={:#x} kpti_distinct={} user_lower_zero={} kernel_upper_mirrored={} smap_smep_supported={} smap_smep_enabled={} user_access_faults={} result={}",
+        if kpti.passes() { 1 } else { 0 },
+        kpti.kernel_cr3,
+        kpti.user_cr3,
+        if kpti.distinct_roots { 1 } else { 0 },
+        if kpti.user_lower_half_empty { 1 } else { 0 },
+        if kpti.kernel_upper_half_mirrored { 1 } else { 0 },
+        if smap_supported { 1 } else { 0 },
+        if smap_enabled { 1 } else { 0 },
+        smap_smep::user_access_faults(),
+        result
+    );
 }
 
 #[cfg(any(test, feature = "test-mode"))]

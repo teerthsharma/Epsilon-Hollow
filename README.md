@@ -219,7 +219,7 @@ The naming scheme is inconsistent and borderline unhinged:
 **A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
 
 ### Q: Can I use this as my daily driver?
-**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." The GPU drivers are "stubs." The WiFi is "simulated." Your therapist will bill you hourly.
+**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi is "simulated." Your therapist will bill you hourly.
 
 ### Q: Why S2 and not S3?
 **A:** S3 is for cowards who can't commit to two dimensions. Also, I couldn't figure out how to visualize it on a 1024x768 framebuffer.
@@ -357,7 +357,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 - **ASLR** — userspace mmap base randomised with 16-bit entropy shift, RDRAND/RDSEED source
 - **Seccomp** — classic BPF evaluator, per-task filter arrays, `BPF_LD_W_ABS`/`BPF_JMP_JEQ`/`BPF_RET`
-- **KPTI scaffolding** — CR3 swap code exists, boot selftest pending hard gate
+- **KPTI hardening proof** — distinct kernel/user CR3 roots, empty user lower-half PML4, mirrored kernel upper-half, and SMAP/SMEP enablement are emitted at boot and hard-gated by `seal-mkimage`
 - **Retpoline** — compiler flags in `.cargo/config.toml`, all 16 register thunks, trampoline page table
 - **SMAP/SMEP** — init at boot
 - **MAC** — scaffolding present
@@ -404,13 +404,13 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 | Feature | Limitation | Path to Full |
 |---|---|---|
-| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. GCN shader binaries are honest ABI stubs with placeholder logic; they do not compute full topology, and hardware dispatch still needs a proof artifact. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Compile real OpenCL C → GCN ISA, replace stub arrays, and add a hardware `[GPU-BENCH]` proof |
+| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. The build no longer fabricates placeholder shader binaries; hardware dispatch only embeds real checked-in `.bin` blobs and otherwise reports `kernel_not_found`. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Check in real OpenCL C → GCN ISA blobs and add a hardware `[GPU-BENCH]` proof |
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
 | **Package Manager** | Local extraction + signed verification path exist. remote registry fixture and signed package gate are pending. | Build registry + fixture |
 | **Installer** | UI exists. Actual GPT partitioning and filesystem formatting not yet implemented. | Raw block device write path |
 | **FAT / ext2 parity** | Write paths exist; fixture gate pending before "full filesystem parity" claims. | Comprehensive fixture tests |
-| **Security hardening** | Scaffolding present; per-feature hardening proof gates pending before production security claims. | Boot selftests for each feature |
+| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush, TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
 | **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |
 
 ### ❌ Not Yet Real
@@ -418,7 +418,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | Feature | Why | When |
 |---|---|---|
 | **GPU drivers (i915/nouveau)** | Proprietary firmware blobs required, out of scope for research kernel | Never (vendor IP) |
-| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. Shader stubs need real compiled ISA and an AMD hardware proof for correct results. | Rebuild shader binaries from OpenCL C source and gate with `[GPU-BENCH]` |
+| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. The kernel refuses fake shader blobs; real compiled ISA and an AMD hardware proof are still required for correct GPU results. | Check in real shader binaries and gate with `[GPU-BENCH]` |
 | **Full internet TLS** | X.509/PKI/ECDHE not implemented | Post-1.0 |
 | **Self-hosting** | Aether-Lang needs more stdlib before it can build itself | Roadmap phase 4 |
 
@@ -434,10 +434,10 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 1. **It boots.** This is genuinely impressive. You would be shocked how many OS projects never reach the "prints to serial" stage.
 2. **It has real drivers.** Not mock drivers. Real e1000 TX/RX rings. Real NVMe admin queues. Real xHCI port enumeration. These are not stubs that return `Ok(())`.
 3. **It has a window manager.** With double buffering. And anti-aliased text. And a taskbar. Written from scratch in software rendering. On a framebuffer. In 2026.
-4. **It will panic if you look at it wrong.** The COW fork path has a known double-free under memory pressure. The GPU shader stubs are placeholder logic and are not a proven hardware compute path. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
+4. **It will panic if you look at it wrong.** The COW fork path still needs a dedicated rollback/leak proof. GPU hardware compute is not proven yet, and the build now refuses fake shader binaries. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
 5. **It is not Linux.** You cannot `apt install` things. There is no `bash`. The shell speaks English-first commands like `look` and `peek`. This is a feature, not a bug, but it is also inconvenient.
 6. **One person wrote most of it.** With occasional help from AI agents, contributors, and sheer stubbornness. This means design coherence is high, but bus factor is catastrophic.
-7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that some of our core claims hold. This is not decoration.
+7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that core claims hold. This is not decoration.
 
 ### What "Research Kernel" Does NOT Mean
 
@@ -810,7 +810,7 @@ Every OS has design decisions. Mine were made at ungodly hours by a sleep-depriv
 
 **Why it was painful:** Anti-aliased text rendering in software is slow. Glow effects require multiple blur passes. The Schwarzschild metric wallpaper looks cool but eats CPU cycles.
 
-**Verdict:** The desktop looks amazing. The CPU usage is concerning. I have GPU offload plans (PM4 rings, shader stubs), but they are not ready yet.
+**Verdict:** The desktop looks amazing. The CPU usage is concerning. I have GPU offload plans (PM4 rings, real shader blobs, VRAM topology paths), but the hardware proof is not ready yet.
 
 ### Decision 5: No POSIX
 
@@ -1132,7 +1132,7 @@ The scheduler lock is released **before** context switch, preventing deadlock wh
 **RTC + Watchdog**: CMOS real-time clock (ports 0x70/0x71) with BCD/binary detection. APIC timer watchdog — pets via `SYS_WATCHDOG`, triggers keyboard-controller reset on 5-second hang.
 
 
-> **Driver confession:** Our GPU driver is mostly stubs. The PM4 ring infrastructure is real code, but the current proof does not show a real GPU dispatch. The shaders don't compute topology yet; they are placeholder ABI scaffolds until a hardware `[GPU-BENCH]` run proves otherwise. This is documented. This is honest. We are working on it. Please stop emailing us about it.
+> **Driver confession:** My GPU hardware path is not proven acceleration yet. The PM4 ring infrastructure is real code, but the current proof does not show a real GPU dispatch. The build refuses fake shader binaries now; real checked-in ISA blobs plus a hardware `[GPU-BENCH]` run must prove this path before I claim it. This is documented. This is honest. I am working on it. Please stop emailing me about it.
 
 </details>
 
@@ -1268,7 +1268,7 @@ flowchart TB
 
 ### KPTI (Kernel Page-Table Isolation)
 
-CR3 swap code exists via `memory/pgtable_asm.rs`. A hard gate still needs to prove installed KPTI page tables during a boot selftest. **Status**: scaffolding present, syscall entry/exit wiring pending.
+CR3 swap code exists via `memory/pgtable_asm.rs`. Boot now emits `[SECURITY] hardening proof` and `seal-mkimage` requires distinct kernel/user CR3 roots, empty user lower-half PML4 entries, mirrored kernel upper-half entries, SMAP/SMEP enablement when supported, and `result=pass`. **Status**: hard-gated KPTI shape proof exists; deeper syscall-path stress and side-channel tests remain pending.
 
 ### ASLR
 
@@ -1295,14 +1295,14 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🔴 Critical (Please Don't)
 
-1. **COW Fork Double-Free:** Under memory pressure, the copy-on-write fork path can double-free a page frame. This is a known bug tracked in our security audit. The fix requires rewriting the COW page table cloning logic.
-2. **KPTI Not Fully Wired:** The CR3 swap code exists but the syscall entry/exit paths don't fully use it yet. A clever userspace program might be able to read kernel memory via cache timing.
-3. **Weak Password Hashing:** `/etc/shadow` uses single-iteration SHA-256. This is documented as weak. A GPU could crack it in seconds.
+1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
+2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
+3. **Auth Proof Gap:** New/default `/etc/shadow` entries use `$topo$5000` topological hashes instead of single-round SHA-256. Legacy `$topo$legacy` migration remains supported for old images and must get a no-legacy boot proof.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
+5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
@@ -1582,8 +1582,8 @@ Let's strip away the marketing and talk about where Seal OS actually is, in term
 ### What I Cannot Honestly Claim Yet
 
 1. **Seal OS is not globally faster than Linux yet.** For most workloads, Linux is faster. The side-by-side benchmark harness exists. The Ubuntu artifact is pending. I am not claiming victory until the Ubuntu artifact exists.
-2. **Seal OS is not production-secure.** It has scaffolding. It has ASLR and seccomp. It does NOT have full KPTI, production TLS, or a security audit. Do not use this for sensitive data.
-3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact. The shaders are stubs. Annoying, but better than lying.
+2. **Seal OS is not production-secure.** It has ASLR, seccomp, SMAP/SMEP, and a hard-gated KPTI shape proof. It does NOT have production TLS, KASLR, or a full external security audit. Do not use this for sensitive data.
+3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact and real checked-in shader blobs. Annoying, but better than lying.
 4. **There is no browser.** There is an HTTP/HTTPS client. You can fetch raw HTML. You cannot render it. You cannot run JavaScript. There is no DOM.
 5. **It is not self-hosting.** Seal OS still needs Linux, Windows, or macOS to compile the kernel. Aether-Lang is not yet powerful enough to build itself.
 6. **Every legacy host wrapper is not gone yet.** Production OS roots are quarantined away from host-script runtime drift, and LAAMBA's runtime bridge has a native gate. Legacy wrappers and research scripts may still exist outside the runtime path until Rust/Aether replacements prove they can carry the weight.
@@ -2036,27 +2036,27 @@ For full threat model, cryptographic audit, and security architecture, see:
 
 ## How To Break This OS (A Hacker's Guide To Our Pain)
 
-We believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for us.
+I believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for me.
 
 ### 🔴 Critical (Please Don't)
 
-1. **COW Fork Double-Free:** Under memory pressure, the copy-on-write fork path can double-free a page frame. This is a known bug tracked in our security audit. The fix requires rewriting the COW page table cloning logic.
-2. **KPTI Not Fully Wired:** The CR3 swap code exists but the syscall entry/exit paths don't fully use it yet. A clever userspace program might be able to read kernel memory via cache timing.
-3. **Weak Password Hashing:** `/etc/shadow` uses single-iteration SHA-256. This is documented as weak. A GPU could crack it in seconds.
+1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
+2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
+3. **Auth Proof Gap:** New/default `/etc/shadow` entries use `$topo$5000` topological hashes instead of single-round SHA-256. Legacy `$topo$legacy` migration remains supported for old images and must get a no-legacy boot proof.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
+5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
 7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. We fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
 
-### 🟢 Theoretical (We Think These Exist But Haven't Proven)
+### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
 10. **APIC Timer Race:** There might be a race between the scheduler lock release and context switch. We haven't observed it in practice, but the window exists.
 11. **Voronoi Index Overflow:** If you create more than 2^32 files, the inode generation counter wraps. This is theoretical because we haven't tested with 4 billion files.

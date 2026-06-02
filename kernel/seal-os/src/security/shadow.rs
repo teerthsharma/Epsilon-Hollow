@@ -114,6 +114,7 @@ pub struct ShadowEntry {
     pub username: String,
     pub salt: [u8; 8],
     pub hash: [u8; 32],
+    pub rounds: u32,
     pub legacy: bool,
 }
 
@@ -150,16 +151,25 @@ fn parse_shadow(data: &[u8]) -> Vec<ShadowEntry> {
         if hash_parts.len() < 5 {
             continue;
         }
-        let rounds = hash_parts.get(2).copied().unwrap_or("");
+        let rounds_field = hash_parts.get(2).copied().unwrap_or("");
         let salt_hex = hash_parts.get(3).copied().unwrap_or("");
         let hash_hex = hash_parts.get(4).copied().unwrap_or("");
         let salt = hex_decode_salt(salt_hex);
         let hash = hex_decode(hash_hex).unwrap_or([0u8; 32]);
-        let legacy = rounds == "legacy";
+        let legacy = rounds_field == "legacy";
+        let rounds = if legacy {
+            1
+        } else {
+            rounds_field.parse::<u32>().unwrap_or(0)
+        };
+        if !legacy && rounds == 0 {
+            continue;
+        }
         entries.push(ShadowEntry {
             username,
             salt,
             hash,
+            rounds,
             legacy,
         });
     }

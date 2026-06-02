@@ -1004,6 +1004,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
+        "[SECURITY] hardening proof",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
         "[GFX] desktop-live-proof",
@@ -1051,6 +1052,50 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_benchmark_text(&text)?;
     check_aether_runtime_text(&text)?;
     check_laamba_app_proof_text(&text)?;
+    check_security_hardening_text(&text)?;
+    Ok(())
+}
+
+fn check_security_hardening_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] hardening proof")?;
+    require_field_eq(line, "version=", "1", "security hardening proof")?;
+    require_field_eq(line, "kpti=", "1", "security hardening proof")?;
+    require_field_eq(line, "kpti_distinct=", "1", "security hardening proof")?;
+    require_field_eq(line, "user_lower_zero=", "1", "security hardening proof")?;
+    require_field_eq(
+        line,
+        "kernel_upper_mirrored=",
+        "1",
+        "security hardening proof",
+    )?;
+    require_field_eq(line, "result=", "pass", "security hardening proof")?;
+
+    let kernel_cr3 = parse_hex_metric(line, "kernel_cr3=")?;
+    let user_cr3 = parse_hex_metric(line, "user_cr3=")?;
+    if kernel_cr3 == 0 || user_cr3 == 0 {
+        return Err(String::from(
+            "security hardening proof CR3 roots must be nonzero",
+        ));
+    }
+    if kernel_cr3 == user_cr3 {
+        return Err(String::from(
+            "security hardening proof kernel/user CR3 roots must differ",
+        ));
+    }
+
+    let smap_supported = parse_metric(line, "smap_smep_supported=")?;
+    let smap_enabled = parse_metric(line, "smap_smep_enabled=")?;
+    if smap_supported > 1 || smap_enabled > 1 {
+        return Err(String::from(
+            "security hardening proof SMAP/SMEP fields must be booleans",
+        ));
+    }
+    if smap_supported == 1 && smap_enabled != 1 {
+        return Err(String::from(
+            "security hardening proof reports SMAP/SMEP support without enablement",
+        ));
+    }
+    parse_metric(line, "user_access_faults=")?;
     Ok(())
 }
 
@@ -2462,6 +2507,14 @@ fn parse_metric(line: &str, key: &str) -> Result<u64, String> {
         .map_err(|e| format!("invalid metric `{key}{value}`: {e}"))
 }
 
+fn parse_hex_metric(line: &str, key: &str) -> Result<u64, String> {
+    let value = parse_field(line, key)?;
+    let hex = value
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("invalid hex metric `{key}{value}`: missing 0x prefix"))?;
+    u64::from_str_radix(hex, 16).map_err(|e| format!("invalid hex metric `{key}{value}`: {e}"))
+}
+
 fn parse_field<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
     let value = line
         .split_whitespace()
@@ -2766,6 +2819,7 @@ mod tests {
     const GFX_DESKTOP_SOAK_LOG: &str = "[GFX] desktop-soak frames=24 p50_cycles=100 p95_cycles=160 max_cycles=220 missed_16ms=unscaled input_events=0 dirty_px_max=786432\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
+    const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -4036,6 +4090,25 @@ with:
 
         let used_exact_scan = TCP_PACKET_DEMUX_LOG.replace("exact_scan=0", "exact_scan=1");
         assert!(parse_tcp_packet_demux_benchmark(&used_exact_scan).is_err());
+    }
+
+    #[test]
+    fn security_hardening_proof_requires_real_kpti_invariants() {
+        assert!(check_security_hardening_text(SECURITY_HARDENING_LOG).is_ok());
+
+        let no_kpti = SECURITY_HARDENING_LOG.replace("kpti=1", "kpti=0");
+        assert!(check_security_hardening_text(&no_kpti).is_err());
+
+        let same_cr3 = SECURITY_HARDENING_LOG.replace("user_cr3=0x2000", "user_cr3=0x1000");
+        assert!(check_security_hardening_text(&same_cr3).is_err());
+
+        let mapped_lower =
+            SECURITY_HARDENING_LOG.replace("user_lower_zero=1", "user_lower_zero=0");
+        assert!(check_security_hardening_text(&mapped_lower).is_err());
+
+        let smap_claim =
+            SECURITY_HARDENING_LOG.replace("smap_smep_enabled=1", "smap_smep_enabled=0");
+        assert!(check_security_hardening_text(&smap_claim).is_err());
     }
 
     #[test]
