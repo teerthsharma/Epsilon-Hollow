@@ -308,7 +308,7 @@ jobs:
       - name: Install QEMU and OVMF
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf socat
       - name: Extract expected Seal OS version
         id: version
         run: |
@@ -404,6 +404,18 @@ jobs:
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof /tmp/seal-os.log
       - name: Verify desktop compositor soak marker
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os.log
+      - name: Capture QEMU proof screen
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG_PATH="kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img"
+          if [ ! -f "$IMG_PATH" ]; then
+            IMG_PATH=$(find . -name "seal-os.img" -type f | head -n1)
+          fi
+          chmod +x scripts/capture_qemu_proof_screen.sh
+          scripts/capture_qemu_proof_screen.sh "$IMG_PATH" /tmp/seal-os-screen.log /tmp/seal-os-screen.ppm
+      - name: Verify captured proof screen
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen /tmp/seal-os-screen.ppm
       - name: Verify benchmark proof markers
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os.log
       - name: Verify T1-T5 runtime theorem coverage
@@ -456,7 +468,10 @@ jobs:
         if: always()
         with:
           name: seal-os-boot-log
-          path: /tmp/seal-os.log
+          path: |
+            /tmp/seal-os.log
+            /tmp/seal-os-screen.log
+            /tmp/seal-os-screen.ppm
 
   ubuntu-alloc-baseline:
     name: Native Ubuntu 26.04 allocator comparison

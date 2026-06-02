@@ -82,10 +82,12 @@ persistent ManifoldFS root, TopoRAM allocation benchmark marker, physical
 allocator benchmark marker, ManifoldFS teleport benchmark marker, scheduler
 select benchmark marker, Aether runtime proof marker, desktop proof frame,
 desktop live input marker, desktop soak marker, desktop readiness, and event
-loop entry. The GUI pixel proof is manual/local because it needs a captured
-`kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm` from
-`run-qemu.ps1 -HeadlessProof`. After that capture, run
-`cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm`.
+loop entry. CI and release also capture `/tmp/seal-os-screen.ppm` with
+`scripts/capture_qemu_proof_screen.sh` and run `seal-mkimage
+--check-proof-screen /tmp/seal-os-screen.ppm`. For the local canonical proof
+bundle, `run-qemu.ps1 -HeadlessProof` writes
+`kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm`; after
+that capture, run `cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen kernel/seal-os/target/x86_64-unknown-uefi/release/qemu-proof/screen.ppm`.
 
 The Ubuntu allocator audit is intentionally optional locally. It becomes a real
 comparison only when `tools/ubuntu-alloc-bench/ubuntu-alloc.log` was captured on

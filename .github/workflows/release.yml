@@ -71,7 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install QEMU and OVMF
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xorriso qemu-system-x86 ovmf
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xorriso qemu-system-x86 ovmf socat
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -141,6 +141,19 @@ jobs:
       - name: Verify release desktop soak
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os-release.log
 
+      - name: Capture release proof screen in QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/capture_qemu_proof_screen.sh
+          scripts/capture_qemu_proof_screen.sh \
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img \
+            /tmp/seal-os-screen.log \
+            /tmp/seal-os-screen.ppm
+
+      - name: Verify release proof screen
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen /tmp/seal-os-screen.ppm
+
       - name: Verify release benchmark proof
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os-release.log
 
@@ -158,10 +171,15 @@ jobs:
         run: |
           mkdir -p release-proof
           cp /tmp/seal-os-release.log release-proof/serial.log
+          cp /tmp/seal-os-screen.log release-proof/screen-serial.log
+          cp /tmp/seal-os-screen.ppm release-proof/screen.ppm
+          cp kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi release-proof/seal-os.efi
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --write-qemu-proof-manifest release-proof kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img ci 240 .
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-current-proof-manifest release-proof/proof-manifest.txt .
           {
-            echo "QEMU serial proof passed for this release image."
-            echo "Not an any-VM, GPU, or Ubuntu-superiority proof."
-            echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, O(1) allocator, and O(1) TCP demux indexes."
+            echo "QEMU serial and captured desktop pixel proof passed for this release image."
+            echo "Not an any-VM, hardware-GPU, or Ubuntu-superiority proof."
+            echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, captured proof-screen pixels, proof manifest provenance, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, O(1) allocator, and O(1) TCP demux indexes."
           } > release-proof/proof-summary.txt
 
       - name: Upload release proof artifacts
@@ -184,6 +202,9 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/screen-serial.log
+            release-proof/screen.ppm
+            release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
 
       - name: Create GitHub Release
@@ -194,15 +215,20 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/screen-serial.log
+            release-proof/screen.ppm
+            release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
           body: |
             ## Seal OS ${{ github.ref_name }}
 
-            QEMU serial proof passed for this release image.
-            Not an any-VM, GPU, or Ubuntu-superiority proof.
+            QEMU serial and captured desktop pixel proof passed for this release image.
+            Not an any-VM, hardware-GPU, or Ubuntu-superiority proof.
 
             ### Release proof
             - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop live input proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
+            - Captured QEMU framebuffer pixels in `release-proof/screen.ppm` passed `seal-mkimage --check-proof-screen`.
+            - `release-proof/proof-manifest.txt` passed `seal-mkimage --check-current-proof-manifest`, binding image, EFI, serial log, screen PPM, commit, and clean/dirty state.
             - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, O(1) allocator hot path, and O(1) TCP demux indexes.
 
             ### What is in the image
@@ -214,7 +240,7 @@ jobs:
             - Software-rendered desktop with live icon-click/focus proof and compositor soak proof markers.
 
             ### Honest limits
-            - VirtualBox, real hardware, GPU/VRAM, and Ubuntu-superiority claims need their own proof artifacts.
+            - VirtualBox, real hardware, hardware GPU/VRAM, and Ubuntu-superiority claims need their own proof artifacts.
             - WiFi and Bluetooth paths remain simulated unless hardware firmware support lands.
             - Filesystem parity, production TLS, and long-haul reliability remain gated work.
 
@@ -234,21 +260,30 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/screen-serial.log
+            release-proof/screen.ppm
+            release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
           body: |
             ## Seal OS ${{ github.event.inputs.tag }}
 
-            QEMU serial proof passed for this release image.
-            Not an any-VM, GPU, or Ubuntu-superiority proof.
+            QEMU serial and captured desktop pixel proof passed for this release image.
+            Not an any-VM, hardware-GPU, or Ubuntu-superiority proof.
 
             Built from `${{ github.sha }}`.
 
             Attached proof artifacts:
             - `serial.log`
+            - `screen-serial.log`
+            - `screen.ppm`
+            - `proof-manifest.txt`
             - `proof-summary.txt`
 
             The serial proof includes theorem, Aether runtime, LAAMBA app,
-            desktop live input, desktop soak, and benchmark gates.
+            desktop live input, desktop soak, and benchmark gates. The captured
+            QEMU framebuffer pixels in `screen.ppm` passed `seal-mkimage
+            --check-proof-screen`. The proof manifest passed `seal-mkimage
+            --check-current-proof-manifest`.
 
             ### Run it
             ```bash
