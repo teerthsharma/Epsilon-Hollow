@@ -141,7 +141,61 @@ codegen-units = 1
 
 Seal OS sets `panic = "abort"` in **both** `dev` and `release` because unwinding is not supported in bare-metal environments without an unwinder.
 
+## Aether Self-Hosting Roadmap
+
+Seal OS is moving toward a build system where the Aether language drives its own compilation, reducing reliance on host Cargo/Rust toolchains. This is staged in three phases.
+
+### Phase 0 — Rust Driver + Bootstrap Compiler *(Current)*
+
+A Rust module (`kernel/seal-mkimage/src/aether_build.rs`) and a shell script (`scripts/build_aether.sh`) discover Aether sources (`.ae` / `.aether`), invoke the bootstrap `aether-cli` compiler for syntax verification, and emit placeholder **Aether Object Images** (`.aeo`) into `target/aether-build/`.
+
+Rust remains responsible for:
+- Directory traversal and build orchestration
+- Bare-metal image linking (`seal-mkimage`)
+- Host-side build utilities
+
+**Key files:**
+- `kernel/seal-mkimage/src/aether_build.rs` — Rust build driver
+- `scripts/build_aether.sh` — Shell orchestrator
+- `target/aether-build/aether-build-manifest.json` — Incremental-build manifest
+
+### Phase 1 — Aether Builds Aether
+
+The Aether bootstrap compiler gains a `compile` subcommand that emits serialized TitanVM bytecode directly to `.aeo` files. The Rust driver shrinks to a thin linker wrapper:
+
+1. `aether-cli compile kernel/aether/*.ae -o target/aether-build/`
+2. Rust driver reads `.aeo` blobs and embeds them into the OS disk image.
+
+**Blockers to resolve:**
+- Bytecode serialization format for `OpCode` vectors
+- Bare-metal TitanVM loader in `kernel/seal-os`
+- Incremental rebuild tracking inside Aether itself
+
+### Phase 2 — Aether Builds Rust Subset
+
+Aether compiler front-end learns enough of the Rust type system to translate a **restricted subset** of Rust (no `std`, no proc macros, no async) into Aether IR, then into the same bytecode/object pipeline.
+
+This allows core kernel shims (allocators, serial drivers, GDT/IDT setup) to be expressed in Rust syntax but compiled by the Aether toolchain, proving the compiler can handle systems-level code.
+
+**Scope of Rust subset:**
+- `no_std` + `no_alloc` safe code
+- Raw pointers and `unsafe` blocks (with Aether safety annotations)
+- Inline assembly (passthrough to LLVM backend)
+- Zero-cost abstractions (enums, structs, generics without trait objects)
+
+### Phase 3 — Full Self-Host
+
+The Aether compiler is rewritten in Aether and compiles itself. At this point:
+
+- `cargo` is no longer required on the host.
+- The only host dependency is a C compiler or assembler for the final linker step (or an Aether-native linker).
+- Seal OS can rebuild itself from source inside a running Seal OS instance.
+
+**Verification target:**
+> Boot a Seal OS VM, mount the source partition, run `aether build --self-host`, and produce a byte-identical OS image.
+
 ## Notes
 
 - Do **not** modify `kernel/seal-os/Cargo.toml` workspace membership. It is intentionally excluded and carries its own `[workspace]` header to remain a standalone bare-metal crate.
 - Feature flags in `kernel/seal-os` are minimal (`default = []`, `test-mode = []`) to keep the kernel image small.
+- The `scripts/build_aether.sh` script is additive: it does not replace `cargo build` or `scripts/build_iso.sh`. Run it independently when working on Aether kernel modules.
