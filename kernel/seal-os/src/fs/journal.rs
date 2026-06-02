@@ -56,8 +56,11 @@ struct JournalEntryHeader {
     before_len: u32,
     after_len: u32,
     embedding: [u16; 32],
-    _pad: [u8; 440],
+    _pad: [u8; 436],
 }
+
+const _: [(); 512] = [(); core::mem::size_of::<JournalHeader>()];
+const _: [(); 512] = [(); core::mem::size_of::<JournalEntryHeader>()];
 
 impl JournalHeader {
     fn as_bytes(&self) -> &[u8] {
@@ -229,7 +232,7 @@ impl TopologicalJournal {
                 before_len: entry.before_image.len() as u32,
                 after_len: entry.after_image.len() as u32,
                 embedding: entry.manifold_embedding,
-                _pad: [0; 440],
+                _pad: [0; 436],
             };
             backend.write_sector(lba, eh.as_bytes())?;
             lba += 1;
