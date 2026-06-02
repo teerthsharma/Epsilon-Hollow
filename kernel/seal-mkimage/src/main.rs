@@ -992,6 +992,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[LAAMBA] app proof:",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
+        "[GFX] desktop-live-proof",
         "[GFX] desktop-soak",
         "[BOOT] Seal OS desktop ready.",
         "[EVENT] Entering real event loop",
@@ -1764,6 +1765,24 @@ fn find_marker_line<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> 
         .ok_or_else(|| format!("missing {marker} marker"))
 }
 
+fn find_unique_marker_line<'a>(text: &'a str, marker: &str) -> Result<&'a str, String> {
+    let mut found = None;
+    let mut count = 0u64;
+    for line in text.lines().filter(|line| line.starts_with(marker)) {
+        count += 1;
+        if found.is_none() {
+            found = Some(line);
+        }
+    }
+    match (found, count) {
+        (Some(line), 1) => Ok(line),
+        (Some(_), _) => Err(format!(
+            "{marker} marker must appear exactly once, found {count}"
+        )),
+        (None, _) => Err(format!("missing {marker} marker")),
+    }
+}
+
 fn find_line_matching<'a>(text: &'a str, marker: &str, needle: &str) -> Result<&'a str, String> {
     text.lines()
         .find(|line| line.starts_with(marker) && line.contains(needle))
@@ -1802,6 +1821,7 @@ fn check_desktop_soak(log_path: &Path) -> Result<(), String> {
 
 fn check_desktop_soak_text(text: &str) -> Result<(), String> {
     parse_graphics_desktop_proof(text)?;
+    parse_graphics_desktop_live_proof(text)?;
 
     let line = text
         .lines()
@@ -1831,6 +1851,58 @@ fn check_desktop_soak_text(text: &str) -> Result<(), String> {
     if !line.contains("input_events=") {
         return Err(String::from("desktop soak missing input_events field"));
     }
+    Ok(())
+}
+
+fn parse_graphics_desktop_live_proof(text: &str) -> Result<(), String> {
+    let line = find_unique_marker_line(text, "[GFX] desktop-live-proof")?;
+    let label = "graphics desktop live proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "route=", "desktop_handle_input", label)?;
+    require_field_eq(line, "action=", "desktop_icon_launch", label)?;
+    require_field_eq(line, "app=", "Files", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    require_metric_eq(line, "app_id=", 3, label)?;
+    require_metric_eq(line, "blit=", 1, label)?;
+    require_metric_eq(line, "handled=", 1, label)?;
+    require_metric_eq(line, "icon_hit=", 1, label)?;
+    require_metric_eq(line, "launched_app_id=", 3, label)?;
+    require_metric_min(line, "events=", 2, label)?;
+    require_metric_min(line, "window_count=", 12, label)?;
+    require_metric_min(line, "changed_samples=", 32, label)?;
+
+    let pre_focused = parse_metric(line, "pre_focused=")?;
+    let post_focused = parse_metric(line, "post_focused=")?;
+    let post_window_id = parse_metric(line, "post_window_id=")?;
+    let pre_hash = parse_metric(line, "pre_hash=")?;
+    let post_hash = parse_metric(line, "post_hash=")?;
+
+    if pre_focused == 0 || post_focused == 0 || post_window_id == 0 {
+        return Err(format!(
+            "{label} focus ids must be nonzero: pre={pre_focused}, post={post_focused}, post_window_id={post_window_id}"
+        ));
+    }
+    if post_focused != post_window_id {
+        return Err(format!(
+            "{label} post focus must match launched window: post_focused={post_focused}, post_window_id={post_window_id}"
+        ));
+    }
+    if pre_focused == post_focused {
+        return Err(format!(
+            "{label} did not change focus: pre_focused={pre_focused}, post_focused={post_focused}"
+        ));
+    }
+    if pre_hash == 0 || post_hash == 0 {
+        return Err(format!(
+            "{label} hashes must be nonzero: pre_hash={pre_hash}, post_hash={post_hash}"
+        ));
+    }
+    if pre_hash == post_hash {
+        return Err(format!(
+            "{label} visible samples did not change: hash={pre_hash}"
+        ));
+    }
+
     Ok(())
 }
 
@@ -2626,6 +2698,7 @@ mod tests {
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software hardware_dispatch=0 shader_used=0 kernels=3 passed=3 failed=0 result=pass claim=cpu_fallback_correctness_only
 ";
     const GFX_DESKTOP_PROOF_LOG: &str = "[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=4096 back_buffer=1 window_count=12 focused_window_id=1 scanned_pixels=786432 nonblack_px=300000 visible_icons=10 icon_region_signal=23040 icon_color_buckets=10 control_region_signal=282000 primary_titlebar_signal=15912 start_button_signal=1440 theorem_indicator_signal=1000 minimized_app_lane_signal=1320 power_button_signal=384 sampled_pixels=3072 nonblack_samples=2048 sample_hash=123456789 result=pass\n";
+    const GFX_DESKTOP_LIVE_PROOF_LOG: &str = "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=1 post_focused=9 post_window_id=9 window_count=12 pre_hash=111 post_hash=222 changed_samples=96 blit=1 result=pass\n";
     const GFX_DESKTOP_SOAK_LOG: &str = "[GFX] desktop-soak frames=24 p50_cycles=100 p95_cycles=160 max_cycles=220 missed_16ms=unscaled input_events=0 dirty_px_max=786432\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
@@ -3382,6 +3455,7 @@ gate_proof_screen=ok\n",
             r"\[Aether-Lang\] runtime proof:",
             r"\[LAAMBA\] app proof:",
             r"\[GFX\] desktop-proof",
+            r"\[GFX\] desktop-live-proof",
             r"\[GFX\] desktop-soak",
         ] {
             assert!(
@@ -3437,6 +3511,7 @@ workflow_dispatch:
 uses: softprops/action-gh-release@v2
 with:
   tag_name: ${{ github.event.inputs.tag }}
+  make_latest: true
   files: |
     kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
     seal-os.iso
@@ -3525,7 +3600,11 @@ with:
     fn desktop_soak_requires_serial_graphics_desktop_proof() {
         assert!(check_desktop_soak_text(GFX_DESKTOP_SOAK_LOG).is_err());
 
-        let log = format!("{GFX_DESKTOP_PROOF_LOG}{GFX_DESKTOP_SOAK_LOG}");
+        let no_live = format!("{GFX_DESKTOP_PROOF_LOG}{GFX_DESKTOP_SOAK_LOG}");
+        assert!(check_desktop_soak_text(&no_live).is_err());
+
+        let log =
+            format!("{GFX_DESKTOP_PROOF_LOG}{GFX_DESKTOP_LIVE_PROOF_LOG}{GFX_DESKTOP_SOAK_LOG}");
         assert!(check_desktop_soak_text(&log).is_ok());
     }
 
@@ -3537,6 +3616,38 @@ with:
 
         assert!(parse_graphics_desktop_proof(&zero_hash).is_err());
         assert!(parse_graphics_desktop_proof(&weak_terminal).is_err());
+    }
+
+    #[test]
+    fn desktop_live_proof_rejects_noninteractive_or_unchanged_claims() {
+        assert!(parse_graphics_desktop_live_proof(GFX_DESKTOP_LIVE_PROOF_LOG).is_ok());
+
+        let no_route =
+            GFX_DESKTOP_LIVE_PROOF_LOG.replace("route=desktop_handle_input", "route=direct_focus");
+        let unchanged = GFX_DESKTOP_LIVE_PROOF_LOG.replace("post_hash=222", "post_hash=111");
+        let wrong_focus = GFX_DESKTOP_LIVE_PROOF_LOG.replace("post_focused=9", "post_focused=1");
+        let no_changes =
+            GFX_DESKTOP_LIVE_PROOF_LOG.replace("changed_samples=96", "changed_samples=0");
+        let no_blit = GFX_DESKTOP_LIVE_PROOF_LOG.replace("blit=1", "blit=0");
+        let no_icon_hit = GFX_DESKTOP_LIVE_PROOF_LOG.replace("icon_hit=1", "icon_hit=0");
+        let wrong_launch =
+            GFX_DESKTOP_LIVE_PROOF_LOG.replace("launched_app_id=3", "launched_app_id=4");
+        let duplicate = format!("{GFX_DESKTOP_LIVE_PROOF_LOG}{GFX_DESKTOP_LIVE_PROOF_LOG}");
+        let pass_then_fail = format!(
+            "{}{}",
+            GFX_DESKTOP_LIVE_PROOF_LOG,
+            GFX_DESKTOP_LIVE_PROOF_LOG.replace("result=pass", "result=fail")
+        );
+
+        assert!(parse_graphics_desktop_live_proof(&no_route).is_err());
+        assert!(parse_graphics_desktop_live_proof(&unchanged).is_err());
+        assert!(parse_graphics_desktop_live_proof(&wrong_focus).is_err());
+        assert!(parse_graphics_desktop_live_proof(&no_changes).is_err());
+        assert!(parse_graphics_desktop_live_proof(&no_blit).is_err());
+        assert!(parse_graphics_desktop_live_proof(&no_icon_hit).is_err());
+        assert!(parse_graphics_desktop_live_proof(&wrong_launch).is_err());
+        assert!(parse_graphics_desktop_live_proof(&duplicate).is_err());
+        assert!(parse_graphics_desktop_live_proof(&pass_then_fail).is_err());
     }
 
     #[test]
@@ -4396,6 +4507,10 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
         (
             "tag_name: ${{ github.event.inputs.tag }}",
             "manual release must publish exactly the explicit tag input",
+        ),
+        (
+            "make_latest: true",
+            "release workflow must make the explicit release the GitHub latest release",
         ),
         (
             "QEMU serial proof passed",

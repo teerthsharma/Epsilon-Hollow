@@ -26,6 +26,7 @@ param(
         '\[disk::ahci\] First disk readable \(sector 0 OK\)',
         '\[VFS\] ManifoldFS mounted from disk',
         '\[GFX\] desktop-proof',
+        '\[GFX\] desktop-live-proof',
         '\[BOOT\] Desktop proof frame blit done',
         '\[GFX\] desktop-soak',
         '\[BOOT\] Seal OS desktop ready\.',

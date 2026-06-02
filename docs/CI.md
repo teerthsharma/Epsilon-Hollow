@@ -19,7 +19,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 
 ---
 
-## Job 1: `fmt`
+## Job: `fmt`
 
 | Field | Value |
 |-------|-------|
@@ -30,7 +30,19 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | All Rust source files are formatted per `rustfmt` defaults |
 | Failure Means | Unformatted code exists; run `cargo fmt` locally |
 
-## Job 2: `clippy`
+## Job: `build`
+
+| Field | Value |
+|-------|-------|
+| Display Name | `cargo build --workspace` |
+| Runner | `ubuntu-latest` |
+| Toolchain | `dtolnay/rust-toolchain@stable` |
+| Cache | `Swatinem/rust-cache@v2` |
+| Command | `cargo build --workspace` |
+| What It Checks | The full Rust workspace compiles on stable |
+| Failure Means | A workspace crate no longer builds |
+
+## Job: `clippy`
 
 | Field | Value |
 |-------|-------|
@@ -42,7 +54,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | Lint-free workspace (all warnings are errors) |
 | Failure Means | Clippy lint violations |
 
-## Job 3: `test`
+## Job: `test`
 
 | Field | Value |
 |-------|-------|
@@ -55,7 +67,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | All unit and integration tests pass, Aether core still compiles in the bare-metal no_std feature path, deleted legacy theorem modules have Rust public API coverage, README/docs claims keep Ubuntu/O(1)/ManifoldFS assertions tied to proof gates, and release publishing cannot skip explicit tags or QEMU serial proof |
 | Failure Means | Test failure in any workspace crate |
 
-## Job 4: `bench-compile`
+## Job: `bench-compile`
 
 | Field | Value |
 |-------|-------|
@@ -67,7 +79,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | All benchmarks compile without errors |
 | Failure Means | Benchmark code has compilation errors |
 
-## Job 5: `miri`
+## Job: `miri`
 
 | Field | Value |
 |-------|-------|
@@ -80,7 +92,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | No undefined behavior in aether-core state and os modules |
 | Failure Means | Miri detected UB (uninitialized memory, data races, etc.) |
 
-## Job 6: `bench-regression`
+## Job: `bench-regression`
 
 | Field | Value |
 |-------|-------|
@@ -94,7 +106,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | AETHER-Link I/O cycle latency has not regressed beyond 120ns |
 | Failure Means | Performance regression in the I/O prediction kernel |
 
-## Job 7: `audit`
+## Job: `audit`
 
 | Field | Value |
 |-------|-------|
@@ -105,7 +117,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | No known security vulnerabilities in dependencies |
 | Failure Means | A dependency has a published CVE/advisory |
 
-## Job 8: `deny`
+## Job: `deny`
 
 | Field | Value |
 |-------|-------|
@@ -116,7 +128,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | License compliance, duplicate crates, banned crates |
 | Failure Means | License violation, banned dependency, or duplicate crate |
 
-## Job 9: `docs`
+## Job: `docs`
 
 | Field | Value |
 |-------|-------|
@@ -128,7 +140,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | What It Checks | All doc comments compile without warnings |
 | Failure Means | Broken doc links, missing docs on public items |
 
-## Job 10: `bom`
+## Job: `bom`
 
 | Field | Value |
 |-------|-------|
@@ -143,7 +155,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 Seal OS GitHub-facing gates are Rust, assembly, and Aether-Lang DSL. Host
 research-script compile/test jobs are removed from the OS CI path.
 
-## Job 12: `kernel-build`
+## Job: `kernel-build`
 
 | Field | Value |
 |-------|-------|
@@ -156,7 +168,7 @@ research-script compile/test jobs are removed from the OS CI path.
 | What It Checks | Kernel compiles for bare-metal x86_64 target, the in-kernel test-mode path compiles, and the release build emits a PE/COFF EFI binary |
 | Failure Means | Kernel build failure or missing/invalid EFI binary |
 
-## Job 13: `kernel-image`
+## Job: `kernel-image`
 
 | Field | Value |
 |-------|-------|
@@ -171,7 +183,7 @@ research-script compile/test jobs are removed from the OS CI path.
 | What It Checks | Bootable UEFI disk image can be created from the kernel binary |
 | Failure Means | `seal-mkimage` failed, missing PE/COFF header, or invalid GPT/ESP layout |
 
-## Job 14: `kernel-qemu-smoke`
+## Job: `kernel-qemu-smoke`
 
 | Field | Value |
 |-------|-------|
@@ -211,9 +223,10 @@ The smoke test must verify these serial output patterns:
 | 19 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
 | 20 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
 | 21 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 22 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 23 | `Seal OS desktop ready.` | Desktop reached |
-| 24 | `Entering real event loop` | Event loop active |
+| 22 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved visible samples changed |
+| 23 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 24 | `Seal OS desktop ready.` | Desktop reached |
+| 25 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -221,11 +234,11 @@ Additional Rust-native audit commands run against the same OS surface:
 
 | Command | Purpose |
 |---|---|
-| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, serial desktop pixel proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
-| `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
+| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
+| `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, live desktop input proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
-| `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses `[GFX] desktop-proof` and `[GFX] desktop-soak`; requires framebuffer dimensions, back-buffer presence, full-frame scan count, nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, nonzero sample hash, frame count, monotonic cycle percentiles, and input-events field |
+| `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak`; requires framebuffer dimensions, back-buffer presence, full-frame scan count, nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, nonzero sample hash, live desktop click/focus/blit evidence with changed samples, frame count, monotonic cycle percentiles, and input-events field |
 | `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and `[GPU-BENCH]`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries in `fs_mode=mock_block`, bounded metadata ops, `persistence_bytes_per_move=0`, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, exact-flow TCP demux payload delivery, same-port decoy non-delivery, listener fallback, and CPU-fallback topology accelerator correctness against CPU recomputation with no hardware dispatch claimed |
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
@@ -272,7 +285,7 @@ These are useful observations, but not hard proof unless CI explicitly requires 
 | `Shell` | Shell or desktop control surface loaded |
 | `Seal OS desktop ready` | GUI path reached ready sentinel |
 
-## Job 15: `kernel-clippy`
+## Job: `kernel-clippy`
 
 | Field | Value |
 |-------|-------|
@@ -284,7 +297,20 @@ These are useful observations, but not hard proof unless CI explicitly requires 
 | What It Checks | Kernel code passes clippy (with unused/dead_code/approx_constant allowed) |
 | Failure Means | Clippy lint violation in kernel code |
 
-## Job 16: `lean`
+## Job: `laamba-governor-check`
+
+| Field | Value |
+|-------|-------|
+| Display Name | `LAAMBA Governor check (Rust backend)` |
+| Runner | `ubuntu-latest` |
+| APT Packages | Tauri GTK/WebKit system dependencies |
+| Toolchain | `dtolnay/rust-toolchain@stable` |
+| Workspace | `apps/laamba-governor/src-tauri` |
+| Command | `cargo check` with `RUSTFLAGS=""` |
+| What It Checks | The LAAMBA Governor Rust/Tauri backend still compiles with a stub frontend dist |
+| Failure Means | LAAMBA app backend drifted away from the OS release contract |
+
+## Job: `lean`
 
 | Field | Value |
 |-------|-------|

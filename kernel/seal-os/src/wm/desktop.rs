@@ -213,6 +213,10 @@ pub fn handle_input(
     app_state: &mut AppState,
 ) -> bool {
     match event {
+        InputEvent::MouseMove { dx, dy } => {
+            app_state.handle_event(InputEvent::MouseMove { dx, dy }, compositor);
+            true
+        }
         InputEvent::MouseButton {
             button: 0,
             pressed: true,

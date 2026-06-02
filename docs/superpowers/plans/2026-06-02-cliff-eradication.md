@@ -23,7 +23,7 @@
 
 | Cliff | Current evidence | Missing proof | Exit gate that vanishes it |
 |---|---|---|---|
-| Weak desktop serial proof | `[GFX] desktop-soak` proves compose timing, and local PPM proof checks pixels | `-nographic` CI could pass a render path without proving desktop pixels | `seal-mkimage --check-desktop-soak serial.log` must require `[GFX] desktop-proof` framebuffer scan with icons, titlebar, taskbar signals, window count, and nonzero sample hash |
+| Weak desktop serial proof | `[GFX] desktop-proof` proves desktop pixels, `[GFX] desktop-live-proof` proves icon-click routing/focus/blit, `[GFX] desktop-soak` proves compose timing, and local PPM proof checks pixels | Calibrated frame pacing and broad input coverage still need future artifacts | `seal-mkimage --check-desktop-soak serial.log` must require `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak` together |
 | Oracle/VirtualBox parity | `smoke-vbox.ps1` captures serial/screenshot and current manifest proof passes | VirtualBox PNG is visual evidence, not QEMU PPM parity | `seal-mkimage --check-proof-manifest vbox-smoke/proof-manifest.txt` plus screenshot artifact and current dirty/commit provenance |
 | Ubuntu superiority | Seal allocator and TopoRAM markers exist | Same-machine Ubuntu 26.04 artifact missing for full HFT/ML matrix | `seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .` and future HFT/ML benchmark gates in `docs/BENCHMARK_PLAN.md` |
 | GPU-native topology | PM4/firmware scaffold and CPU fallback `[GPU-BENCH]` exist | `hardware_dispatch=1` proof missing; shader stubs do not compute topology | New hardware `[GPU-BENCH]` gate must prove dispatch, wait, upload, download, CPU recompute match, and real shader checksum |
@@ -66,12 +66,13 @@ Expected failure before implementation: `parse_graphics_desktop_proof` missing, 
 
 - [x] **Step 2: Add parser gate**
 
-`check_desktop_soak_text` must call `parse_graphics_desktop_proof(text)` before accepting `[GFX] desktop-soak`.
+`check_desktop_soak_text` must call `parse_graphics_desktop_proof(text)` and `parse_graphics_desktop_live_proof(text)` before accepting `[GFX] desktop-soak`.
 
 Required fields:
 
 ```text
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
 ```
 
 Minimums enforced by parser:
@@ -98,13 +99,34 @@ nonblack_samples >= 512
 sample_hash != 0
 ```
 
+Live input proof minimums enforced by parser:
+
+```text
+route = desktop_handle_input
+action = desktop_icon_launch
+app = Files
+app_id = 3
+events >= 2
+handled = 1
+icon_hit = 1
+launched_app_id = 3
+window_count >= 12
+changed_samples >= 32
+blit = 1
+pre_focused != post_focused
+post_focused = post_window_id
+pre_hash != 0
+post_hash != 0
+pre_hash != post_hash
+```
+
 - [x] **Step 3: Emit live kernel marker**
 
-`kernel/seal-os/src/lib.rs` must measure pixels from `Framebuffer::get_pixel` after desktop render and compositor compose, before `[BOOT] Desktop proof frame blit done`.
+`kernel/seal-os/src/lib.rs` must measure pixels from `Framebuffer::get_pixel` after desktop render and compositor compose, before `[BOOT] Desktop proof frame blit done`; then route a Files icon click through `wm::desktop::handle_input`, blit, and emit `[GFX] desktop-live-proof`.
 
 - [x] **Step 4: Update docs**
 
-Docs must show `[GFX] desktop-proof` in the boot proof path and explain that `[GFX] desktop-soak` now includes serial pixel proof.
+Docs must show `[GFX] desktop-proof` and `[GFX] desktop-live-proof` in the boot proof path and explain that `[GFX] desktop-soak` now includes serial pixel proof plus live input proof.
 
 Commands:
 
@@ -126,6 +148,7 @@ Pass condition:
 
 ```text
 qemu-proof\serial.log contains [GFX] desktop-proof ... result=pass
+qemu-proof\serial.log contains [GFX] desktop-live-proof ... result=pass
 qemu-proof\proof-manifest.txt has proof_verdict=PASS
 seal-mkimage --check-current-proof-manifest qemu-proof\proof-manifest.txt . passes
 ```
@@ -273,4 +296,4 @@ Pass condition: CPU fallback proof remains valid without claiming hardware GPU.
 
 - Spec coverage: every known cliff has a current marker, missing proof, and exit gate.
 - Placeholder scan: there are no "TBD" or "implement later" placeholders; pending work has concrete commands and pass conditions.
-- Type consistency: marker names match current `seal-mkimage` gates: `[LAAMBA] app proof:`, `[GFX] desktop-proof`, `[GFX] desktop-soak`, `[GPU-BENCH]`, `--check-current-benchmark-proof`, `--check-proof-manifest`, `--check-doc-claim-contract`.
+- Type consistency: marker names match current `seal-mkimage` gates: `[LAAMBA] app proof:`, `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, `[GFX] desktop-soak`, `[GPU-BENCH]`, `--check-current-benchmark-proof`, `--check-proof-manifest`, `--check-doc-claim-contract`.

@@ -60,6 +60,7 @@ run_step "seal-os image verify" cargo +stable run --manifest-path kernel/seal-mk
 run_step "seal abi audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-seal-abi .
 run_step "language hygiene audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-language-hygiene .
 run_step "doc claim contract audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-doc-claim-contract .
+run_step "release workflow contract audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
 run_step "aether migration audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-migration .
 run_step "o1 allocator audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-o1-allocator .
 run_step "runtime theorem coverage audit" cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .

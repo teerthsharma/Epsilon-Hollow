@@ -603,6 +603,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     }
     run_graphics_desktop_proof(fb, &compositor);
     serial_println!("[BOOT] Desktop proof frame blit done");
+    run_graphics_desktop_live_proof(fb, &mut compositor, &mut app_state);
     run_desktop_soak_probe(fb, &mut compositor);
 
     serial_println!(
@@ -793,6 +794,176 @@ fn run_graphics_desktop_proof(
         proof.sample_hash,
         result
     );
+}
+
+const DESKTOP_LIVE_SAMPLE_COUNT: usize = 128;
+
+fn run_graphics_desktop_live_proof(
+    fb: &graphics::framebuffer::Framebuffer,
+    compositor: &mut wm::compositor::Compositor,
+    app_state: &mut wm::app_state::AppState,
+) {
+    const FILES_ICON_CENTER_X: i32 = 344;
+    const FILES_ICON_CENTER_Y: i32 = 74;
+    const FILES_REGION_X: u32 = 160;
+    const FILES_REGION_Y: u32 = 120;
+    const FILES_REGION_W: u32 = 564;
+    const FILES_REGION_H: u32 = 72;
+
+    let pre_focused = compositor.focused_window_id();
+    let post_window_id = app_state.fm_id;
+    let mut pre_samples = [0u32; DESKTOP_LIVE_SAMPLE_COUNT];
+    let pre_hash = sample_desktop_live_region(
+        fb,
+        FILES_REGION_X,
+        FILES_REGION_Y,
+        FILES_REGION_W,
+        FILES_REGION_H,
+        &mut pre_samples,
+    );
+
+    while wm::app_launcher::poll_launch_queue().is_some() {}
+
+    let mouse = *compositor.mouse_state();
+    let move_handled = wm::desktop::handle_input(
+        wm::event::InputEvent::MouseMove {
+            dx: FILES_ICON_CENTER_X.saturating_sub(mouse.x),
+            dy: FILES_ICON_CENTER_Y.saturating_sub(mouse.y),
+        },
+        fb,
+        compositor,
+        app_state,
+    );
+    let click_handled = wm::desktop::handle_input(
+        wm::event::InputEvent::MouseButton {
+            button: 0,
+            pressed: true,
+        },
+        fb,
+        compositor,
+        app_state,
+    );
+
+    app_state.render_dirty(compositor);
+    wm::desktop::render_desktop(fb);
+    compositor.mark_dirty(0, 0, fb.width, fb.height);
+    compositor.compose_full(fb);
+    wm::desktop::render_overlays(fb);
+    wm::desktop::render_notifications(fb);
+    let blit = if fb.blit() { 1u64 } else { 0u64 };
+
+    let mut launched_app_id = 0u64;
+    while let Some(app_id) = wm::app_launcher::poll_launch_queue() {
+        launched_app_id = app_id as u64;
+    }
+
+    let (post_hash, changed_samples) = compare_desktop_live_region(
+        fb,
+        FILES_REGION_X,
+        FILES_REGION_Y,
+        FILES_REGION_W,
+        FILES_REGION_H,
+        &pre_samples,
+    );
+    let post_focused = compositor.focused_window_id();
+    let icon_hit = if click_handled && launched_app_id == 3 {
+        1u64
+    } else {
+        0u64
+    };
+    let handled = if move_handled && click_handled {
+        1u64
+    } else {
+        0u64
+    };
+    let result = if handled == 1
+        && icon_hit == 1
+        && launched_app_id == 3
+        && pre_focused != 0
+        && post_window_id != 0
+        && post_focused == post_window_id
+        && post_focused != pre_focused
+        && compositor.window_count() >= 12
+        && pre_hash != 0
+        && post_hash != 0
+        && pre_hash != post_hash
+        && changed_samples >= 32
+        && blit == 1
+    {
+        "pass"
+    } else {
+        "fail"
+    };
+
+    serial_println!(
+        "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled={} icon_hit={} launched_app_id={} pre_focused={} post_focused={} post_window_id={} window_count={} pre_hash={} post_hash={} changed_samples={} blit={} result={}",
+        handled,
+        icon_hit,
+        launched_app_id,
+        pre_focused,
+        post_focused,
+        post_window_id,
+        compositor.window_count(),
+        pre_hash,
+        post_hash,
+        changed_samples,
+        blit,
+        result
+    );
+}
+
+fn desktop_live_sample_point(x: u32, y: u32, w: u32, h: u32, idx: usize) -> (u32, u32) {
+    let sx = x + ((idx as u32).wrapping_mul(37) % w.max(1));
+    let sy = y + ((idx as u32).wrapping_mul(17) % h.max(1));
+    (sx, sy)
+}
+
+fn desktop_live_hash_push(hash: u64, color: u32, idx: usize) -> u64 {
+    hash.wrapping_mul(1_099_511_628_211)
+        .wrapping_add((color as u64) ^ ((idx as u64).wrapping_mul(0x9E37_79B9)))
+}
+
+fn sample_desktop_live_region(
+    fb: &graphics::framebuffer::Framebuffer,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    out: &mut [u32; DESKTOP_LIVE_SAMPLE_COUNT],
+) -> u64 {
+    let mut hash = 14_695_981_039_346_656_037u64;
+    let mut idx = 0usize;
+    while idx < DESKTOP_LIVE_SAMPLE_COUNT {
+        let (sx, sy) = desktop_live_sample_point(x, y, w, h, idx);
+        let color = fb.get_pixel(sx, sy);
+        out[idx] = color;
+        hash = desktop_live_hash_push(hash, color, idx);
+        idx += 1;
+    }
+    hash
+}
+
+fn compare_desktop_live_region(
+    fb: &graphics::framebuffer::Framebuffer,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    before: &[u32; DESKTOP_LIVE_SAMPLE_COUNT],
+) -> (u64, u64) {
+    let mut hash = 14_695_981_039_346_656_037u64;
+    let mut changed = 0u64;
+    let mut idx = 0usize;
+    while idx < DESKTOP_LIVE_SAMPLE_COUNT {
+        let (sx, sy) = desktop_live_sample_point(x, y, w, h, idx);
+        let color = fb.get_pixel(sx, sy);
+        if color != before[idx] {
+            changed += 1;
+        }
+        hash = desktop_live_hash_push(hash, color, idx);
+        idx += 1;
+    }
+    (hash, changed)
 }
 
 fn measure_graphics_desktop_proof(fb: &graphics::framebuffer::Framebuffer) -> GraphicsDesktopProof {
