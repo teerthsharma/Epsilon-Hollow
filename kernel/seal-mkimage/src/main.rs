@@ -3487,10 +3487,22 @@ gate_proof_screen=ok\n",
                 .join("smoke-vbox.ps1"),
         )
         .unwrap();
+        let capture_script = fs::read_to_string(
+            repo_root
+                .join("scripts")
+                .join("capture_qemu_proof_screen.sh"),
+        )
+        .unwrap();
 
         assert!(qemu_script.contains("--write-qemu-proof-manifest"));
         assert!(qemu_script.contains("--check-current-proof-manifest"));
         assert!(vbox_script.contains("--check-current-proof-manifest"));
+        assert!(capture_script.contains("OVMF_VARS_4M.fd"));
+        assert!(capture_script.contains("-drive if=pflash,format=raw,file=\"$OVMF_VARS_COPY\""));
+        assert!(capture_script.contains("-monitor unix:\"$MON\",server,nowait"));
+        assert!(capture_script.contains("-display none"));
+        assert!(capture_script.contains("-device VGA"));
+        assert!(capture_script.contains("screendump %s"));
     }
 
     #[test]
