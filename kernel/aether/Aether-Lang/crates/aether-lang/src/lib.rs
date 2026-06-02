@@ -41,6 +41,7 @@ extern crate alloc;
 
 pub mod ascii_render;
 pub mod ast;
+pub mod bytecode;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
