@@ -1,7 +1,7 @@
 # Seal OS Topological Contract
 
 Seal OS is a topological OS only when topology is a runtime invariant, not a theme.
-This document defines the minimum contract for version 0.4.5 and the later
+This document defines the minimum contract for version 0.4.6 and the later
 "perfect" target.
 
 ## Hard Rules
@@ -20,7 +20,7 @@ This document defines the minimum contract for version 0.4.5 and the later
 
 ## Theorem-To-Subsystem Matrix
 
-| Theorem | Required runtime ownership | Current 0.4.5 status |
+| Theorem | Required runtime ownership | Current 0.4.6 status |
 |---|---|---|
 | T1/TSS | Voronoi partitioning for frames, tasks, file/inode lookup, packets | Runtime active in TopoRAM, scheduler, ManifoldFS, topological networking |
 | T2/SCM | Spectral contraction for prefetch and next-runnable prediction | Runtime active in TopoRAM, scheduler, ManifoldFS |

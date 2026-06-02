@@ -22,7 +22,7 @@ Traditional OS kernels treat memory, files, and scheduling as separate 1D proble
 
 | Metric | Value |
 |--------|-------|
-| Version | 0.4.5 |
+| Version | 0.4.6 |
 | Language | Rust (~108k lines) |
 | Boot | UEFI native, no GRUB, no POSIX |
 | VMs | QEMU + Oracle VirtualBox verified |
