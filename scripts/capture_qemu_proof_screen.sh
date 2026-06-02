@@ -10,8 +10,10 @@ IMG_PATH="$1"
 LOG="$2"
 PPM="$3"
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+OVMF_VARS_TEMPLATE="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 SECONDS_LIMIT="${SEAL_QEMU_SCREEN_SECONDS:-240}"
 MON="${SEAL_QEMU_MONITOR:-/tmp/seal-qemu-monitor-$$.sock}"
+OVMF_VARS_COPY="/tmp/seal_OVMF_VARS_$$.fd"
 
 command -v qemu-system-x86_64 >/dev/null || {
   echo "FAIL: qemu-system-x86_64 not found" >&2
@@ -30,9 +32,14 @@ if [ ! -f "$OVMF_CODE" ]; then
   echo "FAIL: OVMF code file not found: $OVMF_CODE" >&2
   exit 1
 fi
+if [ ! -f "$OVMF_VARS_TEMPLATE" ]; then
+  echo "FAIL: OVMF vars template not found: $OVMF_VARS_TEMPLATE" >&2
+  exit 1
+fi
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$PPM")"
-rm -f "$MON" "$LOG" "$PPM"
+rm -f "$MON" "$LOG" "$PPM" "$OVMF_VARS_COPY"
+cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS_COPY"
 
 qemu-system-x86_64 \
   -machine q35 \
@@ -40,6 +47,7 @@ qemu-system-x86_64 \
   -cpu qemu64 \
   -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+  -drive if=pflash,format=raw,file="$OVMF_VARS_COPY" \
   -device ahci,id=seal_sata \
   -drive if=none,id=seal_disk,file="$IMG_PATH",format=raw,media=disk \
   -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
@@ -52,7 +60,7 @@ qemu-system-x86_64 \
 QEMU_PID=$!
 
 cleanup() {
-  rm -f "$MON"
+  rm -f "$MON" "$OVMF_VARS_COPY"
 }
 trap cleanup EXIT
 
