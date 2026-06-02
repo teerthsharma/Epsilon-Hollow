@@ -1,0 +1,13 @@
+[package]
+name = "browser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lib]
+name = "browser"
+path = "src/lib.rs"
