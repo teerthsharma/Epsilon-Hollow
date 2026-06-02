@@ -101,7 +101,7 @@ I am an independent researcher building this as a one-person war room: bare-meta
 **What this README promises:**
 - Technical honesty. I will tell you what breaks.
 - Sarcasm. I have spent too many nights debugging APIC timer interrupts to be polite.
-- Depth. Every claim traces to code. Every "O(1)" has a proof gate.
+- Depth. Every claim traces to code. Every "O(1)" is either tied to a proof gate or explicitly marked pending/scoped.
 - Occasional existential despair. You try writing a TLS stack in `#![no_std]` and stay chipper.
 
 **What this README does NOT promise:**
@@ -583,7 +583,7 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
-[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> vram_hash=<n> vram_changed_samples=<n> vram_matches_backbuffer=<n> blit=1 result=pass
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
@@ -1496,7 +1496,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | README/doc claim contract | ✓ | N/A | `seal-mkimage --check-doc-claim-contract .` enforces a limited allow/deny string contract for `README.md`, `docs/BENCHMARK_PLAN.md`, and `docs/CI.md` |
 | Additional VM proof targets | △ | ✓ | QEMU and Oracle VM VirtualBox now have separate current-manifest proof paths. VMware, Hyper-V, cloud hypervisors, and real hardware remain gated targets. Two VM wins are evidence for those two backends, not a universal "any VM, any firmware" claim. |
 | Serial desktop pixel proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` requires `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak`; this row covers the framebuffer/back-buffer scan for nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, window count, and nonzero sample hash |
-| Desktop live input proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` also requires `[GFX] desktop-live-proof`, which routes a mouse move + click through `wm::desktop::handle_input`, launches/focuses Files from the desktop icon, blits, and proves sampled pixels changed |
+| Desktop live input proof | ✓ | N/A | `seal-mkimage --check-desktop-soak ...\serial.log` also requires `[GFX] desktop-live-proof`, which routes a mouse move + click through `wm::desktop::handle_input`, launches/focuses Files from the desktop icon, blits, and proves both back-buffer samples and presented VRAM samples changed |
 | First captured desktop pixel proof | local/pre-release | N/A | `seal-mkimage --check-proof-screen ...\qemu-proof\screen.ppm` verifies nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, and taskbar start/power controls; GitHub CI uses `-nographic`, so this is not a CI framebuffer capture |
 | Desktop compositor soak marker | ✓ | △ | `seal-mkimage --check-desktop-soak ...\serial.log` requires the serial desktop pixel proof and live desktop input proof plus a deterministic 24-frame compose+blit exercise with monotonic cycle percentiles; calibrated 16.7 ms frame-pacing benchmark still pending |
 | Bare-metal allocator benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] alloc-frame` with 64 successful alloc/free iterations, topological fast-path hits, zero bounded misses, no contiguous-probe drift, and no frame leak |
@@ -1611,7 +1611,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **Context switch** | `switch_context()` | O(1) — FXSAVE/FXRSTOR + CR3 swap | benchmark pending |
 | **NVMe read** | `read_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
-| **TCP demux** | `handle_tcp_packet()` | O(1) exact flow match before listener fallback | `[BENCH] tcp-packet-demux` proves listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
+| **TCP demux** | `handle_tcp_packet()` | O(number of TCP sockets) current Vec scan; exact-flow correctness before listener fallback is gated; O(1) needs a bounded table/hash-index gate | `[BENCH] tcp-packet-demux` proves listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
 | **TCP round-trip** | localhost ping | O(1) stack traversal | benchmark pending |
 | **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |

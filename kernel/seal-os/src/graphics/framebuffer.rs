@@ -157,6 +157,17 @@ impl Framebuffer {
         }
     }
 
+    pub fn get_presented_pixel(&self, x: u32, y: u32) -> u32 {
+        if x >= self.width || y >= self.height || self.buffer.is_null() || self.bpp != 32 {
+            return 0;
+        }
+        let offset = (y * self.pitch + x * 4) as isize;
+        unsafe {
+            let pixel = self.buffer.offset(offset) as *mut u32;
+            ptr::read_volatile(pixel)
+        }
+    }
+
     /// Copy the back buffer to VRAM.
     /// Accounts for `pitch` vs `width * bpp/8`.
     pub fn blit(&self) -> bool {

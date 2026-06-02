@@ -16,7 +16,7 @@ A VM run passes only when the serial log reaches:
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
-[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> vram_hash=<n> vram_changed_samples=<n> vram_matches_backbuffer=<n> blit=1 result=pass
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
@@ -28,8 +28,9 @@ checker accepts that path when the sibling PPM proof capture is present.
 `seal-mkimage --check-laamba-app-proof` separately parses the LAAMBA line and
 rejects Python-backed or missing-window app proofs.
 The desktop soak gate now also parses `[GFX] desktop-live-proof`, which proves
-the real desktop input path launched and focused Files from an icon click before
-the proof bundle accepts the desktop as live.
+the real desktop input path launched and focused Files from an icon click, then
+proves the blitted presented VRAM samples changed before the proof bundle
+accepts the desktop as live.
 
 For QEMU provenance proof, `run-qemu.ps1 -HeadlessProof` writes a timestamped
 `qemu-proof-runs\<stamp>` staging directory, runs every hard gate, writes
@@ -97,7 +98,7 @@ Seal OS - UEFI boot complete, boot services exited
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=<n> back_buffer=1 window_count=12 focused_window_id=<n> scanned_pixels=786432 nonblack_px=<n> visible_icons=10 icon_region_signal=<n> icon_color_buckets=<n> control_region_signal=<n> primary_titlebar_signal=<n> start_button_signal=<n> theorem_indicator_signal=<n> minimized_app_lane_signal=<n> power_button_signal=<n> sampled_pixels=<n> nonblack_samples=<n> sample_hash=<n> result=pass
 [BOOT] Desktop proof frame blit done
-[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> blit=1 result=pass
+[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=<n> post_focused=<n> post_window_id=<n> window_count=12 pre_hash=<n> post_hash=<n> changed_samples=<n> vram_hash=<n> vram_changed_samples=<n> vram_matches_backbuffer=<n> blit=1 result=pass
 [GFX] desktop-soak frames=24 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> missed_16ms=unscaled input_events=0 dirty_px_max=786432
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
