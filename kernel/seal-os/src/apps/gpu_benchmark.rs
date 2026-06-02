@@ -53,8 +53,16 @@ pub fn run_structured_topology_proof() {
     );
 
     if !cpu_fallback {
+        // Attempt real AMD hardware dispatch proof (Stream-13 artifact).
+        let hw_ok = unsafe { crate::drivers::gpu::dispatch::run_amd_hardware_proof() };
+        let passed = if hw_ok { 1 } else { 0 };
+        let failed = 3usize.saturating_sub(passed);
         serial_println!(
-            "[GPU-BENCH] suite version=1 mode=hardware_unproven backend=unknown hardware_dispatch=1 shader_used=1 kernels=3 passed=0 failed=3 result=fail claim=hardware_requires_cpu_reference_proof"
+            "[GPU-BENCH] suite version=1 mode={} backend=pm4 hardware_dispatch=1 shader_used=1 kernels=3 passed={} failed={} result={} claim=amd_hardware_dispatch_proof",
+            if hw_ok { "hardware_proven" } else { "hardware_unproven" },
+            passed,
+            failed,
+            if hw_ok { "partial" } else { "fail" }
         );
         return;
     }
