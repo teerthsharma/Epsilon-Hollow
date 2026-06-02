@@ -64,7 +64,7 @@ Current workflow jobs: `fmt`, `build`, `clippy`, `test`, `bench-compile`,
 | Cache | `Swatinem/rust-cache@v2` |
 | Command | `cargo test --workspace` |
 | Extra Gates | `cargo +stable check --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --no-default-features --features no_std`; `cargo +stable test --manifest-path kernel/epsilon/epsilon/crates/aether-core/Cargo.toml --test legacy_migration_gate`; `seal-mkimage --check-doc-claim-contract .`; `seal-mkimage --check-release-workflow-contract .` |
-| What It Checks | All unit and integration tests pass, Aether core still compiles in the bare-metal no_std feature path, deleted legacy theorem modules have Rust public API coverage, README/docs claims keep Ubuntu/O(1)/ManifoldFS assertions tied to proof gates, and release publishing cannot skip explicit tags or QEMU serial proof |
+| What It Checks | All unit and integration tests pass, Aether core still compiles in the bare-metal no_std feature path, deleted legacy theorem modules have Rust public API coverage, README/docs claims keep Ubuntu/O(1)/ManifoldFS assertions tied to proof gates, and release publishing cannot skip explicit tags, QEMU serial proof, or captured proof-screen pixels |
 | Failure Means | Test failure in any workspace crate |
 
 ## Job: `bench-compile`
@@ -190,10 +190,10 @@ research-script compile/test jobs are removed from the OS CI path.
 | Display Name | `QEMU boot smoke test` |
 | Runner | `ubuntu-latest` |
 | Depends On | `kernel-image` |
-| APT Packages | `qemu-system-x86`, `ovmf` |
-| Command | `timeout 240 qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -device ahci,id=seal_sata -drive if=none,id=seal_disk,file=seal-os.img,format=raw,media=disk -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 -nographic -m 4G -no-reboot -no-shutdown` |
-| Artifact | `seal-os-boot-log` (/tmp/seal-os.log) |
-| What It Checks | Kernel boots successfully in QEMU and reaches hard boot gates; soft milestones are reported separately |
+| APT Packages | `qemu-system-x86`, `ovmf`, `socat` |
+| Command | Serial proof: `timeout 240 qemu-system-x86_64 -machine q35 -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -device ahci,id=seal_sata -drive if=none,id=seal_disk,file=seal-os.img,format=raw,media=disk -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 -nographic -m 4G -no-reboot -no-shutdown`; captured pixel proof: `scripts/capture_qemu_proof_screen.sh <seal-os.img> /tmp/seal-os-screen.log /tmp/seal-os-screen.ppm` |
+| Artifact | `seal-os-boot-log` (`/tmp/seal-os.log`, `/tmp/seal-os-screen.log`, `/tmp/seal-os-screen.ppm`) |
+| What It Checks | Kernel boots successfully in QEMU and reaches hard boot gates; a second hidden VGA run captures a framebuffer PPM and runs the proof-screen pixel gate; soft milestones are reported separately |
 | Failure Means | Kernel fails to boot, misses a hard gate, or reports a panic/fault/watchdog/theorem failure |
 
 ### QEMU Hard Gates
@@ -239,6 +239,7 @@ Additional Rust-native audit commands run against the same OS surface:
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
 | `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak`; requires framebuffer dimensions, back-buffer presence, full-frame scan count, nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, nonzero sample hash, live desktop click/focus/blit evidence with changed back-buffer samples, changed presented VRAM samples, VRAM/back-buffer sample agreement, frame count, monotonic cycle percentiles, and input-events field |
+| `seal-mkimage --check-proof-screen /tmp/seal-os-screen.ppm` | Parses the captured QEMU PPM and requires nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, theorem/taskbar/start/power signals, and color diversity |
 | `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`, `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and `[GPU-BENCH]`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, same-inode ManifoldFS metadata teleport across 8-256 entries in `fs_mode=mock_block`, bounded metadata ops, `persistence_bytes_per_move=0`, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, bounded-index exact-flow TCP demux payload delivery, same-port decoy non-delivery, zero exact-flow scan, bounded listener-index fallback, and CPU-fallback topology accelerator correctness against CPU recomputation with no hardware dispatch claimed |
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
@@ -266,13 +267,16 @@ and WSL kernels, boots the Seal image on that same runner, captures
 checkout, `--check-current-benchmark-proof`, then uploads the Seal log, Ubuntu
 log, and host manifest as `ubuntu-26-alloc-comparison`.
 
-The serial desktop proof now scans the framebuffer/back buffer in `-nographic`
-CI, but it is still a serial counter proof, not a captured image. The captured
-pixel and manifest gates, `seal-mkimage --check-proof-screen qemu-proof/screen.ppm`
-and `seal-mkimage --check-proof-manifest qemu-proof/proof-manifest.txt`, are
-local WSL2/QEMU proof gates because the CI smoke job does not capture a
-framebuffer dump. They must pass before claiming a screenshot-backed GUI
-desktop proof.
+The serial desktop proof scans the framebuffer/back buffer in `-nographic`
+CI, and the smoke job also runs a second hidden VGA QEMU boot that captures
+`/tmp/seal-os-screen.ppm` through the QEMU monitor. The captured pixel gate,
+`seal-mkimage --check-proof-screen /tmp/seal-os-screen.ppm`, is a CI/release
+gate before screenshot-backed GUI claims. The release workflow also writes
+`release-proof/proof-manifest.txt` and runs
+`seal-mkimage --check-current-proof-manifest release-proof/proof-manifest.txt .`;
+the same manifest gate remains available for local/pre-release proof bundles
+under `qemu-proof/proof-manifest.txt`. This is QEMU framebuffer evidence, not
+hardware-GPU/VRAM proof.
 
 ### QEMU Soft Milestones
 

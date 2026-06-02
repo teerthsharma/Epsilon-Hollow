@@ -3536,6 +3536,7 @@ workflow_dispatch:
 - name: Check release workflow contract
   run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
 - name: Install QEMU and OVMF
+  run: sudo apt-get install -y qemu-system-x86 ovmf socat
 - name: Boot release image in QEMU and capture serial output
   run: |
     qemu-system-x86_64 -nographic | tee /tmp/seal-os-release.log
@@ -3549,6 +3550,12 @@ workflow_dispatch:
   run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof /tmp/seal-os-release.log
 - name: Verify release desktop soak
   run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak /tmp/seal-os-release.log
+- name: Capture release proof screen in QEMU
+  run: |
+    qemu-system-x86_64 -serial file:/tmp/seal-os-screen.log -monitor unix:/tmp/seal-qemu-monitor.sock,server,nowait -display none -device VGA
+    printf 'screendump /tmp/seal-os-screen.ppm\nquit\n' | socat - UNIX-CONNECT:/tmp/seal-qemu-monitor.sock
+- name: Verify release proof screen
+  run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen /tmp/seal-os-screen.ppm
 - name: Verify release benchmark proof
   run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os-release.log
 - name: Verify release source proof gates
@@ -3564,7 +3571,10 @@ workflow_dispatch:
   run: |
     mkdir -p release-proof
     cp /tmp/seal-os-release.log release-proof/serial.log
-    printf 'QEMU serial proof only; not any-VM/GPU/Ubuntu proof\\n' > release-proof/proof-summary.txt
+    cp /tmp/seal-os-screen.ppm release-proof/screen.ppm
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --write-qemu-proof-manifest release-proof seal-os.img ci 240 .
+    cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-current-proof-manifest release-proof/proof-manifest.txt .
+    printf 'QEMU serial and captured desktop pixel proof passed; not any-VM/hardware-GPU/Ubuntu proof; proof manifest provenance passed\\n' > release-proof/proof-summary.txt
 - name: Upload release proof artifacts
   uses: actions/upload-artifact@v4
   with:
@@ -3578,10 +3588,12 @@ with:
     kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
     seal-os.iso
     release-proof/serial.log
+    release-proof/screen.ppm
+    release-proof/proof-manifest.txt
     release-proof/proof-summary.txt
   body: |
-    QEMU serial proof passed.
-    Not an any-VM, GPU, or Ubuntu-superiority proof.
+    QEMU serial and captured desktop pixel proof passed.
+    Not an any-VM, hardware-GPU, or Ubuntu-superiority proof.
 ";
 
         assert!(check_release_workflow_contract_text(good).is_ok());
@@ -3600,6 +3612,21 @@ with:
 
         let no_proof_asset = good.replace("release-proof/serial.log", "release-proof/missing.log");
         assert!(check_release_workflow_contract_text(&no_proof_asset).is_err());
+
+        let no_screen_gate = good.replace("--check-proof-screen /tmp/seal-os-screen.ppm", "echo screen");
+        assert!(check_release_workflow_contract_text(&no_screen_gate).is_err());
+
+        let no_screen_asset = good.replace("release-proof/screen.ppm", "release-proof/missing.ppm");
+        assert!(check_release_workflow_contract_text(&no_screen_asset).is_err());
+
+        let no_manifest_writer = good.replace("--write-qemu-proof-manifest", "--skip-manifest");
+        assert!(check_release_workflow_contract_text(&no_manifest_writer).is_err());
+
+        let no_manifest_asset = good.replace(
+            "release-proof/proof-manifest.txt",
+            "release-proof/missing-manifest.txt",
+        );
+        assert!(check_release_workflow_contract_text(&no_manifest_asset).is_err());
     }
 
     #[test]
@@ -4553,6 +4580,10 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
             "release workflow must install VM proof dependencies",
         ),
         (
+            "socat",
+            "release workflow must install a monitor transport for captured QEMU proof screens",
+        ),
+        (
             "Boot release image in QEMU and capture serial output",
             "release workflow must boot the release image before publishing",
         ),
@@ -4579,6 +4610,26 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
         (
             "--check-desktop-soak /tmp/seal-os-release.log",
             "release workflow must run desktop soak proof gate",
+        ),
+        (
+            "Capture release proof screen in QEMU",
+            "release workflow must capture a real QEMU framebuffer dump",
+        ),
+        (
+            "/tmp/seal-os-screen.ppm",
+            "release workflow must capture a release proof-screen PPM",
+        ),
+        (
+            "--check-proof-screen /tmp/seal-os-screen.ppm",
+            "release workflow must run the captured proof-screen pixel gate",
+        ),
+        (
+            "--write-qemu-proof-manifest",
+            "release workflow must write a QEMU proof manifest for public artifacts",
+        ),
+        (
+            "--check-current-proof-manifest release-proof/proof-manifest.txt .",
+            "release workflow must bind the proof manifest to the current checkout",
         ),
         (
             "--check-benchmark-log /tmp/seal-os-release.log",
@@ -4617,6 +4668,14 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
             "release workflow must stage serial proof as release artifact",
         ),
         (
+            "release-proof/screen.ppm",
+            "release workflow must stage captured proof-screen as release artifact",
+        ),
+        (
+            "release-proof/proof-manifest.txt",
+            "release workflow must stage proof manifest as release artifact",
+        ),
+        (
             "release-proof/proof-summary.txt",
             "release workflow must stage honest proof summary as release artifact",
         ),
@@ -4633,11 +4692,11 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
             "release workflow must make the explicit release the GitHub latest release",
         ),
         (
-            "QEMU serial proof passed",
+            "QEMU serial and captured desktop pixel proof passed",
             "release body must state the proof that actually ran",
         ),
         (
-            "Not an any-VM, GPU, or Ubuntu-superiority proof",
+            "Not an any-VM, hardware-GPU, or Ubuntu-superiority proof",
             "release body must deny broad unproven claims",
         ),
     ];
@@ -4677,6 +4736,10 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
         (
             "pure Rust, zero assembly",
             "release body must not make broad zero-assembly marketing claims",
+        ),
+        (
+            "Not an any-VM, GPU, or Ubuntu-superiority proof",
+            "release body must distinguish captured QEMU pixels from hardware-GPU proof",
         ),
     ];
     findings.extend(
