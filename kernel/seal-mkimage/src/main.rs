@@ -4301,7 +4301,7 @@ Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
 Remote registry fixture and signed package release gate are still pending
-fixture gate pending before \"full filesystem parity\" claims
+Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
 `seal-mkimage --check-aether-runtime
@@ -4450,6 +4450,45 @@ fn key_press(&mut self, ch: u8) {
 
         let stub = format!("{ide}\n//! AI code completion stub\n");
         assert!(check_ide_completion_source_contract_text(&stub).is_err());
+    }
+
+    #[test]
+    fn filesystem_parity_contract_rejects_missing_write_paths() {
+        let fat = r#"
+//! FAT12/16/32 filesystem driver with VFS read/write/create/delete/rename support.
+impl FileSystem for FatFs {
+    fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> { self.read_file(2, buf, offset) }
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> { let written = self.write_clusters(2, buf, offset)?; self.write_dir_raw(0, buf)?; Ok(written) }
+    fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> { self.add_dir_entry(0, path, 0x20, 2, 0)?; Ok(VfsHandle { fs_idx: 0, inode: 2 }) }
+    fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> { self.add_dir_entry(0, path, 0x10, 2, 0)?; self.write_dir_raw(2, &[])?; Ok(VfsHandle { fs_idx: 0, inode: 2 }) }
+    fn unlink(&mut self, path: &str) -> Result<(), VfsError> { self.free_cluster_chain(2)?; self.remove_dir_entry(0, path) }
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> { self.remove_dir_entry(0, path) }
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> { self.write_dir_raw(0, &[])?; Ok(()) }
+    fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> { Ok(Vec::new()) }
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> { todo!() }
+}
+"#;
+        let ext2 = r#"
+impl FileSystem for Ext2Fs {
+    fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> { self.read_inode_data(&self.read_inode(handle.inode as u32)?, offset, buf) }
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> { let mut inode = self.read_inode(handle.inode as u32)?; let written = self.write_inode_data(&mut inode, offset, buf)?; self.write_inode(handle.inode as u32, &inode)?; Ok(written) }
+    fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> { let ino = self.allocate_inode()?; self.write_inode(ino, &inode)?; self.add_dir_entry(2, path, ino, 1)?; Ok(VfsHandle { fs_idx: 0, inode: ino as u64 }) }
+    fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> { let ino = self.allocate_inode()?; let block = self.allocate_block()?; self.write_disk_block(block, &[])?; self.add_dir_entry(2, path, ino, 2)?; Ok(VfsHandle { fs_idx: 0, inode: ino as u64 }) }
+    fn unlink(&mut self, path: &str) -> Result<(), VfsError> { self.free_inode_blocks(&mut inode)?; self.remove_dir_entry(2, path)?; self.free_inode(3) }
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> { self.free_inode_blocks(&mut inode)?; self.remove_dir_entry(2, path)?; self.free_inode(3) }
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> { self.remove_dir_entry(2, old)?; self.add_dir_entry(2, new, 3, 1) }
+    fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> { Ok(Vec::new()) }
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> { todo!() }
+    fn sync(&mut self) -> Result<(), VfsError> { self.buffer_cache.lock().flush_all() }
+}
+"#;
+        assert!(check_filesystem_parity_source_contract_text(fat, ext2).is_ok());
+
+        let read_only_fat = fat.replace("with VFS read/write/create/delete/rename support", "read-only v1");
+        assert!(check_filesystem_parity_source_contract_text(&read_only_fat, ext2).is_err());
+
+        let missing_ext2_write = ext2.replace("fn write(&mut self", "fn write_missing(&mut self");
+        assert!(check_filesystem_parity_source_contract_text(fat, &missing_ext2_write).is_err());
     }
 
     #[test]
@@ -5043,7 +5082,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
     check_manifoldpkg_shell_contract(root)?;
     check_installer_source_contract(root)?;
-    check_ide_completion_source_contract(root)
+    check_ide_completion_source_contract(root)?;
+    check_filesystem_parity_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5318,8 +5358,8 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "fixture gate pending before \"full filesystem parity\" claims",
-            "README must expose missing filesystem fixture proof",
+            "Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2",
+            "README must expose filesystem parity source gate before mounted fixture parity is claimed",
         ),
         (
             "README.md",
@@ -5720,6 +5760,101 @@ fn check_ide_completion_source_contract_text(ide: &str) -> Result<(), String> {
             ));
         }
     }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_filesystem_parity_source_contract(root: &Path) -> Result<(), String> {
+    let fat_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("fs")
+        .join("fat.rs");
+    let ext2_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("fs")
+        .join("ext2.rs");
+    let fat =
+        fs::read_to_string(&fat_path).map_err(|e| format!("read {}: {e}", fat_path.display()))?;
+    let ext2 = fs::read_to_string(&ext2_path)
+        .map_err(|e| format!("read {}: {e}", ext2_path.display()))?;
+    check_filesystem_parity_source_contract_text(&fat, &ext2)
+}
+
+fn check_filesystem_parity_source_contract_text(fat: &str, ext2: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for (label, text, needles) in [
+        (
+            "FAT",
+            fat,
+            &[
+                "filesystem driver with VFS read/write/create/delete/rename support",
+                "impl FileSystem for FatFs",
+                "fn read(&self",
+                "fn write(&mut self",
+                "self.write_clusters",
+                "self.write_dir_raw",
+                "fn create(&mut self",
+                "self.add_dir_entry",
+                "fn mkdir(&mut self",
+                "fn unlink(&mut self",
+                "self.free_cluster_chain",
+                "fn rmdir(&mut self",
+                "fn rename(&mut self",
+                "fn readdir(&self",
+                "fn stat(&self",
+            ] as &[&str],
+        ),
+        (
+            "ext2",
+            ext2,
+            &[
+                "impl FileSystem for Ext2Fs",
+                "fn read(&self",
+                "self.read_inode_data",
+                "fn write(&mut self",
+                "self.write_inode_data",
+                "self.write_inode",
+                "fn create(&mut self",
+                "self.allocate_inode",
+                "self.add_dir_entry",
+                "fn mkdir(&mut self",
+                "self.allocate_block",
+                "self.write_disk_block",
+                "fn unlink(&mut self",
+                "self.free_inode_blocks",
+                "self.remove_dir_entry",
+                "fn rmdir(&mut self",
+                "fn rename(&mut self",
+                "fn readdir(&self",
+                "fn stat(&self",
+                "fn sync(&mut self",
+            ] as &[&str],
+        ),
+    ] {
+        for needle in needles {
+            if !text.contains(needle) {
+                findings.push(format!("{label} filesystem parity source missing `{needle}`"));
+            }
+        }
+    }
+
+    for needle in [
+        "read-only v1",
+        "write paths exist; fixture gate pending",
+        "full filesystem parity",
+    ] {
+        if fat.contains(needle) {
+            findings.push(format!("FAT source still contains stale marker `{needle}`"));
+        }
+    }
+
     if findings.is_empty() {
         Ok(())
     } else {
