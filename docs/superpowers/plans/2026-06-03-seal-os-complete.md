@@ -14,7 +14,7 @@
 
 1. **Aether-Lang cannot self-host** — needs bootstrap compiler, richer stdlib, build system integration
 2. **Not faster than Linux** — Ubuntu artifact missing, side-by-side harness incomplete
-3. **Not production-secure** — KPTI and audit flush boot gates exist; no X.509/TLS PKI/ECDHE, KASLR, or external security audit
+3. **Not production-secure** — KPTI, audit flush, and blocked `seal`/`seal` credential boot gates exist; no X.509/TLS PKI/ECDHE, KASLR, or external security audit
 4. **GPU not proven hardware compute** — shader stubs need real GCN ISA, hardware dispatch proof missing
 5. **No browser** — no HTML parser, DOM, CSS, JS, or renderer
 6. **Not self-hosting build** — needs Aether-Lang cross-compiler to break Linux/Windows/macOS dependency
@@ -159,11 +159,11 @@
 **Goal:** Produce a runnable security audit suite that checks ASLR, seccomp, KPTI, SMAP/SMEP, stack canaries, and reports JSON.  
 **Independence:** New `tests/security/` directory and additive audit code.
 
-- [ ] **Step 1: Create `tests/security/audit_suite.py`** — Host-side runner that launches Seal OS in QEMU and runs security probes via serial.
+- [ ] **Step 1: Create a Rust `tests/security-audit` host runner** — Launch Seal OS in QEMU and run security probes via serial without Python.
 - [ ] **Step 2: Add `kernel/seal-os/src/security/audit_runtime.rs`** — Kernel-side runtime that responds to audit probes: report ASLR entropy bits, seccomp filter count, KPTI status.
-- [ ] **Step 3: Create `tests/security/test_aslr.py`** — Verifies mmap base shifts across 10 runs.
-- [ ] **Step 4: Create `tests/security/test_seccomp.py`** — Verifies seccomp kills forbidden syscalls.
-- [ ] **Step 5: Create `tests/security/test_kpti.py`** — Verifies user-mode cannot read kernel pages.
+- [ ] **Step 3: Add Rust ASLR probe tests** — Verifies mmap base shifts across 10 runs.
+- [ ] **Step 4: Add Rust seccomp probe tests** — Verifies seccomp kills forbidden syscalls.
+- [ ] **Step 5: Add Rust KPTI probe tests** — Verifies user-mode cannot read kernel pages.
 - [ ] **Step 6: Update `CRYPTO_AUDIT.md` and `THREAT_MODEL.md`** with completed status.
 - [ ] **Step 7: Commit**
 

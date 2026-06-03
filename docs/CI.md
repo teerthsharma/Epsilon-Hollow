@@ -218,7 +218,7 @@ The smoke test must verify these serial output patterns:
 | 14 | `[GPU-BENCH] suite` | CPU fallback topology accelerator proof ran three kernels against CPU recomputation, with no hardware dispatch claimed |
 | 15 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
 | 16 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
-| 17 | `[SECURITY] auth proof` | `/etc/shadow` exists, default/new users use `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded hashes |
+| 17 | `[SECURITY] auth proof` | `/etc/shadow` exists, `seal`/`seal` is rejected, default/new users use `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded hashes |
 | 18 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
 | 19 | `Device model: QEMU HARDDISK` | AHCI disk identified |
 | 20 | `Registered as block device 0x800` | AHCI block device registered |

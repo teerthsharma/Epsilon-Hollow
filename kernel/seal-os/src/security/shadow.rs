@@ -124,6 +124,7 @@ pub struct AuthShadowProof {
     pub default_user_present: bool,
     pub default_rounds_5000: bool,
     pub default_legacy: bool,
+    pub default_password_rejected: bool,
     pub new_user_rounds_5000: bool,
     pub passwd_embedded_hashes: u64,
 }
@@ -134,6 +135,7 @@ impl AuthShadowProof {
             && self.default_user_present
             && self.default_rounds_5000
             && !self.default_legacy
+            && self.default_password_rejected
             && self.new_user_rounds_5000
             && self.passwd_embedded_hashes == 0
     }
@@ -202,7 +204,7 @@ fn parse_shadow(data: &[u8]) -> Vec<ShadowEntry> {
 pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
     let data = read_shadow_file();
     let entries = parse_shadow(&data);
-    let entry = entries.into_iter().find(|e| e.username == username)?;
+    let entry = entries.into_iter().rev().find(|e| e.username == username)?;
     let seed = TOPO_SEED.lock();
     if entry.legacy {
         // Legacy migration: old direct SHA-256(password)
@@ -230,10 +232,31 @@ pub fn make_shadow_line(username: &str, password: &str, uid: u32) -> String {
     format!("{}:$topo$5000${}${}\n", username, salt_hex, hash_hex)
 }
 
+/// Append a fresh topological shadow entry for an existing user.
+///
+/// Verification reads the newest entry for a username, so this updates the
+/// live password without needing truncation support from the early VFS.
+pub fn set_password(username: &str, password: &str) -> bool {
+    let Some(user) = crate::security::passwd::get_user(username) else {
+        return false;
+    };
+    let shadow_line = make_shadow_line(username, password, user.uid);
+    with_vfs(|vfs| {
+        let handle = vfs.lookup_follow("/etc/shadow").ok()?;
+        let size = vfs.stat(handle).map(|n| n.size).unwrap_or(0);
+        vfs.write(handle, shadow_line.as_bytes(), size).ok()?;
+        Some(true)
+    })
+    .unwrap_or(false)
+}
+
 pub fn auth_shadow_proof() -> AuthShadowProof {
     let shadow_data = read_shadow_file();
     let shadow_entries = parse_shadow(&shadow_data);
-    let default = shadow_entries.iter().find(|entry| entry.username == "seal");
+    let default = shadow_entries
+        .iter()
+        .rev()
+        .find(|entry| entry.username == "seal");
     let proof_user = make_shadow_line("__proof_new_user", "proof-password", 65_500);
     let proof_entry = parse_shadow(proof_user.as_bytes())
         .into_iter()
@@ -246,6 +269,7 @@ pub fn auth_shadow_proof() -> AuthShadowProof {
             .map(|entry| !entry.legacy && entry.rounds >= 5000)
             .unwrap_or(false),
         default_legacy: default.map(|entry| entry.legacy).unwrap_or(true),
+        default_password_rejected: verify_login("seal", "seal").is_none(),
         new_user_rounds_5000: proof_entry
             .map(|entry| !entry.legacy && entry.rounds >= 5000)
             .unwrap_or(false),
@@ -256,11 +280,12 @@ pub fn auth_shadow_proof() -> AuthShadowProof {
 pub fn emit_auth_shadow_proof() {
     let proof = auth_shadow_proof();
     crate::serial_println!(
-        "[SECURITY] auth proof version=1 shadow={} default_user=seal default_present={} default_topo5000={} default_legacy={} new_user_topo5000={} passwd_embedded_hashes={} result={}",
+        "[SECURITY] auth proof version=1 shadow={} default_user=seal default_present={} default_topo5000={} default_legacy={} default_password_rejected={} new_user_topo5000={} passwd_embedded_hashes={} result={}",
         if proof.shadow_present { 1 } else { 0 },
         if proof.default_user_present { 1 } else { 0 },
         if proof.default_rounds_5000 { 1 } else { 0 },
         if proof.default_legacy { 1 } else { 0 },
+        if proof.default_password_rejected { 1 } else { 0 },
         if proof.new_user_rounds_5000 { 1 } else { 0 },
         proof.passwd_embedded_hashes,
         if proof.passes() { "pass" } else { "fail" }

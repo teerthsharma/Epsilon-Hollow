@@ -429,8 +429,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         serial_println!("[LOGIN] Authenticated");
     }
 
-    // Default password reminder (shown every boot for v1)
-    serial_println!("[Lypnos Guard] Default login: seal / seal");
+    serial_println!("[Lypnos Guard] Default password seal/seal is blocked.");
     serial_println!("[Lypnos Guard] Press Ctrl+L to lock files into topological sleep.");
 
     if run_installer {

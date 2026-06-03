@@ -1084,6 +1084,12 @@ fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
     require_field_eq(line, "default_present=", "1", "auth shadow proof")?;
     require_field_eq(line, "default_topo5000=", "1", "auth shadow proof")?;
     require_field_eq(line, "default_legacy=", "0", "auth shadow proof")?;
+    require_field_eq(
+        line,
+        "default_password_rejected=",
+        "1",
+        "auth shadow proof",
+    )?;
     require_field_eq(line, "new_user_topo5000=", "1", "auth shadow proof")?;
     require_field_eq(line, "result=", "pass", "auth shadow proof")?;
 
@@ -2953,7 +2959,7 @@ mod tests {
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
     const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
-    const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
+    const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 default_password_rejected=1 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
@@ -4281,6 +4287,10 @@ with:
         let legacy_default = AUTH_SHADOW_PROOF_LOG.replace("default_legacy=0", "default_legacy=1");
         assert!(check_auth_shadow_proof_text(&legacy_default).is_err());
 
+        let default_password_allowed =
+            AUTH_SHADOW_PROOF_LOG.replace("default_password_rejected=1", "default_password_rejected=0");
+        assert!(check_auth_shadow_proof_text(&default_password_allowed).is_err());
+
         let weak_new_user =
             AUTH_SHADOW_PROOF_LOG.replace("new_user_topo5000=1", "new_user_topo5000=0");
         assert!(check_auth_shadow_proof_text(&weak_new_user).is_err());
@@ -4353,6 +4363,7 @@ no X.509/PKI/ECDHE gate yet
 Public remote release channel is still pending
 Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
 [SECURITY] audit proof
+`seal`/`seal` is rejected
 /var/log/audit.log
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
@@ -4395,6 +4406,13 @@ hardware `[GPU-BENCH]` artifact proves otherwise
         let ubuntu_variant_overclaim = format!("{readme}\nSeal OS surpasses Ubuntu.\n");
         assert!(
             check_doc_claim_contract_text(&ubuntu_variant_overclaim, benchmark, ci, gpu_doc)
+                .is_err()
+        );
+
+        let default_credential_overclaim =
+            format!("{readme}\nDefault credentials: `seal` / `seal`\n");
+        assert!(
+            check_doc_claim_contract_text(&default_credential_overclaim, benchmark, ci, gpu_doc)
                 .is_err()
         );
 
@@ -5428,6 +5446,12 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
+            "`seal`/`seal` is rejected",
+            "README must expose the blocked default credential proof",
+        ),
+        (
+            "README.md",
+            readme,
             "/var/log/audit.log",
             "README must expose audit log VFS readback path",
         ),
@@ -5630,6 +5654,14 @@ fn check_doc_claim_contract_text(
         (
             "fs_mode=ramfs",
             "README ManifoldFS benchmark must not fall back to ramfs-only proof",
+        ),
+        (
+            "Default credentials: `seal` / `seal`",
+            "README must not instruct users to use the blocked default credential",
+        ),
+        (
+            "The default login is `seal`/`seal`",
+            "README must not claim the blocked default credential is accepted",
         ),
         (
             "they execute (the GPU doesn't crash)",
