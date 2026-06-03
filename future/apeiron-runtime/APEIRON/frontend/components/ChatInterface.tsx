@@ -1,9 +1,33 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { useApeiron } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
+
+// BOLT PERFORMANCE OPTIMIZATION
+// Why: `messages` is a streamed text array updated frequently. This prevents O(N^2) rendering bottlenecks
+// Expected impact: Only the currently streaming message chunk re-renders, rather than the entire list.
+const MessageItem = memo(({ msg }: { msg: { id: string; sender: 'user' | 'apeiron'; text: string; isPlasticityEvent: boolean } }) => (
+    <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+        <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+            ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+            : msg.sender === 'user'
+                ? 'border-gray-700 bg-gray-800'
+                : 'border-blue-900/30 bg-blue-900/10'
+            }`}>
+            {msg.isPlasticityEvent && (
+                <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                    <Zap size={12} fill="currentColor" />
+                    <span>Weights Updated</span>
+                </div>
+            )}
+            <p className="whitespace-pre-wrap">{msg.text}</p>
+        </div>
+    </div>
+));
+
+MessageItem.displayName = 'MessageItem';
 
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts } = useApeiron();
@@ -81,22 +105,7 @@ export default function ChatInterface() {
                     aria-label="Chat history"
                 >
                     {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
-                        </div>
+                        <MessageItem key={msg.id} msg={msg} />
                     ))}
                     <div ref={scrollRef} />
                 </div>
