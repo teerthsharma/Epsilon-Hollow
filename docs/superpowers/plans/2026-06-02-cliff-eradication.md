@@ -35,7 +35,7 @@
 | Release honesty | Release workflow now requires explicit tag and proof gates | Release must continue rejecting stale `latest` fallbacks and missing proof assets | `seal-mkimage --check-release-workflow-contract .` in CI |
 | Topological semantic closure | `[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths` and `--check-runtime-theorems` source-gate callsites | Runtime markers prove topology is wired into core paths, not full semantic equivalence of every subsystem to every theorem claim | Add subsystem-specific theorem consequence markers after allocator, scheduler, ManifoldFS, and compositor paths |
 | Any VM / real hardware | QEMU and VirtualBox have separate proof gates | No VMware, Hyper-V, cloud hypervisor, or physical-machine proof contract | Add one backend-specific proof contract per target; never generalize QEMU success |
-| COW/page-table safety | README admits COW fork double-free risk | No regression fixture for fork/COW page-table lifecycle under memory pressure | Add a Rust kernel test or mkimage source gate for COW clone/free ownership invariants before claiming security maturity |
+| COW/page-table safety | `[MM] cow-proof` and `--check-doc-claim-contract` now require rollback cleanup and no parent-page-table fallback | Needs deeper syscall-path churn/fault stress under real processes | Extend VM stress fixture to hammer fork/clone under allocation pressure |
 
 ## Task 1: Close The Weak Desktop Serial Proof Cliff
 

@@ -1021,6 +1021,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[SECURITY] hardening proof",
         "[SECURITY] audit proof",
         "[SECURITY] auth proof",
+        "[MM] cow-proof",
         "[ManifoldPkg] proof",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
@@ -1072,7 +1073,33 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_security_hardening_text(&text)?;
     check_security_audit_text(&text)?;
     check_auth_shadow_proof_text(&text)?;
+    check_cow_proof_text(&text)?;
     check_manifoldpkg_proof_text(&text)?;
+    Ok(())
+}
+
+fn check_cow_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[MM] cow-proof")?;
+    require_field_eq(line, "version=", "1", "COW proof")?;
+    require_field_eq(line, "rollback_guard=", "1", "COW proof")?;
+    require_field_eq(line, "fork_fallback=", "0", "COW proof")?;
+    require_field_eq(line, "clone_fallback=", "0", "COW proof")?;
+    require_field_eq(line, "leaked_frames=", "0", "COW proof")?;
+    require_field_eq(line, "result=", "pass", "COW proof")?;
+    let samples = parse_metric(line, "samples=")?;
+    let rollback_ok = parse_metric(line, "rollback_ok=")?;
+    let tracked = parse_metric(line, "tracked_frames=")?;
+    let freed = parse_metric(line, "rollback_frees=")?;
+    if samples == 0 || samples != rollback_ok {
+        return Err(format!(
+            "COW proof rollback samples incomplete: samples={samples}, rollback_ok={rollback_ok}"
+        ));
+    }
+    if tracked == 0 || tracked != freed {
+        return Err(format!(
+            "COW proof rollback accounting mismatch: tracked_frames={tracked}, rollback_frees={freed}"
+        ));
+    }
     Ok(())
 }
 
@@ -2960,6 +2987,7 @@ mod tests {
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
     const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 default_password_rejected=1 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
+    const COW_PROOF_LOG: &str = "[MM] cow-proof version=1 rollback_guard=1 fork_fallback=0 clone_fallback=0 samples=4 rollback_ok=4 tracked_frames=10 rollback_frees=10 leaked_frames=0 result=pass\n";
     const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
@@ -4301,6 +4329,29 @@ with:
     }
 
     #[test]
+    fn cow_proof_requires_rollback_guard_and_no_parent_fallback() {
+        assert!(check_cow_proof_text(COW_PROOF_LOG).is_ok());
+
+        let no_guard = COW_PROOF_LOG.replace("rollback_guard=1", "rollback_guard=0");
+        assert!(check_cow_proof_text(&no_guard).is_err());
+
+        let fork_fallback = COW_PROOF_LOG.replace("fork_fallback=0", "fork_fallback=1");
+        assert!(check_cow_proof_text(&fork_fallback).is_err());
+
+        let clone_fallback = COW_PROOF_LOG.replace("clone_fallback=0", "clone_fallback=1");
+        assert!(check_cow_proof_text(&clone_fallback).is_err());
+
+        let leak = COW_PROOF_LOG.replace("leaked_frames=0", "leaked_frames=1");
+        assert!(check_cow_proof_text(&leak).is_err());
+
+        let partial = COW_PROOF_LOG.replace("rollback_ok=4", "rollback_ok=3");
+        assert!(check_cow_proof_text(&partial).is_err());
+
+        let bad_accounting = COW_PROOF_LOG.replace("rollback_frees=10", "rollback_frees=9");
+        assert!(check_cow_proof_text(&bad_accounting).is_err());
+    }
+
+    #[test]
     fn installer_proof_requires_real_safe_vfs_writes_not_simulation() {
         assert!(check_installer_proof_text(INSTALLER_PROOF_LOG).is_ok());
 
@@ -4363,6 +4414,7 @@ no X.509/PKI/ECDHE gate yet
 Public remote release channel is still pending
 Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
 [SECURITY] audit proof
+[MM] cow-proof
 `seal`/`seal` is rejected
 /var/log/audit.log
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
@@ -5164,7 +5216,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     check_manifoldpkg_shell_contract(root)?;
     check_installer_source_contract(root)?;
     check_ide_completion_source_contract(root)?;
-    check_filesystem_parity_source_contract(root)
+    check_filesystem_parity_source_contract(root)?;
+    check_cow_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5453,6 +5506,12 @@ fn check_doc_claim_contract_text(
             readme,
             "[SECURITY] audit proof",
             "README must expose audit flush boot proof marker",
+        ),
+        (
+            "README.md",
+            readme,
+            "[MM] cow-proof",
+            "README must expose COW rollback/no-fallback proof marker",
         ),
         (
             "README.md",
@@ -5807,6 +5866,74 @@ fn check_manifoldpkg_shell_contract_text(
         }
     }
 
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_cow_source_contract(root: &Path) -> Result<(), String> {
+    let virt_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("memory")
+        .join("virt.rs");
+    let scheduler_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("process")
+        .join("scheduler.rs");
+    let lib_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("lib.rs");
+    let virt =
+        fs::read_to_string(&virt_path).map_err(|e| format!("read {}: {e}", virt_path.display()))?;
+    let scheduler = fs::read_to_string(&scheduler_path)
+        .map_err(|e| format!("read {}: {e}", scheduler_path.display()))?;
+    let lib =
+        fs::read_to_string(&lib_path).map_err(|e| format!("read {}: {e}", lib_path.display()))?;
+    check_cow_source_contract_text(&virt, &scheduler, &lib)
+}
+
+fn check_cow_source_contract_text(
+    virt: &str,
+    scheduler: &str,
+    lib: &str,
+) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "struct CowCloneRollback",
+        "fn track(&mut self, frame: PhysAddr)",
+        "fn commit(mut self)",
+        "impl Drop for CowCloneRollback",
+        "fn cow_alloc_frame(",
+        "clone_page_table_cow_with_budget",
+        "COW_ROLLBACK_TRACKED_TOTAL",
+        "COW_ROLLBACK_FREED_TOTAL",
+        "rollback.track(",
+        "rollback.commit()",
+        "emit_cow_proof",
+        "[MM] cow-proof version=1",
+    ] {
+        if !virt.contains(needle) {
+            findings.push(format!("COW clone source missing `{needle}`"));
+        }
+    }
+    for needle in [".unwrap_or(parent.page_table)"] {
+        if scheduler.contains(needle) {
+            findings.push(format!(
+                "scheduler still falls back to parent page table after COW clone failure: `{needle}`"
+            ));
+        }
+    }
+    if !lib.contains("memory::virt::emit_cow_proof()") {
+        findings.push(String::from("boot path does not emit COW proof marker"));
+    }
     if findings.is_empty() {
         Ok(())
     } else {

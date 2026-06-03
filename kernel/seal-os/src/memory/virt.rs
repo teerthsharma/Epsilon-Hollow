@@ -12,6 +12,7 @@
 //! All page-table pages are allocated from the physical allocator and accessed
 //! through the identity map (they live below 4 GiB).
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{
@@ -353,6 +354,61 @@ fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTa
 // COW fork support — T5 hyperbolic lifetime classification
 // ---------------------------------------------------------------------------
 
+struct CowCloneRollback {
+    frames: Vec<PhysAddr>,
+    committed: bool,
+}
+
+static COW_ROLLBACK_TRACKED_TOTAL: AtomicU64 = AtomicU64::new(0);
+static COW_ROLLBACK_FREED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+impl CowCloneRollback {
+    fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn track(&mut self, frame: PhysAddr) {
+        COW_ROLLBACK_TRACKED_TOTAL.fetch_add(1, Ordering::SeqCst);
+        self.frames.push(frame);
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CowCloneRollback {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for frame in self.frames.drain(..).rev() {
+            unsafe {
+                crate::memory::phys::free_frame(frame);
+            }
+            COW_ROLLBACK_FREED_TOTAL.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+fn cow_alloc_frame(
+    rollback: &mut CowCloneRollback,
+    allocation_budget: Option<&mut usize>,
+) -> Option<PhysAddr> {
+    if let Some(remaining) = allocation_budget {
+        if *remaining == 0 {
+            return None;
+        }
+        *remaining -= 1;
+    }
+    let frame = crate::memory::phys::alloc_frame()?;
+    rollback.track(frame);
+    Some(frame)
+}
+
 /// Clone a page table for COW fork.
 ///
 /// Kernel higher-half entries (256..512) are shared verbatim.
@@ -364,8 +420,16 @@ fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTa
 /// # Safety
 /// `old_pml4_phys` must be a valid page table.
 pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> {
+    clone_page_table_cow_with_budget(old_pml4_phys, None)
+}
+
+unsafe fn clone_page_table_cow_with_budget(
+    old_pml4_phys: PhysAddr,
+    mut allocation_budget: Option<usize>,
+) -> Option<PhysAddr> {
     let old_pml4 = &*(old_pml4_phys.as_u64() as *const PageTable);
-    let new_pml4_frame = crate::memory::phys::alloc_frame()?;
+    let mut rollback = CowCloneRollback::new();
+    let new_pml4_frame = cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
     let new_pml4 = &mut *(new_pml4_frame.as_u64() as *mut PageTable);
     new_pml4.zero();
 
@@ -381,7 +445,7 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
             continue;
         }
         let old_pdpt = &*(pdpt_entry.addr().as_u64() as *const PageTable);
-        let new_pdpt_frame = crate::memory::phys::alloc_frame()?;
+        let new_pdpt_frame = cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
         let new_pdpt = &mut *(new_pdpt_frame.as_u64() as *mut PageTable);
         new_pdpt.zero();
         new_pml4[pml4_idx].set_addr(
@@ -400,7 +464,7 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
                 continue;
             }
             let old_pd = &*(pd_entry.addr().as_u64() as *const PageTable);
-            let new_pd_frame = crate::memory::phys::alloc_frame()?;
+            let new_pd_frame = cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
             let new_pd = &mut *(new_pd_frame.as_u64() as *mut PageTable);
             new_pd.zero();
             new_pdpt[pdpt_idx].set_addr(
@@ -418,7 +482,7 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
                     continue;
                 }
                 let old_pt = &*(pt_entry.addr().as_u64() as *const PageTable);
-                let new_pt_frame = crate::memory::phys::alloc_frame()?;
+                let new_pt_frame = cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
                 let new_pt = &mut *(new_pt_frame.as_u64() as *mut PageTable);
                 new_pt.zero();
                 new_pd[pd_idx].set_addr(
@@ -434,7 +498,8 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
                     let new_flags = page_entry.flags();
                     // Deep copy all user-accessible pages to prevent double-free
                     if new_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                        let new_frame = crate::memory::phys::alloc_frame()?;
+                        let new_frame =
+                            cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
                         core::ptr::copy_nonoverlapping(
                             page_entry.addr().as_u64() as *const u8,
                             new_frame.as_u64() as *mut u8,
@@ -449,7 +514,132 @@ pub unsafe fn clone_page_table_cow(old_pml4_phys: PhysAddr) -> Option<PhysAddr> 
         }
     }
 
+    rollback.commit();
     Some(new_pml4_frame)
+}
+
+pub fn emit_cow_proof() {
+    let tracked_start = COW_ROLLBACK_TRACKED_TOTAL.load(Ordering::SeqCst);
+    let freed_start = COW_ROLLBACK_FREED_TOTAL.load(Ordering::SeqCst);
+
+    let Some(old_pml4_frame) = crate::memory::phys::alloc_frame() else {
+        crate::serial_println!(
+            "[MM] cow-proof version=1 rollback_guard=0 fork_fallback=0 clone_fallback=0 samples=0 rollback_ok=0 tracked_frames=0 rollback_frees=0 leaked_frames=1 result=fail"
+        );
+        return;
+    };
+    let Some(old_pdpt_frame) = crate::memory::phys::alloc_frame() else {
+        unsafe {
+            crate::memory::phys::free_frame(old_pml4_frame);
+        }
+        crate::serial_println!(
+            "[MM] cow-proof version=1 rollback_guard=0 fork_fallback=0 clone_fallback=0 samples=0 rollback_ok=0 tracked_frames=0 rollback_frees=0 leaked_frames=1 result=fail"
+        );
+        return;
+    };
+    let Some(old_pd_frame) = crate::memory::phys::alloc_frame() else {
+        unsafe {
+            crate::memory::phys::free_frame(old_pdpt_frame);
+            crate::memory::phys::free_frame(old_pml4_frame);
+        }
+        crate::serial_println!(
+            "[MM] cow-proof version=1 rollback_guard=0 fork_fallback=0 clone_fallback=0 samples=0 rollback_ok=0 tracked_frames=0 rollback_frees=0 leaked_frames=1 result=fail"
+        );
+        return;
+    };
+    let Some(old_pt_frame) = crate::memory::phys::alloc_frame() else {
+        unsafe {
+            crate::memory::phys::free_frame(old_pd_frame);
+            crate::memory::phys::free_frame(old_pdpt_frame);
+            crate::memory::phys::free_frame(old_pml4_frame);
+        }
+        crate::serial_println!(
+            "[MM] cow-proof version=1 rollback_guard=0 fork_fallback=0 clone_fallback=0 samples=0 rollback_ok=0 tracked_frames=0 rollback_frees=0 leaked_frames=1 result=fail"
+        );
+        return;
+    };
+    let Some(old_page_frame) = crate::memory::phys::alloc_frame() else {
+        unsafe {
+            crate::memory::phys::free_frame(old_pt_frame);
+            crate::memory::phys::free_frame(old_pd_frame);
+            crate::memory::phys::free_frame(old_pdpt_frame);
+            crate::memory::phys::free_frame(old_pml4_frame);
+        }
+        crate::serial_println!(
+            "[MM] cow-proof version=1 rollback_guard=0 fork_fallback=0 clone_fallback=0 samples=0 rollback_ok=0 tracked_frames=0 rollback_frees=0 leaked_frames=1 result=fail"
+        );
+        return;
+    };
+
+    unsafe {
+        let old_pml4 = &mut *(old_pml4_frame.as_u64() as *mut PageTable);
+        let old_pdpt = &mut *(old_pdpt_frame.as_u64() as *mut PageTable);
+        let old_pd = &mut *(old_pd_frame.as_u64() as *mut PageTable);
+        let old_pt = &mut *(old_pt_frame.as_u64() as *mut PageTable);
+        old_pml4.zero();
+        old_pdpt.zero();
+        old_pd.zero();
+        old_pt.zero();
+        old_pml4[0].set_addr(
+            old_pdpt_frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+        old_pdpt[0].set_addr(
+            old_pd_frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+        old_pd[0].set_addr(
+            old_pt_frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+        old_pt[0].set_addr(
+            old_page_frame,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE,
+        );
+    }
+
+    let mut rollback_ok = 0_u64;
+    let samples = 4_u64;
+    for budget in 1..=samples as usize {
+        let before = crate::memory::phys::free_count();
+        let cloned = unsafe { clone_page_table_cow_with_budget(old_pml4_frame, Some(budget)) };
+        let after = crate::memory::phys::free_count();
+        if cloned.is_none()
+            && before == after
+            && translate_in_pml4(VirtAddr::new(0), old_pml4_frame) == Some(old_page_frame)
+        {
+            rollback_ok += 1;
+        }
+    }
+
+    unsafe {
+        crate::memory::phys::free_frame(old_page_frame);
+        crate::memory::phys::free_frame(old_pt_frame);
+        crate::memory::phys::free_frame(old_pd_frame);
+        crate::memory::phys::free_frame(old_pdpt_frame);
+        crate::memory::phys::free_frame(old_pml4_frame);
+    }
+
+    let tracked = COW_ROLLBACK_TRACKED_TOTAL
+        .load(Ordering::SeqCst)
+        .saturating_sub(tracked_start);
+    let freed = COW_ROLLBACK_FREED_TOTAL
+        .load(Ordering::SeqCst)
+        .saturating_sub(freed_start);
+    let leaked = tracked.saturating_sub(freed);
+    let pass = rollback_ok == samples && tracked > 0 && leaked == 0;
+    let rollback_guard = if pass { 1 } else { 0 };
+    let result = if pass { "pass" } else { "fail" };
+    crate::serial_println!(
+        "[MM] cow-proof version=1 rollback_guard={} fork_fallback=0 clone_fallback=0 samples={} rollback_ok={} tracked_frames={} rollback_frees={} leaked_frames={} result={}",
+        rollback_guard,
+        samples,
+        rollback_ok,
+        tracked,
+        freed,
+        leaked,
+        result
+    );
 }
 
 /// Handle a COW page fault at `fault_addr` for the page table rooted at

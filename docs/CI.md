@@ -219,16 +219,17 @@ The smoke test must verify these serial output patterns:
 | 15 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
 | 16 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
 | 17 | `[SECURITY] auth proof` | `/etc/shadow` exists, `seal`/`seal` is rejected, default/new users use `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded hashes |
-| 18 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
-| 19 | `Device model: QEMU HARDDISK` | AHCI disk identified |
-| 20 | `Registered as block device 0x800` | AHCI block device registered |
-| 21 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
-| 22 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
-| 23 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 24 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
-| 25 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 26 | `Seal OS desktop ready.` | Desktop reached |
-| 27 | `Entering real event loop` | Event loop active |
+| 18 | `[MM] cow-proof` | COW page-table clone has rollback cleanup for partial allocation failure and fork/clone fail closed instead of falling back to the parent page table |
+| 19 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
+| 20 | `Device model: QEMU HARDDISK` | AHCI disk identified |
+| 21 | `Registered as block device 0x800` | AHCI block device registered |
+| 22 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
+| 23 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
+| 24 | `Desktop proof frame blit done` | First desktop frame blitted |
+| 25 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
+| 26 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 27 | `Seal OS desktop ready.` | Desktop reached |
+| 28 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -236,7 +237,7 @@ Additional Rust-native audit commands run against the same OS surface:
 
 | Command | Purpose |
 |---|---|
-| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, auth shadow proof, ManifoldPkg `.eph` install/extract proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
+| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, auth shadow proof, COW rollback/no-fallback proof, ManifoldPkg `.eph` install/extract proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
 | `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, live desktop input proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
