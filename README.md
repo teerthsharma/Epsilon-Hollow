@@ -1602,7 +1602,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | Subsystem | Operation | Complexity | Evidence / latency |
 |-----------|-----------|-----------|----------------|
 | **Physical alloc** | `alloc_frame()` | O(1) bounded topological free-index lookup across 8 cells; max 2 L3 words and 8192 summary-backed word candidates per cell | source-gated + boot log proof marker + `[BENCH] alloc-frame` |
-| **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; size-class refill/dealloc/realloc proof pending | benchmark pending |
+| **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; `[BENCH] slab-alloc` covers all 6 size classes, refill, free-list reuse, free, and grow/shrink copy-realloc fixtures | boot-gated benchmark |
 | **TopoRAM alloc** | `alloc_frames(1, hint)` | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` |
 | **TopoRAM contiguous** | `alloc_frames(count > 1, hint)` | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap | source-gated by `--check-o1-allocator` |
 | **ManifoldFS lookup** | `lookup(path)` | O(path depth) + O(K) cell search | benchmark pending |
@@ -2303,24 +2303,25 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 8. Theorem summary line
 9. `[BENCH] toporam-alloc`
 10. `[BENCH] alloc-frame`
-11. `[BENCH] manifold-teleport`
-12. `[BENCH] scheduler-select-next`
-13. `[BENCH] tcp-packet-demux`
-14. `[GPU-BENCH] suite`
-15. `[Aether-Lang] runtime proof`
-16. `[LAAMBA] app proof:`
-17. `[SECURITY] auth proof`
-18. `[MM] cow-proof`
-19. `[ManifoldPkg] proof`
-20. QEMU AHCI disk identity
-21. Block device `0x800` registered
-22. Persistent ManifoldFS root mounted from disk
-23. `[GFX] desktop-proof`
-24. Desktop proof frame blit sentinel
-25. `[GFX] desktop-live-proof`
-26. `[GFX] desktop-soak`
-27. Desktop ready sentinel
-28. Event-loop entry sentinel
+11. `[BENCH] slab-alloc`
+12. `[BENCH] manifold-teleport`
+13. `[BENCH] scheduler-select-next`
+14. `[BENCH] tcp-packet-demux`
+15. `[GPU-BENCH] suite`
+16. `[Aether-Lang] runtime proof`
+17. `[LAAMBA] app proof:`
+18. `[SECURITY] auth proof`
+19. `[MM] cow-proof`
+20. `[ManifoldPkg] proof`
+21. QEMU AHCI disk identity
+22. Block device `0x800` registered
+23. Persistent ManifoldFS root mounted from disk
+24. `[GFX] desktop-proof`
+25. Desktop proof frame blit sentinel
+26. `[GFX] desktop-live-proof`
+27. `[GFX] desktop-soak`
+28. Desktop ready sentinel
+29. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
