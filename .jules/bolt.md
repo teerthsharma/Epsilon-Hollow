@@ -1,0 +1,3 @@
+## 2026-06-03 - Prevent O(N^2) Re-renders with Array Streaming
+**Learning:** React state arrays representing streamed text chunks (like DSP Bus chat messages or thought logs) will trigger a full re-render of every item in the list on every small chunk update. This causes O(N^2) rendering bottlenecks during intense data streaming.
+**Action:** When rendering elements from streamed arrays, extract the list items into separate components and wrap them in `React.memo()`. This ensures that only the newly added items or specific items whose props have changed are re-rendered, while the rest are skipped.
