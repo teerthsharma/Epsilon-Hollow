@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Seal IDE — built-in development environment.
-//! Features: syntax highlighting, file explorer, AI code completion stub.
+//! Features: syntax highlighting, file explorer, deterministic code completion.
 
 use alloc::format;
 use alloc::string::String;
@@ -26,6 +26,21 @@ const STATUS_FG: u32 = 0x00BAC2DE;
 
 const SIDEBAR_WIDTH: u32 = 160;
 const GUTTER_WIDTH: u32 = 40;
+
+const COMPLETION_CANDIDATES: &[&str] = &[
+    "SphericalVoronoiIndex",
+    "GeometricGovernor",
+    "serial_println!",
+    "kernel_main",
+    "epsilon",
+    "voronoi",
+    "governor",
+    "locate",
+    "loop",
+    "unsafe",
+    "crate::",
+    "alloc::",
+];
 
 pub struct SealIde {
     files: Vec<IdeFile>,
@@ -127,7 +142,14 @@ impl SealIde {
                 }
             }
             b'\t' => {
-                if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                if let Some(suffix) =
+                    completion_suffix_for_line(file.lines.get(self.cursor_line), self.cursor_col)
+                {
+                    if let Some(line) = file.lines.get_mut(self.cursor_line) {
+                        line.insert_str(self.cursor_col, suffix);
+                        self.cursor_col += suffix.len();
+                    }
+                } else if let Some(line) = file.lines.get_mut(self.cursor_line) {
                     line.insert_str(self.cursor_col, "    ");
                     self.cursor_col += 4;
                 }
@@ -292,12 +314,24 @@ impl SealIde {
                 }
             }
             let status = format!(
-                " {} | Ln {}, Col {} | Rust | T1-T10 OK | Seal IDE",
+                " {} | Ln {}, Col {} | Rust | T1-T10 OK | {}",
                 file.name,
                 self.cursor_line + 1,
-                self.cursor_col + 1
+                self.cursor_col + 1,
+                self.completion_status()
             );
             self.render_text(win, editor_x + 4, sy + 3, &status, STATUS_FG);
+        }
+    }
+
+    fn completion_status(&self) -> String {
+        let line = self
+            .files
+            .get(self.active_file)
+            .and_then(|file| file.lines.get(self.cursor_line));
+        match completion_suffix_for_line(line, self.cursor_col) {
+            Some(suffix) => format!("Tab completes {}", suffix),
+            None => String::from("Seal IDE"),
         }
     }
 
@@ -412,6 +446,34 @@ impl SealIde {
 
     pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
+}
+
+fn completion_suffix_for_line(line: Option<&String>, cursor_col: usize) -> Option<&'static str> {
+    let prefix = current_word_prefix(line?, cursor_col);
+    if prefix.len() < 2 {
+        return None;
+    }
+    for candidate in COMPLETION_CANDIDATES {
+        if candidate.starts_with(prefix.as_str()) && candidate.len() > prefix.len() {
+            return candidate.get(prefix.len()..);
+        }
+    }
+    None
+}
+
+fn current_word_prefix(line: &str, cursor_col: usize) -> String {
+    let end = cursor_col.min(line.len());
+    let mut start = end;
+    let bytes = line.as_bytes();
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_alphanumeric() || b == b'_' || b == b'!' || b == b':' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    String::from(&line[start..end])
 }
 
 pub fn main() {

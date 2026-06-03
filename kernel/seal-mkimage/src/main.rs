@@ -4420,6 +4420,39 @@ fn apply_safe_install(&self) -> bool {
     }
 
     #[test]
+    fn ide_completion_contract_rejects_stub_completion() {
+        let ide = r#"
+const COMPLETION_CANDIDATES: &[&str] = &["SphericalVoronoiIndex", "serial_println!"];
+fn completion_suffix_for_line(line: Option<&String>, cursor_col: usize) -> Option<&'static str> {
+    let prefix = current_word_prefix(line?, cursor_col);
+    for candidate in COMPLETION_CANDIDATES {
+        if candidate.starts_with(prefix.as_str()) && candidate.len() > prefix.len() {
+            return candidate.get(prefix.len()..);
+        }
+    }
+    None
+}
+fn current_word_prefix(line: &str, cursor_col: usize) -> String { String::from(line) }
+fn completion_status(&self) -> String { String::from("Tab completes ln!") }
+fn key_press(&mut self, ch: u8) {
+    match ch {
+        b'\t' => {
+            if let Some(suffix) = completion_suffix_for_line(file.lines.get(self.cursor_line), self.cursor_col) {
+                line.insert_str(self.cursor_col, suffix);
+                self.cursor_col += suffix.len();
+            }
+        }
+        _ => {}
+    }
+}
+"#;
+        assert!(check_ide_completion_source_contract_text(ide).is_ok());
+
+        let stub = format!("{ide}\n//! AI code completion stub\n");
+        assert!(check_ide_completion_source_contract_text(&stub).is_err());
+    }
+
+    #[test]
     fn comparison_requires_seal_to_win_all_recorded_percentiles() {
         let seal = parse_seal_alloc_benchmark(SEAL_ALLOC_LOG).unwrap();
         let ubuntu = parse_ubuntu_alloc_benchmark(UBUNTU_ALLOC_LOG).unwrap();
@@ -5009,7 +5042,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
         fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
     check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
     check_manifoldpkg_shell_contract(root)?;
-    check_installer_source_contract(root)
+    check_installer_source_contract(root)?;
+    check_ide_completion_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5634,6 +5668,55 @@ fn check_installer_source_contract_text(installer: &str) -> Result<(), String> {
         if installer.contains(needle) {
             findings.push(format!(
                 "installer still contains simulation marker `{needle}`"
+            ));
+        }
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_ide_completion_source_contract(root: &Path) -> Result<(), String> {
+    let ide_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("seal_ide.rs");
+    let ide =
+        fs::read_to_string(&ide_path).map_err(|e| format!("read {}: {e}", ide_path.display()))?;
+    check_ide_completion_source_contract_text(&ide)
+}
+
+fn check_ide_completion_source_contract_text(ide: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "const COMPLETION_CANDIDATES",
+        "fn completion_suffix_for_line",
+        "fn current_word_prefix",
+        "candidate.starts_with(prefix.as_str())",
+        "return candidate.get(prefix.len()..)",
+        "b'\\t'",
+        "line.insert_str(self.cursor_col, suffix)",
+        "self.cursor_col += suffix.len()",
+        "Tab completes",
+    ] {
+        if !ide.contains(needle) {
+            findings.push(format!("Seal IDE completion missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "AI code completion stub",
+        "completion stub",
+        "stub completion",
+        "TODO completion",
+        "fake completion",
+    ] {
+        if ide.contains(needle) {
+            findings.push(format!(
+                "Seal IDE completion still contains theater marker `{needle}`"
             ));
         }
     }
