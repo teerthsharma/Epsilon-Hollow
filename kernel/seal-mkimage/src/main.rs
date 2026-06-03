@@ -1018,6 +1018,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
         "[BENCH] tcp-roundtrip",
+        "[BENCH] tls-encrypt",
         "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
@@ -1339,6 +1340,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
     parse_tcp_roundtrip_benchmark(text)?;
+    parse_tls_encrypt_benchmark(text)?;
     parse_gpu_topology_benchmark(text)?;
     Ok(())
 }
@@ -1932,6 +1934,45 @@ fn parse_tcp_roundtrip_benchmark(text: &str) -> Result<(), String> {
     if cleanup != "ok" || result != "pass" {
         return Err(format!(
             "TCP roundtrip cleanup/result failed: cleanup={cleanup}, result={result}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_tls_encrypt_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tls-encrypt")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let plaintext_bytes = parse_metric(line, "plaintext_bytes=")?;
+    let record_bytes = parse_metric(line, "record_bytes=")?;
+    let tag_bytes = parse_metric(line, "tag_bytes=")?;
+    let decrypt_match = parse_metric(line, "decrypt_match=")?;
+    let write_seq = parse_metric(line, "write_seq=")?;
+    let read_seq = parse_metric(line, "read_seq=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "TlsSession::encrypt" || fixture != "psk_aes_128_gcm_record" {
+        return Err(format!(
+            "TLS encrypt benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if plaintext_bytes != 1024 || tag_bytes != 16 || record_bytes != plaintext_bytes + tag_bytes + 5
+    {
+        return Err(format!(
+            "TLS encrypt record size invalid: plaintext={plaintext_bytes}, record={record_bytes}, tag={tag_bytes}"
+        ));
+    }
+    if decrypt_match != 1 || write_seq != 1 || read_seq != 1 || result != "pass" {
+        return Err(format!(
+            "TLS encrypt roundtrip/auth failed: decrypt_match={decrypt_match}, write_seq={write_seq}, read_seq={read_seq}, result={result}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "TLS encrypt cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
         ));
     }
     Ok(())
@@ -3155,6 +3196,7 @@ mod tests {
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
     const TCP_ROUNDTRIP_LOG: &str = "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=4 index_probe_bound=256 cleanup=ok result=pass\n";
+    const TLS_ENCRYPT_LOG: &str = "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=900 p95_cycles=900 max_cycles=900 result=pass\n";
     const GPU_TOPOLOGY_BENCH_LOG: &str = "\
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
 [GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
@@ -3708,6 +3750,7 @@ gate_benchmark_log=ok\n",
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
             TCP_ROUNDTRIP_LOG,
+            TLS_ENCRYPT_LOG,
             GPU_TOPOLOGY_BENCH_LOG,
         ]
         .concat()
@@ -3987,6 +4030,7 @@ gate_proof_screen=ok
             r"\[BENCH\] scheduler-select-next",
             r"\[BENCH\] tcp-packet-demux",
             r"\[BENCH\] tcp-roundtrip",
+            r"\[BENCH\] tls-encrypt",
             r"\[GPU-BENCH\] suite",
             r"\[Aether-Lang\] runtime proof:",
             r"\[LAAMBA\] app proof:",
@@ -4262,9 +4306,27 @@ with:
     }
 
     #[test]
+    fn parses_tls_encrypt_benchmark() {
+        assert!(parse_tls_encrypt_benchmark(TLS_ENCRYPT_LOG).is_ok());
+
+        let wrong_api =
+            TLS_ENCRYPT_LOG.replace("api=TlsSession::encrypt", "api=TlsSocket::send");
+        assert!(parse_tls_encrypt_benchmark(&wrong_api).is_err());
+
+        let wrong_size = TLS_ENCRYPT_LOG.replace("record_bytes=1045", "record_bytes=1024");
+        assert!(parse_tls_encrypt_benchmark(&wrong_size).is_err());
+
+        let auth_failed = TLS_ENCRYPT_LOG.replace("decrypt_match=1", "decrypt_match=0");
+        assert!(parse_tls_encrypt_benchmark(&auth_failed).is_err());
+
+        let seq_failed = TLS_ENCRYPT_LOG.replace("write_seq=1", "write_seq=0");
+        assert!(parse_tls_encrypt_benchmark(&seq_failed).is_err());
+    }
+
+    #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{TLS_ENCRYPT_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());

@@ -2010,6 +2010,7 @@ fn init_drivers() {
     net::init();
     run_tcp_packet_demux_bench();
     run_tcp_roundtrip_bench();
+    run_tls_encrypt_bench();
     serial_println!("[BOOT] driver init: net done");
 }
 
@@ -2092,6 +2093,47 @@ fn run_tcp_roundtrip_bench() {
         if proof.cleanup_ok { "ok" } else { "leak" },
         if result { "pass" } else { "fail" }
     );
+}
+
+#[cfg(not(test))]
+fn run_tls_encrypt_bench() {
+    const PAYLOAD_BYTES: usize = 1024;
+    let payload = [0x5Au8; PAYLOAD_BYTES];
+    let before = read_desktop_soak_cycles();
+    let proof = drivers::net::tls::TlsSession::benchmark_psk_record_roundtrip(&payload);
+    let after = read_desktop_soak_cycles();
+    let cycles = after.saturating_sub(before);
+
+    match proof {
+        Ok(proof) => {
+            let result = proof.plaintext_bytes == PAYLOAD_BYTES
+                && proof.record_bytes == PAYLOAD_BYTES + proof.tag_bytes + 5
+                && proof.tag_bytes == 16
+                && proof.decrypt_match
+                && proof.write_seq == 1
+                && proof.read_seq == 1;
+            serial_println!(
+                "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes={} record_bytes={} tag_bytes={} decrypt_match={} write_seq={} read_seq={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+                proof.plaintext_bytes,
+                proof.record_bytes,
+                proof.tag_bytes,
+                if proof.decrypt_match { 1 } else { 0 },
+                proof.write_seq,
+                proof.read_seq,
+                cycles,
+                cycles,
+                cycles,
+                if result { "pass" } else { "fail" }
+            );
+        }
+        Err(_) => serial_println!(
+            "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes={} record_bytes=0 tag_bytes=16 decrypt_match=0 write_seq=0 read_seq=0 p50_cycles={} p95_cycles={} max_cycles={} result=fail",
+            PAYLOAD_BYTES,
+            cycles,
+            cycles,
+            cycles
+        ),
+    }
 }
 
 #[cfg(not(test))]

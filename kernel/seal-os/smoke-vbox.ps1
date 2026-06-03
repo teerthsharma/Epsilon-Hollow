@@ -11,6 +11,7 @@ param(
         '\[BENCH\] scheduler-select-next',
         '\[BENCH\] tcp-packet-demux',
         '\[BENCH\] tcp-roundtrip',
+        '\[BENCH\] tls-encrypt',
         '\[GPU-BENCH\] suite',
         '\[Aether-Lang\] runtime proof:',
         '\[LAAMBA\] app proof:',

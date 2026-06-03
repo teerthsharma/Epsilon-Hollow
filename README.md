@@ -579,6 +579,8 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=<n> dirhash_probes_max=<n> dirhash_probe_bound=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
 [BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
+[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=<n> index_probe_bound=256 cleanup=ok result=pass
+[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
@@ -1506,6 +1508,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | ManifoldFS path lookup marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] manifold-lookup`, proving `resolve_path_with_proof` walks 64 four-component paths in mock-block ManifoldFS with bounded DirHash probes and `result=pass` |
 | Scheduler select benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] scheduler-select-next`, gating the live `select_next_task` requeue marker across 64 iterations with ready count preserved, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 priority-bucket scan |
 | TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes through the bounded exact-flow index, leaves a same-port decoy empty, avoids exact-flow socket scans, and falls back through the bounded listener index for a new SYN |
+| TLS PSK record encrypt marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tls-encrypt`, proving `TlsSession::encrypt` produced a 1024-byte PSK AES-128-GCM record, 16-byte tag, sequence increments, decrypt/auth match, monotonic cycle samples, and `result=pass`; this does not claim X.509/ECDHE or public HTTPS compatibility |
 | GPU topology CPU-fallback benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires structured `[GPU-BENCH]` markers for Voronoi assignment, JL projection, and spectral contraction; current proof is `mode=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`, `mismatches=0`, and `claim=cpu_fallback_correctness_only` |
 | AHCI persistent ManifoldFS root | ✓ | ✓ | QEMU serial log shows `QEMU HARDDISK`, `Registered as block device 0x800`, `First disk readable`, and `[VFS] ManifoldFS mounted from disk` |
 | Native non-POSIX ABI | ✓ | ✗ | `seal-mkimage --check-seal-abi .` passes |
@@ -1615,7 +1618,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **TCP demux** | `handle_tcp_packet()` | O(1) bounded exact-flow index for accepted flows plus bounded listener-port index for SYN fallback | `[BENCH] tcp-packet-demux` proves bounded exact-flow index hit, bounded listener-index hit, zero exact-flow scan, listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
 | **TCP round-trip** | loopback echo fixture | `[BENCH] tcp-roundtrip` proves 8 accepted loopback echo flows, 64-byte payloads, exact-flow/client/listener indexes, byte-for-byte echo, and cleanup | boot-gated benchmark |
-| **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
+| **TLS encrypt** | 1KB record | O(N) AES-GCM over PSK-only TLS 1.3 record payload | `[BENCH] tls-encrypt` proves 1024-byte `TlsSession::encrypt` AES-128-GCM record wrapping, 16-byte auth tag, decrypt/auth roundtrip, sequence increments, monotonic cycle samples, and `result=pass`; X.509/ECDHE remains out of scope |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |
 | **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | benchmark pending |
 
@@ -2311,21 +2314,22 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 14. `[BENCH] scheduler-select-next`
 15. `[BENCH] tcp-packet-demux`
 16. `[BENCH] tcp-roundtrip`
-17. `[GPU-BENCH] suite`
-18. `[Aether-Lang] runtime proof`
-19. `[LAAMBA] app proof:`
-20. `[SECURITY] auth proof`
-21. `[MM] cow-proof`
-22. `[ManifoldPkg] proof`
-23. QEMU AHCI disk identity
-24. Block device `0x800` registered
-25. Persistent ManifoldFS root mounted from disk
-26. `[GFX] desktop-proof`
-27. Desktop proof frame blit sentinel
-28. `[GFX] desktop-live-proof`
-29. `[GFX] desktop-soak`
-30. Desktop ready sentinel
-31. Event-loop entry sentinel
+17. `[BENCH] tls-encrypt`
+18. `[GPU-BENCH] suite`
+19. `[Aether-Lang] runtime proof`
+20. `[LAAMBA] app proof:`
+21. `[SECURITY] auth proof`
+22. `[MM] cow-proof`
+23. `[ManifoldPkg] proof`
+24. QEMU AHCI disk identity
+25. Block device `0x800` registered
+26. Persistent ManifoldFS root mounted from disk
+27. `[GFX] desktop-proof`
+28. Desktop proof frame blit sentinel
+29. `[GFX] desktop-live-proof`
+30. `[GFX] desktop-soak`
+31. Desktop ready sentinel
+32. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
@@ -2376,18 +2380,19 @@ CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what ev
 14. `[BENCH] scheduler-select-next`
 15. `[BENCH] tcp-packet-demux`
 16. `[BENCH] tcp-roundtrip`
-17. `[GPU-BENCH] suite`
-18. `[Aether-Lang] runtime proof`
-19. `[LAAMBA] app proof:`
-20. QEMU AHCI disk identity
-21. Block device `0x800` registered
-22. Persistent ManifoldFS root mounted from disk
-20. `[GFX] desktop-proof`
-21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-live-proof`
-23. `[GFX] desktop-soak`
-24. Desktop ready sentinel
-25. Event-loop entry sentinel
+17. `[BENCH] tls-encrypt`
+18. `[GPU-BENCH] suite`
+19. `[Aether-Lang] runtime proof`
+20. `[LAAMBA] app proof:`
+21. QEMU AHCI disk identity
+22. Block device `0x800` registered
+23. Persistent ManifoldFS root mounted from disk
+24. `[GFX] desktop-proof`
+25. Desktop proof frame blit sentinel
+26. `[GFX] desktop-live-proof`
+27. `[GFX] desktop-soak`
+28. Desktop ready sentinel
+29. Event-loop entry sentinel
 
 If any of the hard milestone gates tracked in [docs/CI.md](docs/CI.md) fail, the entire CI run fails. No exceptions. No mercy.
 
