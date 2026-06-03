@@ -381,7 +381,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 - **SealShell** — 30+ English-first commands: `look`, `peek`, `move`, `search`, `tasks`, `seal`, `race`, `stats`, `calc`, `play`, `tensor render`
 - **Terminal Emulator** — 80×25 scrollback, key input processing
-- **Seal IDE** — code editor panel, file tree sidebar, status bar
+- **Seal IDE** — code editor panel, file tree sidebar, status bar, deterministic Tab completion
 - **Calculator** — scientific with recursive descent parser, gradient UI
 - **SealPlayer** — WAV/PCM playback with RIFF/WAVE header parser
 - **Theorem Viewer** — T1-T10 status, real-time governor ε, Betti-0 count
