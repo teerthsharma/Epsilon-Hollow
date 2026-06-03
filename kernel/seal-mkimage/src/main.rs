@@ -1019,6 +1019,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
         "[SECURITY] hardening proof",
+        "[SECURITY] audit proof",
         "[SECURITY] auth proof",
         "[ManifoldPkg] proof",
         "[BOOT] Desktop proof frame blit done",
@@ -1069,6 +1070,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_aether_runtime_text(&text)?;
     check_laamba_app_proof_text(&text)?;
     check_security_hardening_text(&text)?;
+    check_security_audit_text(&text)?;
     check_auth_shadow_proof_text(&text)?;
     check_manifoldpkg_proof_text(&text)?;
     Ok(())
@@ -1212,6 +1214,20 @@ fn check_security_hardening_text(text: &str) -> Result<(), String> {
         ));
     }
     parse_metric(line, "user_access_faults=")?;
+    Ok(())
+}
+
+fn check_security_audit_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] audit proof")?;
+    require_field_eq(line, "version=", "1", "security audit proof")?;
+    require_field_eq(line, "vfs=", "1", "security audit proof")?;
+    require_field_eq(line, "dirs=", "1", "security audit proof")?;
+    require_field_eq(line, "buffered_after=", "0", "security audit proof")?;
+    require_field_eq(line, "file=", "/var/log/audit.log", "security audit proof")?;
+    require_field_eq(line, "readback=", "1", "security audit proof")?;
+    require_field_eq(line, "flushed=", "1", "security audit proof")?;
+    require_field_eq(line, "result=", "pass", "security audit proof")?;
+    parse_metric(line, "buffered_before=")?;
     Ok(())
 }
 
@@ -2936,6 +2952,7 @@ mod tests {
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
+    const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
@@ -4231,6 +4248,23 @@ with:
     }
 
     #[test]
+    fn security_audit_proof_requires_vfs_flush_and_readback() {
+        assert!(check_security_audit_text(SECURITY_AUDIT_LOG).is_ok());
+
+        let no_vfs = SECURITY_AUDIT_LOG.replace("vfs=1", "vfs=0");
+        assert!(check_security_audit_text(&no_vfs).is_err());
+
+        let no_dirs = SECURITY_AUDIT_LOG.replace("dirs=1", "dirs=0");
+        assert!(check_security_audit_text(&no_dirs).is_err());
+
+        let buffered = SECURITY_AUDIT_LOG.replace("buffered_after=0", "buffered_after=8");
+        assert!(check_security_audit_text(&buffered).is_err());
+
+        let no_readback = SECURITY_AUDIT_LOG.replace("readback=1", "readback=0");
+        assert!(check_security_audit_text(&no_readback).is_err());
+    }
+
+    #[test]
     fn auth_shadow_proof_requires_topo5000_default_and_no_passwd_hashes() {
         assert!(check_auth_shadow_proof_text(AUTH_SHADOW_PROOF_LOG).is_ok());
 
@@ -4318,6 +4352,8 @@ no X.509/PKI/ECDHE gate yet
 `registry_index=ed25519_fixture`
 Public remote release channel is still pending
 Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
+[SECURITY] audit proof
+/var/log/audit.log
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
 `seal-mkimage --check-aether-runtime
@@ -5382,6 +5418,18 @@ fn check_doc_claim_contract_text(
             readme,
             "Public remote release channel is still pending",
             "README must expose missing ManifoldPkg remote release proof",
+        ),
+        (
+            "README.md",
+            readme,
+            "[SECURITY] audit proof",
+            "README must expose audit flush boot proof marker",
+        ),
+        (
+            "README.md",
+            readme,
+            "/var/log/audit.log",
+            "README must expose audit log VFS readback path",
         ),
         (
             "README.md",
