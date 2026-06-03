@@ -274,7 +274,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **VMM** — 4-level page tables (PML4), on-demand mapping
 - **Demand paging** — `SYS_MMAP` reserves virtual ranges, page-fault handler lazily allocates backing frames
 - **Swap** — low-memory pressure can swap mmap-backed pages to `/swap.topo` and fault them back
-- **COW fork** — userspace fork clones page tables, clears writable bits for shared pages, resolves write faults by copying the page
+- **Fork memory isolation** — userspace fork clones page tables, deep-copies user pages today, and is guarded by `[MM] cow-proof` rollback/no-parent-fallback checks
 - **TopoRAM wrapper** — 64 bytes metadata per frame (S² embedding, access history, Voronoi cell, lifetime class)
 
 </details>
@@ -434,7 +434,7 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 1. **It boots.** This is genuinely impressive. You would be shocked how many OS projects never reach the "prints to serial" stage.
 2. **It has real drivers.** Not mock drivers. Real e1000 TX/RX rings. Real NVMe admin queues. Real xHCI port enumeration. These are not stubs that return `Ok(())`.
 3. **It has a window manager.** With double buffering. And anti-aliased text. And a taskbar. Written from scratch in software rendering. On a framebuffer. In 2026.
-4. **It will panic if you look at it wrong.** The COW fork path still needs a dedicated rollback/leak proof. GPU hardware compute is not proven yet, and the build now refuses fake shader binaries. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
+4. **It will panic if you look at it wrong.** The COW fork path now has a rollback/no-parent-fallback proof gate, but deeper syscall-path stress still needs more fixtures. GPU hardware compute is not proven yet, and the build now refuses fake shader binaries. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
 5. **It is not Linux.** You cannot `apt install` things. There is no `bash`. The shell speaks English-first commands like `look` and `peek`. This is a feature, not a bug, but it is also inconvenient.
 6. **One person wrote most of it.** With occasional help from AI agents, contributors, and sheer stubbornness. This means design coherence is high, but bus factor is catastrophic.
 7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that core claims hold. This is not decoration.
@@ -1295,7 +1295,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🔴 Critical (Please Don't)
 
-1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
+1. **Fork Stress Gap:** COW clone now has a hard `[MM] cow-proof` gate: partial page-table clones use a rollback guard, and `fork`/`clone` fail closed instead of falling back to the parent page table. The remaining pain is deeper syscall-path stress under real process churn.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
 3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
@@ -2040,7 +2040,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🔴 Critical (Please Don't)
 
-1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
+1. **Fork Stress Gap:** COW clone now has a hard `[MM] cow-proof` gate: partial page-table clones use a rollback guard, and `fork`/`clone` fail closed instead of falling back to the parent page table. The remaining pain is deeper syscall-path stress under real process churn.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
 3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
@@ -2310,16 +2310,17 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 15. `[Aether-Lang] runtime proof`
 16. `[LAAMBA] app proof:`
 17. `[SECURITY] auth proof`
-18. `[ManifoldPkg] proof`
-19. QEMU AHCI disk identity
-20. Block device `0x800` registered
-21. Persistent ManifoldFS root mounted from disk
-22. `[GFX] desktop-proof`
-23. Desktop proof frame blit sentinel
-24. `[GFX] desktop-live-proof`
-25. `[GFX] desktop-soak`
-26. Desktop ready sentinel
-27. Event-loop entry sentinel
+18. `[MM] cow-proof`
+19. `[ManifoldPkg] proof`
+20. QEMU AHCI disk identity
+21. Block device `0x800` registered
+22. Persistent ManifoldFS root mounted from disk
+23. `[GFX] desktop-proof`
+24. Desktop proof frame blit sentinel
+25. `[GFX] desktop-live-proof`
+26. `[GFX] desktop-soak`
+27. Desktop ready sentinel
+28. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 

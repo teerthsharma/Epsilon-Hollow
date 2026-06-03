@@ -897,13 +897,14 @@ impl ManifoldScheduler {
                 user_stack: parent.user_stack.clone(),
                 // T5: COW fork — clone page table, mark writable user pages read-only.
                 page_table: if parent.is_userspace && parent.page_table != 0 {
-                    unsafe {
+                    let Some(cloned_page_table) = (unsafe {
                         crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
                             parent.page_table,
                         ))
-                    }
-                    .map(|f| f.as_u64())
-                    .unwrap_or(parent.page_table)
+                    }) else {
+                        return None;
+                    };
+                    cloned_page_table.as_u64()
                 } else {
                     parent.page_table
                 },
@@ -1014,13 +1015,14 @@ impl ManifoldScheduler {
             let page_table = if share_vm {
                 parent.page_table
             } else {
-                unsafe {
+                let Some(cloned_page_table) = (unsafe {
                     crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
                         parent.page_table,
                     ))
-                }
-                .map(|f| f.as_u64())
-                .unwrap_or(parent.page_table)
+                }) else {
+                    return None;
+                };
+                cloned_page_table.as_u64()
             };
 
             let tls_base = if parent.is_userspace {

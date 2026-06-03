@@ -379,6 +379,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         );
     }
     memory::swap::init();
+    memory::virt::emit_cow_proof();
     security::audit::emit_flush_proof();
     security::passwd::init_passwd();
     security::shadow::shadow_init();
