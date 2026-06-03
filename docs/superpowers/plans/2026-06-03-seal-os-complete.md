@@ -314,13 +314,16 @@
 
 ### Stream 23: Installer GPT Partitioning + Formatting
 **Agent:** Installer-Agent  
-**Scope:** `userspace/installer/src/partition.rs` (create), `userspace/installer/src/format.rs` (create)  
+**Scope:** `kernel/seal-os/src/apps/installer.rs`, future raw block helpers under the kernel installer path
 **Goal:** Make the Installer UI actually write GPT partitions and format FAT/ext2/ManifoldFS on raw block devices.  
-**Independence:** New files in existing `userspace/installer/`.
+**Independence:** Installer UI path plus future raw block helpers.
+
+**Current bridge:** Kernel Installer now has a real safe VFS install proof path, not old "would install" theater. It writes the boot marker, home directory, profile file, passwd entry, and shadow-auth proof, then emits `[INSTALLER] proof version=1 mode=safe_vfs ... result=pass`. Use `seal-mkimage --check-installer-proof <installer.log>` to reject simulation-only logs. The remaining cliff is raw disk GPT/format/boot-after-install.
 
 - [ ] **Step 1: Create `userspace/installer/src/partition.rs`** — GPT header creation, partition entry writing, protective MBR.
 - [ ] **Step 2: Create `userspace/installer/src/format.rs`** — `mkfs.fat` equivalent, `mkfs.ext2` equivalent, ManifoldFS superblock init.
-- [ ] **Step 3: Wire into Installer UI** — When user clicks "Install", write GPT, create Seal OS partition, format it, copy kernel + EFI.
+- [x] **Step 3a: Wire safe install proof into Installer UI** — When user clicks "Install", perform safe VFS writes and emit the install proof.
+- [ ] **Step 3b: Wire raw disk install into Installer UI** — Write GPT, create Seal OS partition, format it, copy kernel + EFI to a selected block device.
 - [ ] **Step 4: Test** — Run installer in QEMU on blank disk, verify bootable afterwards.
 - [ ] **Step 5: Commit**
 
