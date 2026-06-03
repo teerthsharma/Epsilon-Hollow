@@ -108,7 +108,7 @@
 **Goal:** Make the benchmark harness produce rigorous, reproducible comparisons against Linux on identical hardware.  
 **Independence:** New files in `.benchmarks/` and additive bench code.
 
-- [ ] **Step 1: Create `.benchmarks/harness.py`** — Python harness (acceptable as host-side tool) that boots Seal OS in QEMU and Ubuntu in QEMU side-by-side, runs identical workloads, collects `rdtsc` and wall-clock metrics.
+- [ ] **Step 1: Create a Rust `.benchmarks/harness` runner** — Boots Seal OS in QEMU and Ubuntu in QEMU side-by-side, runs identical workloads, collects `rdtsc` and wall-clock metrics.
 - [ ] **Step 2: Define 5 standard workloads** — `alloc_stress`, `file_walk`, `context_switch`, `syscall_loop`, `tcp_echo`.
 - [ ] **Step 3: Add `kernel/seal-os/src/bench/external_harness.rs`** — Serial protocol for harness to inject benchmark commands and read JSON results from Seal OS serial.
 - [ ] **Step 4: Commit**
@@ -180,7 +180,7 @@
 - [ ] **Step 1: Create `kernel/seal-os/src/drivers/gpu/shaders/voronoi.cl`** — OpenCL C implementing spherical Voronoi computation.
 - [ ] **Step 2: Create `kernel/seal-os/src/drivers/gpu/shaders/jl_project.cl`** — OpenCL C implementing Johnson-Lindenstrauss projection.
 - [ ] **Step 3: Create `kernel/seal-os/src/drivers/gpu/shaders/spectral_contract.cl`** — OpenCL C implementing spectral contraction.
-- [ ] **Step 4: Create `scripts/compile_shaders.py`** — Host-side script using ROCm/LLVM to compile `.cl` → `.bin` (GCN ISA binaries) at build time.
+- [ ] **Step 4: Create `tools/compile-shaders` Rust CLI** — Host-side tool using ROCm/LLVM to compile `.cl` → `.bin` (GCN ISA binaries) at build time.
 - [ ] **Step 5: Replace stub arrays in `pm4.rs`** with `include_bytes!()` of compiled `.bin` files.
 - [ ] **Step 6: Commit**
 
@@ -191,7 +191,7 @@
 **Independence:** New files only.
 
 - [ ] **Step 1: Create `kernel/seal-os/src/drivers/gpu/dispatch.rs`** — Hardware dispatch ring management: map PM4 ring, submit compute packet, wait for completion interrupt.
-- [ ] **Step 2: Create `tests/gpu/test_amd_compute.py`** — Host-side test that runs Seal OS on AMD GPU hardware (or QEMU with GPU passthrough), submits compute job, reads back result.
+- [ ] **Step 2: Create `tests/gpu-amd-compute` Rust runner** — Host-side test that runs Seal OS on AMD GPU hardware (or QEMU with GPU passthrough), submits compute job, reads back result.
 - [ ] **Step 3: Add `[GPU-BENCH]` serial sentinel** — Seal OS prints `[GPU-BENCH] voronoi result=OK cycles=<n>` after hardware dispatch.
 - [ ] **Step 4: Update `NVIDIA_4060_TEST_PLAN.md`** → rename to `GPU_TEST_PLAN.md`, add AMD test matrix.
 - [ ] **Step 5: Commit**

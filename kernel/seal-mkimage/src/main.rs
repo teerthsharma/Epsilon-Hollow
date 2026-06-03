@@ -4461,15 +4461,26 @@ fn cmd_packages(&self) -> String {
 }
 "#;
         let pkg = "parse_eph(data); verify_signature(&pkg, key); self.install_file";
-        assert!(check_manifoldpkg_shell_contract_text(shell, pkg).is_ok());
+        let carrier = r#"
+pub enum CarrierType { Aether, Rust, C, Js }
+impl CarrierType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s { "aether" => Some(Self::Aether), "rust" => Some(Self::Rust), "c" => Some(Self::C), "js" => Some(Self::Js), _ => None }
+    }
+}
+"#;
+        assert!(check_manifoldpkg_shell_contract_text(shell, pkg, carrier).is_ok());
 
         let metadata_only = format!(
             "{shell}\nlet manifest = \"status=metadata-only\";\nstore_text(&format!(\"{{}}.pkg\", pkg), manifest, self.cwd);\nStored package manifest\n"
         );
-        assert!(check_manifoldpkg_shell_contract_text(&metadata_only, pkg).is_err());
+        assert!(check_manifoldpkg_shell_contract_text(&metadata_only, pkg, carrier).is_err());
 
         let missing_core = "parse_eph(data);";
-        assert!(check_manifoldpkg_shell_contract_text(shell, missing_core).is_err());
+        assert!(check_manifoldpkg_shell_contract_text(shell, missing_core, carrier).is_err());
+
+        let python_carrier = format!("{carrier}\npub struct PipCarrier;\n");
+        assert!(check_manifoldpkg_shell_contract_text(shell, pkg, &python_carrier).is_err());
     }
 
     #[test]
@@ -5732,14 +5743,26 @@ fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
         .join("src")
         .join("pkg")
         .join("mod.rs");
+    let carrier_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("carrier.rs");
     let shell =
         fs::read_to_string(&shell_path).map_err(|e| format!("read {}: {e}", shell_path.display()))?;
     let pkg =
         fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
-    check_manifoldpkg_shell_contract_text(&shell, &pkg)
+    let carrier = fs::read_to_string(&carrier_path)
+        .map_err(|e| format!("read {}: {e}", carrier_path.display()))?;
+    check_manifoldpkg_shell_contract_text(&shell, &pkg, &carrier)
 }
 
-fn check_manifoldpkg_shell_contract_text(shell: &str, pkg: &str) -> Result<(), String> {
+fn check_manifoldpkg_shell_contract_text(
+    shell: &str,
+    pkg: &str,
+    carrier: &str,
+) -> Result<(), String> {
     let mut findings = Vec::new();
     for needle in [
         "pkg.ends_with(\".eph\")",
@@ -5757,6 +5780,18 @@ fn check_manifoldpkg_shell_contract_text(shell: &str, pkg: &str) -> Result<(), S
     for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
         if !pkg.contains(needle) {
             findings.push(format!("ManifoldPkg core missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "CarrierType::Python",
+        "Self::Python",
+        "\"python\" | \"pip\"",
+        "PipCarrier",
+    ] {
+        if pkg.contains(needle) || carrier.contains(needle) {
+            findings.push(format!(
+                "ManifoldPkg core exposes Python/Pip carrier marker `{needle}`"
+            ));
         }
     }
     for needle in [

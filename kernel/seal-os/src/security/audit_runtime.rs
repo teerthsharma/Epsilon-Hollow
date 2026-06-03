@@ -4,8 +4,8 @@
 //! Runtime security audit probes.
 //!
 //! Responds to host-side audit commands over the serial port with structured
-//! JSON-like output.  Used by the Python security audit suite in
-//! `tests/security/`.
+//! JSON-like output. Used by the Rust security audit runner in
+//! `tests/security-audit/`.
 
 use alloc::format;
 use alloc::string::String;
