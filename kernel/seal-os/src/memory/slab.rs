@@ -8,8 +8,14 @@
 //! allocator.  Free objects are kept on an intrusive singly-linked list.
 
 use spin::Mutex;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const SLAB_SIZES: &[usize] = &[64, 128, 256, 512, 1024, 2048];
+
+static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
+static FREE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static REFILL_PAGES: AtomicUsize = AtomicUsize::new(0);
+static FREE_LIST_HITS: AtomicUsize = AtomicUsize::new(0);
 
 struct SlabCache {
     obj_size: usize,
@@ -57,12 +63,14 @@ impl SlabAllocator {
         let cache = &mut self.caches[idx];
 
         if let Some(ptr) = cache.free_list {
+            FREE_LIST_HITS.fetch_add(1, Ordering::Relaxed);
             let next = *(ptr as *const *mut u8);
             cache.free_list = if next.is_null() { None } else { Some(next) };
             return Some(ptr);
         }
 
         let frame = crate::memory::phys::alloc_frame()?;
+        REFILL_PAGES.fetch_add(1, Ordering::Relaxed);
         let page_start = frame.as_u64() as *mut u8;
         let objs_per_page = 4096 / cache.obj_size;
 
@@ -112,6 +120,7 @@ static SLAB: Mutex<SlabAllocator> = Mutex::new(SlabAllocator::new());
 /// unsupported size returns a null pointer; dereferencing it without a check
 /// causes undefined behavior.
 pub unsafe fn slab_alloc(size: usize) -> *mut u8 {
+    ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
     let result = SLAB.lock().alloc(size);
     if result.is_none() {
         crate::serial_println!("[DEBUG] slab_alloc({}) failed", size);
@@ -128,8 +137,26 @@ pub unsafe fn slab_alloc(size: usize) -> *mut u8 {
 /// memory corruption or use-after-free.
 pub unsafe fn slab_free(ptr: *mut u8, size: usize) {
     if !ptr.is_null() {
+        FREE_CALLS.fetch_add(1, Ordering::Relaxed);
         SLAB.lock().free(ptr, size);
     }
+}
+
+pub fn stats() -> SlabStats {
+    SlabStats {
+        alloc_calls: ALLOC_CALLS.load(Ordering::Relaxed),
+        free_calls: FREE_CALLS.load(Ordering::Relaxed),
+        refill_pages: REFILL_PAGES.load(Ordering::Relaxed),
+        free_list_hits: FREE_LIST_HITS.load(Ordering::Relaxed),
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SlabStats {
+    pub alloc_calls: usize,
+    pub free_calls: usize,
+    pub refill_pages: usize,
+    pub free_list_hits: usize,
 }
 
 #[cfg(test)]

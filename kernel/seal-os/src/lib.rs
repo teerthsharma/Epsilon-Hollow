@@ -213,6 +213,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     );
     run_topo_ram_hotpath_bench();
     run_allocator_hotpath_bench();
+    run_slab_allocator_bench();
     run_manifold_teleport_bench();
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
@@ -1217,6 +1218,152 @@ fn run_allocator_hotpath_bench() {
         contig_after.saturating_sub(contig_before),
         free_before,
         free_after
+    );
+}
+
+fn run_slab_allocator_bench() {
+    const ITERS: usize = 64;
+    const CLASSES: [usize; 6] = [64, 128, 256, 512, 1024, 2048];
+    const MAX_PROBE_ALLOCS: usize = 256;
+
+    let stats_before = memory::slab::stats();
+    let free_before = memory::phys::free_count();
+    let mut refill_ok = 0usize;
+    let mut reuse_ok = 0usize;
+    let mut free_ok = 0usize;
+
+    for &size in &CLASSES {
+        let refill_before = memory::slab::stats().refill_pages;
+        let mut ptrs = [core::ptr::null_mut::<u8>(); MAX_PROBE_ALLOCS];
+        let mut count = 0usize;
+
+        while count < MAX_PROBE_ALLOCS {
+            let ptr = unsafe { memory::slab::slab_alloc(size) };
+            if ptr.is_null() {
+                break;
+            }
+            ptrs[count] = ptr;
+            count += 1;
+            if memory::slab::stats().refill_pages > refill_before {
+                refill_ok += 1;
+                break;
+            }
+        }
+
+        for &ptr in ptrs.iter().take(count) {
+            unsafe {
+                memory::slab::slab_free(ptr, size);
+            }
+        }
+        if count != 0 {
+            free_ok += 1;
+        }
+
+        let hits_before = memory::slab::stats().free_list_hits;
+        let reuse_ptr = unsafe { memory::slab::slab_alloc(size) };
+        let hits_after = memory::slab::stats().free_list_hits;
+        if !reuse_ptr.is_null() && hits_after > hits_before {
+            reuse_ok += 1;
+            unsafe {
+                memory::slab::slab_free(reuse_ptr, size);
+            }
+        }
+    }
+
+    let free_after_refill = memory::phys::free_count();
+
+    let mut realloc_ok = 0usize;
+    let grow_src = unsafe { memory::slab::slab_alloc(128) };
+    let grow_dst = unsafe { memory::slab::slab_alloc(256) };
+    if !grow_src.is_null() && !grow_dst.is_null() {
+        unsafe {
+            for i in 0..128 {
+                *grow_src.add(i) = i as u8;
+            }
+            core::ptr::copy_nonoverlapping(grow_src, grow_dst, 128);
+            if (0..128).all(|i| *grow_dst.add(i) == i as u8) {
+                realloc_ok += 1;
+            }
+            memory::slab::slab_free(grow_dst, 256);
+            memory::slab::slab_free(grow_src, 128);
+        }
+    }
+
+    let shrink_src = unsafe { memory::slab::slab_alloc(256) };
+    let shrink_dst = unsafe { memory::slab::slab_alloc(64) };
+    if !shrink_src.is_null() && !shrink_dst.is_null() {
+        unsafe {
+            for i in 0..64 {
+                *shrink_src.add(i) = (255 - i) as u8;
+            }
+            core::ptr::copy_nonoverlapping(shrink_src, shrink_dst, 64);
+            if (0..64).all(|i| *shrink_dst.add(i) == (255 - i) as u8) {
+                realloc_ok += 1;
+            }
+            memory::slab::slab_free(shrink_dst, 64);
+            memory::slab::slab_free(shrink_src, 256);
+        }
+    }
+
+    let mut samples = [0u64; ITERS];
+    let mut ok = 0usize;
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let size = CLASSES[idx % CLASSES.len()];
+        let before = read_desktop_soak_cycles();
+        let ptr = unsafe { memory::slab::slab_alloc(size) };
+        if !ptr.is_null() {
+            unsafe {
+                *ptr = idx as u8;
+                memory::slab::slab_free(ptr, size);
+            }
+            ok += 1;
+        }
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+    }
+
+    for i in 1..ITERS {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let stats_after = memory::slab::stats();
+    let free_after_reuse = memory::phys::free_count();
+    let p50_cycles = samples[ITERS / 2];
+    let p95_cycles = samples[(ITERS * 95 / 100).min(ITERS - 1)];
+    let max_cycles = samples[ITERS - 1];
+    serial_println!(
+        "[BENCH] slab-alloc iterations={} ok={} classes={} refill_ok={} reuse_ok={} free_ok={} realloc_ok={} p50_cycles={} p95_cycles={} max_cycles={} refill_pages_delta={} free_list_hits_delta={} alloc_calls_delta={} free_calls_delta={} free_before={} free_after_refill={} free_after_reuse={}",
+        ITERS,
+        ok,
+        CLASSES.len(),
+        refill_ok,
+        reuse_ok,
+        free_ok,
+        realloc_ok,
+        p50_cycles,
+        p95_cycles,
+        max_cycles,
+        stats_after
+            .refill_pages
+            .saturating_sub(stats_before.refill_pages),
+        stats_after
+            .free_list_hits
+            .saturating_sub(stats_before.free_list_hits),
+        stats_after
+            .alloc_calls
+            .saturating_sub(stats_before.alloc_calls),
+        stats_after
+            .free_calls
+            .saturating_sub(stats_before.free_calls),
+        free_before,
+        free_after_refill,
+        free_after_reuse
     );
 }
 

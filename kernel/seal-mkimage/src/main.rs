@@ -1012,6 +1012,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[ALLOC] O(1) proof:",
         "[BENCH] toporam-alloc",
         "[BENCH] alloc-frame",
+        "[BENCH] slab-alloc",
         "[BENCH] manifold-teleport",
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
@@ -1330,6 +1331,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_alloc_o1_proof(text)?;
     parse_toporam_alloc_benchmark(text)?;
     parse_seal_alloc_benchmark(text)?;
+    parse_slab_alloc_benchmark(text)?;
     parse_manifold_teleport_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
@@ -1533,6 +1535,60 @@ fn parse_toporam_alloc_benchmark(text: &str) -> Result<(), String> {
         ));
     }
 
+    Ok(())
+}
+
+fn parse_slab_alloc_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] slab-alloc")?;
+    let bench = parse_alloc_bench_metrics(line, "Slab allocation benchmark")?;
+    let classes = parse_metric(line, "classes=")?;
+    let refill_ok = parse_metric(line, "refill_ok=")?;
+    let reuse_ok = parse_metric(line, "reuse_ok=")?;
+    let free_ok = parse_metric(line, "free_ok=")?;
+    let realloc_ok = parse_metric(line, "realloc_ok=")?;
+    let refill_pages_delta = parse_metric(line, "refill_pages_delta=")?;
+    let free_list_hits_delta = parse_metric(line, "free_list_hits_delta=")?;
+    let alloc_calls_delta = parse_metric(line, "alloc_calls_delta=")?;
+    let free_calls_delta = parse_metric(line, "free_calls_delta=")?;
+    let free_before = parse_metric(line, "free_before=")?;
+    let free_after_refill = parse_metric(line, "free_after_refill=")?;
+    let free_after_reuse = parse_metric(line, "free_after_reuse=")?;
+
+    if classes != 6 {
+        return Err(format!("slab benchmark must cover 6 classes, got {classes}"));
+    }
+    if refill_ok != classes || reuse_ok != classes || free_ok != classes || realloc_ok != 2 {
+        return Err(format!(
+            "slab benchmark coverage incomplete: refill_ok={refill_ok}, reuse_ok={reuse_ok}, free_ok={free_ok}, realloc_ok={realloc_ok}"
+        ));
+    }
+    if refill_pages_delta < classes {
+        return Err(format!(
+            "slab benchmark did not force one refill page per class: refill_pages_delta={refill_pages_delta}, classes={classes}"
+        ));
+    }
+    if free_list_hits_delta < bench.iterations {
+        return Err(format!(
+            "slab benchmark did not use free-list fast path enough: free_list_hits_delta={free_list_hits_delta}, iterations={}",
+            bench.iterations
+        ));
+    }
+    if alloc_calls_delta < bench.iterations || free_calls_delta < bench.iterations {
+        return Err(format!(
+            "slab benchmark call accounting too low: alloc_calls_delta={alloc_calls_delta}, free_calls_delta={free_calls_delta}, iterations={}",
+            bench.iterations
+        ));
+    }
+    if free_before <= free_after_refill {
+        return Err(format!(
+            "slab benchmark did not consume refill frames: free_before={free_before}, free_after_refill={free_after_refill}"
+        ));
+    }
+    if free_after_refill != free_after_reuse {
+        return Err(format!(
+            "slab benchmark reuse allocated more frames: free_after_refill={free_after_refill}, free_after_reuse={free_after_reuse}"
+        ));
+    }
     Ok(())
 }
 
@@ -2969,6 +3025,7 @@ mod tests {
     const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 toporam_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
     const TOPORAM_ALLOC_LOG: &str = "[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=90 p95_cycles=130 max_cycles=150 target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=10 free_after=10\n";
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
+    const SLAB_ALLOC_LOG: &str = "[BENCH] slab-alloc iterations=64 ok=64 classes=6 refill_ok=6 reuse_ok=6 free_ok=6 realloc_ok=2 p50_cycles=80 p95_cycles=120 max_cycles=150 refill_pages_delta=6 free_list_hits_delta=64 alloc_calls_delta=80 free_calls_delta=80 free_before=100 free_after_refill=94 free_after_reuse=94\n";
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
@@ -3519,6 +3576,7 @@ gate_benchmark_log=ok\n",
             ALLOC_PROOF_LOG,
             TOPORAM_ALLOC_LOG,
             SEAL_ALLOC_LOG,
+            SLAB_ALLOC_LOG,
             MANIFOLD_TELEPORT_LOG,
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
@@ -4028,6 +4086,7 @@ with:
     fn parses_seal_and_ubuntu_allocator_benchmarks() {
         assert!(parse_alloc_o1_proof(ALLOC_PROOF_LOG).is_ok());
         assert!(parse_toporam_alloc_benchmark(TOPORAM_ALLOC_LOG).is_ok());
+        assert!(parse_slab_alloc_benchmark(SLAB_ALLOC_LOG).is_ok());
         let seal = parse_seal_alloc_benchmark(SEAL_ALLOC_LOG).unwrap();
         let ubuntu = parse_ubuntu_alloc_benchmark(UBUNTU_ALLOC_LOG).unwrap();
 
@@ -4038,9 +4097,26 @@ with:
     }
 
     #[test]
+    fn rejects_weak_slab_allocator_proof() {
+        assert!(parse_slab_alloc_benchmark(SLAB_ALLOC_LOG).is_ok());
+
+        let missing_class = SLAB_ALLOC_LOG.replace("classes=6", "classes=5");
+        assert!(parse_slab_alloc_benchmark(&missing_class).is_err());
+
+        let no_reuse = SLAB_ALLOC_LOG.replace("free_list_hits_delta=64", "free_list_hits_delta=63");
+        assert!(parse_slab_alloc_benchmark(&no_reuse).is_err());
+
+        let extra_refill = SLAB_ALLOC_LOG.replace("free_after_reuse=94", "free_after_reuse=93");
+        assert!(parse_slab_alloc_benchmark(&extra_refill).is_err());
+
+        let no_realloc = SLAB_ALLOC_LOG.replace("realloc_ok=2", "realloc_ok=1");
+        assert!(parse_slab_alloc_benchmark(&no_realloc).is_err());
+    }
+
+    #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());
@@ -4056,7 +4132,7 @@ with:
             "mode=hardware backend=amd_gcn dispatch_path=hardware hardware_dispatch=1 shader_used=1",
         );
         let log = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{fake_hardware}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{fake_hardware}"
         );
 
         assert!(check_benchmark_text(&log).is_err());
