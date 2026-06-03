@@ -1005,6 +1005,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
         "[SECURITY] hardening proof",
+        "[SECURITY] auth proof",
         "[ManifoldPkg] proof",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
@@ -1054,7 +1055,28 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_aether_runtime_text(&text)?;
     check_laamba_app_proof_text(&text)?;
     check_security_hardening_text(&text)?;
+    check_auth_shadow_proof_text(&text)?;
     check_manifoldpkg_proof_text(&text)?;
+    Ok(())
+}
+
+fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] auth proof")?;
+    require_field_eq(line, "version=", "1", "auth shadow proof")?;
+    require_field_eq(line, "shadow=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_user=", "seal", "auth shadow proof")?;
+    require_field_eq(line, "default_present=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_topo5000=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_legacy=", "0", "auth shadow proof")?;
+    require_field_eq(line, "new_user_topo5000=", "1", "auth shadow proof")?;
+    require_field_eq(line, "result=", "pass", "auth shadow proof")?;
+
+    let embedded = parse_metric(line, "passwd_embedded_hashes=")?;
+    if embedded != 0 {
+        return Err(String::from(
+            "auth shadow proof found embedded password hashes in /etc/passwd",
+        ));
+    }
     Ok(())
 }
 
@@ -2859,6 +2881,7 @@ mod tests {
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
+    const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=skipped_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
@@ -4149,6 +4172,32 @@ with:
         let smap_claim =
             SECURITY_HARDENING_LOG.replace("smap_smep_enabled=1", "smap_smep_enabled=0");
         assert!(check_security_hardening_text(&smap_claim).is_err());
+    }
+
+    #[test]
+    fn auth_shadow_proof_requires_topo5000_default_and_no_passwd_hashes() {
+        assert!(check_auth_shadow_proof_text(AUTH_SHADOW_PROOF_LOG).is_ok());
+
+        let no_shadow = AUTH_SHADOW_PROOF_LOG.replace("shadow=1", "shadow=0");
+        assert!(check_auth_shadow_proof_text(&no_shadow).is_err());
+
+        let no_default = AUTH_SHADOW_PROOF_LOG.replace("default_present=1", "default_present=0");
+        assert!(check_auth_shadow_proof_text(&no_default).is_err());
+
+        let weak_default =
+            AUTH_SHADOW_PROOF_LOG.replace("default_topo5000=1", "default_topo5000=0");
+        assert!(check_auth_shadow_proof_text(&weak_default).is_err());
+
+        let legacy_default = AUTH_SHADOW_PROOF_LOG.replace("default_legacy=0", "default_legacy=1");
+        assert!(check_auth_shadow_proof_text(&legacy_default).is_err());
+
+        let weak_new_user =
+            AUTH_SHADOW_PROOF_LOG.replace("new_user_topo5000=1", "new_user_topo5000=0");
+        assert!(check_auth_shadow_proof_text(&weak_new_user).is_err());
+
+        let embedded_hashes =
+            AUTH_SHADOW_PROOF_LOG.replace("passwd_embedded_hashes=0", "passwd_embedded_hashes=1");
+        assert!(check_auth_shadow_proof_text(&embedded_hashes).is_err());
     }
 
     #[test]
