@@ -410,7 +410,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof` with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; the boot package and registry index fixtures are signed and verified before install. Public remote release channel is still pending. | Build hosted registry release fixture gate |
 | **Installer** | Safe VFS install path is real and proof-gated: it writes `/boot/EFI/BOOT/BOOTX64.EFI`, creates `/home/<user>`, writes profile data, wires passwd/shadow auth, and rejects old simulation logs. Raw GPT partitioning and filesystem formatting are still not implemented. | Raw block device write path with GPT + format proof |
 | **FAT / ext2 parity** | Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2. Full cross-image parity still needs mounted fixture images. | Mounted FAT/ext2 fixture images with byte-for-byte parity tests |
-| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush, TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
+| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is now boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
 | **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |
 
 ### ❌ Not Yet Real
@@ -1268,7 +1268,7 @@ flowchart TB
 
 ### KPTI (Kernel Page-Table Isolation)
 
-CR3 swap code exists via `memory/pgtable_asm.rs`. Boot now emits `[SECURITY] hardening proof` and `seal-mkimage` requires distinct kernel/user CR3 roots, empty user lower-half PML4 entries, mirrored kernel upper-half entries, SMAP/SMEP enablement when supported, and `result=pass`. **Status**: hard-gated KPTI shape proof exists; deeper syscall-path stress and side-channel tests remain pending.
+CR3 swap code exists via `memory/pgtable_asm.rs`. Boot now emits `[SECURITY] hardening proof` and `seal-mkimage` requires distinct kernel/user CR3 roots, empty user lower-half PML4 entries, mirrored kernel upper-half entries, SMAP/SMEP enablement when supported, and `result=pass`. Boot also emits `[SECURITY] audit proof` after VFS init and requires `/var/log/audit.log` readback with `flushed=1`. **Status**: hard-gated KPTI shape and audit flush proofs exist; deeper syscall-path stress and side-channel tests remain pending.
 
 ### ASLR
 
@@ -1280,7 +1280,7 @@ Classic BPF evaluator (not eBPF). Per-task filter arrays. Instructions: `BPF_LD_
 
 ### Audit
 
-JSON-formatted event buffering exists. A hard gate still needs to prove VFS flush semantics for `/var/log/audit.log`.
+JSON-formatted event buffering exists. Boot now emits `[SECURITY] audit proof` after VFS init and `seal-mkimage` requires directory creation, zero buffered bytes after flush, and readback from `/var/log/audit.log`.
 
 ### Threat Model
 

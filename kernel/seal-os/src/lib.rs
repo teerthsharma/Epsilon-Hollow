@@ -379,6 +379,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         );
     }
     memory::swap::init();
+    security::audit::emit_flush_proof();
     security::passwd::init_passwd();
     security::shadow::shadow_init();
     security::shadow::emit_auth_shadow_proof();
@@ -1544,6 +1545,7 @@ fn boot_serial() {
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     }
+    security::audit::emit_flush_proof();
     pkg::emit_boot_proof();
     memory::swap::init();
     init_usb();

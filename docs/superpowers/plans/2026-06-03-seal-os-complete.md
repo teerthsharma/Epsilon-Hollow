@@ -14,7 +14,7 @@
 
 1. **Aether-Lang cannot self-host** — needs bootstrap compiler, richer stdlib, build system integration
 2. **Not faster than Linux** — Ubuntu artifact missing, side-by-side harness incomplete
-3. **Not production-secure** — KPTI boot selftest pending, no X.509/TLS, no security audit
+3. **Not production-secure** — KPTI and audit flush boot gates exist; no X.509/TLS PKI/ECDHE, KASLR, or external security audit
 4. **GPU not proven hardware compute** — shader stubs need real GCN ISA, hardware dispatch proof missing
 5. **No browser** — no HTML parser, DOM, CSS, JS, or renderer
 6. **Not self-hosting build** — needs Aether-Lang cross-compiler to break Linux/Windows/macOS dependency
