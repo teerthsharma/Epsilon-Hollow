@@ -19,7 +19,7 @@
 5. **No browser** — no HTML parser, DOM, CSS, JS, or renderer
 6. **Not self-hosting build** — needs Aether-Lang cross-compiler to break Linux/Windows/macOS dependency
 7. **Legacy host wrappers remain** — scripts/ and host Python still outside runtime path
-8. **Package manager remote registry pending** — `.eph` remote fetch + signed gate missing
+8. **Package manager remote registry pending** — `.eph` signed boot fixture is gated with `signature=ed25519_fixture`; remote registry index and public signed release channel remain missing
 9. **Installer lacks GPT/formatting** — UI exists, no raw block write path
 10. **FAT/ext2 mounted fixture parity pending** — read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are `--check-doc-claim-contract` gated; byte-for-byte mounted fixture images still need coverage
 11. **Kernel modules framework missing** — everything built-in, no LKM ABI

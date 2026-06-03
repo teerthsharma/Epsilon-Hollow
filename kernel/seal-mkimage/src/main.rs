@@ -1139,7 +1139,7 @@ fn check_manifoldpkg_proof_text(text: &str) -> Result<(), String> {
     require_field_eq(line, "list=", "ok", "ManifoldPkg proof")?;
     require_field_eq(line, "remove=", "ok", "ManifoldPkg proof")?;
     require_field_eq(line, "metadata_only=", "0", "ManifoldPkg proof")?;
-    require_field_eq(line, "signature=", "skipped_fixture", "ManifoldPkg proof")?;
+    require_field_eq(line, "signature=", "ed25519_fixture", "ManifoldPkg proof")?;
     require_field_eq(line, "result=", "pass", "ManifoldPkg proof")?;
 
     let files = parse_metric(line, "files=")?;
@@ -2932,7 +2932,7 @@ mod tests {
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
-    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=skipped_fixture result=pass\n";
+    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -4286,6 +4286,10 @@ with:
         let bad_count =
             MANIFOLDPKG_PROOF_LOG.replace("package_count_after_install=1", "package_count_after_install=0");
         assert!(check_manifoldpkg_proof_text(&bad_count).is_err());
+
+        let skipped_sig =
+            MANIFOLDPKG_PROOF_LOG.replace("signature=ed25519_fixture", "signature=skipped_fixture");
+        assert!(check_manifoldpkg_proof_text(&skipped_sig).is_err());
     }
 
     #[test]
@@ -4300,7 +4304,8 @@ fs_mode=mock_block
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
-Remote registry fixture and signed package release gate are still pending
+`signature=ed25519_fixture`
+Remote registry index and public signed release channel are still pending
 Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
@@ -5352,8 +5357,14 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "Remote registry fixture and signed package release gate are still pending",
-            "README must expose missing ManifoldPkg remote proof",
+            "`signature=ed25519_fixture`",
+            "README must expose signed ManifoldPkg boot fixture proof",
+        ),
+        (
+            "README.md",
+            readme,
+            "Remote registry index and public signed release channel are still pending",
+            "README must expose missing ManifoldPkg remote release proof",
         ),
         (
             "README.md",
