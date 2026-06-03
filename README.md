@@ -395,7 +395,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 <details open>
 <summary><strong>Package Manager & Settings</strong></summary>
 
-- **ManifoldPkg** — `.eph` parser, dependency resolver, local ManifoldFS extraction, HTTPS registry URL, Ed25519 verification path
+- **ManifoldPkg** — `.eph` parser, dependency resolver, local ManifoldFS extraction, boot proof marker, HTTPS registry URL, Ed25519 verification path
 - **Settings** — live `BTreeMap<String,String>` with theme/font/wallpaper defaults, `sys_setting_get`/`sys_setting_set`
 
 </details>
@@ -407,7 +407,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. The build no longer fabricates placeholder shader binaries; hardware dispatch only embeds real checked-in `.bin` blobs and otherwise reports `kernel_not_found`. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Check in real OpenCL C → GCN ISA blobs and add a hardware `[GPU-BENCH]` proof |
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
-| **Package Manager** | Local extraction + signed verification path exist. remote registry fixture and signed package gate are pending. | Build registry + fixture |
+| **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof`; signed verification path exists. Remote registry fixture and signed package release gate are still pending. | Build registry + signed fixture |
 | **Installer** | UI exists. Actual GPT partitioning and filesystem formatting not yet implemented. | Raw block device write path |
 | **FAT / ext2 parity** | Write paths exist; fixture gate pending before "full filesystem parity" claims. | Comprehensive fixture tests |
 | **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush, TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
@@ -1544,7 +1544,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
 | **Shell** | SealShell (30+ English-first commands) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
-| **Package manager** | ManifoldPkg local metadata + signed `.eph` path | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
+| **Package manager** | ManifoldPkg local `.eph` extraction proof + signed `.eph` path | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
 | **Syscalls** | Seal ABI + Epsilon theorem extensions | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
 | **USB support** | Real — xHCI controller, HID boot keyboards/mice, Mass Storage SCSI BBB | Basic (xHCI) | Full | Full | Full | Full |
 | **Network stack** | Kernel TCP/UDP/DHCP/DNS implementations + minimal TLS 1.3 PSK client; exact-flow TCP demux is gated, full external session matrix pending | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
@@ -2309,15 +2309,16 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 14. `[GPU-BENCH] suite`
 15. `[Aether-Lang] runtime proof`
 16. `[LAAMBA] app proof:`
-17. QEMU AHCI disk identity
-18. Block device `0x800` registered
-19. Persistent ManifoldFS root mounted from disk
-20. `[GFX] desktop-proof`
-21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-live-proof`
-23. `[GFX] desktop-soak`
-24. Desktop ready sentinel
-25. Event-loop entry sentinel
+17. `[ManifoldPkg] proof`
+18. QEMU AHCI disk identity
+19. Block device `0x800` registered
+20. Persistent ManifoldFS root mounted from disk
+21. `[GFX] desktop-proof`
+22. Desktop proof frame blit sentinel
+23. `[GFX] desktop-live-proof`
+24. `[GFX] desktop-soak`
+25. Desktop ready sentinel
+26. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 

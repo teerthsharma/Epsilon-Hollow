@@ -507,6 +507,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     graphics::splash::draw_progress_bar(fb, 40, "");
 
     init_manifold_pkg();
+    pkg::emit_boot_proof();
     graphics::splash::draw_progress_bar(fb, 50, "Network stack");
 
     init_aether_lang();
@@ -1542,6 +1543,7 @@ fn boot_serial() {
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     }
+    pkg::emit_boot_proof();
     memory::swap::init();
     init_usb();
     init_prefetch();

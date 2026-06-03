@@ -617,17 +617,19 @@ impl Shell {
         if pkg.is_empty() {
             return String::from("install: which package? Usage: install <package>");
         }
-        let manifest = format!("name={}\nversion=1.0.0\nstatus=metadata-only", pkg);
-        match self
-            .fs
-            .store_text(&format!("{}.pkg", pkg), &manifest, self.cwd)
-        {
-            Ok(id) => format!(
-                "[ManifoldPkg] Resolved '{}' via Voronoi cell lookup\n\
-                 [ManifoldPkg] Stored package manifest (inode {})\n\
-                 Note: no remote registry — package metadata stored in ManifoldFS only",
-                pkg, id
-            ),
+
+        if pkg.ends_with(".eph") {
+            let Some(data) = self.fs.read_bytes(pkg, self.cwd) else {
+                return format!("[ManifoldPkg] local package '{}' not found", pkg);
+            };
+            return match crate::pkg::GLOBAL_PKG.lock().install_bytes(&data, None) {
+                Ok(msg) => format!("[ManifoldPkg] {}", msg),
+                Err(e) => format!("[ManifoldPkg] local install: {}", e),
+            };
+        }
+
+        match crate::pkg::GLOBAL_PKG.lock().install(pkg) {
+            Ok(msg) => format!("[ManifoldPkg] {}", msg),
             Err(e) => format!("[ManifoldPkg] install: {}", e),
         }
     }
@@ -636,37 +638,38 @@ impl Shell {
         if pkg.is_empty() {
             return String::from("remove: which package? Usage: remove <package>");
         }
-        let pkg_file = format!("{}.pkg", pkg);
-        match self.fs.delete(&pkg_file, self.cwd) {
-            Ok(()) => format!("[ManifoldPkg] Removed '{}' manifest", pkg),
-            Err(_) => format!("[ManifoldPkg] Package '{}' not found", pkg),
+        match crate::pkg::GLOBAL_PKG.lock().remove(pkg) {
+            Ok(msg) => format!("[ManifoldPkg] {}", msg),
+            Err(e) => format!("[ManifoldPkg] remove: {}", e),
         }
     }
 
     fn cmd_packages(&self) -> String {
-        match self.fs.ls(self.cwd) {
-            Ok(entries) => {
-                let pkgs: Vec<_> = entries
-                    .iter()
-                    .filter(|e| e.name.ends_with(".pkg"))
-                    .collect();
-                if pkgs.is_empty() {
-                    return String::from(
-                        "[ManifoldPkg] No packages installed — use 'install <package>'",
-                    );
-                }
-                let mut out = String::from("[ManifoldPkg] Installed packages:\n");
-                for p in &pkgs {
-                    out.push_str(&format!("  {} ({} bytes)\n", p.name, p.original_size));
-                }
-                out
-            }
-            Err(_) => String::from("[ManifoldPkg] No packages installed"),
+        let pkg = crate::pkg::GLOBAL_PKG.lock();
+        let packages = pkg.list();
+        if packages.is_empty() {
+            return String::from("[ManifoldPkg] No packages installed");
         }
+        let mut out = String::from("[ManifoldPkg] Installed packages:\n");
+        for manifest in packages {
+            out.push_str(&format!(
+                "  {} v{} [{}]\n",
+                manifest.name,
+                manifest.version,
+                manifest.carrier.name()
+            ));
+        }
+        out
     }
 
     fn cmd_update(&self) -> String {
-        String::from("ManifoldPkg: no remote registry — packages are local metadata only")
+        if crate::net::has_nic() {
+            String::from(
+                "ManifoldPkg: registry refresh requires the signed remote index gate; install <name> can fetch signed .eph packages",
+            )
+        } else {
+            String::from("ManifoldPkg: no network device; use install <local.eph> for local packages")
+        }
     }
 
     fn cmd_wifi(&self, sub: &str, arg: &str) -> String {

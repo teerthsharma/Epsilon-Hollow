@@ -218,15 +218,16 @@ The smoke test must verify these serial output patterns:
 | 14 | `[GPU-BENCH] suite` | CPU fallback topology accelerator proof ran three kernels against CPU recomputation, with no hardware dispatch claimed |
 | 15 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
 | 16 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
-| 17 | `Device model: QEMU HARDDISK` | AHCI disk identified |
-| 18 | `Registered as block device 0x800` | AHCI block device registered |
-| 19 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
-| 20 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
-| 21 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 22 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
-| 23 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 24 | `Seal OS desktop ready.` | Desktop reached |
-| 25 | `Entering real event loop` | Event loop active |
+| 17 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
+| 18 | `Device model: QEMU HARDDISK` | AHCI disk identified |
+| 19 | `Registered as block device 0x800` | AHCI block device registered |
+| 20 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
+| 21 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
+| 22 | `Desktop proof frame blit done` | First desktop frame blitted |
+| 23 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
+| 24 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 25 | `Seal OS desktop ready.` | Desktop reached |
+| 26 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -234,7 +235,7 @@ Additional Rust-native audit commands run against the same OS surface:
 
 | Command | Purpose |
 |---|---|
-| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
+| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, ManifoldPkg `.eph` install/extract proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
 | `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, live desktop input proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
