@@ -218,21 +218,22 @@ The smoke test must verify these serial output patterns:
 | 14 | `[BENCH] scheduler-select-next` | Live scheduler selector requeue hot path measured |
 | 15 | `[BENCH] tcp-packet-demux` | TCP listener-first same-port demux fixture delivered payload through the bounded exact-flow index, avoided exact-flow socket scans, left a decoy empty, and proved bounded listener-index fallback |
 | 16 | `[BENCH] tcp-roundtrip` | TCP loopback echo fixture accepted 8 flows, delivered and echoed 64-byte payloads, used bounded indexes, and cleaned up |
-| 17 | `[GPU-BENCH] suite` | CPU fallback topology accelerator proof ran three kernels against CPU recomputation, with no hardware dispatch claimed |
-| 18 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
-| 19 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
-| 20 | `[SECURITY] auth proof` | `/etc/shadow` exists, `seal`/`seal` is rejected, default/new users use `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded hashes |
-| 21 | `[MM] cow-proof` | COW page-table clone has rollback cleanup for partial allocation failure and fork/clone fail closed instead of falling back to the parent page table |
-| 22 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
-| 23 | `Device model: QEMU HARDDISK` | AHCI disk identified |
-| 24 | `Registered as block device 0x800` | AHCI block device registered |
-| 25 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
-| 26 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
-| 27 | `Desktop proof frame blit done` | First desktop frame blitted |
-| 28 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
-| 29 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
-| 30 | `Seal OS desktop ready.` | Desktop reached |
-| 31 | `Entering real event loop` | Event loop active |
+| 17 | `[BENCH] tls-encrypt` | TLS PSK AES-128-GCM record encryption measured with decrypt/auth roundtrip and sequence increments |
+| 18 | `[GPU-BENCH] suite` | CPU fallback topology accelerator proof ran three kernels against CPU recomputation, with no hardware dispatch claimed |
+| 19 | `[Aether-Lang] runtime proof` | Parser, interpreter, and app host executed the boot probe |
+| 20 | `[LAAMBA] app proof:` | Kernel LAAMBA Governor window, launcher slot, desktop icon, start-menu path, and Aether host bridge proved without Python runtime |
+| 21 | `[SECURITY] auth proof` | `/etc/shadow` exists, `seal`/`seal` is rejected, default/new users use `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded hashes |
+| 22 | `[MM] cow-proof` | COW page-table clone has rollback cleanup for partial allocation failure and fork/clone fail closed instead of falling back to the parent page table |
+| 23 | `[ManifoldPkg] proof` | Embedded `.eph` package parsed, installed, extracted to VFS, listed, removed from registry, and proved `metadata_only=0` |
+| 24 | `Device model: QEMU HARDDISK` | AHCI disk identified |
+| 25 | `Registered as block device 0x800` | AHCI block device registered |
+| 26 | `ManifoldFS mounted from disk` | Persistent ManifoldFS root mounted |
+| 27 | `[GFX] desktop-proof` | Serial framebuffer/back-buffer scan proved nonblank desktop structure, icons, taskbar signals, window count, and nonzero sample hash |
+| 28 | `Desktop proof frame blit done` | First desktop frame blitted |
+| 29 | `[GFX] desktop-live-proof` | Desktop input route clicked the Files icon through `wm::desktop::handle_input`, focused the Files window, blitted, and proved both back-buffer samples and presented VRAM samples changed |
+| 30 | `[GFX] desktop-soak` | Deterministic compositor compose+blit exercise ran |
+| 31 | `Seal OS desktop ready.` | Desktop reached |
+| 32 | `Entering real event loop` | Event loop active |
 
 The job must fail if any theorem line contains `FAILED`, or if panic/fault/watchdog markers appear.
 
@@ -246,7 +247,7 @@ Additional Rust-native audit commands run against the same OS surface:
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |
 | `seal-mkimage --check-desktop-soak /tmp/seal-os.log` | Parses `[GFX] desktop-proof`, `[GFX] desktop-live-proof`, and `[GFX] desktop-soak`; requires framebuffer dimensions, back-buffer presence, full-frame scan count, nonblank pixels, 10 visible icons, color diversity, primary titlebar, control region, taskbar start/theorem/minimized/power signals, nonzero sample hash, live desktop click/focus/blit evidence with changed back-buffer samples, changed presented VRAM samples, VRAM/back-buffer sample agreement, frame count, monotonic cycle percentiles, and input-events field |
 | `seal-mkimage --check-proof-screen /tmp/seal-os-screen.ppm` | Parses the captured QEMU PPM and requires nonblank 1024x768 desktop pixels, icon lane, control region, primary terminal titlebar, theorem/taskbar/start/power signals, and color diversity |
-| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`, `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`, and `[GPU-BENCH]`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, slab coverage for all six size classes/refill/reuse/free/realloc fixtures, same-inode ManifoldFS metadata teleport across 8-256 entries in `fs_mode=mock_block`, bounded metadata ops, `persistence_bytes_per_move=0`, ManifoldFS path lookup through `resolve_path_with_proof` across 64 four-component mock-block paths with bounded DirHash probes, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, bounded-index exact-flow TCP demux payload delivery, same-port decoy non-delivery, zero exact-flow scan, bounded listener-index fallback, loopback TCP echo byte-for-byte round-trip, and CPU-fallback topology accelerator correctness against CPU recomputation with no hardware dispatch claimed |
+| `seal-mkimage --check-benchmark-log /tmp/seal-os.log` | Parses `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`, `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`, `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`, `[BENCH] tls-encrypt`, and `[GPU-BENCH]`; requires TopoRAM target-cell hits with zero fallbacks, physical allocator fast-path invariants, slab coverage for all six size classes/refill/reuse/free/realloc fixtures, same-inode ManifoldFS metadata teleport across 8-256 entries in `fs_mode=mock_block`, bounded metadata ops, `persistence_bytes_per_move=0`, ManifoldFS path lookup through `resolve_path_with_proof` across 64 four-component mock-block paths with bounded DirHash probes, live scheduler select requeue with fixed 8-cell/256-bucket bounds and zero context switches, bounded-index exact-flow TCP demux payload delivery, same-port decoy non-delivery, zero exact-flow scan, bounded listener-index fallback, loopback TCP echo byte-for-byte round-trip, TLS PSK AES-128-GCM 1024-byte record encrypt/decrypt proof, and CPU-fallback topology accelerator correctness against CPU recomputation with no hardware dispatch claimed |
 | `seal-mkimage --check-proof-manifest <proof-manifest.txt>` | Verifies proof bundle provenance. QEMU manifests require image/EFI/log/screen byte counts, CRC32/SHA-256 fingerprints, backend, commit/dirty flag, proof-screen status, and hard gate statuses. VirtualBox manifests require image/EFI/log/screenshot fingerprints, headless backend, commit/dirty flag, vbox proof status, and hard gate statuses without claiming QEMU PPM parity |
 | `seal-mkimage --check-ubuntu-benchmark-log ubuntu-alloc.log` | Parses a same-machine `[UBUNTU-BENCH] alloc-frame` artifact and rejects it unless `os=ubuntu`, `version_id=26.04`, `kernel=` is native rather than WSL, iterations are complete, bytes are 4096, and cycle percentiles are monotonic |
 | `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log` | Fails unless Seal OS p50, p95, and max allocation cycles beat the validated Ubuntu artifact |

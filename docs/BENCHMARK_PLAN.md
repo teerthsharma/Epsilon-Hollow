@@ -175,6 +175,25 @@ empty, and routes a fresh SYN through the bounded listener-port index. It is not
 a network latency benchmark; DHCP, external RX/TX, and HFT packet latency remain
 separate artifacts.
 
+### 4.2 TLS PSK Record Encrypt Fixture
+
+Seal OS:
+
+- a PSK-only `TlsSession` is placed in established state
+- a 1024-byte record is encrypted with AES-128-GCM and then decrypted with the
+  matching read key/IV
+- current boot marker:
+
+```text
+[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
+```
+
+The marker proves the kernel TLS record path wraps a 1024-byte payload into a
+1045-byte TLS record, authenticates with a 16-byte GCM tag, advances read/write
+sequence numbers, decrypts back to the source payload, and emits monotonic cycle
+samples. It does not claim X.509, ECDHE, certificate validation, socket I/O, or
+public HTTPS compatibility.
+
 Ubuntu target:
 
 - `perf sched` or cyclictest wake latency
@@ -437,7 +456,8 @@ The first benchmark milestone is modest and measurable:
    desktop-ready sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
    `[BENCH] alloc-frame`, `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`,
    `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`,
-   `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`, and
+   `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`,
+   `[BENCH] tls-encrypt`, and
    `[GFX] desktop-proof` / `[GFX] desktop-live-proof` /
    `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
