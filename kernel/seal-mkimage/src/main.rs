@@ -1016,6 +1016,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] manifold-teleport",
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
+        "[BENCH] tcp-roundtrip",
         "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
@@ -1335,6 +1336,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_manifold_teleport_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
+    parse_tcp_roundtrip_benchmark(text)?;
     parse_gpu_topology_benchmark(text)?;
     Ok(())
 }
@@ -1810,6 +1812,69 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
         ));
     }
 
+    Ok(())
+}
+
+fn parse_tcp_roundtrip_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tcp-roundtrip")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let connections = parse_metric(line, "connections=")?;
+    let established = parse_metric(line, "established=")?;
+    let payload_bytes = parse_metric(line, "payload_bytes=")?;
+    let client_tx = parse_metric(line, "client_tx=")?;
+    let server_rx = parse_metric(line, "server_rx=")?;
+    let server_echo = parse_metric(line, "server_echo=")?;
+    let client_rx = parse_metric(line, "client_rx=")?;
+    let listener_accept = parse_metric(line, "listener_accept=")?;
+    let exact_flow = parse_metric(line, "exact_flow=")?;
+    let listener_index_hit = parse_metric(line, "listener_index_hit=")?;
+    let client_index_hit = parse_metric(line, "client_index_hit=")?;
+    let index_lookup_probes_max = parse_metric(line, "index_lookup_probes_max=")?;
+    let index_probe_bound = parse_metric(line, "index_probe_bound=")?;
+    let cleanup = parse_field(line, "cleanup=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "tcp_loopback_echo_fixture" || fixture != "loopback_echo" {
+        return Err(format!(
+            "TCP roundtrip benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if connections < 8 || established != connections || listener_accept != connections {
+        return Err(format!(
+            "TCP roundtrip did not establish/accept all connections: connections={connections}, established={established}, listener_accept={listener_accept}"
+        ));
+    }
+    if payload_bytes < 64 {
+        return Err(format!(
+            "TCP roundtrip payload too small: payload_bytes={payload_bytes}"
+        ));
+    }
+    let expected_bytes = connections * payload_bytes;
+    if client_tx != expected_bytes
+        || server_rx != expected_bytes
+        || server_echo != expected_bytes
+        || client_rx != expected_bytes
+    {
+        return Err(format!(
+            "TCP roundtrip byte mismatch: expected={expected_bytes}, client_tx={client_tx}, server_rx={server_rx}, server_echo={server_echo}, client_rx={client_rx}"
+        ));
+    }
+    if exact_flow != connections || listener_index_hit != connections || client_index_hit != connections {
+        return Err(format!(
+            "TCP roundtrip did not use bounded indexes for all flows: exact_flow={exact_flow}, listener_index_hit={listener_index_hit}, client_index_hit={client_index_hit}, connections={connections}"
+        ));
+    }
+    if index_lookup_probes_max == 0 || index_lookup_probes_max > index_probe_bound {
+        return Err(format!(
+            "TCP roundtrip index probes exceeded bound: max={index_lookup_probes_max}, bound={index_probe_bound}"
+        ));
+    }
+    if cleanup != "ok" || result != "pass" {
+        return Err(format!(
+            "TCP roundtrip cleanup/result failed: cleanup={cleanup}, result={result}"
+        ));
+    }
     Ok(())
 }
 
@@ -3029,6 +3094,7 @@ mod tests {
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
+    const TCP_ROUNDTRIP_LOG: &str = "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=4 index_probe_bound=256 cleanup=ok result=pass\n";
     const GPU_TOPOLOGY_BENCH_LOG: &str = "\
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
 [GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
@@ -3580,6 +3646,7 @@ gate_benchmark_log=ok\n",
             MANIFOLD_TELEPORT_LOG,
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
+            TCP_ROUNDTRIP_LOG,
             GPU_TOPOLOGY_BENCH_LOG,
         ]
         .concat()
@@ -4114,9 +4181,26 @@ with:
     }
 
     #[test]
+    fn rejects_weak_tcp_roundtrip_fixture() {
+        assert!(parse_tcp_roundtrip_benchmark(TCP_ROUNDTRIP_LOG).is_ok());
+
+        let too_few = TCP_ROUNDTRIP_LOG.replace("connections=8", "connections=7");
+        assert!(parse_tcp_roundtrip_benchmark(&too_few).is_err());
+
+        let byte_loss = TCP_ROUNDTRIP_LOG.replace("client_rx=512", "client_rx=511");
+        assert!(parse_tcp_roundtrip_benchmark(&byte_loss).is_err());
+
+        let no_index = TCP_ROUNDTRIP_LOG.replace("exact_flow=8", "exact_flow=7");
+        assert!(parse_tcp_roundtrip_benchmark(&no_index).is_err());
+
+        let bad_cleanup = TCP_ROUNDTRIP_LOG.replace("cleanup=ok", "cleanup=leak");
+        assert!(parse_tcp_roundtrip_benchmark(&bad_cleanup).is_err());
+    }
+
+    #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());
@@ -4132,7 +4216,7 @@ with:
             "mode=hardware backend=amd_gcn dispatch_path=hardware hardware_dispatch=1 shader_used=1",
         );
         let log = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{fake_hardware}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{fake_hardware}"
         );
 
         assert!(check_benchmark_text(&log).is_err());

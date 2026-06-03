@@ -1920,6 +1920,7 @@ fn init_drivers() {
     serial_println!("[BOOT] driver init: xhci done");
     net::init();
     run_tcp_packet_demux_bench();
+    run_tcp_roundtrip_bench();
     serial_println!("[BOOT] driver init: net done");
 }
 
@@ -1967,6 +1968,40 @@ fn run_tcp_packet_demux_bench() {
         proof.listener_index_capacity,
         if proof.exact_scan { 1 } else { 0 },
         if proof.cleanup_ok { "ok" } else { "leak" }
+    );
+}
+
+#[cfg(not(test))]
+fn run_tcp_roundtrip_bench() {
+    net::tcp::reset_for_benchmark();
+    let proof = net::tcp::loopback_echo_fixture_proof();
+    let result = proof.established == proof.connections
+        && proof.client_tx == proof.connections * proof.payload_bytes
+        && proof.server_rx == proof.client_tx
+        && proof.server_echo == proof.client_tx
+        && proof.client_rx == proof.client_tx
+        && proof.listener_accept == proof.connections
+        && proof.exact_flow == proof.connections
+        && proof.listener_index_hit == proof.connections
+        && proof.client_index_hit == proof.connections
+        && proof.cleanup_ok;
+    serial_println!(
+        "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections={} established={} payload_bytes={} client_tx={} server_rx={} server_echo={} client_rx={} listener_accept={} exact_flow={} listener_index_hit={} client_index_hit={} index_lookup_probes_max={} index_probe_bound={} cleanup={} result={}",
+        proof.connections,
+        proof.established,
+        proof.payload_bytes,
+        proof.client_tx,
+        proof.server_rx,
+        proof.server_echo,
+        proof.client_rx,
+        proof.listener_accept,
+        proof.exact_flow,
+        proof.listener_index_hit,
+        proof.client_index_hit,
+        proof.index_lookup_probes_max,
+        proof.index_probe_bound,
+        if proof.cleanup_ok { "ok" } else { "leak" },
+        if result { "pass" } else { "fail" }
     );
 }
 

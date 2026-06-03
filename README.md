@@ -1612,7 +1612,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **NVMe read** | `read_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **TCP demux** | `handle_tcp_packet()` | O(1) bounded exact-flow index for accepted flows plus bounded listener-port index for SYN fallback | `[BENCH] tcp-packet-demux` proves bounded exact-flow index hit, bounded listener-index hit, zero exact-flow scan, listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
-| **TCP round-trip** | localhost ping | complexity pending until full round-trip fixture and listener index land | benchmark pending |
+| **TCP round-trip** | loopback echo fixture | `[BENCH] tcp-roundtrip` proves 8 accepted loopback echo flows, 64-byte payloads, exact-flow/client/listener indexes, byte-for-byte echo, and cleanup | boot-gated benchmark |
 | **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |
 | **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | benchmark pending |
@@ -2307,21 +2307,22 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 12. `[BENCH] manifold-teleport`
 13. `[BENCH] scheduler-select-next`
 14. `[BENCH] tcp-packet-demux`
-15. `[GPU-BENCH] suite`
-16. `[Aether-Lang] runtime proof`
-17. `[LAAMBA] app proof:`
-18. `[SECURITY] auth proof`
-19. `[MM] cow-proof`
-20. `[ManifoldPkg] proof`
-21. QEMU AHCI disk identity
-22. Block device `0x800` registered
-23. Persistent ManifoldFS root mounted from disk
-24. `[GFX] desktop-proof`
-25. Desktop proof frame blit sentinel
-26. `[GFX] desktop-live-proof`
-27. `[GFX] desktop-soak`
-28. Desktop ready sentinel
-29. Event-loop entry sentinel
+15. `[BENCH] tcp-roundtrip`
+16. `[GPU-BENCH] suite`
+17. `[Aether-Lang] runtime proof`
+18. `[LAAMBA] app proof:`
+19. `[SECURITY] auth proof`
+20. `[MM] cow-proof`
+21. `[ManifoldPkg] proof`
+22. QEMU AHCI disk identity
+23. Block device `0x800` registered
+24. Persistent ManifoldFS root mounted from disk
+25. `[GFX] desktop-proof`
+26. Desktop proof frame blit sentinel
+27. `[GFX] desktop-live-proof`
+28. `[GFX] desktop-soak`
+29. Desktop ready sentinel
+30. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
