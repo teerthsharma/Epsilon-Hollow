@@ -12,6 +12,7 @@ pub mod resolver;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use ed25519_dalek::{Signer, SigningKey};
 
 use self::format::{parse_eph, verify_signature};
 use self::manifest::PackageManifest;
@@ -28,6 +29,10 @@ const PROOF_PKG_NAME: &str = "seal-proof-pkg";
 const PROOF_PKG_VERSION: &str = "0.0.1";
 const PROOF_FILE_PATH: &str = "/packages/seal-proof.txt";
 const PROOF_FILE_BYTES: &[u8] = b"seal package proof\n";
+const PROOF_PKG_SIGNING_KEY: [u8; 32] = [
+    0x51, 0x9d, 0x7a, 0x12, 0xe3, 0x04, 0x42, 0xb7, 0x28, 0x6f, 0xaa, 0xc1, 0x09, 0x5b, 0x73, 0xd0,
+    0x18, 0x8c, 0xf5, 0x36, 0x21, 0xee, 0x90, 0x44, 0x67, 0xa3, 0xd2, 0x0f, 0xb9, 0x5c, 0x61, 0x2a,
+];
 
 pub struct ManifoldPkg {
     registry: PackageRegistry,
@@ -40,6 +45,7 @@ pub fn emit_boot_proof() {
     let _ = pkg.remove(PROOF_PKG_NAME);
     let before = pkg.package_count();
     let eph = build_proof_eph();
+    let proof_public_key = proof_pkg_public_key();
     let parse_ok = parse_eph(&eph)
         .map(|parsed| {
             parsed.manifest.name == PROOF_PKG_NAME
@@ -49,7 +55,10 @@ pub fn emit_boot_proof() {
                 && parsed.files[0].data == PROOF_FILE_BYTES
         })
         .unwrap_or(false);
-    let install_ok = pkg.install_bytes(&eph, None).is_ok();
+    let signature_ok = parse_eph(&eph)
+        .and_then(|parsed| verify_signature(&parsed, &proof_public_key))
+        .is_ok();
+    let install_ok = pkg.install_bytes(&eph, Some(&proof_public_key)).is_ok();
     let after_install = pkg.package_count();
     let list_ok = pkg
         .list()
@@ -59,14 +68,13 @@ pub fn emit_boot_proof() {
     let remove_ok = pkg.remove(PROOF_PKG_NAME).is_ok();
     let after_remove = pkg.package_count();
     let counts_ok = after_install == before + 1 && after_remove == before;
-    let result =
-        if parse_ok && install_ok && list_ok && extract_ok && remove_ok && counts_ok {
+    let result = if parse_ok && signature_ok && install_ok && list_ok && extract_ok && remove_ok && counts_ok {
             "pass"
         } else {
             "fail"
         };
     crate::serial_println!(
-        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature=skipped_fixture result={}",
+        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature={} result={}",
         if parse_ok { "ok" } else { "fail" },
         if install_ok { "ok" } else { "fail" },
         if extract_ok { "ok" } else { "fail" },
@@ -76,6 +84,7 @@ pub fn emit_boot_proof() {
         before,
         after_install,
         after_remove,
+        if signature_ok { "ed25519_fixture" } else { "fail" },
         result
     );
 }
@@ -95,7 +104,31 @@ fn build_proof_eph() -> Vec<u8> {
     data.extend_from_slice(&(PROOF_FILE_BYTES.len() as u32).to_be_bytes());
     data.extend_from_slice(PROOF_FILE_BYTES);
     data.extend_from_slice(b"END\0");
+    let signature_offset = 8 + manifest.len();
+    if let Ok(parsed) = parse_eph(&data) {
+        let sig = sign_proof_package(&parsed);
+        data[signature_offset..signature_offset + 64].copy_from_slice(&sig);
+    }
     data
+}
+
+fn proof_pkg_public_key() -> [u8; 32] {
+    SigningKey::from_bytes(&PROOF_PKG_SIGNING_KEY)
+        .verifying_key()
+        .to_bytes()
+}
+
+fn sign_proof_package(pkg: &self::format::EphPackage) -> [u8; 64] {
+    let mut signed = Vec::new();
+    signed.extend_from_slice(pkg.manifest.name.as_bytes());
+    signed.extend_from_slice(pkg.manifest.version.as_bytes());
+    for f in &pkg.files {
+        signed.extend_from_slice(f.path.as_bytes());
+        signed.extend_from_slice(&f.hash);
+    }
+    SigningKey::from_bytes(&PROOF_PKG_SIGNING_KEY)
+        .sign(&signed)
+        .to_bytes()
 }
 
 fn proof_file_matches() -> bool {
