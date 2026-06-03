@@ -195,12 +195,16 @@ Seal OS:
 
 ```text
 [BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=<n> dirhash_probes_max=<n> dirhash_probe_bound=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 ```
 
 - this marker proves bounded metadata surgery through the persistent mock
   block-store path, same-inode movement, and `persistence_bytes_per_move=0`
   for same-filesystem moves in `fs_mode=mock_block`; it is not an AHCI latency
   or any-VM proof
+- the lookup marker proves 64 four-component `resolve_path_with_proof` walks
+  in the same mock-block ManifoldFS fixture and requires bounded DirHash probes;
+  it is not a content-similarity Voronoi search proof
 
 Ubuntu:
 
@@ -431,8 +435,9 @@ The first benchmark milestone is modest and measurable:
 4. Capture serial log to theorem gate, Aether runtime proof, LAAMBA app proof,
    serial desktop pixel proof, live desktop input proof, desktop proof frame,
    desktop-ready sentinel, `[ALLOC] O(1) proof:`, `[BENCH] toporam-alloc`,
-   `[BENCH] alloc-frame`, `[BENCH] manifold-teleport`,
-   `[BENCH] scheduler-select-next`, `[BENCH] tcp-packet-demux`, and
+   `[BENCH] alloc-frame`, `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`,
+   `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`,
+   `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`, and
    `[GFX] desktop-proof` / `[GFX] desktop-live-proof` /
    `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.
