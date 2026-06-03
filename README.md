@@ -576,6 +576,7 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
 [BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=<n> dirhash_probes_max=<n> dirhash_probe_bound=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
 [BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
@@ -1502,6 +1503,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | Bare-metal allocator benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] alloc-frame` with 64 successful alloc/free iterations, topological fast-path hits, zero bounded misses, no contiguous-probe drift, and no frame leak |
 | TopoRAM target-cell allocation marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] toporam-alloc` with 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycle samples, and no frame leak |
 | ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode mock block-store metadata move across 8-256 directory entries with `metadata_ops_max=7`, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
+| ManifoldFS path lookup marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] manifold-lookup`, proving `resolve_path_with_proof` walks 64 four-component paths in mock-block ManifoldFS with bounded DirHash probes and `result=pass` |
 | Scheduler select benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] scheduler-select-next`, gating the live `select_next_task` requeue marker across 64 iterations with ready count preserved, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 priority-bucket scan |
 | TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes through the bounded exact-flow index, leaves a same-port decoy empty, avoids exact-flow socket scans, and falls back through the bounded listener index for a new SYN |
 | GPU topology CPU-fallback benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires structured `[GPU-BENCH]` markers for Voronoi assignment, JL projection, and spectral contraction; current proof is `mode=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`, `mismatches=0`, and `claim=cpu_fallback_correctness_only` |
@@ -1605,7 +1607,7 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; `[BENCH] slab-alloc` covers all 6 size classes, refill, free-list reuse, free, and grow/shrink copy-realloc fixtures | boot-gated benchmark |
 | **TopoRAM alloc** | `alloc_frames(1, hint)` | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` |
 | **TopoRAM contiguous** | `alloc_frames(count > 1, hint)` | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap | source-gated by `--check-o1-allocator` |
-| **ManifoldFS lookup** | `lookup(path)` | O(path depth) + O(K) cell search | benchmark pending |
+| **ManifoldFS lookup** | `resolve_path_with_proof(path)` | O(path depth) path walk; each component uses bounded DirHash probes under the table capacity | `[BENCH] manifold-lookup` gate proves 64 four-component paths in `fs_mode=mock_block`, `entries=64`, bounded `dirhash_probes_total_max` and `dirhash_probes_max <= dirhash_probe_bound`, monotonic cycle samples, and `result=pass` |
 | **ManifoldFS teleport** | move file | O(1) metadata rewiring with same-inode directory topology move on the same filesystem; mock block-store persistence does not rewrite file bytes | `[BENCH] manifold-teleport` gate proves same inode, source removal, destination presence, bounded metadata ops, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
 | **Scheduler select** | `select_next_task()` | O(1) — one predicted-cell check plus bounded fallback across 8 cells and 256 priority buckets | `[BENCH] scheduler-select-next` gate proves 64 live requeue selections, ready count preservation, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 bucket scan |
 | **Context switch** | `switch_context()` | O(1) — FXSAVE/FXRSTOR + CR3 swap | benchmark pending |
@@ -2305,24 +2307,25 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 10. `[BENCH] alloc-frame`
 11. `[BENCH] slab-alloc`
 12. `[BENCH] manifold-teleport`
-13. `[BENCH] scheduler-select-next`
-14. `[BENCH] tcp-packet-demux`
-15. `[BENCH] tcp-roundtrip`
-16. `[GPU-BENCH] suite`
-17. `[Aether-Lang] runtime proof`
-18. `[LAAMBA] app proof:`
-19. `[SECURITY] auth proof`
-20. `[MM] cow-proof`
-21. `[ManifoldPkg] proof`
-22. QEMU AHCI disk identity
-23. Block device `0x800` registered
-24. Persistent ManifoldFS root mounted from disk
-25. `[GFX] desktop-proof`
-26. Desktop proof frame blit sentinel
-27. `[GFX] desktop-live-proof`
-28. `[GFX] desktop-soak`
-29. Desktop ready sentinel
-30. Event-loop entry sentinel
+13. `[BENCH] manifold-lookup`
+14. `[BENCH] scheduler-select-next`
+15. `[BENCH] tcp-packet-demux`
+16. `[BENCH] tcp-roundtrip`
+17. `[GPU-BENCH] suite`
+18. `[Aether-Lang] runtime proof`
+19. `[LAAMBA] app proof:`
+20. `[SECURITY] auth proof`
+21. `[MM] cow-proof`
+22. `[ManifoldPkg] proof`
+23. QEMU AHCI disk identity
+24. Block device `0x800` registered
+25. Persistent ManifoldFS root mounted from disk
+26. `[GFX] desktop-proof`
+27. Desktop proof frame blit sentinel
+28. `[GFX] desktop-live-proof`
+29. `[GFX] desktop-soak`
+30. Desktop ready sentinel
+31. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
@@ -2367,15 +2370,18 @@ CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what ev
 8. Theorem summary line
 9. `[BENCH] toporam-alloc`
 10. `[BENCH] alloc-frame`
-11. `[BENCH] manifold-teleport`
-12. `[BENCH] scheduler-select-next`
-13. `[BENCH] tcp-packet-demux`
-14. `[GPU-BENCH] suite`
-15. `[Aether-Lang] runtime proof`
-16. `[LAAMBA] app proof:`
-17. QEMU AHCI disk identity
-18. Block device `0x800` registered
-19. Persistent ManifoldFS root mounted from disk
+11. `[BENCH] slab-alloc`
+12. `[BENCH] manifold-teleport`
+13. `[BENCH] manifold-lookup`
+14. `[BENCH] scheduler-select-next`
+15. `[BENCH] tcp-packet-demux`
+16. `[BENCH] tcp-roundtrip`
+17. `[GPU-BENCH] suite`
+18. `[Aether-Lang] runtime proof`
+19. `[LAAMBA] app proof:`
+20. QEMU AHCI disk identity
+21. Block device `0x800` registered
+22. Persistent ManifoldFS root mounted from disk
 20. `[GFX] desktop-proof`
 21. Desktop proof frame blit sentinel
 22. `[GFX] desktop-live-proof`

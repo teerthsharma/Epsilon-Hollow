@@ -1014,6 +1014,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] alloc-frame",
         "[BENCH] slab-alloc",
         "[BENCH] manifold-teleport",
+        "[BENCH] manifold-lookup",
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
         "[BENCH] tcp-roundtrip",
@@ -1334,6 +1335,7 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_seal_alloc_benchmark(text)?;
     parse_slab_alloc_benchmark(text)?;
     parse_manifold_teleport_benchmark(text)?;
+    parse_manifold_lookup_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
     parse_tcp_roundtrip_benchmark(text)?;
@@ -1653,6 +1655,63 @@ fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
     if persistence_bytes != 0 {
         return Err(format!(
             "ManifoldFS teleport rewrote file bytes: persistence_bytes_per_move={persistence_bytes}, payload_bytes={payload_bytes}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_manifold_lookup_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] manifold-lookup")?;
+    let api = parse_field(line, "api=")?;
+    let fs_mode = parse_field(line, "fs_mode=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let samples = parse_metric(line, "samples=")?;
+    let ok = parse_metric(line, "ok=")?;
+    let entries = parse_metric(line, "entries=")?;
+    let path_depth = parse_metric(line, "path_depth=")?;
+    let components_max = parse_metric(line, "components_max=")?;
+    let payload_bytes = parse_metric(line, "payload_bytes=")?;
+    let dirhash_probes_total_max = parse_metric(line, "dirhash_probes_total_max=")?;
+    let dirhash_probes_max = parse_metric(line, "dirhash_probes_max=")?;
+    let dirhash_probe_bound = parse_metric(line, "dirhash_probe_bound=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "resolve_path_with_proof"
+        || fs_mode != "mock_block"
+        || fixture != "dirhash_path_walk"
+    {
+        return Err(format!(
+            "ManifoldFS lookup benchmark identifies the wrong API/path: api={api}, fs_mode={fs_mode}, fixture={fixture}"
+        ));
+    }
+    if samples < 64 || ok != samples || result != "pass" {
+        return Err(format!(
+            "ManifoldFS lookup benchmark failed samples: ok={ok}, samples={samples}, result={result}"
+        ));
+    }
+    if entries < 64 || path_depth < 4 || components_max != path_depth {
+        return Err(format!(
+            "ManifoldFS lookup fixture too weak: entries={entries}, path_depth={path_depth}, components_max={components_max}"
+        ));
+    }
+    if payload_bytes == 0 {
+        return Err("ManifoldFS lookup benchmark used empty payloads".to_string());
+    }
+    if dirhash_probe_bound == 0
+        || dirhash_probes_max == 0
+        || dirhash_probes_total_max < dirhash_probes_max
+        || dirhash_probes_max > dirhash_probe_bound
+    {
+        return Err(format!(
+            "ManifoldFS lookup DirHash probes invalid: total_max={dirhash_probes_total_max}, max={dirhash_probes_max}, bound={dirhash_probe_bound}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "ManifoldFS lookup cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
         ));
     }
     Ok(())
@@ -3092,6 +3151,7 @@ mod tests {
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
     const SLAB_ALLOC_LOG: &str = "[BENCH] slab-alloc iterations=64 ok=64 classes=6 refill_ok=6 reuse_ok=6 free_ok=6 realloc_ok=2 p50_cycles=80 p95_cycles=120 max_cycles=150 refill_pages_delta=6 free_list_hits_delta=64 alloc_calls_delta=80 free_calls_delta=80 free_before=100 free_after_refill=94 free_after_reuse=94\n";
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
+    const MANIFOLD_LOOKUP_LOG: &str = "[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=8 dirhash_probes_max=3 dirhash_probe_bound=256 p50_cycles=100 p95_cycles=180 max_cycles=220 result=pass\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
     const TCP_ROUNDTRIP_LOG: &str = "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=4 index_probe_bound=256 cleanup=ok result=pass\n";
@@ -3644,6 +3704,7 @@ gate_benchmark_log=ok\n",
             SEAL_ALLOC_LOG,
             SLAB_ALLOC_LOG,
             MANIFOLD_TELEPORT_LOG,
+            MANIFOLD_LOOKUP_LOG,
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
             TCP_ROUNDTRIP_LOG,
@@ -3920,9 +3981,12 @@ gate_proof_screen=ok
         for marker in [
             r"\[BENCH\] toporam-alloc",
             r"\[BENCH\] alloc-frame",
+            r"\[BENCH\] slab-alloc",
             r"\[BENCH\] manifold-teleport",
+            r"\[BENCH\] manifold-lookup",
             r"\[BENCH\] scheduler-select-next",
             r"\[BENCH\] tcp-packet-demux",
+            r"\[BENCH\] tcp-roundtrip",
             r"\[GPU-BENCH\] suite",
             r"\[Aether-Lang\] runtime proof:",
             r"\[LAAMBA\] app proof:",
@@ -4200,7 +4264,7 @@ with:
     #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());
@@ -4371,6 +4435,25 @@ with:
         let weak_ramfs_marker =
             MANIFOLD_TELEPORT_LOG.replace("fs_mode=mock_block", "fs_mode=ramfs");
         assert!(parse_manifold_teleport_benchmark(&weak_ramfs_marker).is_err());
+    }
+
+    #[test]
+    fn parses_manifold_lookup_benchmark() {
+        assert!(parse_manifold_lookup_benchmark(MANIFOLD_LOOKUP_LOG).is_ok());
+
+        let wrong_api =
+            MANIFOLD_LOOKUP_LOG.replace("api=resolve_path_with_proof", "api=resolve_path");
+        assert!(parse_manifold_lookup_benchmark(&wrong_api).is_err());
+
+        let weak_fixture = MANIFOLD_LOOKUP_LOG.replace("entries=64", "entries=8");
+        assert!(parse_manifold_lookup_benchmark(&weak_fixture).is_err());
+
+        let unbounded_probe =
+            MANIFOLD_LOOKUP_LOG.replace("dirhash_probes_max=3", "dirhash_probes_max=512");
+        assert!(parse_manifold_lookup_benchmark(&unbounded_probe).is_err());
+
+        let failed_result = MANIFOLD_LOOKUP_LOG.replace("result=pass", "result=fail");
+        assert!(parse_manifold_lookup_benchmark(&failed_result).is_err());
     }
 
     #[test]

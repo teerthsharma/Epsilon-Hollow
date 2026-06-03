@@ -215,6 +215,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     run_allocator_hotpath_bench();
     run_slab_allocator_bench();
     run_manifold_teleport_bench();
+    run_manifold_lookup_bench();
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
@@ -1533,6 +1534,94 @@ fn run_manifold_teleport_bench() {
         metadata_ops_max,
         persistence_bytes_per_move,
         payload_points
+    );
+}
+
+fn run_manifold_lookup_bench() {
+    const SAMPLES: usize = 64;
+    const PAYLOAD_BYTES: usize = 64;
+    const MOCK_BLOCK_SECTORS: usize = 4096;
+
+    let mut samples = [0u64; SAMPLES];
+    let mut ok = 0usize;
+    let mut components_max = 0usize;
+    let mut dirhash_probes_total_max = 0usize;
+    let mut dirhash_probes_max = 0usize;
+    let mut dirhash_probe_bound = 0usize;
+    let payload = [0x35u8; PAYLOAD_BYTES];
+    let mut fs = fs::manifold_fs::ManifoldFS::new_with_mock_store(MOCK_BLOCK_SECTORS);
+    let root = fs.root_id();
+    let bench = match fs.mkdir("bench", root) {
+        Ok(id) => id,
+        Err(_) => root,
+    };
+    let hot = match fs.mkdir("hot", bench) {
+        Ok(id) => id,
+        Err(_) => bench,
+    };
+    let leaf = match fs.mkdir("leaf", hot) {
+        Ok(id) => id,
+        Err(_) => hot,
+    };
+
+    for i in 0..SAMPLES {
+        let name = alloc::format!("f{}", i);
+        let _ = fs.store(name.as_str(), &payload, leaf);
+    }
+
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let path = alloc::format!("/bench/hot/leaf/f{}", idx);
+        let before = read_desktop_soak_cycles();
+        let proof = fs.resolve_path_with_proof(path.as_str());
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+
+        if let Ok(proof) = proof {
+            if proof.inode_id != root && proof.components == 4 {
+                ok += 1;
+            }
+            components_max = components_max.max(proof.components);
+            dirhash_probes_total_max = dirhash_probes_total_max.max(proof.dirhash_probes);
+            dirhash_probes_max = dirhash_probes_max.max(proof.dirhash_probes_max);
+            dirhash_probe_bound = dirhash_probe_bound.max(proof.dirhash_probe_bound);
+        }
+    }
+
+    for i in 1..SAMPLES {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let result = if ok == SAMPLES
+        && components_max == 4
+        && dirhash_probes_max <= dirhash_probe_bound
+        && dirhash_probe_bound > 0
+    {
+        "pass"
+    } else {
+        "fail"
+    };
+
+    serial_println!(
+        "[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples={} ok={} entries={} path_depth={} components_max={} payload_bytes={} dirhash_probes_total_max={} dirhash_probes_max={} dirhash_probe_bound={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+        SAMPLES,
+        ok,
+        SAMPLES,
+        4,
+        components_max,
+        PAYLOAD_BYTES,
+        dirhash_probes_total_max,
+        dirhash_probes_max,
+        dirhash_probe_bound,
+        samples[SAMPLES / 2],
+        samples[(SAMPLES * 95 / 100).min(SAMPLES - 1)],
+        samples[SAMPLES - 1],
+        result
     );
 }
 

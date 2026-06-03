@@ -83,6 +83,13 @@ pub struct DirHash {
     cap_mask: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirLookupProbe {
+    pub probes: usize,
+    pub probe_bound: usize,
+    pub found: bool,
+}
+
 impl DirHash {
     pub fn new(seed: u64) -> Self {
         let cap = 16usize;
@@ -98,20 +105,21 @@ impl DirHash {
         }
     }
 
-    fn probe(&self, parent: u64, name: &str) -> (usize, bool) {
+    fn probe(&self, parent: u64, name: &str) -> (usize, bool, usize) {
         let name_hash = hash_name(name, self.seed);
         let hash = hash_dir_key(parent, name_hash, self.seed);
         let mut idx = (hash as usize) & self.cap_mask;
         let mut dist = 0usize;
         loop {
+            let probes = dist + 1;
             match &self.buckets[idx] {
-                Bucket::Empty => return (idx, false),
+                Bucket::Empty => return (idx, false, probes),
                 Bucket::Tombstone => {}
                 Bucket::Occupied {
                     parent: p, name: n, ..
                 } => {
                     if *p == parent && n == name {
-                        return (idx, true);
+                        return (idx, true, probes);
                     }
                 }
             }
@@ -121,7 +129,7 @@ impl DirHash {
                 break;
             }
         }
-        (0, false)
+        (0, false, self.buckets.len())
     }
 
     fn grow(&mut self) {
@@ -176,7 +184,7 @@ impl DirHash {
     }
 
     pub fn lookup(&self, parent: u64, name: &str) -> Option<u64> {
-        let (idx, found) = self.probe(parent, name);
+        let (idx, found, _probes) = self.probe(parent, name);
         if found {
             match &self.buckets[idx] {
                 Bucket::Occupied { inode_id, .. } => Some(*inode_id),
@@ -187,8 +195,28 @@ impl DirHash {
         }
     }
 
+    pub fn lookup_with_probe(&self, parent: u64, name: &str) -> (Option<u64>, DirLookupProbe) {
+        let (idx, found, probes) = self.probe(parent, name);
+        let inode_id = if found {
+            match &self.buckets[idx] {
+                Bucket::Occupied { inode_id, .. } => Some(*inode_id),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        (
+            inode_id,
+            DirLookupProbe {
+                probes,
+                probe_bound: self.buckets.len(),
+                found,
+            },
+        )
+    }
+
     pub fn remove(&mut self, parent: u64, name: &str) -> Option<u64> {
-        let (idx, found) = self.probe(parent, name);
+        let (idx, found, _probes) = self.probe(parent, name);
         if found {
             let old = core::mem::replace(&mut self.buckets[idx], Bucket::Tombstone);
             self.len -= 1;
