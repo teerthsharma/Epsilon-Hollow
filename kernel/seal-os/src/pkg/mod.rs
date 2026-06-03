@@ -12,7 +12,8 @@ pub mod resolver;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use sha2::{Digest, Sha256};
 
 use self::format::{parse_eph, verify_signature};
 use self::manifest::PackageManifest;
@@ -46,6 +47,8 @@ pub fn emit_boot_proof() {
     let before = pkg.package_count();
     let eph = build_proof_eph();
     let proof_public_key = proof_pkg_public_key();
+    let registry_index = build_proof_registry_index(&eph);
+    let registry_index_ok = verify_proof_registry_index(&registry_index, &eph, &proof_public_key);
     let parse_ok = parse_eph(&eph)
         .map(|parsed| {
             parsed.manifest.name == PROOF_PKG_NAME
@@ -68,14 +71,23 @@ pub fn emit_boot_proof() {
     let remove_ok = pkg.remove(PROOF_PKG_NAME).is_ok();
     let after_remove = pkg.package_count();
     let counts_ok = after_install == before + 1 && after_remove == before;
-    let result = if parse_ok && signature_ok && install_ok && list_ok && extract_ok && remove_ok && counts_ok {
-            "pass"
-        } else {
-            "fail"
-        };
+    let result = if parse_ok
+        && registry_index_ok
+        && signature_ok
+        && install_ok
+        && list_ok
+        && extract_ok
+        && remove_ok
+        && counts_ok
+    {
+        "pass"
+    } else {
+        "fail"
+    };
     crate::serial_println!(
-        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature={} result={}",
+        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} registry_index={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature={} result={}",
         if parse_ok { "ok" } else { "fail" },
+        if registry_index_ok { "ed25519_fixture" } else { "fail" },
         if install_ok { "ok" } else { "fail" },
         if extract_ok { "ok" } else { "fail" },
         if list_ok { "ok" } else { "fail" },
@@ -110,6 +122,111 @@ fn build_proof_eph() -> Vec<u8> {
         data[signature_offset..signature_offset + 64].copy_from_slice(&sig);
     }
     data
+}
+
+fn build_proof_registry_index(eph: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(eph);
+    let hash: [u8; 32] = hasher.finalize().into();
+    let body = format!(
+        "name={}\nversion={}\nbytes={}\nsha256={}\n",
+        PROOF_PKG_NAME,
+        PROOF_PKG_VERSION,
+        eph.len(),
+        hex32(&hash)
+    );
+    let signature = SigningKey::from_bytes(&PROOF_PKG_SIGNING_KEY).sign(body.as_bytes());
+    let mut index = Vec::new();
+    index.extend_from_slice(b"EPHIDX1\n");
+    index.extend_from_slice(body.as_bytes());
+    index.extend_from_slice(b"signature=");
+    index.extend_from_slice(hex64(&signature.to_bytes()).as_bytes());
+    index.extend_from_slice(b"\n");
+    index
+}
+
+fn verify_proof_registry_index(index: &[u8], eph: &[u8], public_key: &[u8; 32]) -> bool {
+    let text = match core::str::from_utf8(index) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    if !text.starts_with("EPHIDX1\n") {
+        return false;
+    }
+    let Some(sig_pos) = text.find("signature=") else {
+        return false;
+    };
+    let signed = &text["EPHIDX1\n".len()..sig_pos];
+    let expected_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(eph);
+        let hash: [u8; 32] = hasher.finalize().into();
+        hex32(&hash)
+    };
+    let expected_bytes = format!("bytes={}\n", eph.len());
+    let expected_hash_line = format!("sha256={}\n", expected_hash);
+    if !signed.contains("name=seal-proof-pkg\n")
+        || !signed.contains("version=0.0.1\n")
+        || !signed.contains(expected_bytes.as_str())
+        || !signed.contains(expected_hash_line.as_str())
+    {
+        return false;
+    }
+    let sig_hex = text[sig_pos + "signature=".len()..].trim();
+    let Some(sig_bytes) = parse_hex64(sig_hex) else {
+        return false;
+    };
+    let Ok(vk) = VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    let sig = Signature::from_bytes(&sig_bytes);
+    vk.verify_strict(signed.as_bytes(), &sig).is_ok()
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut out = String::new();
+    for byte in bytes {
+        out.push(nibble_hex(byte >> 4));
+        out.push(nibble_hex(byte & 0x0f));
+    }
+    out
+}
+
+fn hex64(bytes: &[u8; 64]) -> String {
+    let mut out = String::new();
+    for byte in bytes {
+        out.push(nibble_hex(byte >> 4));
+        out.push(nibble_hex(byte & 0x0f));
+    }
+    out
+}
+
+fn parse_hex64(text: &str) -> Option<[u8; 64]> {
+    if text.len() != 128 {
+        return None;
+    }
+    let mut out = [0u8; 64];
+    let bytes = text.as_bytes();
+    for i in 0..64 {
+        out[i] = (hex_nibble(bytes[i * 2])? << 4) | hex_nibble(bytes[i * 2 + 1])?;
+    }
+    Some(out)
+}
+
+fn nibble_hex(n: u8) -> char {
+    match n & 0x0f {
+        0..=9 => (b'0' + (n & 0x0f)) as char,
+        v => (b'a' + (v - 10)) as char,
+    }
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(10 + b - b'a'),
+        b'A'..=b'F' => Some(10 + b - b'A'),
+        _ => None,
+    }
 }
 
 fn proof_pkg_public_key() -> [u8; 32] {

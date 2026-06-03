@@ -665,7 +665,7 @@ impl Shell {
     fn cmd_update(&self) -> String {
         if crate::net::has_nic() {
             String::from(
-                "ManifoldPkg: registry refresh requires the signed remote index gate; install <name> can fetch signed .eph packages",
+                "ManifoldPkg: signed registry-index fixture is boot-gated; public refresh needs hosted release channel",
             )
         } else {
             String::from("ManifoldPkg: no network device; use install <local.eph> for local packages")
