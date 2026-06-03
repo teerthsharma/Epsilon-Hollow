@@ -24,11 +24,88 @@ const SEAL_PKG_PUBLIC_KEY: [u8; 32] = [
     0x3b, 0x6a, 0x27, 0xbc, 0xce, 0xb6, 0xa4, 0x2d, 0x62, 0xa3, 0xa8, 0xd0, 0x2a, 0x6f, 0x0d, 0x73,
     0x63, 0x2e, 0x3e, 0x77, 0xe3, 0xe9, 0xdf, 0x15, 0xe2, 0xda, 0x4c, 0x64, 0x3a, 0x53, 0x97, 0x43,
 ];
+const PROOF_PKG_NAME: &str = "seal-proof-pkg";
+const PROOF_PKG_VERSION: &str = "0.0.1";
+const PROOF_FILE_PATH: &str = "/packages/seal-proof.txt";
+const PROOF_FILE_BYTES: &[u8] = b"seal package proof\n";
 
 pub struct ManifoldPkg {
     registry: PackageRegistry,
     resolver: DependencyResolver,
     registry_url: String,
+}
+
+pub fn emit_boot_proof() {
+    let mut pkg = GLOBAL_PKG.lock();
+    let _ = pkg.remove(PROOF_PKG_NAME);
+    let before = pkg.package_count();
+    let eph = build_proof_eph();
+    let parse_ok = parse_eph(&eph)
+        .map(|parsed| {
+            parsed.manifest.name == PROOF_PKG_NAME
+                && parsed.manifest.version == PROOF_PKG_VERSION
+                && parsed.files.len() == 1
+                && parsed.files[0].path == PROOF_FILE_PATH
+                && parsed.files[0].data == PROOF_FILE_BYTES
+        })
+        .unwrap_or(false);
+    let install_ok = pkg.install_bytes(&eph, None).is_ok();
+    let after_install = pkg.package_count();
+    let list_ok = pkg
+        .list()
+        .iter()
+        .any(|manifest| manifest.name == PROOF_PKG_NAME && manifest.version == PROOF_PKG_VERSION);
+    let extract_ok = proof_file_matches();
+    let remove_ok = pkg.remove(PROOF_PKG_NAME).is_ok();
+    let after_remove = pkg.package_count();
+    let counts_ok = after_install == before + 1 && after_remove == before;
+    let result =
+        if parse_ok && install_ok && list_ok && extract_ok && remove_ok && counts_ok {
+            "pass"
+        } else {
+            "fail"
+        };
+    crate::serial_println!(
+        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature=skipped_fixture result={}",
+        if parse_ok { "ok" } else { "fail" },
+        if install_ok { "ok" } else { "fail" },
+        if extract_ok { "ok" } else { "fail" },
+        if list_ok { "ok" } else { "fail" },
+        if remove_ok { "ok" } else { "fail" },
+        PROOF_FILE_BYTES.len(),
+        before,
+        after_install,
+        after_remove,
+        result
+    );
+}
+
+fn build_proof_eph() -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(b"EPH\0");
+    let manifest = format!(
+        "name=\"{}\"\nversion=\"{}\"\ndescription=\"boot proof\"",
+        PROOF_PKG_NAME, PROOF_PKG_VERSION
+    );
+    data.extend_from_slice(&(manifest.len() as u32).to_be_bytes());
+    data.extend_from_slice(manifest.as_bytes());
+    data.extend_from_slice(&[0u8; 64]);
+    data.extend_from_slice(&(PROOF_FILE_PATH.len() as u16).to_be_bytes());
+    data.extend_from_slice(PROOF_FILE_PATH.as_bytes());
+    data.extend_from_slice(&(PROOF_FILE_BYTES.len() as u32).to_be_bytes());
+    data.extend_from_slice(PROOF_FILE_BYTES);
+    data.extend_from_slice(b"END\0");
+    data
+}
+
+fn proof_file_matches() -> bool {
+    crate::fs::vfs::with_vfs(|vfs| {
+        let handle = vfs.lookup_follow(PROOF_FILE_PATH).ok()?;
+        let mut buf = alloc::vec![0u8; PROOF_FILE_BYTES.len()];
+        let read = vfs.read(handle, &mut buf, 0).ok()?;
+        Some(read == PROOF_FILE_BYTES.len() && buf == PROOF_FILE_BYTES)
+    })
+    .unwrap_or(false)
 }
 
 impl ManifoldPkg {

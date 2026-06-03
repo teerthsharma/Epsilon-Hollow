@@ -1005,6 +1005,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
         "[SECURITY] hardening proof",
+        "[ManifoldPkg] proof",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
         "[GFX] desktop-live-proof",
@@ -1053,6 +1054,44 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_aether_runtime_text(&text)?;
     check_laamba_app_proof_text(&text)?;
     check_security_hardening_text(&text)?;
+    check_manifoldpkg_proof_text(&text)?;
+    Ok(())
+}
+
+fn check_manifoldpkg_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[ManifoldPkg] proof")?;
+    require_field_eq(line, "version=", "1", "ManifoldPkg proof")?;
+    require_field_eq(line, "source=", "embedded_eph", "ManifoldPkg proof")?;
+    require_field_eq(line, "parse=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "install=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "extract=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "list=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "remove=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "metadata_only=", "0", "ManifoldPkg proof")?;
+    require_field_eq(line, "signature=", "skipped_fixture", "ManifoldPkg proof")?;
+    require_field_eq(line, "result=", "pass", "ManifoldPkg proof")?;
+
+    let files = parse_metric(line, "files=")?;
+    let bytes = parse_metric(line, "bytes=")?;
+    let before = parse_metric(line, "package_count_before=")?;
+    let after_install = parse_metric(line, "package_count_after_install=")?;
+    let after_remove = parse_metric(line, "package_count_after_remove=")?;
+    if files == 0 {
+        return Err(String::from("ManifoldPkg proof must extract at least one file"));
+    }
+    if bytes == 0 {
+        return Err(String::from("ManifoldPkg proof must extract nonempty bytes"));
+    }
+    if after_install != before + 1 {
+        return Err(String::from(
+            "ManifoldPkg proof package count must increase by one after install",
+        ));
+    }
+    if after_remove != before {
+        return Err(String::from(
+            "ManifoldPkg proof package count must return to baseline after remove",
+        ));
+    }
     Ok(())
 }
 
@@ -2820,6 +2859,7 @@ mod tests {
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
+    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=skipped_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -4112,6 +4152,27 @@ with:
     }
 
     #[test]
+    fn manifoldpkg_proof_requires_real_eph_extract_and_registry_counts() {
+        assert!(check_manifoldpkg_proof_text(MANIFOLDPKG_PROOF_LOG).is_ok());
+
+        let metadata_only = MANIFOLDPKG_PROOF_LOG.replace("metadata_only=0", "metadata_only=1");
+        assert!(check_manifoldpkg_proof_text(&metadata_only).is_err());
+
+        let no_extract = MANIFOLDPKG_PROOF_LOG.replace("extract=ok", "extract=fail");
+        assert!(check_manifoldpkg_proof_text(&no_extract).is_err());
+
+        let no_files = MANIFOLDPKG_PROOF_LOG.replace("files=1", "files=0");
+        assert!(check_manifoldpkg_proof_text(&no_files).is_err());
+
+        let no_bytes = MANIFOLDPKG_PROOF_LOG.replace("bytes=19", "bytes=0");
+        assert!(check_manifoldpkg_proof_text(&no_bytes).is_err());
+
+        let bad_count =
+            MANIFOLDPKG_PROOF_LOG.replace("package_count_after_install=1", "package_count_after_install=0");
+        assert!(check_manifoldpkg_proof_text(&bad_count).is_err());
+    }
+
+    #[test]
     fn doc_claim_contract_requires_ubuntu_and_benchmark_guards() {
         let readme = "\
 not a blanket victory claim
@@ -4123,14 +4184,14 @@ fs_mode=mock_block
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
-remote registry fixture and signed package gate are pending
+Remote registry fixture and signed package release gate are still pending
 fixture gate pending before \"full filesystem parity\" claims
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
 `seal-mkimage --check-aether-runtime
 [LAAMBA] app proof:
 `seal-mkimage --check-benchmark-log
-hardware dispatch still needs a proof artifact
+Hardware dispatch still needs a proof artifact
 ";
         let benchmark = "\
 That claim is not
@@ -4170,7 +4231,7 @@ hardware `[GPU-BENCH]` artifact proves otherwise
         );
 
         let gpu_overclaim = readme.replace(
-            "hardware dispatch still needs a proof artifact",
+            "Hardware dispatch still needs a proof artifact",
             "they execute (the GPU doesn't crash)",
         );
         assert!(check_doc_claim_contract_text(&gpu_overclaim, benchmark, ci, gpu_doc).is_err());
@@ -4187,6 +4248,42 @@ hardware `[GPU-BENCH]` artifact proves otherwise
             "Seal OS offloads topological computations to discrete GPUs",
         );
         assert!(check_doc_claim_contract_text(readme, benchmark, ci, &gpu_doc_overclaim).is_err());
+    }
+
+    #[test]
+    fn manifoldpkg_shell_contract_rejects_metadata_only_install() {
+        let shell = r#"
+fn cmd_install(&mut self, pkg: &str) -> String {
+    if pkg.ends_with(".eph") {
+        let Some(data) = self.fs.read_bytes(pkg, self.cwd) else { return String::new(); };
+        return match crate::pkg::GLOBAL_PKG.lock().install_bytes(&data, None) {
+            Ok(msg) => msg,
+            Err(e) => e,
+        };
+    }
+    crate::pkg::GLOBAL_PKG.lock().install(pkg).unwrap();
+}
+fn cmd_remove(&mut self, pkg: &str) -> String {
+    crate::pkg::GLOBAL_PKG.lock().remove(pkg).unwrap()
+}
+fn cmd_packages(&self) -> String {
+    let pkg = crate::pkg::GLOBAL_PKG.lock();
+    for manifest in pkg.list() {
+        manifest.carrier.name();
+    }
+    String::new()
+}
+"#;
+        let pkg = "parse_eph(data); verify_signature(&pkg, key); self.install_file";
+        assert!(check_manifoldpkg_shell_contract_text(shell, pkg).is_ok());
+
+        let metadata_only = format!(
+            "{shell}\nlet manifest = \"status=metadata-only\";\nstore_text(&format!(\"{{}}.pkg\", pkg), manifest, self.cwd);\nStored package manifest\n"
+        );
+        assert!(check_manifoldpkg_shell_contract_text(&metadata_only, pkg).is_err());
+
+        let missing_core = "parse_eph(data);";
+        assert!(check_manifoldpkg_shell_contract_text(shell, missing_core).is_err());
     }
 
     #[test]
@@ -4777,7 +4874,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
         fs::read_to_string(&ci_path).map_err(|e| format!("read {}: {e}", ci_path.display()))?;
     let gpu =
         fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
-    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)
+    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
+    check_manifoldpkg_shell_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5046,7 +5144,7 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "remote registry fixture and signed package gate are pending",
+            "Remote registry fixture and signed package release gate are still pending",
             "README must expose missing ManifoldPkg remote proof",
         ),
         (
@@ -5088,7 +5186,7 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "hardware dispatch still needs a proof artifact",
+            "Hardware dispatch still needs a proof artifact",
             "README must keep GPU acceleration scoped to unproven hardware dispatch",
         ),
         (
@@ -5303,6 +5401,66 @@ fn check_doc_claim_contract_text(
     }
 
     Ok(())
+}
+
+fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
+    let shell_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("shell.rs");
+    let pkg_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("mod.rs");
+    let shell =
+        fs::read_to_string(&shell_path).map_err(|e| format!("read {}: {e}", shell_path.display()))?;
+    let pkg =
+        fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
+    check_manifoldpkg_shell_contract_text(&shell, &pkg)
+}
+
+fn check_manifoldpkg_shell_contract_text(shell: &str, pkg: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "pkg.ends_with(\".eph\")",
+        "self.fs.read_bytes(pkg, self.cwd)",
+        "crate::pkg::GLOBAL_PKG.lock().install_bytes(&data, None)",
+        "crate::pkg::GLOBAL_PKG.lock().install(pkg)",
+        "crate::pkg::GLOBAL_PKG.lock().remove(pkg)",
+        "pkg.list()",
+        "manifest.carrier.name()",
+    ] {
+        if !shell.contains(needle) {
+            findings.push(format!("shell ManifoldPkg path missing `{needle}`"));
+        }
+    }
+    for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
+        if !pkg.contains(needle) {
+            findings.push(format!("ManifoldPkg core missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "status=metadata-only",
+        "store_text(&format!(\"{}.pkg\"",
+        "packages are local metadata only",
+        "Stored package manifest",
+    ] {
+        if shell.contains(needle) {
+            findings.push(format!(
+                "shell ManifoldPkg path still contains fake metadata install marker `{needle}`"
+            ));
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
 }
 
 fn check_aether_migration(root: &Path) -> Result<(), String> {

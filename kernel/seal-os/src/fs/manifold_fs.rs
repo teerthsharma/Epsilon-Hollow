@@ -823,6 +823,12 @@ impl ManifoldFS {
         String::from_utf8(inode.data.clone()).ok()
     }
 
+    pub fn read_bytes(&self, name: &str, dir_id: u64) -> Option<Vec<u8>> {
+        let inode_id = self.dirs.lookup(dir_id, name)?;
+        let inode = self.inodes.get(inode_id)?;
+        Some(inode.data.clone())
+    }
+
     pub fn file_info(&self, name: &str, dir_id: u64) -> Option<String> {
         let inode_id = self.dirs.lookup(dir_id, name)?;
         let inode = self.inodes.get(inode_id)?;
