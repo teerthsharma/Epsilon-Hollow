@@ -21,7 +21,7 @@
 7. **Legacy host wrappers remain** — scripts/ and host Python still outside runtime path
 8. **Package manager remote registry pending** — `.eph` remote fetch + signed gate missing
 9. **Installer lacks GPT/formatting** — UI exists, no raw block write path
-10. **FAT/ext2 fixture gates missing** — write paths exist, no comprehensive parity tests
+10. **FAT/ext2 mounted fixture parity pending** — read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are `--check-doc-claim-contract` gated; byte-for-byte mounted fixture images still need coverage
 11. **Kernel modules framework missing** — everything built-in, no LKM ABI
 12. **WiFi/Bluetooth simulated** — acceptable as vendor IP, but state machines need real firmware path docs
 
