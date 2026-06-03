@@ -98,9 +98,10 @@ fn parse_passwd(data: &[u8]) -> Vec<UserEntry> {
     entries
 }
 
-/// Create /etc/passwd and /etc/shadow with a default user if absent.
-/// Default password is "seal" and is stored with the current topological
-/// shadow hash format, not the legacy single-round SHA-256 format.
+const LOCKED_BOOTSTRAP_PASSWORD: &str = "__seal_locked_bootstrap_password__";
+
+/// Create /etc/passwd and /etc/shadow with a locked bootstrap user if absent.
+/// The historical `seal`/`seal` credential is deliberately not generated.
 pub fn init_passwd() {
     let exists = with_vfs(|vfs| vfs.lookup_follow("/etc/passwd")).is_ok();
     if exists {
@@ -113,7 +114,8 @@ pub fn init_passwd() {
         vfs.write(handle, line.as_bytes(), 0).ok()?;
         Some(())
     });
-    let shadow_line = crate::security::shadow::make_shadow_line("seal", "seal", 1000);
+    let shadow_line =
+        crate::security::shadow::make_shadow_line("seal", LOCKED_BOOTSTRAP_PASSWORD, 1000);
     with_vfs(|vfs| {
         let handle = vfs.create("/etc/shadow").ok()?;
         vfs.write(handle, shadow_line.as_bytes(), 0).ok()?;

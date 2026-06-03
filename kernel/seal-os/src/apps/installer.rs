@@ -485,6 +485,10 @@ impl Installer {
                     self.error_msg = Some("Password cannot be empty.");
                     return false;
                 }
+                if self.username_is_seal() && self.password_is_literal_seal() {
+                    self.error_msg = Some("Default password is blocked.");
+                    return false;
+                }
                 if self.password_len != self.confirm_len {
                     self.error_msg = Some("Passwords do not match.");
                     return false;
@@ -515,6 +519,14 @@ impl Installer {
                 false
             }
         }
+    }
+
+    fn username_is_seal(&self) -> bool {
+        self.username_len == 4 && &self.username[..4] == b"seal"
+    }
+
+    fn password_is_literal_seal(&self) -> bool {
+        self.password_len == 4 && &self.password[..4] == b"seal"
     }
 
     fn draw_title(&self, fb: &Framebuffer, text: &str) {
@@ -587,7 +599,7 @@ impl Installer {
         let home_ok = create_dir_path(&format!("/home/{}", username));
         let profile_ok = home_ok && write_file_verified(&profile_path, profile.as_bytes());
         let user_ok = if username == "seal" {
-            true
+            crate::security::shadow::set_password(username, password)
         } else {
             if crate::security::passwd::get_user(username).is_none() {
                 crate::security::passwd::add_user(username, password, 1001, 1001);

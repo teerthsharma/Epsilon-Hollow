@@ -410,7 +410,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof` with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; the boot package and registry index fixtures are signed and verified before install. Public remote release channel is still pending. | Build hosted registry release fixture gate |
 | **Installer** | Safe VFS install path is real and proof-gated: it writes `/boot/EFI/BOOT/BOOTX64.EFI`, creates `/home/<user>`, writes profile data, wires passwd/shadow auth, and rejects old simulation logs. Raw GPT partitioning and filesystem formatting are still not implemented. | Raw block device write path with GPT + format proof |
 | **FAT / ext2 parity** | Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2. Full cross-image parity still needs mounted fixture images. | Mounted FAT/ext2 fixture images with byte-for-byte parity tests |
-| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is now boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
+| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. Auth proof now rejects `seal`/`seal` while keeping `$topo$5000` shadow hashes. TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
 | **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |
 
 ### ❌ Not Yet Real
@@ -535,7 +535,7 @@ You should see the boot sequence, theorem verification, desktop splash, and fina
 
 ### 5. First Login
 
-Default credentials: `seal` / `seal`
+There is no accepted `seal` / `seal` password now. Use the installer (`i` at login) to create or reset the account password; headless proof runs use the serial-marked no-input auto-login harness, not a reusable credential.
 
 After login, try these shell commands:
 
@@ -1297,7 +1297,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
-3. **Default Password Exposure:** Boot now proves `/etc/shadow` exists, default `seal` uses `$topo$5000`, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is operational: the default login is still `seal`/`seal` until first-boot password setup is enforced.
+3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
@@ -1307,7 +1307,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
-7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
+7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
 9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
 
@@ -2042,7 +2042,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
-3. **Default Password Exposure:** Boot now proves `/etc/shadow` exists, default `seal` uses `$topo$5000`, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is operational: the default login is still `seal`/`seal` until first-boot password setup is enforced.
+3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
@@ -2052,7 +2052,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
-7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
+7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
 9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
 
