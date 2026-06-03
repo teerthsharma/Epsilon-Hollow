@@ -125,8 +125,8 @@ export default function ChatInterface() {
                             type="submit"
                             disabled={!input.trim()}
                             aria-label="Send message"
-                            title="Send message"
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
+                            title={!input.trim() ? "Cannot send empty message" : "Send message"}
+                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 rounded-lg text-green-500 transition-colors"
                         >
                             <Send size={20} />
                         </button>
