@@ -388,7 +388,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **Tensor Viewer** — CSV/trading data → 3D tensor rendering, profit=green peaks, loss=red valleys
 - **Games** — Snake, Breakout, Warp Racer
 - **File Manager** — ManifoldFS-native file operations
-- **Installer UI** — GPT partitioning simulation
+- **Installer UI** — safe ManifoldFS/VFS install path with boot marker, home/profile creation, shadow-auth proof, and `seal-mkimage --check-installer-proof` gate
 
 </details>
 
@@ -408,7 +408,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
 | **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof`; signed verification path exists. Remote registry fixture and signed package release gate are still pending. | Build registry + signed fixture |
-| **Installer** | UI exists. Actual GPT partitioning and filesystem formatting not yet implemented. | Raw block device write path |
+| **Installer** | Safe VFS install path is real and proof-gated: it writes `/boot/EFI/BOOT/BOOTX64.EFI`, creates `/home/<user>`, writes profile data, wires passwd/shadow auth, and rejects old simulation logs. Raw GPT partitioning and filesystem formatting are still not implemented. | Raw block device write path with GPT + format proof |
 | **FAT / ext2 parity** | Write paths exist; fixture gate pending before "full filesystem parity" claims. | Comprehensive fixture tests |
 | **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush, TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
 | **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |

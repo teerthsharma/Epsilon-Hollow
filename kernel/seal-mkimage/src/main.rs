@@ -38,6 +38,20 @@ fn main() {
         println!("[seal-audit] THEOREM LOG OK: {}", log_path.display());
         return;
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-installer-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os-installer.log"));
+        let text = fs::read_to_string(&log_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", log_path.display()));
+        check_installer_proof_text(&text).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] INSTALLER PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] INSTALLER PROOF OK: {}", log_path.display());
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--check-vm-proof") {
         let log_path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from("../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log")
@@ -1075,6 +1089,41 @@ fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
     if embedded != 0 {
         return Err(String::from(
             "auth shadow proof found embedded password hashes in /etc/passwd",
+        ));
+    }
+    Ok(())
+}
+
+fn check_installer_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[INSTALLER] proof")?;
+    require_field_eq(line, "version=", "1", "installer proof")?;
+    require_field_eq(line, "mode=", "safe_vfs", "installer proof")?;
+    require_field_eq(line, "boot_marker=", "1", "installer proof")?;
+    require_field_eq(line, "home=", "1", "installer proof")?;
+    require_field_eq(line, "profile=", "1", "installer proof")?;
+    require_field_eq(line, "user=", "1", "installer proof")?;
+    require_field_eq(line, "auth_topo5000=", "1", "installer proof")?;
+    require_field_eq(line, "raw_gpt=", "0", "installer proof")?;
+    require_field_eq(line, "raw_format=", "0", "installer proof")?;
+    require_field_eq(line, "result=", "pass", "installer proof")?;
+    parse_field(line, "selected_disk=")?;
+
+    let banned = [
+        "Would create GPT",
+        "Would format",
+        "Would copy",
+        "Would install",
+        "Installation simulation complete",
+        "SHA-256 hash",
+    ];
+    let hits: Vec<&str> = text
+        .lines()
+        .filter(|line| banned.iter().any(|marker| line.contains(marker)))
+        .collect();
+    if !hits.is_empty() {
+        return Err(format!(
+            "installer proof log contains simulation markers: {}",
+            hits.join(" | ")
         ));
     }
     Ok(())
@@ -2882,6 +2931,7 @@ mod tests {
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
     const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
+    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=skipped_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
@@ -4201,6 +4251,23 @@ with:
     }
 
     #[test]
+    fn installer_proof_requires_real_safe_vfs_writes_not_simulation() {
+        assert!(check_installer_proof_text(INSTALLER_PROOF_LOG).is_ok());
+
+        let no_boot = INSTALLER_PROOF_LOG.replace("boot_marker=1", "boot_marker=0");
+        assert!(check_installer_proof_text(&no_boot).is_err());
+
+        let no_auth = INSTALLER_PROOF_LOG.replace("auth_topo5000=1", "auth_topo5000=0");
+        assert!(check_installer_proof_text(&no_auth).is_err());
+
+        let claims_raw = INSTALLER_PROOF_LOG.replace("raw_gpt=0", "raw_gpt=1");
+        assert!(check_installer_proof_text(&claims_raw).is_err());
+
+        let simulation_log = format!("{INSTALLER_PROOF_LOG}[INSTALLER] Would format ESP\n");
+        assert!(check_installer_proof_text(&simulation_log).is_err());
+    }
+
+    #[test]
     fn manifoldpkg_proof_requires_real_eph_extract_and_registry_counts() {
         assert!(check_manifoldpkg_proof_text(MANIFOLDPKG_PROOF_LOG).is_ok());
 
@@ -4333,6 +4400,23 @@ fn cmd_packages(&self) -> String {
 
         let missing_core = "parse_eph(data);";
         assert!(check_manifoldpkg_shell_contract_text(shell, missing_core).is_err());
+    }
+
+    #[test]
+    fn installer_source_contract_rejects_would_install_theater() {
+        let installer = r#"
+fn apply_safe_install(&self) -> bool {
+    write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", b"boot");
+    crate::security::passwd::add_user("seal2", "pw", 1001, 1001);
+    crate::security::shadow::auth_shadow_proof();
+    serial_println!("[INSTALLER] proof version=1 mode=safe_vfs raw_gpt=0 raw_format=0 result=pass");
+    true
+}
+"#;
+        assert!(check_installer_source_contract_text(installer).is_ok());
+
+        let theater = format!("{installer}\nserial_println!(\"[INSTALLER] Would format ESP\");\n");
+        assert!(check_installer_source_contract_text(&theater).is_err());
     }
 
     #[test]
@@ -4924,7 +5008,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     let gpu =
         fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
     check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
-    check_manifoldpkg_shell_contract(root)
+    check_manifoldpkg_shell_contract(root)?;
+    check_installer_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5505,6 +5590,53 @@ fn check_manifoldpkg_shell_contract_text(shell: &str, pkg: &str) -> Result<(), S
         }
     }
 
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_installer_source_contract(root: &Path) -> Result<(), String> {
+    let installer_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("installer.rs");
+    let installer = fs::read_to_string(&installer_path)
+        .map_err(|e| format!("read {}: {e}", installer_path.display()))?;
+    check_installer_source_contract_text(&installer)
+}
+
+fn check_installer_source_contract_text(installer: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "fn apply_safe_install(&self) -> bool",
+        "write_file_verified(\"/boot/EFI/BOOT/BOOTX64.EFI\"",
+        "crate::security::passwd::add_user",
+        "crate::security::shadow::auth_shadow_proof",
+        "[INSTALLER] proof version=1 mode=safe_vfs",
+        "raw_gpt=0 raw_format=0",
+    ] {
+        if !installer.contains(needle) {
+            findings.push(format!("installer missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "Would create GPT",
+        "Would format",
+        "Would copy",
+        "Would install",
+        "Installation simulation complete",
+        "SHA-256 hash",
+    ] {
+        if installer.contains(needle) {
+            findings.push(format!(
+                "installer still contains simulation marker `{needle}`"
+            ));
+        }
+    }
     if findings.is_empty() {
         Ok(())
     } else {
