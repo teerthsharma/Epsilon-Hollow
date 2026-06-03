@@ -4352,6 +4352,38 @@ with:
     }
 
     #[test]
+    fn panic_serial_contract_rejects_formatting_macro_in_panic_handler() {
+        let serial = r#"
+pub fn panic_write_byte(byte: u8) {
+    for _ in 0..PANIC_SERIAL_SPIN_LIMIT {
+        if ready { write(byte); return; }
+    }
+}
+pub fn panic_write_bytes(bytes: &[u8]) {}
+pub fn panic_write_line(line: &str) {}
+pub fn panic_write_fmt(args: fmt::Arguments) {}
+"#;
+        let main = r#"
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    seal_os::drivers::serial::panic_write_line("!!! SEAL OS KERNEL PANIC !!!");
+    seal_os::drivers::serial::panic_write_fmt(format_args!("{}", info));
+    loop { x86_64::instructions::hlt(); }
+}
+"#;
+        assert!(check_panic_serial_source_contract_text(serial, main).is_ok());
+
+        let macro_panic = main.replace(
+            "seal_os::drivers::serial::panic_write_line(\"!!! SEAL OS KERNEL PANIC !!!\");",
+            "seal_os::serial_println!(\"!!! SEAL OS KERNEL PANIC !!!\");",
+        );
+        assert!(check_panic_serial_source_contract_text(serial, &macro_panic).is_err());
+
+        let missing_bound = serial.replace("PANIC_SERIAL_SPIN_LIMIT", "UNBOUNDED_WAIT");
+        assert!(check_panic_serial_source_contract_text(&missing_bound, main).is_err());
+    }
+
+    #[test]
     fn installer_proof_requires_real_safe_vfs_writes_not_simulation() {
         assert!(check_installer_proof_text(INSTALLER_PROOF_LOG).is_ok());
 
@@ -5217,7 +5249,8 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     check_installer_source_contract(root)?;
     check_ide_completion_source_contract(root)?;
     check_filesystem_parity_source_contract(root)?;
-    check_cow_source_contract(root)
+    check_cow_source_contract(root)?;
+    check_panic_serial_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -5934,6 +5967,64 @@ fn check_cow_source_contract_text(
     if !lib.contains("memory::virt::emit_cow_proof()") {
         findings.push(String::from("boot path does not emit COW proof marker"));
     }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_panic_serial_source_contract(root: &Path) -> Result<(), String> {
+    let serial_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("drivers")
+        .join("serial.rs");
+    let main_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("main.rs");
+    let serial = fs::read_to_string(&serial_path)
+        .map_err(|e| format!("read {}: {e}", serial_path.display()))?;
+    let main = fs::read_to_string(&main_path)
+        .map_err(|e| format!("read {}: {e}", main_path.display()))?;
+    check_panic_serial_source_contract_text(&serial, &main)
+}
+
+fn check_panic_serial_source_contract_text(serial: &str, main: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "pub fn panic_write_byte(byte: u8)",
+        "PANIC_SERIAL_SPIN_LIMIT",
+        "pub fn panic_write_bytes(bytes: &[u8])",
+        "pub fn panic_write_line(line: &str)",
+        "pub fn panic_write_fmt(args: fmt::Arguments)",
+    ] {
+        if !serial.contains(needle) {
+            findings.push(format!("panic serial source missing `{needle}`"));
+        }
+    }
+
+    let panic_start = main
+        .find("#[panic_handler]")
+        .ok_or_else(|| String::from("kernel main missing #[panic_handler]"))?;
+    let panic_body = &main[panic_start..];
+    if panic_body.contains("serial_println!") || panic_body.contains("serial_print!") {
+        findings.push(String::from(
+            "panic handler must not use normal serial formatting macros",
+        ));
+    }
+    for needle in [
+        "panic_write_line(\"!!! SEAL OS KERNEL PANIC !!!\")",
+        "panic_write_fmt(format_args!(\"{}\", info))",
+    ] {
+        if !panic_body.contains(needle) {
+            findings.push(format!("panic handler missing `{needle}`"));
+        }
+    }
+
     if findings.is_empty() {
         Ok(())
     } else {

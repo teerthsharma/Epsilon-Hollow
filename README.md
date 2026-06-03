@@ -1309,7 +1309,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler now uses a raw, bounded, no-lock COM1 emergency writer and the README/source contract rejects normal `serial_println!` use inside `#[panic_handler]`. Remaining pain is broader fatal-path coverage for interrupt fault handlers.
 
 ### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
@@ -2054,7 +2054,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler now uses a raw, bounded, no-lock COM1 emergency writer and the README/source contract rejects normal `serial_println!` use inside `#[panic_handler]`. Remaining pain is broader fatal-path coverage for interrupt fault handlers.
 
 ### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
