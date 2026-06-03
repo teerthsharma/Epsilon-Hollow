@@ -1297,7 +1297,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
-3. **Auth Proof Gap:** New/default `/etc/shadow` entries use `$topo$5000` topological hashes instead of single-round SHA-256. Legacy `$topo$legacy` migration remains supported for old images and must get a no-legacy boot proof.
+3. **Default Password Exposure:** Boot now proves `/etc/shadow` exists, default `seal` uses `$topo$5000`, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is operational: the default login is still `seal`/`seal` until first-boot password setup is enforced.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
@@ -2042,7 +2042,7 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 1. **Fork Memory-Proof Gap:** The current fork path avoids the old shared-user-frame double-free shape, but it still needs a hard rollback/leak proof under allocation failure before I call it done.
 2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
-3. **Auth Proof Gap:** New/default `/etc/shadow` entries use `$topo$5000` topological hashes instead of single-round SHA-256. Legacy `$topo$legacy` migration remains supported for old images and must get a no-legacy boot proof.
+3. **Default Password Exposure:** Boot now proves `/etc/shadow` exists, default `seal` uses `$topo$5000`, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is operational: the default login is still `seal`/`seal` until first-boot password setup is enforced.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
@@ -2309,16 +2309,17 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 14. `[GPU-BENCH] suite`
 15. `[Aether-Lang] runtime proof`
 16. `[LAAMBA] app proof:`
-17. `[ManifoldPkg] proof`
-18. QEMU AHCI disk identity
-19. Block device `0x800` registered
-20. Persistent ManifoldFS root mounted from disk
-21. `[GFX] desktop-proof`
-22. Desktop proof frame blit sentinel
-23. `[GFX] desktop-live-proof`
-24. `[GFX] desktop-soak`
-25. Desktop ready sentinel
-26. Event-loop entry sentinel
+17. `[SECURITY] auth proof`
+18. `[ManifoldPkg] proof`
+19. QEMU AHCI disk identity
+20. Block device `0x800` registered
+21. Persistent ManifoldFS root mounted from disk
+22. `[GFX] desktop-proof`
+23. Desktop proof frame blit sentinel
+24. `[GFX] desktop-live-proof`
+25. `[GFX] desktop-soak`
+26. Desktop ready sentinel
+27. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 

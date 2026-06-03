@@ -41,6 +41,9 @@ exist in:
   empty user lower-half PML4 entries, mirrored kernel upper-half entries, and
   SMAP/SMEP enablement when supported. Syscall-path stress and cache-timing
   validation remain pending.
+- Auth now emits a boot proof that `/etc/shadow` exists, default/new users use
+  `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded
+  password hashes.
 - No stack canary or KASLR for the kernel image itself (higher-half base is
   fixed at `0xffffffff80000000`).
 
@@ -48,6 +51,8 @@ exist in:
 - Kernel ASLR is not implemented.
 - Stack overflow into guard pages is not enforced on all kernel stacks.
 - No Control-Flow Integrity (CFI) or shadow stack.
+- First-boot password rotation is not enforced; the default lab credential is
+  still operationally weak even though its storage format is gated.
 
 ### 2.2 Information Leaks
 

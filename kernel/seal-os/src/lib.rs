@@ -381,6 +381,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     memory::swap::init();
     security::passwd::init_passwd();
     security::shadow::shadow_init();
+    security::shadow::emit_auth_shadow_proof();
     security::group::init_group();
 
     // First-boot login screen with mascot splash
