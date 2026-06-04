@@ -210,6 +210,12 @@ pub struct TraceCache {
     max_trace_len: usize,
 }
 
+impl Default for TraceCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceCache {
     pub fn new() -> Self {
         Self {
