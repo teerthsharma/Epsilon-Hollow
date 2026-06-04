@@ -1,0 +1,3 @@
+## 2024-05-18 - [Optimizing List Rendering in Streamed Interfaces]
+**Learning:** In Next.js/React frontends that handle streamed text arrays (like the DSP Bus chat messages here), state array updates trigger full-list re-renders on every streamed chunk. This leads to an O(N^2) rendering bottleneck as the chat grows.
+**Action:** Always wrap individual list items in `React.memo()` (as a named function to avoid display-name lint errors) to prevent these re-renders and isolate updates only to the active chunk.
