@@ -338,6 +338,8 @@ extern "C" fn kernel_main_continue() -> ! {
     }
 
     loop {
+        testing::runner::test_main();
+
         x86_64::instructions::hlt();
     }
 }
@@ -392,6 +394,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
     let mut run_installer = false;
     let login_start = drivers::interrupts::ticks();
     loop {
+        testing::runner::test_main();
+
         if let Some(event) = drivers::interrupts::poll_event() {
             if let wm::event::InputEvent::KeyPress(scancode) = event {
                 let ch = drivers::interrupts::scancode_to_char(scancode);
@@ -437,6 +441,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
         installer.render(fb);
         fb.blit();
         loop {
+        testing::runner::test_main();
+
             if let Some(event) = drivers::interrupts::poll_event() {
                 if installer.handle_event(event) {
                     break;
@@ -456,6 +462,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
         fb.blit();
         let welcome_start = drivers::interrupts::ticks();
         loop {
+        testing::runner::test_main();
+
             if let Some(event) = drivers::interrupts::poll_event() {
                 if welcome.handle_event(event) {
                     wm::welcome::mark_first_boot_done();
@@ -621,6 +629,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
 
     loop {
+        testing::runner::test_main();
+
         drivers::watchdog::pet();
         while let Some(event) = drivers::interrupts::poll_event() {
             // Global keyboard shortcuts (TopCrypt / Lypnos Guard / Tensor View)
@@ -1661,6 +1671,8 @@ fn init_scheduler() {
 
 fn kernel_task_main() {
     loop {
+        testing::runner::test_main();
+
         // Kernel housekeeping — swap daemon and health monitoring.
         crate::memory::swap::swap_out_daemon();
         crate::process::scheduler::yield_current();
@@ -1669,6 +1681,8 @@ fn kernel_task_main() {
 
 fn compositor_task_main() {
     loop {
+        testing::runner::test_main();
+
         // Compositor refresh loop
         crate::process::scheduler::yield_current();
     }
@@ -1676,6 +1690,8 @@ fn compositor_task_main() {
 
 fn shell_task_main() {
     loop {
+        testing::runner::test_main();
+
         // Shell input processing
         crate::process::scheduler::yield_current();
     }
