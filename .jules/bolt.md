@@ -1,0 +1,3 @@
+## 2026-06-05 - O(N^2) Rendering Bottlenecks in Chat UI
+**Learning:** Rendering arrays of complex React components that update frequently (like incoming chat messages or event logs streaming from a backend) directly via `map` inside a parent component that manages the array state causes O(N^2) rendering performance drops. Every new chunk added to the array forces a full re-render of all previously rendered items in the list.
+**Action:** Always extract individual list items into standalone named functional components and wrap them in `React.memo(function Item() { ... })` when rendering streamed or frequently appended arrays, specifically in the `future/apeiron-runtime/APEIRON/frontend/` codebase.
