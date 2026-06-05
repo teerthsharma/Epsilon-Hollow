@@ -1,6 +1,8 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
+#![allow(dead_code)]
+
 //! Aether Build Driver — Stream 6 Scaffolding
 //!
 //! Invokes the Aether bootstrap compiler (`aether-cli`) to compile kernel
