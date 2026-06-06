@@ -181,7 +181,7 @@ pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
         }
         return None;
     }
-    let computed = compute_hash(password, &entry.salt, &*seed, entry.rounds);
+    let computed = compute_hash(password, &entry.salt, &*seed, 100000);
     if constant_time_eq(&computed, &entry.hash) {
         crate::security::passwd::get_user(username)
     } else {

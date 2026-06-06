@@ -211,6 +211,7 @@ pub struct TraceCache {
 }
 
 impl TraceCache {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             traces: Vec::with_capacity(16),
@@ -243,7 +244,10 @@ impl TraceCache {
 
     /// Retrieve a compiled trace starting at `ip`.
     pub fn get_trace(&self, ip: usize) -> Option<&Trace> {
-        self.traces.iter().find(|(start, _)| *start == ip).map(|(_, t)| t)
+        self.traces
+            .iter()
+            .find(|(start, _)| *start == ip)
+            .map(|(_, t)| t)
     }
 
     /// Compile a trace from `start_ip` (inclusive) to `end_ip` (exclusive).
