@@ -24,8 +24,8 @@ fn main() {
     // generated .bin files, or when the .bin files are missing.
     let mut needs_compile = false;
     if let Ok(entries) = std::fs::read_dir(&shaders_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
+        for entry in entries.flatten() {
+
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("cl") {
                     let bin_path = path.with_extension("bin");
@@ -39,7 +39,6 @@ fn main() {
                     }
                 }
             }
-        }
     }
 
     if needs_compile {
@@ -85,8 +84,8 @@ fn main() {
     // Re-run build.rs if any .cl source changes.
     println!("cargo:rerun-if-changed={}", shaders_dir.display());
     if let Ok(entries) = std::fs::read_dir(&shaders_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
+        for entry in entries.flatten() {
+
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("cl") {
                     println!("cargo:rerun-if-changed={}", path.display());
@@ -94,4 +93,3 @@ fn main() {
             }
         }
     }
-}
