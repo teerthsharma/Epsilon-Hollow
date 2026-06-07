@@ -178,7 +178,8 @@ impl TitanVM {
                         if self.trace_cache.is_hot(target)
                             && self.trace_cache.get_trace(target).is_none()
                         {
-                            self.trace_cache.compile_trace(&self.code, target, self.ip - 1);
+                            self.trace_cache
+                                .compile_trace(&self.code, target, self.ip - 1);
                         }
                     }
                     self.ip = target;
@@ -203,7 +204,8 @@ impl TitanVM {
                             if self.trace_cache.is_hot(target)
                                 && self.trace_cache.get_trace(target).is_none()
                             {
-                                self.trace_cache.compile_trace(&self.code, target, self.ip - 1);
+                                self.trace_cache
+                                    .compile_trace(&self.code, target, self.ip - 1);
                             }
                         }
                         self.ip = target;
