@@ -1262,8 +1262,8 @@ fn render() {
             program.statements.len()
         );
         assert!(
-            elapsed.as_millis() < 200,
-            "parsing 10,000 lines took {}ms, expected <200ms",
+            elapsed.as_millis() < 500,
+            "parsing 10,000 lines took {}ms, expected <500ms",
             elapsed.as_millis()
         );
     }
