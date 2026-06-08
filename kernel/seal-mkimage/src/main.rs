@@ -663,9 +663,7 @@ fn create_fat32_esp(efi_data: &[u8], size: usize) -> Vec<u8> {
     let cursor = Cursor::new(&mut img[..]);
     let options = fatfs::FormatVolumeOptions::new()
         .fat_type(fatfs::FatType::Fat32)
-        .volume_label([
-            b'S', b'E', b'A', b'L', b'-', b'O', b'S', b'-', b'E', b'F', b'I',
-        ]);
+        .volume_label(*b"SEAL-OS-EFI");
     fatfs::format_volume(cursor, options).expect("Failed to format FAT32");
 
     {
@@ -694,9 +692,7 @@ fn create_fat12_efi_image(efi_data: &[u8]) -> Vec<u8> {
     let cursor = Cursor::new(&mut img[..]);
     let options = fatfs::FormatVolumeOptions::new()
         .fat_type(fatfs::FatType::Fat12)
-        .volume_label([
-            b'E', b'F', b'I', b'B', b'O', b'O', b'T', b' ', b' ', b' ', b' ',
-        ]);
+        .volume_label(*b"EFIBOOT    ");
     fatfs::format_volume(cursor, options).expect("Failed to format FAT12");
 
     {
