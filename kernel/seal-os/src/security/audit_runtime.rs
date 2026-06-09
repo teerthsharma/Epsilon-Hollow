@@ -66,8 +66,5 @@ fn probe_kpti() -> String {
 
 fn probe_smap_smep() -> String {
     let enabled = crate::security::smap_smep::is_enabled();
-    format!(
-        "{{\"probe\":\"smap_smep\",\"enabled\":{}}}",
-        enabled
-    )
+    format!("{{\"probe\":\"smap_smep\",\"enabled\":{}}}", enabled)
 }

@@ -101,7 +101,9 @@ impl HttpClient {
 
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/{}\r\n\r\n",
-            parsed.path, parsed.host, crate::VERSION
+            parsed.path,
+            parsed.host,
+            crate::VERSION
         );
         tcp.send(req.as_bytes());
 
@@ -200,7 +202,9 @@ impl HttpClient {
 
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/{}\r\n\r\n",
-            parsed.path, parsed.host, crate::VERSION
+            parsed.path,
+            parsed.host,
+            crate::VERSION
         );
         if let Err(e) = tls.send(req.as_bytes()) {
             return Err(format!("TLS send failed: {}", e));

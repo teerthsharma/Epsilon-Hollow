@@ -3675,7 +3675,10 @@ with:
         let no_proof_asset = good.replace("release-proof/serial.log", "release-proof/missing.log");
         assert!(check_release_workflow_contract_text(&no_proof_asset).is_err());
 
-        let no_screen_gate = good.replace("--check-proof-screen /tmp/seal-os-screen.ppm", "echo screen");
+        let no_screen_gate = good.replace(
+            "--check-proof-screen /tmp/seal-os-screen.ppm",
+            "echo screen",
+        );
         assert!(check_release_workflow_contract_text(&no_screen_gate).is_err());
 
         let no_screen_asset = good.replace("release-proof/screen.ppm", "release-proof/missing.ppm");

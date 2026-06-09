@@ -31,9 +31,7 @@ fn main() {
                     let bin_path = path.with_extension("bin");
                     let cl_mtime = std::fs::metadata(&path).and_then(|m| m.modified());
                     let bin_mtime = std::fs::metadata(&bin_path).and_then(|m| m.modified());
-                    if bin_mtime.is_err()
-                        || cl_mtime.unwrap() > bin_mtime.unwrap()
-                    {
+                    if bin_mtime.is_err() || cl_mtime.unwrap() > bin_mtime.unwrap() {
                         needs_compile = true;
                         break;
                     }
@@ -63,7 +61,9 @@ fn main() {
                 .status();
             if let Ok(st) = status {
                 if !st.success() {
-                    println!("cargo:warning=Shader compilation failed; build may use stale binaries.");
+                    println!(
+                        "cargo:warning=Shader compilation failed; build may use stale binaries."
+                    );
                 }
             }
         } else {
