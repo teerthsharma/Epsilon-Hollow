@@ -1,0 +1,3 @@
+## 2024-06-09 - Memoizing Streamed Arrays in Next.js
+**Learning:** In Next.js/React architectures handling high-frequency streamed text chunks (like DSP Bus responses), rendering arrays of messages via standard `.map()` causes O(N^2) rendering bottlenecks. The entire list re-renders on every chunk payload update. Additionally, when wrapping components in `React.memo()`, using anonymous arrow functions triggers `react/display-name` ESLint errors which can cause CI/build failures in strict codebases.
+**Action:** Always extract items from streamed lists into separate components and wrap them in `React.memo(function ComponentName(...) {...})` using named functions to prevent performance degradation without violating strict ESLint `display-name` rules.
