@@ -1,0 +1,3 @@
+## 2024-07-25 - Dynamic disabled states for form submission buttons
+**Learning:** Adding dynamic ARIA labels and title attributes on disabled send/submit buttons helps inform screen readers and pointer-device users *why* the button is disabled (e.g. "Type a message to send").
+**Action:** When implementing disabled form submission buttons, proactively include dynamic context describing the condition needed to enable them. Combine this with keyboard-friendly focus indicators (`focus-visible:ring`) and pointer visual cues (`disabled:cursor-not-allowed`) for a comprehensive accessibility pattern.
