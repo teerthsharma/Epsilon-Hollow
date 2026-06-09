@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Default directories scanned for Aether kernel sources.
+#[allow(dead_code)]
 pub const DEFAULT_AETHER_SOURCE_DIRS: &[&str] = &[
     "kernel/aether/Aether-Lang/examples",
     "kernel/aether/aether-link/src",
@@ -24,12 +25,15 @@ pub const DEFAULT_AETHER_SOURCE_DIRS: &[&str] = &[
 ];
 
 /// Extension patterns recognised as Aether source.
+#[allow(dead_code)]
 pub const AETHER_EXTENSIONS: &[&str] = &["ae", "aether"];
 
 /// Output subdirectory under `target/` where Aether object images are staged.
+#[allow(dead_code)]
 pub const AETHER_BUILD_DIR: &str = "target/aether-build";
 
 /// Metadata written alongside each compiled object image.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct AetherObjectMeta {
     pub source_path: PathBuf,
@@ -39,6 +43,7 @@ pub struct AetherObjectMeta {
 }
 
 /// A single compiled Aether object image.
+#[allow(dead_code)]
 pub struct AetherObject {
     pub meta: AetherObjectMeta,
     /// Bytecode payload (TitanVM OpCode sequence) or placeholder for Phase 1.
@@ -46,6 +51,7 @@ pub struct AetherObject {
 }
 
 /// Build configuration for the Aether driver.
+#[allow(dead_code)]
 pub struct AetherBuildConfig {
     pub source_dirs: Vec<PathBuf>,
     pub output_dir: PathBuf,
@@ -70,6 +76,7 @@ impl Default for AetherBuildConfig {
 }
 
 /// Discover all Aether source files under the configured directories.
+#[allow(dead_code)]
 pub fn discover_sources(config: &AetherBuildConfig) -> Vec<PathBuf> {
     let mut sources = Vec::new();
     for dir in &config.source_dirs {
@@ -94,6 +101,7 @@ pub fn discover_sources(config: &AetherBuildConfig) -> Vec<PathBuf> {
 
 /// Run the Aether bootstrap compiler (`cargo run -p aether-cli`) in check mode.
 /// Returns `Ok(())` if syntax is valid.
+#[allow(dead_code)]
 pub fn bootstrap_check(project_root: &Path, source: &Path) -> Result<(), String> {
     let output = Command::new("cargo")
         .arg("run")
@@ -108,7 +116,11 @@ pub fn bootstrap_check(project_root: &Path, source: &Path) -> Result<(), String>
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("aether check failed for {}: {}", source.display(), stderr));
+        return Err(format!(
+            "aether check failed for {}: {}",
+            source.display(),
+            stderr
+        ));
     }
     Ok(())
 }
@@ -119,10 +131,8 @@ pub fn bootstrap_check(project_root: &Path, source: &Path) -> Result<(), String>
 /// 1. Verify syntax via bootstrap compiler.
 /// 2. Compute source hash for incremental-build tracking.
 /// 3. Write a placeholder `.aeo` payload (full bytecode serialization in Phase 1).
-pub fn compile_source(
-    config: &AetherBuildConfig,
-    source: &Path,
-) -> Result<AetherObject, String> {
+#[allow(dead_code)]
+pub fn compile_source(config: &AetherBuildConfig, source: &Path) -> Result<AetherObject, String> {
     if config.verify_syntax {
         bootstrap_check(&config.project_root, source)?;
     }
@@ -148,13 +158,16 @@ pub fn compile_source(
 }
 
 /// Compile all discovered sources and write object images to the output dir.
+#[allow(dead_code)]
 pub fn build_all(config: &AetherBuildConfig) -> Result<HashMap<PathBuf, AetherObject>, String> {
-    fs::create_dir_all(&config.output_dir)
-        .map_err(|e| format!("cannot create output dir: {e}"))?;
+    fs::create_dir_all(&config.output_dir).map_err(|e| format!("cannot create output dir: {e}"))?;
 
     let sources = discover_sources(config);
     if sources.is_empty() {
-        eprintln!("[aether-build] warning: no Aether sources found in {:?}", config.source_dirs);
+        eprintln!(
+            "[aether-build] warning: no Aether sources found in {:?}",
+            config.source_dirs
+        );
     }
 
     let mut artifacts = HashMap::new();
@@ -182,6 +195,7 @@ pub fn build_all(config: &AetherBuildConfig) -> Result<HashMap<PathBuf, AetherOb
 }
 
 /// Write a JSON manifest describing the current build state.
+#[allow(dead_code)]
 fn write_manifest(
     config: &AetherBuildConfig,
     artifacts: &HashMap<PathBuf, AetherObject>,
@@ -222,6 +236,7 @@ fn write_manifest(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn md5_hash(data: &[u8]) -> [u8; 16] {
     // Simple MD5-like digest using djb2 + checksum for scaffolding.
     // Replace with a proper md5 crate or ring::digest in production.
@@ -246,6 +261,7 @@ fn md5_hash(data: &[u8]) -> [u8; 16] {
     out
 }
 
+#[allow(dead_code)]
 fn iso_timestamp() -> String {
     use std::time::SystemTime;
     let now = SystemTime::now()
@@ -257,6 +273,7 @@ fn iso_timestamp() -> String {
 }
 
 /// Compute a placeholder payload containing a minimal header + source hash.
+#[allow(dead_code)]
 fn build_placeholder_payload(source: &Path, hash: &str) -> Vec<u8> {
     let header = b"AEO\x00"; // Aether Object magic
     let name = source.file_stem().unwrap_or_default().to_string_lossy();
