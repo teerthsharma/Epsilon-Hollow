@@ -57,9 +57,9 @@ pub unsafe fn enter_userspace(context: &mut UserContext) -> ! {
     crate::process::signal::check_and_handle_signals(context);
 
     // Build the interrupt-return stack frame.
-    let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+    let user_ss = (((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8)
         | (PrivilegeLevel::Ring3 as u16 as u64);
-    let user_cs = ((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+    let user_cs = (((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8)
         | (PrivilegeLevel::Ring3 as u16 as u64);
 
     asm!(
