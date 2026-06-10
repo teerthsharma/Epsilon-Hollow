@@ -189,13 +189,13 @@ fn write_manifest(
     let manifest_path = config.output_dir.join("aether-build-manifest.json");
     let mut lines = vec![
         "{".to_string(),
-        format!("  \"version\": 1,"),
+        "  \"version\": 1,".to_string(),
         format!("  \"timestamp\": \"{}\",", iso_timestamp()),
-        format!("  \"phases\": {{"),
-        format!("    \"current\": 0,"),
-        format!("    \"description\": \"Rust driver + Aether bootstrap compiler\","),
-        format!("  }},"),
-        format!("  \"artifacts\": ["),
+        "  \"phases\": {".to_string(),
+        "    \"current\": 0,".to_string(),
+        "    \"description\": \"Rust driver + Aether bootstrap compiler\",".to_string(),
+        "  },".to_string(),
+        "  \"artifacts\": [".to_string(),
     ];
 
     let mut first = true;

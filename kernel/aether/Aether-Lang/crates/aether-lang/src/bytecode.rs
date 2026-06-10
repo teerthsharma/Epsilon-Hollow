@@ -6,7 +6,7 @@
 //! ═══════════════════════════════════════════════════════════════════════════════
 
 #[cfg(not(feature = "std"))]
-use alloc::string::{String, ToString};
+use alloc::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -210,6 +210,12 @@ pub struct TraceCache {
     max_trace_len: usize,
 }
 
+impl Default for TraceCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceCache {
     pub fn new() -> Self {
         Self {
@@ -243,7 +249,10 @@ impl TraceCache {
 
     /// Retrieve a compiled trace starting at `ip`.
     pub fn get_trace(&self, ip: usize) -> Option<&Trace> {
-        self.traces.iter().find(|(start, _)| *start == ip).map(|(_, t)| t)
+        self.traces
+            .iter()
+            .find(|(start, _)| *start == ip)
+            .map(|(_, t)| t)
     }
 
     /// Compile a trace from `start_ip` (inclusive) to `end_ip` (exclusive).

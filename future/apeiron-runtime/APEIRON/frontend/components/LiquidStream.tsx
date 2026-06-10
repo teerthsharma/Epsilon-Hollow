@@ -127,8 +127,8 @@ export const LiquidStream = () => {
                         onClick={handleSend}
                         disabled={!input.trim()}
                         aria-label="Send thought"
-                        title="Send thought"
-                        className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                        title={!input.trim() ? "Cannot send empty thought" : "Send thought"}
+                        className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:outline-none"
                     >
                         <Send size={16} />
                     </button>
