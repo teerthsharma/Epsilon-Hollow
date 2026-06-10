@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-export type Message = {
+type Message = {
     id: string;
     sender: 'user' | 'apeiron';
     text: string;
