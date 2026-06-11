@@ -1,0 +1,3 @@
+## 2024-06-11 - O(N^2) Render Bottleneck in Chat Stream
+**Learning:** Streaming text arrays (like DSP Bus chat messages) in React can cause severe O(N^2) rendering bottlenecks. If a parent component renders a list by mapping over an array, every new streaming chunk updates the state array and triggers a full re-render of ALL list items.
+**Action:** When rendering streamed chat messages, always extract the individual list item into a separate component and wrap it in `React.memo(function Name() { ... })`. This ensures only the actively streaming chunk re-renders, while previous messages remain stable.
