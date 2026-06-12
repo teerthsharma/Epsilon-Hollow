@@ -1,0 +1,3 @@
+## 2023-06-12 - Explicit Disabled States and Keyboard Navigation
+**Learning:** Adding dynamic `title` properties and explicit `disabled:cursor-not-allowed` styles clearly explains disabled states when users attempt to interact with buttons, which significantly boosts UX and prevents user confusion. Additionally, explicitly adding `focus-visible:ring` styles rather than relying entirely on defaults ensures interactive elements are cleanly accessible via keyboard across varying background colors.
+**Action:** When adding or updating buttons, always consider dynamic tooltip attributes for disabled states, alongside visible focus styles and appropriate disabled cursor feedback.
