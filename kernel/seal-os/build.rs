@@ -24,19 +24,15 @@ fn main() {
     // generated .bin files, or when the .bin files are missing.
     let mut needs_compile = false;
     if let Ok(entries) = std::fs::read_dir(&shaders_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("cl") {
-                    let bin_path = path.with_extension("bin");
-                    let cl_mtime = std::fs::metadata(&path).and_then(|m| m.modified());
-                    let bin_mtime = std::fs::metadata(&bin_path).and_then(|m| m.modified());
-                    if bin_mtime.is_err()
-                        || cl_mtime.unwrap() > bin_mtime.unwrap()
-                    {
-                        needs_compile = true;
-                        break;
-                    }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("cl") {
+                let bin_path = path.with_extension("bin");
+                let cl_mtime = std::fs::metadata(&path).and_then(|m| m.modified());
+                let bin_mtime = std::fs::metadata(&bin_path).and_then(|m| m.modified());
+                if bin_mtime.is_err() || cl_mtime.unwrap() > bin_mtime.unwrap() {
+                    needs_compile = true;
+                    break;
                 }
             }
         }
@@ -63,7 +59,9 @@ fn main() {
                 .status();
             if let Ok(st) = status {
                 if !st.success() {
-                    println!("cargo:warning=Shader compilation failed; build may use stale binaries.");
+                    println!(
+                        "cargo:warning=Shader compilation failed; build may use stale binaries."
+                    );
                 }
             }
         } else {
@@ -85,12 +83,10 @@ fn main() {
     // Re-run build.rs if any .cl source changes.
     println!("cargo:rerun-if-changed={}", shaders_dir.display());
     if let Ok(entries) = std::fs::read_dir(&shaders_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("cl") {
-                    println!("cargo:rerun-if-changed={}", path.display());
-                }
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("cl") {
+                println!("cargo:rerun-if-changed={}", path.display());
             }
         }
     }
