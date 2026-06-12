@@ -143,10 +143,7 @@ impl AmdTopologyAccelerator {
     unsafe fn upload_kernel(&mut self, meta: &KernelMeta) -> Result<u64, GpuError> {
         let code_bytes = meta.code_size_bytes;
         let code_buf = GpuBuffer::alloc(code_bytes).ok_or(GpuError::OutOfMemory)?;
-        upload(
-            &code_buf,
-            meta.binary,
-        );
+        upload(&code_buf, meta.binary);
         Ok(code_buf.phys)
     }
 }
