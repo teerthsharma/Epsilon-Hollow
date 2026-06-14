@@ -3,7 +3,8 @@
 
 import { create } from 'zustand';
 
-interface Message {
+export interface Message {
+    isPlasticityEvent?: boolean;
     id: string;
     sender: 'user' | 'apeiron';
     text: string;
