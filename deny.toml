@@ -15,17 +15,11 @@ ignore = [
     # paste is unmaintained but pulled transitively via nalgebra -> simba -> paste
     "RUSTSEC-2024-0436",
     # number_prefix unmaintained — transitive dep, no action available
-    "RUSTSEC-2025-0119",
     # pyo3 buffer overflow — only affects optional python feature
-    "RUSTSEC-2025-0020",
     # rustls-pemfile unmaintained — transitive via reqwest (optional net feature)
-    "RUSTSEC-2025-0134",
     # webpki URI name constraints — transitive via reqwest
-    "RUSTSEC-2026-0098",
     # webpki wildcard name constraints — transitive via reqwest
-    "RUSTSEC-2026-0099",
     # webpki-related — transitive via reqwest
-    "RUSTSEC-2026-0104",
 ]
 
 [licenses]

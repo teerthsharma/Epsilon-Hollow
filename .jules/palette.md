@@ -1,0 +1,3 @@
+## 2024-06-15 - Dynamic Title and Focus Visiblity for Chat Input
+**Learning:** Adding dynamic title tooltips ("Type a message to send" vs "Send message") to disabled buttons significantly clarifies *why* the button is inactive for screen reader and mouse users alike. Pairing `disabled:cursor-not-allowed` with `focus-visible:ring-2` ensures keyboard users receive standard interactive cues without compromising the visual experience for mouse users.
+**Action:** Always pair `disabled` states with explanatory `title` or `aria-label` attributes and use `focus-visible` to style keyboard focus explicitly on interactive forms.
