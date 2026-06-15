@@ -1,9 +1,51 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { useApeiron } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
+
+// OPTIMIZATION: Extract ThoughtItem into a memoized component.
+// This prevents O(N^2) rendering bottlenecks by ensuring that when new chunks
+// stream in, we only re-render the new items rather than the entire list.
+const ThoughtItem = memo(function ThoughtItem({ text }: { text: string }) {
+    return (
+        <div className="opacity-80">
+            {text}
+        </div>
+    );
+});
+
+// OPTIMIZATION: Extract ChatMessage into a memoized component.
+// Similarly prevents the entire message array from re-rendering every time a single
+// new message or streamed chunk is added.
+type Message = {
+    id: string;
+    sender: 'user' | 'apeiron';
+    text: string;
+    isPlasticityEvent: boolean;
+};
+
+const ChatMessage = memo(function ChatMessage({ msg }: { msg: Message }) {
+    return (
+        <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
+                : msg.sender === 'user'
+                    ? 'border-gray-700 bg-gray-800'
+                    : 'border-blue-900/30 bg-blue-900/10'
+                }`}>
+                {msg.isPlasticityEvent && (
+                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
+                        <Zap size={12} fill="currentColor" />
+                        <span>Weights Updated</span>
+                    </div>
+                )}
+                <p className="whitespace-pre-wrap">{msg.text}</p>
+            </div>
+        </div>
+    );
+});
 
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts } = useApeiron();
@@ -49,9 +91,7 @@ export default function ChatInterface() {
                         <div className="text-xs text-gray-500 mb-2 border-b border-gray-800 pb-1">THOUGHT STREAM</div>
                         <div className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide">
                             {thoughts.map((t, i) => (
-                                <div key={i} className="opacity-80">
-                                    {t}
-                                </div>
+                                <ThoughtItem key={i} text={t} />
                             ))}
                             <div ref={scrollRef} />
                         </div>
@@ -81,22 +121,7 @@ export default function ChatInterface() {
                     aria-label="Chat history"
                 >
                     {messages.map((msg) => (
-                        <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
-                                ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
-                                : msg.sender === 'user'
-                                    ? 'border-gray-700 bg-gray-800'
-                                    : 'border-blue-900/30 bg-blue-900/10'
-                                }`}>
-                                {msg.isPlasticityEvent && (
-                                    <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
-                                        <Zap size={12} fill="currentColor" />
-                                        <span>Weights Updated</span>
-                                    </div>
-                                )}
-                                <p className="whitespace-pre-wrap">{msg.text}</p>
-                            </div>
-                        </div>
+                        <ChatMessage key={msg.id} msg={msg} />
                     ))}
                     <div ref={scrollRef} />
                 </div>
