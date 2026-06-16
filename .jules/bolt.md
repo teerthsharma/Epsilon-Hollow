@@ -1,0 +1,3 @@
+## 2024-06-16 - Memoizing Streamed Arrays in React
+**Learning:** When rendering continuous streams of data (like DSP Bus chunks or tokens) into a mapped array in React, every new chunk appended to the last item creates a new array reference in state. If the list items are unmemoized inline JSX, this causes the entire list to re-render for every single chunk, creating a massive O(N^2) rendering bottleneck as the chat history grows.
+**Action:** Always extract individual mapped items into a separate component wrapped with `React.memo()` (using named functions like `memo(function ChatMessage() {...})` to avoid ESLint displayName errors) so that only the actively streaming item re-renders, dropping the update cost to O(1) per chunk.
