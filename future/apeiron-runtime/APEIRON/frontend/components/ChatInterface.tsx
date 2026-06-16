@@ -119,14 +119,14 @@ export default function ChatInterface() {
                             onChange={(e) => setInput(e.target.value)}
                             placeholder="Inject knowledge into the kernel..."
                             aria-label="Message input"
-                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white"
+                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 focus-visible:ring-2 focus-visible:ring-green-500/50 transition-colors text-white"
                         />
                         <button
                             type="submit"
                             disabled={!input.trim()}
-                            aria-label="Send message"
-                            title="Send message"
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-green-500 transition-colors"
+                            aria-label={input.trim() ? "Send message" : "Cannot send empty message"}
+                            title={input.trim() ? "Send message" : "Cannot send empty message"}
+                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500/50 transition-colors"
                         >
                             <Send size={20} />
                         </button>
