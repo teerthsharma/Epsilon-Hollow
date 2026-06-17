@@ -76,12 +76,21 @@ echo "[build] initrd.img: $(du -h "$INITRD_IMG" | cut -f1)"
 # ── Obtain kernel ────────────────────────────────────────────────────────────
 VMLINUZ="$SCRIPT_DIR/vmlinuz"
 if [ ! -f "$VMLINUZ" ]; then
-    SYS_KERNEL=$(ls /boot/vmlinuz-* 2>/dev/null | head -n1 || true)
+    SYS_KERNEL=""
+    for path in /boot/vmlinuz-*; do
+        if [ -r "$path" ]; then
+            SYS_KERNEL="$path"
+            break
+        fi
+        if [ -e "$path" ]; then
+            echo "[build] Skipping unreadable kernel: $path"
+        fi
+    done
     if [ -n "$SYS_KERNEL" ]; then
         cp "$SYS_KERNEL" "$VMLINUZ"
         echo "[build] Using system kernel: $SYS_KERNEL"
     else
-        echo "[build] ERROR: No kernel found at /boot/vmlinuz-*"
+        echo "[build] ERROR: No readable kernel found at /boot/vmlinuz-*"
         echo "[build] Install linux-image-generic and retry."
         exit 1
     fi
