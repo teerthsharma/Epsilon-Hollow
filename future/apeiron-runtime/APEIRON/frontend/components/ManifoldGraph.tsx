@@ -3,43 +3,45 @@
 
 'use client';
 
-import React, { useRef, useMemo } from 'react';
+import React, { useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 
+// Pre-calculate manifold points at module level.
+// This executes the O(N) generation exactly once, rather than on component mount/render.
+// It also resolves Next.js react-hooks/purity rules which forbid Math.random() during render.
+const count = 2000;
+const [initialPositions, initialColors] = (() => {
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const color = new THREE.Color();
+
+    for (let i = 0; i < count; i++) {
+        // Sphere distribution
+        const r = 4 * Math.cbrt(Math.random());
+        const theta = Math.random() * 2 * Math.PI;
+        const phi = Math.acos(2 * Math.random() - 1);
+
+        const x = r * Math.sin(phi) * Math.cos(theta);
+        const y = r * Math.sin(phi) * Math.sin(theta);
+        const z = r * Math.cos(phi);
+
+        positions[i * 3] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+
+        // Gradient colors (Blue to Cyan)
+        color.setHSL(0.6 + Math.random() * 0.1, 0.8, 0.5);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+    }
+    return [positions, colors];
+})();
+
 const PointCloud = () => {
     const pointsRef = useRef<THREE.Points>(null!);
-
-    // Generate random manifold points
-    const count = 2000;
-    const [positions, colors] = useMemo(() => {
-        const positions = new Float32Array(count * 3);
-        const colors = new Float32Array(count * 3);
-        const color = new THREE.Color();
-
-        for (let i = 0; i < count; i++) {
-            // Sphere distribution
-            const r = 4 * Math.cbrt(Math.random());
-            const theta = Math.random() * 2 * Math.PI;
-            const phi = Math.acos(2 * Math.random() - 1);
-
-            const x = r * Math.sin(phi) * Math.cos(theta);
-            const y = r * Math.sin(phi) * Math.sin(theta);
-            const z = r * Math.cos(phi);
-
-            positions[i * 3] = x;
-            positions[i * 3 + 1] = y;
-            positions[i * 3 + 2] = z;
-
-            // Gradient colors (Blue to Cyan)
-            color.setHSL(0.6 + Math.random() * 0.1, 0.8, 0.5);
-            colors[i * 3] = color.r;
-            colors[i * 3 + 1] = color.g;
-            colors[i * 3 + 2] = color.b;
-        }
-        return [positions, colors];
-    }, [count]);
 
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
@@ -54,16 +56,16 @@ const PointCloud = () => {
                 <bufferAttribute
                     attach="attributes-position"
                     count={count}
-                    array={positions}
+                    array={initialPositions}
                     itemSize={3}
-                    args={[positions, 3]}
+                    args={[initialPositions, 3]}
                 />
                 <bufferAttribute
                     attach="attributes-color"
                     count={count}
-                    array={colors}
+                    array={initialColors}
                     itemSize={3}
-                    args={[colors, 3]}
+                    args={[initialColors, 3]}
                 />
             </bufferGeometry>
             <pointsMaterial
