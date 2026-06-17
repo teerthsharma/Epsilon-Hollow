@@ -3,7 +3,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-type Message = {
+export type Message = {
     id: string;
     sender: 'user' | 'apeiron';
     text: string;
@@ -15,6 +15,7 @@ export const useApeiron = () => {
     const [isLearning, setIsLearning] = useState(false);
     const [pulseType, setPulseType] = useState<'none' | 'green' | 'blue' | 'red'>('none');
     const [thoughts, setThoughts] = useState<string[]>([]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [dspBus, setDspBus] = useState<any>(null);
     const [tunnelStatus, setTunnelStatus] = useState<'OFFLINE' | 'LOCKED'>('OFFLINE');
     const downlinkController = useRef<AbortController | null>(null);
@@ -23,7 +24,7 @@ export const useApeiron = () => {
         // Load Sanctuary DSP Bus
         const loadWasm = async () => {
             try {
-                // @ts-ignore - Loading from lib dir
+                // @ts-expect-error - Loading from lib dir
                 const init = (await import('../lib/wasm-pkg/sanctuary_dsp.js')).default;
                 const wasm = await init('/wasm/sanctuary_dsp_bg.wasm');
                 setDspBus(wasm);
@@ -108,6 +109,7 @@ export const useApeiron = () => {
                         }
                     }
                 }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             } catch (err: any) {
                 if (err.name !== 'AbortError') {
                     console.error("Downlink Severed:", err);

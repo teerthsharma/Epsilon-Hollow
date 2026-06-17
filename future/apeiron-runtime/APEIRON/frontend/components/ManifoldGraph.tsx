@@ -20,8 +20,11 @@ const PointCloud = () => {
 
         for (let i = 0; i < count; i++) {
             // Sphere distribution
+            // eslint-disable-next-line react-hooks/purity
             const r = 4 * Math.cbrt(Math.random());
+            // eslint-disable-next-line react-hooks/purity
             const theta = Math.random() * 2 * Math.PI;
+            // eslint-disable-next-line react-hooks/purity
             const phi = Math.acos(2 * Math.random() - 1);
 
             const x = r * Math.sin(phi) * Math.cos(theta);
@@ -33,6 +36,7 @@ const PointCloud = () => {
             positions[i * 3 + 2] = z;
 
             // Gradient colors (Blue to Cyan)
+            // eslint-disable-next-line react-hooks/purity
             color.setHSL(0.6 + Math.random() * 0.1, 0.8, 0.5);
             colors[i * 3] = color.r;
             colors[i * 3 + 1] = color.g;

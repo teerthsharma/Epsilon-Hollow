@@ -10,6 +10,7 @@ export default function Pulse() {
 
     useEffect(() => {
         if (pulseTrigger) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
             setActive(true);
             const timer = setTimeout(() => setActive(false), 2000);
             return () => clearTimeout(timer);
