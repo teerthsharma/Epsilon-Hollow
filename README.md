@@ -1,4 +1,4 @@
-<!-- Seal OS v0.4.6 README -->
+<!-- Seal OS v0.4.7.5 README -->
 <!-- Target: the biggest README ever, with sarcasm and human readability -->
 
 <p align="center">
@@ -564,7 +564,7 @@ VM settings: Type=Other, Version=Other/Unknown (64-bit), Enable EFI, RAM=4096 MB
 ## Boot Log
 
 ```
-Seal OS v0.4.6 — The Geometrical Operating System
+Seal OS v0.4.7.5 — The Geometrical Operating System
 OS state = topology on S². Same-filesystem file moves use metadata topology; the mock block-store path reports zero file-byte persistence per move.
 
 [BOOT] Heap initialized (16 MB)
@@ -1487,7 +1487,7 @@ Benchmark: `io_cycle_8_lbas` median ~18 ns/cycle on desktop x86_64. CI regressio
 
 ## Feature Matrix vs The World
 
-How does a geometry-native research kernel compare to production operating systems? This table is a capability map for Seal OS v0.4.6, not a blanket victory claim. Seal OS aims to beat Ubuntu on the benchmark set in [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md); the claim becomes true only for rows with fresh Seal OS and Ubuntu measurements under the same constraints.
+How does a geometry-native research kernel compare to production operating systems? This table is a capability map for Seal OS v0.4.7.5, not a blanket victory claim. Seal OS aims to beat Ubuntu on the benchmark set in [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md); the claim becomes true only for rows with fresh Seal OS and Ubuntu measurements under the same constraints.
 
 ### Ubuntu Comparison Evidence Sheet
 
@@ -1530,7 +1530,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 
 ### Seal OS vs Redox OS vs Ubuntu vs Debian vs Windows vs macOS
 
-| Feature | **Seal OS v0.4.6** | **Redox OS 0.9.0** | **Ubuntu 26.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
+| Feature | **Seal OS v0.4.7.5** | **Redox OS 0.9.0** | **Ubuntu 26.04 LTS** | **Debian 12 Bookworm** | **Windows 11** | **macOS Sequoia** |
 |---|---|---|---|---|---|---|
 | **Language** | Rust-first `no_std` + small assembly | Rust (microkernel) | C (Linux kernel) | C (Linux kernel) | C/C++ (NT kernel) | C/C++/Obj-C (XNU) |
 | **Architecture** | Monolithic | Microkernel | Monolithic + modules | Monolithic + modules | Hybrid | Hybrid (Mach + BSD) |

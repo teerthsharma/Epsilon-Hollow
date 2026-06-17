@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to publish, e.g. v0.4.6"
+        description: "Existing release tag to publish, e.g. v0.4.7.5"
         required: true
 
 permissions:
@@ -174,6 +174,7 @@ jobs:
           cp /tmp/seal-os-screen.log release-proof/screen-serial.log
           cp /tmp/seal-os-screen.ppm release-proof/screen.ppm
           cp kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi release-proof/seal-os.efi
+          cp kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img release-proof/seal-os-efi.img
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --write-qemu-proof-manifest release-proof kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img ci 240 .
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-current-proof-manifest release-proof/proof-manifest.txt .
           {
@@ -181,6 +182,16 @@ jobs:
             echo "Not an any-VM, hardware-GPU, or Ubuntu-superiority proof."
             echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, captured proof-screen pixels, proof manifest provenance, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, O(1) allocator, and O(1) TCP demux indexes."
           } > release-proof/proof-summary.txt
+          sha256sum \
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img \
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi \
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img \
+            seal-os.iso \
+            release-proof/serial.log \
+            release-proof/screen.ppm \
+            release-proof/proof-manifest.txt \
+            release-proof/proof-summary.txt \
+            > release-proof/SHA256SUMS.txt
 
       - name: Upload release proof artifacts
         uses: actions/upload-artifact@v4
@@ -200,12 +211,15 @@ jobs:
           name: seal-os-images
           path: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
+            release-proof/SHA256SUMS.txt
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -213,12 +227,15 @@ jobs:
         with:
           files: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
+            release-proof/SHA256SUMS.txt
           body: |
             ## Seal OS ${{ github.ref_name }}
 
@@ -258,12 +275,15 @@ jobs:
           tag_name: ${{ github.event.inputs.tag }}
           files: |
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi
+            kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
             release-proof/proof-summary.txt
+            release-proof/SHA256SUMS.txt
           body: |
             ## Seal OS ${{ github.event.inputs.tag }}
 
@@ -273,11 +293,16 @@ jobs:
             Built from `${{ github.sha }}`.
 
             Attached proof artifacts:
+            - `seal-os.iso`
+            - `seal-os.img`
+            - `seal-os.efi`
+            - `seal-os-efi.img`
             - `serial.log`
             - `screen-serial.log`
             - `screen.ppm`
             - `proof-manifest.txt`
             - `proof-summary.txt`
+            - `SHA256SUMS.txt`
 
             The serial proof includes theorem, Aether runtime, LAAMBA app,
             desktop live input, desktop soak, and benchmark gates. The captured

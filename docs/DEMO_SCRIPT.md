@@ -12,7 +12,7 @@
 > "Seal OS boots in under a second from pure UEFI. No GRUB. No Multiboot. No 32-bit trampoline. Watch the theorem gate — ten formal theorems verified before the first pixel hits the screen."
 
 **ON-SCREEN TEXT:**
-- `Seal OS v0.4.6` (top-left, fade in)
+- `Seal OS v0.4.7.5` (top-left, fade in)
 - `T1/TSS … T10/WPHB VERIFIED` (center, green checkmarks)
 - `Desktop ready.` (bottom)
 

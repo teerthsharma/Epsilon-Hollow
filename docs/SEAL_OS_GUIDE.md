@@ -1,4 +1,4 @@
-# Seal OS 0.4.6 Guide
+# Seal OS 0.4.7.5 Guide
 
 Seal OS is a bare-metal Rust and Aether-Lang operating system. It is not a
 Linux distribution, not a POSIX personality, and not a Unix clone. The kernel
@@ -194,7 +194,7 @@ VM settings:
 Boot success means the GUI reaches the desktop, the serial log reaches the same
 T1-T10 theorem proof, and the VM does not hang during driver init.
 
-Current workspace status: Oracle VirtualBox is green for the current 0.4.6
+Current workspace status: Oracle VirtualBox is green for the current 0.4.7.5
 image when the VDI is rebuilt from the current raw image. `smoke-vbox.ps1
 -Seconds 240` reached the theorem gate, `VBOX HARDDISK`, block device `0x800`,
 readable sector 0, persistent ManifoldFS, current allocator markers, Aether
@@ -301,7 +301,7 @@ win:
 Claims must cite logs, screenshots, benchmark output, and exact commands.
 Anything else is noise wearing a hat.
 
-## Seal OS 0.4.6 Proof Baseline
+## Seal OS 0.4.7.5 Proof Baseline
 
 Current passed baseline on this workspace:
 

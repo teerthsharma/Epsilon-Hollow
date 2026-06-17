@@ -1,6 +1,6 @@
 # Cryptographic Audit — Seal OS
 
-**Version:** 0.4.6
+**Version:** 0.4.7.5
 **Scope:** In-kernel TLS 1.3 client, hardware entropy driver, and package signature verification.  
 **Auditor:** Agent 28-32 (Security Hardening & Documentation)  
 **Date:** 2026-06-01

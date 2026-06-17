@@ -2,11 +2,14 @@
 
 [package]
 name = "seal-os"
-version = "0.4.6"
+version = "0.4.7"
 edition = "2021"
 authors = ["Teerth Sharma"]
 license = "MIT"
 description = "Seal OS - The Geometrical Operating System. OS state is topology on S^2."
+
+[package.metadata.seal-os]
+release-version = "0.4.7.5"
 
 [features]
 default = []
