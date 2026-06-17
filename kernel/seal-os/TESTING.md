@@ -1,6 +1,6 @@
 # Seal OS Testing Guide
 
-This document describes the current supported proof path for Seal OS 0.4.6.
+This document describes the current supported proof path for Seal OS 0.4.7.5.
 The kernel crate is a UEFI `no_std` target, so raw host unit tests are not the
 kernel proof. The proof is: build the UEFI kernel, build the UEFI test-mode
 variant, package the image, boot it in a VM, then run the Rust audit gates.

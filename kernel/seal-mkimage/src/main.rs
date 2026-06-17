@@ -22,7 +22,7 @@ const MANIFOLD_END_LBA: u64 = (DISK_SIZE / SECTOR_SIZE) - 34;
 const MANIFOLD_SIZE_SECTORS: u64 = MANIFOLD_END_LBA - MANIFOLD_START_LBA + 1;
 const MNFD_JOURNAL_BLOCKS: u64 = 1024;
 const MNFD_FREE_BITMAP_BLOCKS: u64 = 256;
-const EXPECTED_SEAL_OS_BANNER: &str = "Seal OS v0.4.6";
+const EXPECTED_SEAL_OS_BANNER: &str = "Seal OS v0.4.7.5";
 const CURRENT_UBUNTU_BASELINE_VERSION: &str = "26.04";
 
 fn main() {
@@ -4248,16 +4248,21 @@ with:
     }
 
     #[test]
-    fn release_046_public_version_surfaces_are_aligned() {
+    fn release_0475_public_version_surfaces_are_aligned() {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..");
-        let version = "0.4.6";
-        let version_tag = "v0.4.6";
+        let cargo_version = "0.4.7";
+        let version = "0.4.7.5";
+        let version_tag = "v0.4.7.5";
         let files = [
             (
                 repo_root.join("kernel").join("seal-os").join("Cargo.toml"),
-                format!("version = \"{version}\""),
+                format!("version = \"{cargo_version}\""),
+            ),
+            (
+                repo_root.join("kernel").join("seal-os").join("Cargo.toml"),
+                format!("release-version = \"{version}\""),
             ),
             (
                 repo_root

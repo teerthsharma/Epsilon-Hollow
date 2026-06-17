@@ -15,7 +15,7 @@ Low / Medium / High / Critical (CVSS optional)
 
 ## Affected Versions
 List tags, branches, or commit ranges. Use `git describe` when possible.
-Example: `v0.4.0` – `v0.4.6`
+Example: `v0.4.0` – `v0.4.7.5`
 
 ## Description
 What is the flaw? Root cause, affected component, and preconditions.

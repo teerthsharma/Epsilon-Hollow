@@ -40,7 +40,7 @@ use boot::boot_info::BootInfo;
 #[cfg(not(test))]
 use graphics::framebuffer::Framebuffer;
 
-pub const VERSION: &str = "0.4.6";
+pub const VERSION: &str = "0.4.7.5";
 
 #[cfg(not(test))]
 static FRAMEBUFFER: spin::Once<Framebuffer> = spin::Once::new();

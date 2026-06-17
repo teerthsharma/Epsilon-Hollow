@@ -1,4 +1,4 @@
-# Seal OS v0.4.6
+# Seal OS v0.4.7.5
 
 **The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves have an O(1) metadata-surgery core. The boot benchmark proves that core through a persistent mock block-store path with `persistence_bytes_per_move=0`.
 
@@ -78,7 +78,7 @@ powershell -File .\run-qemu.ps1
 
 ## Architecture
 
-Allocator note for 0.4.6: the current kernel uses slab/page allocation backed by
+Allocator note for 0.4.7.5: the current kernel uses slab/page allocation backed by
 the bounded topological physical allocator. Single-frame allocation is O(1) over
 installed RAM size, and contiguous DMA allocation is capped at 64 pages per
 request; larger transfers must use chunked/scatter-gather I/O. The boot proof

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Current 0.4.6 proof scope: topology drives hot paths, single-frame allocation
+Current 0.4.7.5 proof scope: topology drives hot paths, single-frame allocation
 uses a bounded topological free index, and contiguous DMA allocation is capped at
 64 pages per request. Larger transfers must use chunked/scatter-gather I/O
 instead of one unbounded contiguous request. The TopoRAM proof marker exercises
@@ -50,9 +50,9 @@ Framebuffer              UEFI GOP address from BootInfo
 Kernel page tables are built from the UEFI memory map and Seal OS allocator state.
 ```
 
-Current heap state: fixed slab classes serve small allocations, page-backed paths serve large allocations, and the topological physical allocator backs frame ownership. Legacy bump-only notes no longer describe the 0.4.6 runtime.
+Current heap state: fixed slab classes serve small allocations, page-backed paths serve large allocations, and the topological physical allocator backs frame ownership. Legacy bump-only notes no longer describe the 0.4.7.5 runtime.
 
-Current 0.4.6 allocator note: small objects use fixed slab classes, large
+Current 0.4.7.5 allocator note: small objects use fixed slab classes, large
 allocations use page-backed paths, and physical frames come from the topological
 allocator.
 

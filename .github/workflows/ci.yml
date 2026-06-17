@@ -312,7 +312,10 @@ jobs:
       - name: Extract expected Seal OS version
         id: version
         run: |
-          EXPECTED=$(grep '^version' kernel/seal-os/Cargo.toml | head -n1 | sed 's/.*"\(.*\)".*/\1/')
+          EXPECTED=$(grep '^release-version' kernel/seal-os/Cargo.toml | head -n1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ -z "$EXPECTED" ]; then
+            EXPECTED=$(grep '^version' kernel/seal-os/Cargo.toml | head -n1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
           echo "expected=$EXPECTED" >> "$GITHUB_OUTPUT"
           echo "Expected Seal OS version: $EXPECTED"
       - name: Boot UEFI image in QEMU and capture serial output

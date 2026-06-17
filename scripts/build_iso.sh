@@ -27,13 +27,17 @@ fi
 
 echo "[build_iso] Input EFI: $EFI_BINARY ($(du -h "$EFI_BINARY" | cut -f1))"
 
-# ── Build the mkimage tool to generate EFI boot image ────────────────────────
-echo "[build_iso] Building mkimage tool..."
-cd "$PROJECT_ROOT/kernel/seal-mkimage"
-cargo +stable build --release
-cargo +stable run --release
-
 EFI_IMG="$PROJECT_ROOT/kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img"
+# ── Build the mkimage tool to generate EFI boot image ────────────────────────
+if [ "${SEAL_OS_SKIP_MKIMAGE:-0}" = "1" ] && [ -f "$EFI_IMG" ]; then
+    echo "[build_iso] Reusing existing EFI boot image: $EFI_IMG"
+else
+    echo "[build_iso] Building mkimage tool..."
+    cd "$PROJECT_ROOT/kernel/seal-mkimage"
+    cargo +stable build --release
+    cargo +stable run --release
+fi
+
 if [ ! -f "$EFI_IMG" ]; then
     echo "[build_iso] ERROR: EFI boot image not generated."
     exit 1
