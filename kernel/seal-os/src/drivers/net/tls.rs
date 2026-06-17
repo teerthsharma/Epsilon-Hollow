@@ -31,6 +31,16 @@ pub struct TlsSession {
     read_seq: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct TlsRecordBenchProof {
+    pub plaintext_bytes: usize,
+    pub record_bytes: usize,
+    pub tag_bytes: usize,
+    pub decrypt_match: bool,
+    pub write_seq: u64,
+    pub read_seq: u64,
+}
+
 impl TlsSession {
     pub fn new() -> Self {
         Self {
@@ -188,6 +198,31 @@ impl TlsSession {
             .map_err(|_| String::from("decrypt failed (auth tag mismatch)"))?;
         self.read_seq += 1;
         Ok(pt)
+    }
+
+    pub fn benchmark_psk_record_roundtrip(
+        plaintext: &[u8],
+    ) -> Result<TlsRecordBenchProof, String> {
+        let mut session = Self::new();
+        session.set_psk(&[0xABu8; 32]);
+        session.state = TlsState::Established;
+        session.write_key = [0xCDu8; 16];
+        session.read_key = [0xCDu8; 16];
+        session.write_iv = [0xEFu8; 12];
+        session.read_iv = [0xEFu8; 12];
+
+        let record = session.encrypt(plaintext)?;
+        session.read_seq = session.write_seq - 1;
+        let decrypted = session.decrypt(&record)?;
+
+        Ok(TlsRecordBenchProof {
+            plaintext_bytes: plaintext.len(),
+            record_bytes: record.len(),
+            tag_bytes: 16,
+            decrypt_match: decrypted.as_slice() == plaintext,
+            write_seq: session.write_seq,
+            read_seq: session.read_seq,
+        })
     }
 
     fn make_nonce(&self, write: bool) -> [u8; 12] {

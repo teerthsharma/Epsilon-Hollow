@@ -29,10 +29,10 @@ SealShell is Seal OS's native shell. Commands are plain English — no cryptic f
 | `help` / `help <cmd>` | Show handbook or per-command help |
 | `run <script.aether>` | Execute an Aether-Lang script |
 | `aether` | Enter Aether-Lang interactive mode |
-| `install <pkg>` | Install a package via ManifoldPkg |
+| `install <pkg>` | Install a package via ManifoldPkg; `<name>.eph` installs local bytes, bare names use the registry path |
 | `remove <pkg>` | Remove a package |
 | `packages` | List installed packages |
-| `update` | Update all packages |
+| `update` | Report registry refresh status |
 | `wifi` / `wifi connect <ssid>` | WiFi status or connect |
 | `bluetooth` | Bluetooth device scan |
 | `theme <name>` | Change theme (dark, light, seal, matrix) |

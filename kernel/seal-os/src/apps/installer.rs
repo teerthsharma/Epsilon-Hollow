@@ -12,6 +12,7 @@ use crate::graphics::framebuffer::Framebuffer;
 use crate::serial_println;
 use crate::wm::event::InputEvent;
 use alloc::format;
+use alloc::string::String;
 
 const BG: u32 = 0x00080a10;
 const FG: u32 = 0x00d0d0e0;
@@ -52,6 +53,8 @@ pub struct Installer {
     fb_height: u32,
     install_start_tick: u64,
     error_msg: Option<&'static str>,
+    install_applied: bool,
+    install_ok: bool,
 }
 
 impl Installer {
@@ -73,6 +76,8 @@ impl Installer {
             fb_height: 768,
             install_start_tick: 0,
             error_msg: None,
+            install_applied: false,
+            install_ok: false,
         }
     }
 
@@ -279,12 +284,12 @@ impl Installer {
         font::draw_string(fb, pct_x, pct_y, &pct, BTN_FG);
 
         let msgs = [
-            "Creating partitions...",
-            "Formatting ESP...",
-            "Formatting root...",
-            "Copying system files...",
-            "Installing bootloader...",
+            "Checking target disk...",
+            "Preparing safe install root...",
+            "Writing boot files...",
             "Creating user...",
+            "Verifying installed files...",
+            "Recording proof...",
             "Finalizing...",
         ];
         let msg = msgs[sub_step.min(6) as usize];
@@ -293,30 +298,15 @@ impl Installer {
         let msg_y = bar_y + bar_h + 20;
         font::draw_string(fb, msg_x, msg_y, msg, FG);
 
-        // Simulate what WOULD happen on a real install
-        if sub_step == 1 && self.progress <= 20 {
-            serial_println!("[INSTALLER] Would create GPT partition table");
-            serial_println!("[INSTALLER] Would write EFI System Partition (512MB FAT32)");
-            serial_println!("[INSTALLER] Would write Root Partition (remainder ManifoldFS)");
-        }
-        if sub_step == 2 && self.progress <= 40 {
-            serial_println!("[INSTALLER] Would format ESP as FAT32");
-        }
-        if sub_step == 3 && self.progress <= 55 {
-            serial_println!("[INSTALLER] Would format root as ManifoldFS");
-        }
-        if sub_step == 4 && self.progress <= 75 {
-            serial_println!("[INSTALLER] Would copy system files to ESP/EFI/BOOT/BOOTX64.EFI");
-        }
-        if sub_step == 5 && self.progress <= 90 {
-            serial_println!("[INSTALLER] Would install EFI/BOOT/BOOTX64.EFI");
+        if sub_step >= 1 && !self.install_applied {
+            self.install_applied = true;
+            self.install_ok = self.apply_safe_install();
         }
         if sub_step == 6 && self.progress >= 100 {
             serial_println!(
-                "[INSTALLER] Would create user '{}' with SHA-256 hash",
-                core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("seal")
+                "[INSTALLER] Completed safe VFS install target result={}",
+                if self.install_ok { "pass" } else { "fail" }
             );
-            serial_println!("[INSTALLER] Installation simulation complete");
             self.step = STEP_DONE;
         }
     }
@@ -328,7 +318,11 @@ impl Installer {
         let title_y = fb.height / 3;
         font::draw_string(fb, title_x, title_y, title, ACCENT);
 
-        let sub = "Remove installation media and reboot.";
+        let sub = if self.install_ok {
+            "Safe VFS install target verified. Reboot when ready."
+        } else {
+            "Install verification failed. Check serial log."
+        };
         let sub_w = sub.len() as u32 * CHAR_WIDTH;
         let sub_x = (fb.width.saturating_sub(sub_w)) / 2;
         font::draw_string(fb, sub_x, title_y + CHAR_HEIGHT + 12, sub, FG);
@@ -491,6 +485,10 @@ impl Installer {
                     self.error_msg = Some("Password cannot be empty.");
                     return false;
                 }
+                if self.username_is_seal() && self.password_is_literal_seal() {
+                    self.error_msg = Some("Default password is blocked.");
+                    return false;
+                }
                 if self.password_len != self.confirm_len {
                     self.error_msg = Some("Passwords do not match.");
                     return false;
@@ -509,6 +507,8 @@ impl Installer {
                 self.error_msg = None;
                 self.step = STEP_INSTALL;
                 self.install_start_tick = interrupts::ticks();
+                self.install_applied = false;
+                self.install_ok = false;
                 false
             }
             _ => {
@@ -519,6 +519,14 @@ impl Installer {
                 false
             }
         }
+    }
+
+    fn username_is_seal(&self) -> bool {
+        self.username_len == 4 && &self.username[..4] == b"seal"
+    }
+
+    fn password_is_literal_seal(&self) -> bool {
+        self.password_len == 4 && &self.password[..4] == b"seal"
     }
 
     fn draw_title(&self, fb: &Framebuffer, text: &str) {
@@ -567,4 +575,89 @@ impl Installer {
     fn hit_button(&self, mx: u32, my: u32, x: u32, y: u32, w: u32, h: u32) -> bool {
         mx >= x && mx < x + w && my >= y && my < y + h
     }
+
+    fn apply_safe_install(&self) -> bool {
+        let username = core::str::from_utf8(&self.username[..self.username_len]).unwrap_or("seal");
+        let password = core::str::from_utf8(&self.password[..self.password_len]).unwrap_or("");
+        let disk = DISK_NAMES
+            .get(self.selected_disk as usize)
+            .copied()
+            .unwrap_or("unknown");
+        let boot_marker = format!(
+            "Seal OS {} safe-install\nselected_disk={}\nuser={}\n",
+            crate::VERSION,
+            disk,
+            username
+        );
+        let profile = format!(
+            "user={}\nshell=/bin/shell\nhome=/home/{}\n",
+            username,
+            username
+        );
+        let boot_ok = write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", boot_marker.as_bytes());
+        let profile_path = format!("/home/{}/.seal-profile", username);
+        let home_ok = create_dir_path(&format!("/home/{}", username));
+        let profile_ok = home_ok && write_file_verified(&profile_path, profile.as_bytes());
+        let user_ok = if username == "seal" {
+            crate::security::shadow::set_password(username, password)
+        } else {
+            if crate::security::passwd::get_user(username).is_none() {
+                crate::security::passwd::add_user(username, password, 1001, 1001);
+            }
+            crate::security::passwd::get_user(username).is_some()
+        };
+        let auth = crate::security::shadow::auth_shadow_proof();
+        let result = boot_ok && profile_ok && user_ok && auth.passes();
+        serial_println!(
+            "[INSTALLER] proof version=1 mode=safe_vfs selected_disk={} boot_marker={} home={} profile={} user={} auth_topo5000={} raw_gpt=0 raw_format=0 result={}",
+            disk,
+            if boot_ok { 1 } else { 0 },
+            if home_ok { 1 } else { 0 },
+            if profile_ok { 1 } else { 0 },
+            if user_ok { 1 } else { 0 },
+            if auth.passes() { 1 } else { 0 },
+            if result { "pass" } else { "fail" }
+        );
+        result
+    }
+}
+
+fn create_dir_path(path: &str) -> bool {
+    let mut current = String::new();
+    for part in path.split('/').filter(|part| !part.is_empty()) {
+        current.push('/');
+        current.push_str(part);
+        let ok = crate::fs::vfs::with_vfs(|vfs| {
+            if vfs.lookup_follow(&current).is_ok() {
+                Some(true)
+            } else {
+                vfs.mkdir(&current).ok().map(|_| true)
+            }
+        })
+        .unwrap_or(false);
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+fn write_file_verified(path: &str, data: &[u8]) -> bool {
+    if let Some(parent) = path.rfind('/').and_then(|idx| path.get(..idx)) {
+        if !parent.is_empty() && !create_dir_path(parent) {
+            return false;
+        }
+    }
+    crate::fs::vfs::with_vfs(|vfs| {
+        let handle = match vfs.create(path) {
+            Ok(handle) => handle,
+            Err(crate::fs::vfs::VfsError::AlreadyExists) => vfs.lookup_follow(path).ok()?,
+            Err(_) => return None,
+        };
+        vfs.write(handle, data, 0).ok()?;
+        let mut buf = alloc::vec![0u8; data.len()];
+        let read = vfs.read(handle, &mut buf, 0).ok()?;
+        Some(read == data.len() && buf == data)
+    })
+    .unwrap_or(false)
 }

@@ -8,13 +8,15 @@
 //! SMAP prevents the kernel from reading/writing user pages unless explicitly
 //! allowed via `stac`/`clac`.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr4;
 
 /// Upper limit of user address space (non-canonical gap starts here).
 const USER_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000;
+static USER_ACCESS_FAULTS: AtomicU64 = AtomicU64::new(0);
 
 /// Check whether the CPU supports SMEP/SMAP via CPUID leaf 7.
-fn has_smep_smap() -> bool {
+pub fn has_smep_smap() -> bool {
     let leaf7 = core::arch::x86_64::__cpuid_count(7, 0);
     let smep = (leaf7.ebx & (1 << 7)) != 0;
     let smap = (leaf7.ebx & (1 << 20)) != 0;
@@ -58,13 +60,18 @@ fn is_user_ptr(ptr: *const u8, len: usize) -> bool {
     }
 }
 
-/// Page-fault handler integration stub for SMAP/SMEP violations.
-///
-/// In a full implementation the #PF handler would inspect the error code and
-/// call this when a supervisor access to a user page was attempted while
-/// EFLAGS.AC was clear.
+/// Record a supervisor user-access violation detected by the page-fault path.
 pub fn handle_user_access_fault() {
-    // Full #PF recovery is tracked in docs/USER_COPY_SAFETY.md.
+    let count = USER_ACCESS_FAULTS.fetch_add(1, Ordering::SeqCst) + 1;
+    crate::serial_println!(
+        "[SMAP/SMEP] user-access fault recorded count={}",
+        count
+    );
+}
+
+/// Return the number of recorded supervisor user-access violations.
+pub fn user_access_faults() -> u64 {
+    USER_ACCESS_FAULTS.load(Ordering::SeqCst)
 }
 
 /// Safely copy `len` bytes from user space into `kernel_buf`.

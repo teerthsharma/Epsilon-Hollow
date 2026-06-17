@@ -219,7 +219,7 @@ The naming scheme is inconsistent and borderline unhinged:
 **A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
 
 ### Q: Can I use this as my daily driver?
-**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." The GPU drivers are "stubs." The WiFi is "simulated." Your therapist will bill you hourly.
+**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi is "simulated." Your therapist will bill you hourly.
 
 ### Q: Why S2 and not S3?
 **A:** S3 is for cowards who can't commit to two dimensions. Also, I couldn't figure out how to visualize it on a 1024x768 framebuffer.
@@ -274,7 +274,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **VMM** — 4-level page tables (PML4), on-demand mapping
 - **Demand paging** — `SYS_MMAP` reserves virtual ranges, page-fault handler lazily allocates backing frames
 - **Swap** — low-memory pressure can swap mmap-backed pages to `/swap.topo` and fault them back
-- **COW fork** — userspace fork clones page tables, clears writable bits for shared pages, resolves write faults by copying the page
+- **Fork memory isolation** — userspace fork clones page tables, deep-copies user pages today, and is guarded by `[MM] cow-proof` rollback/no-parent-fallback checks
 - **TopoRAM wrapper** — 64 bytes metadata per frame (S² embedding, access history, Voronoi cell, lifetime class)
 
 </details>
@@ -357,7 +357,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 - **ASLR** — userspace mmap base randomised with 16-bit entropy shift, RDRAND/RDSEED source
 - **Seccomp** — classic BPF evaluator, per-task filter arrays, `BPF_LD_W_ABS`/`BPF_JMP_JEQ`/`BPF_RET`
-- **KPTI scaffolding** — CR3 swap code exists, boot selftest pending hard gate
+- **KPTI hardening proof** — distinct kernel/user CR3 roots, empty user lower-half PML4, mirrored kernel upper-half, and SMAP/SMEP enablement are emitted at boot and hard-gated by `seal-mkimage`
 - **Retpoline** — compiler flags in `.cargo/config.toml`, all 16 register thunks, trampoline page table
 - **SMAP/SMEP** — init at boot
 - **MAC** — scaffolding present
@@ -381,21 +381,21 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 - **SealShell** — 30+ English-first commands: `look`, `peek`, `move`, `search`, `tasks`, `seal`, `race`, `stats`, `calc`, `play`, `tensor render`
 - **Terminal Emulator** — 80×25 scrollback, key input processing
-- **Seal IDE** — code editor panel, file tree sidebar, status bar
+- **Seal IDE** — code editor panel, file tree sidebar, status bar, deterministic Tab completion
 - **Calculator** — scientific with recursive descent parser, gradient UI
 - **SealPlayer** — WAV/PCM playback with RIFF/WAVE header parser
 - **Theorem Viewer** — T1-T10 status, real-time governor ε, Betti-0 count
 - **Tensor Viewer** — CSV/trading data → 3D tensor rendering, profit=green peaks, loss=red valleys
 - **Games** — Snake, Breakout, Warp Racer
 - **File Manager** — ManifoldFS-native file operations
-- **Installer UI** — GPT partitioning simulation
+- **Installer UI** — safe ManifoldFS/VFS install path with boot marker, home/profile creation, shadow-auth proof, and `seal-mkimage --check-installer-proof` gate
 
 </details>
 
 <details open>
 <summary><strong>Package Manager & Settings</strong></summary>
 
-- **ManifoldPkg** — `.eph` parser, dependency resolver, local ManifoldFS extraction, HTTPS registry URL, Ed25519 verification path
+- **ManifoldPkg** — `.eph` parser, dependency resolver, local ManifoldFS extraction, boot proof marker, HTTPS registry URL, Ed25519 verification path
 - **Settings** — live `BTreeMap<String,String>` with theme/font/wallpaper defaults, `sys_setting_get`/`sys_setting_set`
 
 </details>
@@ -404,13 +404,13 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 | Feature | Limitation | Path to Full |
 |---|---|---|
-| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. GCN shader binaries are honest ABI stubs with placeholder logic; they do not compute full topology, and hardware dispatch still needs a proof artifact. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Compile real OpenCL C → GCN ISA, replace stub arrays, and add a hardware `[GPU-BENCH]` proof |
+| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. The build no longer fabricates placeholder shader binaries; hardware dispatch only embeds real checked-in `.bin` blobs and otherwise reports `kernel_not_found`. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Check in real OpenCL C → GCN ISA blobs and add a hardware `[GPU-BENCH]` proof |
 | **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
 | **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
-| **Package Manager** | Local extraction + signed verification path exist. remote registry fixture and signed package gate are pending. | Build registry + fixture |
-| **Installer** | UI exists. Actual GPT partitioning and filesystem formatting not yet implemented. | Raw block device write path |
-| **FAT / ext2 parity** | Write paths exist; fixture gate pending before "full filesystem parity" claims. | Comprehensive fixture tests |
-| **Security hardening** | Scaffolding present; per-feature hardening proof gates pending before production security claims. | Boot selftests for each feature |
+| **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof` with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; the boot package and registry index fixtures are signed and verified before install. Public remote release channel is still pending. | Build hosted registry release fixture gate |
+| **Installer** | Safe VFS install path is real and proof-gated: it writes `/boot/EFI/BOOT/BOOTX64.EFI`, creates `/home/<user>`, writes profile data, wires passwd/shadow auth, and rejects old simulation logs. Raw GPT partitioning and filesystem formatting are still not implemented. | Raw block device write path with GPT + format proof |
+| **FAT / ext2 parity** | Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2. Full cross-image parity still needs mounted fixture images. | Mounted FAT/ext2 fixture images with byte-for-byte parity tests |
+| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. Auth proof now rejects `seal`/`seal` while keeping `$topo$5000` shadow hashes. TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
 | **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |
 
 ### ❌ Not Yet Real
@@ -418,7 +418,7 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 | Feature | Why | When |
 |---|---|---|
 | **GPU drivers (i915/nouveau)** | Proprietary firmware blobs required, out of scope for research kernel | Never (vendor IP) |
-| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. Shader stubs need real compiled ISA and an AMD hardware proof for correct results. | Rebuild shader binaries from OpenCL C source and gate with `[GPU-BENCH]` |
+| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. The kernel refuses fake shader blobs; real compiled ISA and an AMD hardware proof are still required for correct GPU results. | Check in real shader binaries and gate with `[GPU-BENCH]` |
 | **Full internet TLS** | X.509/PKI/ECDHE not implemented | Post-1.0 |
 | **Self-hosting** | Aether-Lang needs more stdlib before it can build itself | Roadmap phase 4 |
 
@@ -434,10 +434,10 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 1. **It boots.** This is genuinely impressive. You would be shocked how many OS projects never reach the "prints to serial" stage.
 2. **It has real drivers.** Not mock drivers. Real e1000 TX/RX rings. Real NVMe admin queues. Real xHCI port enumeration. These are not stubs that return `Ok(())`.
 3. **It has a window manager.** With double buffering. And anti-aliased text. And a taskbar. Written from scratch in software rendering. On a framebuffer. In 2026.
-4. **It will panic if you look at it wrong.** The COW fork path has a known double-free under memory pressure. The GPU shader stubs are placeholder logic and are not a proven hardware compute path. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
+4. **It will panic if you look at it wrong.** The COW fork path now has a rollback/no-parent-fallback proof gate, but deeper syscall-path stress still needs more fixtures. GPU hardware compute is not proven yet, and the build now refuses fake shader binaries. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
 5. **It is not Linux.** You cannot `apt install` things. There is no `bash`. The shell speaks English-first commands like `look` and `peek`. This is a feature, not a bug, but it is also inconvenient.
 6. **One person wrote most of it.** With occasional help from AI agents, contributors, and sheer stubbornness. This means design coherence is high, but bus factor is catastrophic.
-7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that some of our core claims hold. This is not decoration.
+7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that core claims hold. This is not decoration.
 
 ### What "Research Kernel" Does NOT Mean
 
@@ -535,7 +535,7 @@ You should see the boot sequence, theorem verification, desktop splash, and fina
 
 ### 5. First Login
 
-Default credentials: `seal` / `seal`
+There is no accepted `seal` / `seal` password now. Use the installer (`i` at login) to create or reset the account password; headless proof runs use the serial-marked no-input auto-login harness, not a reusable credential.
 
 After login, try these shell commands:
 
@@ -576,8 +576,11 @@ OS state = topology on S². Same-filesystem file moves use metadata topology; th
 [BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=<n> free_after=<n>
 [BENCH] alloc-frame iterations=64 ok=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=<n> free_after=<n>
 [BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> ticks_max=<n> metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=<n>
+[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=<n> dirhash_probes_max=<n> dirhash_probe_bound=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
 [BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
+[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=<n> index_probe_bound=256 cleanup=ok result=pass
+[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
@@ -810,7 +813,7 @@ Every OS has design decisions. Mine were made at ungodly hours by a sleep-depriv
 
 **Why it was painful:** Anti-aliased text rendering in software is slow. Glow effects require multiple blur passes. The Schwarzschild metric wallpaper looks cool but eats CPU cycles.
 
-**Verdict:** The desktop looks amazing. The CPU usage is concerning. I have GPU offload plans (PM4 rings, shader stubs), but they are not ready yet.
+**Verdict:** The desktop looks amazing. The CPU usage is concerning. I have GPU offload plans (PM4 rings, real shader blobs, VRAM topology paths), but the hardware proof is not ready yet.
 
 ### Decision 5: No POSIX
 
@@ -1132,7 +1135,7 @@ The scheduler lock is released **before** context switch, preventing deadlock wh
 **RTC + Watchdog**: CMOS real-time clock (ports 0x70/0x71) with BCD/binary detection. APIC timer watchdog — pets via `SYS_WATCHDOG`, triggers keyboard-controller reset on 5-second hang.
 
 
-> **Driver confession:** Our GPU driver is mostly stubs. The PM4 ring infrastructure is real code, but the current proof does not show a real GPU dispatch. The shaders don't compute topology yet; they are placeholder ABI scaffolds until a hardware `[GPU-BENCH]` run proves otherwise. This is documented. This is honest. We are working on it. Please stop emailing us about it.
+> **Driver confession:** My GPU hardware path is not proven acceleration yet. The PM4 ring infrastructure is real code, but the current proof does not show a real GPU dispatch. The build refuses fake shader binaries now; real checked-in ISA blobs plus a hardware `[GPU-BENCH]` run must prove this path before I claim it. This is documented. This is honest. I am working on it. Please stop emailing me about it.
 
 </details>
 
@@ -1268,7 +1271,7 @@ flowchart TB
 
 ### KPTI (Kernel Page-Table Isolation)
 
-CR3 swap code exists via `memory/pgtable_asm.rs`. A hard gate still needs to prove installed KPTI page tables during a boot selftest. **Status**: scaffolding present, syscall entry/exit wiring pending.
+CR3 swap code exists via `memory/pgtable_asm.rs`. Boot now emits `[SECURITY] hardening proof` and `seal-mkimage` requires distinct kernel/user CR3 roots, empty user lower-half PML4 entries, mirrored kernel upper-half entries, SMAP/SMEP enablement when supported, and `result=pass`. Boot also emits `[SECURITY] audit proof` after VFS init and requires `/var/log/audit.log` readback with `flushed=1`. **Status**: hard-gated KPTI shape and audit flush proofs exist; deeper syscall-path stress and side-channel tests remain pending.
 
 ### ASLR
 
@@ -1280,7 +1283,7 @@ Classic BPF evaluator (not eBPF). Per-task filter arrays. Instructions: `BPF_LD_
 
 ### Audit
 
-JSON-formatted event buffering exists. A hard gate still needs to prove VFS flush semantics for `/var/log/audit.log`.
+JSON-formatted event buffering exists. Boot now emits `[SECURITY] audit proof` after VFS init and `seal-mkimage` requires directory creation, zero buffered bytes after flush, and readback from `/var/log/audit.log`.
 
 ### Threat Model
 
@@ -1295,21 +1298,21 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🔴 Critical (Please Don't)
 
-1. **COW Fork Double-Free:** Under memory pressure, the copy-on-write fork path can double-free a page frame. This is a known bug tracked in our security audit. The fix requires rewriting the COW page table cloning logic.
-2. **KPTI Not Fully Wired:** The CR3 swap code exists but the syscall entry/exit paths don't fully use it yet. A clever userspace program might be able to read kernel memory via cache timing.
-3. **Weak Password Hashing:** `/etc/shadow` uses single-iteration SHA-256. This is documented as weak. A GPU could crack it in seconds.
+1. **Fork Stress Gap:** COW clone now has a hard `[MM] cow-proof` gate: partial page-table clones use a rollback guard, and `fork`/`clone` fail closed instead of falling back to the parent page table. The remaining pain is deeper syscall-path stress under real process churn.
+2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
+3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
+5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
-7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
+7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. I fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler now uses a raw, bounded, no-lock COM1 emergency writer and the README/source contract rejects normal `serial_println!` use inside `#[panic_handler]`. Remaining pain is broader fatal-path coverage for interrupt fault handlers.
 
 ### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
@@ -1502,8 +1505,10 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | Bare-metal allocator benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] alloc-frame` with 64 successful alloc/free iterations, topological fast-path hits, zero bounded misses, no contiguous-probe drift, and no frame leak |
 | TopoRAM target-cell allocation marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] toporam-alloc` with 64 target-cell hits, zero target-cell fallbacks, zero zone fallbacks, monotonic cycle samples, and no frame leak |
 | ManifoldFS metadata teleport marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` also requires `[BENCH] manifold-teleport`, proving same-inode mock block-store metadata move across 8-256 directory entries with `metadata_ops_max=7`, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
+| ManifoldFS path lookup marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] manifold-lookup`, proving `resolve_path_with_proof` walks 64 four-component paths in mock-block ManifoldFS with bounded DirHash probes and `result=pass` |
 | Scheduler select benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] scheduler-select-next`, gating the live `select_next_task` requeue marker across 64 iterations with ready count preserved, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 priority-bucket scan |
 | TCP packet demux benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tcp-packet-demux`, proving a listener-first same-port fixture routes payload bytes through the bounded exact-flow index, leaves a same-port decoy empty, avoids exact-flow socket scans, and falls back through the bounded listener index for a new SYN |
+| TLS PSK record encrypt marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires `[BENCH] tls-encrypt`, proving `TlsSession::encrypt` produced a 1024-byte PSK AES-128-GCM record, 16-byte tag, sequence increments, decrypt/auth match, monotonic cycle samples, and `result=pass`; this does not claim X.509/ECDHE or public HTTPS compatibility |
 | GPU topology CPU-fallback benchmark marker | ✓ | △ | `seal-mkimage --check-benchmark-log ...\serial.log` requires structured `[GPU-BENCH]` markers for Voronoi assignment, JL projection, and spectral contraction; current proof is `mode=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`, `mismatches=0`, and `claim=cpu_fallback_correctness_only` |
 | AHCI persistent ManifoldFS root | ✓ | ✓ | QEMU serial log shows `QEMU HARDDISK`, `Registered as block device 0x800`, `First disk readable`, and `[VFS] ManifoldFS mounted from disk` |
 | Native non-POSIX ABI | ✓ | ✗ | `seal-mkimage --check-seal-abi .` passes |
@@ -1544,7 +1549,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Window manager** | Built-in compositor | Orbital | GNOME/KDE | GNOME/KDE/Xfce | DWM | WindowServer |
 | **Built-in IDE** | Seal IDE (native) | No | No | No | No | Xcode (separate) |
 | **Shell** | SealShell (30+ English-first commands) | Ion shell | bash/zsh | bash | PowerShell/cmd | zsh |
-| **Package manager** | ManifoldPkg local metadata + signed `.eph` path | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
+| **Package manager** | ManifoldPkg local `.eph` extraction proof + signed `.eph` path | pkg (pkgutils) | apt/snap | apt | winget/MSIX | brew (3rd party) |
 | **Syscalls** | Seal ABI + Epsilon theorem extensions | ~100 (POSIX-like) | ~450 (Linux) | ~450 (Linux) | ~2000+ (NT) | ~550 (Mach + BSD) |
 | **USB support** | Real — xHCI controller, HID boot keyboards/mice, Mass Storage SCSI BBB | Basic (xHCI) | Full | Full | Full | Full |
 | **Network stack** | Kernel TCP/UDP/DHCP/DNS implementations + minimal TLS 1.3 PSK client; exact-flow TCP demux is gated, full external session matrix pending | smoltcp | Full (netfilter) | Full (netfilter) | Full (WFP) | Full (PF) |
@@ -1582,8 +1587,8 @@ Let's strip away the marketing and talk about where Seal OS actually is, in term
 ### What I Cannot Honestly Claim Yet
 
 1. **Seal OS is not globally faster than Linux yet.** For most workloads, Linux is faster. The side-by-side benchmark harness exists. The Ubuntu artifact is pending. I am not claiming victory until the Ubuntu artifact exists.
-2. **Seal OS is not production-secure.** It has scaffolding. It has ASLR and seccomp. It does NOT have full KPTI, production TLS, or a security audit. Do not use this for sensitive data.
-3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact. The shaders are stubs. Annoying, but better than lying.
+2. **Seal OS is not production-secure.** It has ASLR, seccomp, SMAP/SMEP, and a hard-gated KPTI shape proof. It does NOT have production TLS, KASLR, or a full external security audit. Do not use this for sensitive data.
+3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact and real checked-in shader blobs. Annoying, but better than lying.
 4. **There is no browser.** There is an HTTP/HTTPS client. You can fetch raw HTML. You cannot render it. You cannot run JavaScript. There is no DOM.
 5. **It is not self-hosting.** Seal OS still needs Linux, Windows, or macOS to compile the kernel. Aether-Lang is not yet powerful enough to build itself.
 6. **Every legacy host wrapper is not gone yet.** Production OS roots are quarantined away from host-script runtime drift, and LAAMBA's runtime bridge has a native gate. Legacy wrappers and research scripts may still exist outside the runtime path until Rust/Aether replacements prove they can carry the weight.
@@ -1602,18 +1607,18 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | Subsystem | Operation | Complexity | Evidence / latency |
 |-----------|-----------|-----------|----------------|
 | **Physical alloc** | `alloc_frame()` | O(1) bounded topological free-index lookup across 8 cells; max 2 L3 words and 8192 summary-backed word candidates per cell | source-gated + boot log proof marker + `[BENCH] alloc-frame` |
-| **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; size-class refill/dealloc/realloc proof pending | benchmark pending |
+| **Slab alloc** | `slab.alloc(size)` | scoped O(1) target; `[BENCH] slab-alloc` covers all 6 size classes, refill, free-list reuse, free, and grow/shrink copy-realloc fixtures | boot-gated benchmark |
 | **TopoRAM alloc** | `alloc_frames(1, hint)` | O(1) Voronoi lookup + O(1) physical frame path; entropy, prefetch, and reseed work are bounded/interval-gated | `[BENCH] toporam-alloc` |
 | **TopoRAM contiguous** | `alloc_frames(count > 1, hint)` | 128 bounded topological candidate probes + hard 64-page allocation/free repair cap | source-gated by `--check-o1-allocator` |
-| **ManifoldFS lookup** | `lookup(path)` | O(path depth) + O(K) cell search | benchmark pending |
+| **ManifoldFS lookup** | `resolve_path_with_proof(path)` | O(path depth) path walk; each component uses bounded DirHash probes under the table capacity | `[BENCH] manifold-lookup` gate proves 64 four-component paths in `fs_mode=mock_block`, `entries=64`, bounded `dirhash_probes_total_max` and `dirhash_probes_max <= dirhash_probe_bound`, monotonic cycle samples, and `result=pass` |
 | **ManifoldFS teleport** | move file | O(1) metadata rewiring with same-inode directory topology move on the same filesystem; mock block-store persistence does not rewrite file bytes | `[BENCH] manifold-teleport` gate proves same inode, source removal, destination presence, bounded metadata ops, `fs_mode=mock_block`, and `persistence_bytes_per_move=0` |
 | **Scheduler select** | `select_next_task()` | O(1) — one predicted-cell check plus bounded fallback across 8 cells and 256 priority buckets | `[BENCH] scheduler-select-next` gate proves 64 live requeue selections, ready count preservation, zero context switches, 8 Voronoi probes, max 9 bitmap tests, and max 256 bucket scan |
 | **Context switch** | `switch_context()` | O(1) — FXSAVE/FXRSTOR + CR3 swap | benchmark pending |
 | **NVMe read** | `read_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **NVMe write** | `write_sector(lba)` | O(1) command submit + DMA poll | benchmark pending |
 | **TCP demux** | `handle_tcp_packet()` | O(1) bounded exact-flow index for accepted flows plus bounded listener-port index for SYN fallback | `[BENCH] tcp-packet-demux` proves bounded exact-flow index hit, bounded listener-index hit, zero exact-flow scan, listener-first socket order, same-port accepted socket delivery, same-port decoy non-delivery, listener fallback for a fresh SYN, 4-byte payload receipt, established-state transition, and fixture cleanup |
-| **TCP round-trip** | localhost ping | complexity pending until full round-trip fixture and listener index land | benchmark pending |
-| **TLS encrypt** | 1KB record | O(N) AES-GCM | benchmark pending |
+| **TCP round-trip** | loopback echo fixture | `[BENCH] tcp-roundtrip` proves 8 accepted loopback echo flows, 64-byte payloads, exact-flow/client/listener indexes, byte-for-byte echo, and cleanup | boot-gated benchmark |
+| **TLS encrypt** | 1KB record | O(N) AES-GCM over PSK-only TLS 1.3 record payload | `[BENCH] tls-encrypt` proves 1024-byte `TlsSession::encrypt` AES-128-GCM record wrapping, 16-byte auth tag, decrypt/auth roundtrip, sequence increments, monotonic cycle samples, and `result=pass`; X.509/ECDHE remains out of scope |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | benchmark pending |
 | **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | benchmark pending |
 
@@ -2036,27 +2041,27 @@ For full threat model, cryptographic audit, and security architecture, see:
 
 ## How To Break This OS (A Hacker's Guide To Our Pain)
 
-We believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for us.
+I believe in full disclosure. Here are known ways to break Seal OS, ranked by how embarrassing they are for me.
 
 ### 🔴 Critical (Please Don't)
 
-1. **COW Fork Double-Free:** Under memory pressure, the copy-on-write fork path can double-free a page frame. This is a known bug tracked in our security audit. The fix requires rewriting the COW page table cloning logic.
-2. **KPTI Not Fully Wired:** The CR3 swap code exists but the syscall entry/exit paths don't fully use it yet. A clever userspace program might be able to read kernel memory via cache timing.
-3. **Weak Password Hashing:** `/etc/shadow` uses single-iteration SHA-256. This is documented as weak. A GPU could crack it in seconds.
+1. **Fork Stress Gap:** COW clone now has a hard `[MM] cow-proof` gate: partial page-table clones use a rollback guard, and `fork`/`clone` fail closed instead of falling back to the parent page table. The remaining pain is deeper syscall-path stress under real process churn.
+2. **KPTI Stress Gap:** The boot hardening proof gates installed KPTI page-table shape, but syscall-path stress and cache-timing validation still need dedicated fixtures.
+3. **Credential Setup Proof Gap:** Boot now proves `/etc/shadow` exists, `seal` uses `$topo$5000`, `seal`/`seal` is rejected, new users use `$topo$5000`, `/etc/passwd` has no embedded hashes, and default legacy auth is absent. The remaining pain is UX: first-boot setup still lives in the installer path instead of being mandatory on the login screen.
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
 4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Shader Stubs:** The AMD GPU compute path is not a proven hardware fast path yet. The shader binaries are stubs with placeholder logic. If you depend on GPU-accelerated topology computation today, you get the CPU fallback or wrong expectations.
+5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
 6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
-7. **Default Password "seal":** The default login is `seal`/`seal`. Change it. Or don't. It's a research OS.
+7. **Installer-Gated Password Setup:** The weak default credential is blocked, but password setup still depends on running the installer path. This is safer than shipping `seal`/`seal`, but not yet polished.
 8. **No Multi-User Permissions:** There's no proper user management. `setuid`/`setgid` exist as syscalls but the security model is basically "everyone is root."
-9. **Serial Output During Panic:** The panic handler writes to serial. If serial fails, the panic handler might double-panic. We fixed one instance of this but there may be others.
+9. **Serial Output During Panic:** The panic handler now uses a raw, bounded, no-lock COM1 emergency writer and the README/source contract rejects normal `serial_println!` use inside `#[panic_handler]`. Remaining pain is broader fatal-path coverage for interrupt fault handlers.
 
-### 🟢 Theoretical (We Think These Exist But Haven't Proven)
+### 🟢 Theoretical (I Think These Exist But Haven't Proven)
 
 10. **APIC Timer Race:** There might be a race between the scheduler lock release and context switch. We haven't observed it in practice, but the window exists.
 11. **Voronoi Index Overflow:** If you create more than 2^32 files, the inode generation counter wraps. This is theoretical because we haven't tested with 4 billion files.
@@ -2303,21 +2308,28 @@ CI builds the Lean package on every push. Proof strength and remaining placehold
 8. Theorem summary line
 9. `[BENCH] toporam-alloc`
 10. `[BENCH] alloc-frame`
-11. `[BENCH] manifold-teleport`
-12. `[BENCH] scheduler-select-next`
-13. `[BENCH] tcp-packet-demux`
-14. `[GPU-BENCH] suite`
-15. `[Aether-Lang] runtime proof`
-16. `[LAAMBA] app proof:`
-17. QEMU AHCI disk identity
-18. Block device `0x800` registered
-19. Persistent ManifoldFS root mounted from disk
-20. `[GFX] desktop-proof`
-21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-live-proof`
-23. `[GFX] desktop-soak`
-24. Desktop ready sentinel
-25. Event-loop entry sentinel
+11. `[BENCH] slab-alloc`
+12. `[BENCH] manifold-teleport`
+13. `[BENCH] manifold-lookup`
+14. `[BENCH] scheduler-select-next`
+15. `[BENCH] tcp-packet-demux`
+16. `[BENCH] tcp-roundtrip`
+17. `[BENCH] tls-encrypt`
+18. `[GPU-BENCH] suite`
+19. `[Aether-Lang] runtime proof`
+20. `[LAAMBA] app proof:`
+21. `[SECURITY] auth proof`
+22. `[MM] cow-proof`
+23. `[ManifoldPkg] proof`
+24. QEMU AHCI disk identity
+25. Block device `0x800` registered
+26. Persistent ManifoldFS root mounted from disk
+27. `[GFX] desktop-proof`
+28. Desktop proof frame blit sentinel
+29. `[GFX] desktop-live-proof`
+30. `[GFX] desktop-soak`
+31. Desktop ready sentinel
+32. Event-loop entry sentinel
 
 See [docs/CI.md](docs/CI.md) for full pipeline documentation.
 
@@ -2362,21 +2374,25 @@ CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what ev
 8. Theorem summary line
 9. `[BENCH] toporam-alloc`
 10. `[BENCH] alloc-frame`
-11. `[BENCH] manifold-teleport`
-12. `[BENCH] scheduler-select-next`
-13. `[BENCH] tcp-packet-demux`
-14. `[GPU-BENCH] suite`
-15. `[Aether-Lang] runtime proof`
-16. `[LAAMBA] app proof:`
-17. QEMU AHCI disk identity
-18. Block device `0x800` registered
-19. Persistent ManifoldFS root mounted from disk
-20. `[GFX] desktop-proof`
-21. Desktop proof frame blit sentinel
-22. `[GFX] desktop-live-proof`
-23. `[GFX] desktop-soak`
-24. Desktop ready sentinel
-25. Event-loop entry sentinel
+11. `[BENCH] slab-alloc`
+12. `[BENCH] manifold-teleport`
+13. `[BENCH] manifold-lookup`
+14. `[BENCH] scheduler-select-next`
+15. `[BENCH] tcp-packet-demux`
+16. `[BENCH] tcp-roundtrip`
+17. `[BENCH] tls-encrypt`
+18. `[GPU-BENCH] suite`
+19. `[Aether-Lang] runtime proof`
+20. `[LAAMBA] app proof:`
+21. QEMU AHCI disk identity
+22. Block device `0x800` registered
+23. Persistent ManifoldFS root mounted from disk
+24. `[GFX] desktop-proof`
+25. Desktop proof frame blit sentinel
+26. `[GFX] desktop-live-proof`
+27. `[GFX] desktop-soak`
+28. Desktop ready sentinel
+29. Event-loop entry sentinel
 
 If any of the hard milestone gates tracked in [docs/CI.md](docs/CI.md) fail, the entire CI run fails. No exceptions. No mercy.
 

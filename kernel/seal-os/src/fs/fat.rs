@@ -1,7 +1,7 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! FAT12/16/32 filesystem driver (read-only v1).
+//! FAT12/16/32 filesystem driver with VFS read/write/create/delete/rename support.
 
 use crate::drivers::block;
 use crate::fs::vfs::{FileSystem, VfsDirEntry, VfsError, VfsHandle, VfsNode, VfsNodeType};

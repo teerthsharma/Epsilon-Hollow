@@ -37,7 +37,13 @@ exist in:
 **Current mitigations:**
 - SMAP / SMEP prevent most kernel-space execution of user pages and accidental
   user-space dereferences.
-- KPTI scaffolding exists but is **not active** on syscall paths yet.
+- KPTI now emits a boot hardening proof for distinct kernel/user CR3 roots,
+  empty user lower-half PML4 entries, mirrored kernel upper-half entries, and
+  SMAP/SMEP enablement when supported. Syscall-path stress and cache-timing
+  validation remain pending.
+- Auth now emits a boot proof that `/etc/shadow` exists, default/new users use
+  `$topo$5000`, default legacy auth is absent, and `/etc/passwd` has no embedded
+  password hashes.
 - No stack canary or KASLR for the kernel image itself (higher-half base is
   fixed at `0xffffffff80000000`).
 
@@ -45,12 +51,14 @@ exist in:
 - Kernel ASLR is not implemented.
 - Stack overflow into guard pages is not enforced on all kernel stacks.
 - No Control-Flow Integrity (CFI) or shadow stack.
+- First-boot password rotation is not enforced; the default lab credential is
+  still operationally weak even though its storage format is gated.
 
 ### 2.2 Information Leaks
 
 | Vector | Mitigation | Status |
 |---|---|---|
-| Userspace kernel pointer leaks | KPTI (pending) + SMAP copy helpers | Partial |
+| Userspace kernel pointer leaks | KPTI shape proof + SMAP copy helpers | Partial |
 | Side-channel (cache timing) | No constant-time primitives for secret handling | Not mitigated |
 | `/proc` or `/sys` info leaks | No procfs/sysfs equivalent yet | N/A |
 | Kernel log leaks (`dmesg`) | Serial output is unrestricted | Audit needed |
@@ -61,7 +69,8 @@ exist in:
   disabled. Mitigation is partial.
 - **Spectre-v1 (bounds-check bypass):** No explicit `lfence` after array bounds
   checks in kernel code.
-- **Meltdown:** Not mitigated. KPTI, once active, will address this.
+- **Meltdown:** KPTI page-table shape is boot-gated, but syscall-path stress and
+  cache-timing validation are still required before claiming full mitigation.
 - **PortSmash / SMT:** No SMT disabling logic.
 
 ---
@@ -125,7 +134,9 @@ The in-kernel TCP/IP stack is research-grade. It does not implement:
 
 - **SMAP/SMEP** enforce the boundary at the hardware level.
 - **Seccomp** can restrict the syscall surface per-task.
-- **KPTI** will remove kernel mappings from user page tables once completed.
+- **KPTI** removes lower-half mappings from the user shadow page table in the
+  boot-gated shape proof. Remaining work is syscall-path stress and side-channel
+  validation.
 - **ASLR** randomises userspace layout.
 
 ### 4.2 Device Drivers
@@ -167,10 +178,10 @@ assumed without additional documentation:
 |---|---|---|---|---|
 | R1 | Kernel exploit via unsafe MMIO driver | Medium | Critical | Kernel team |
 | R2 | PSK compromise (no forward secrecy) | Medium | High | Crypto team |
-| R3 | KPTI bypass due to incomplete syscall hook | Low | High | Kernel team |
+| R3 | KPTI bypass despite passing shape proof | Low | High | Kernel team |
 | R4 | FastAPI backend exposed to non-loopback | Low | Medium | Epsilon team |
 | R5 | DMA attack by malicious PCIe device | Low | High | Hardware / future |
 
 ---
 
-*Last updated: 2026-06-01*
+*Last updated: 2026-06-03*

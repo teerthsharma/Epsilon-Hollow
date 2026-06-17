@@ -114,7 +114,31 @@ pub struct ShadowEntry {
     pub username: String,
     pub salt: [u8; 8],
     pub hash: [u8; 32],
+    pub rounds: u32,
     pub legacy: bool,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AuthShadowProof {
+    pub shadow_present: bool,
+    pub default_user_present: bool,
+    pub default_rounds_5000: bool,
+    pub default_legacy: bool,
+    pub default_password_rejected: bool,
+    pub new_user_rounds_5000: bool,
+    pub passwd_embedded_hashes: u64,
+}
+
+impl AuthShadowProof {
+    pub fn passes(self) -> bool {
+        self.shadow_present
+            && self.default_user_present
+            && self.default_rounds_5000
+            && !self.default_legacy
+            && self.default_password_rejected
+            && self.new_user_rounds_5000
+            && self.passwd_embedded_hashes == 0
+    }
 }
 
 fn hex_decode_salt(s: &str) -> [u8; 8] {
@@ -150,16 +174,25 @@ fn parse_shadow(data: &[u8]) -> Vec<ShadowEntry> {
         if hash_parts.len() < 5 {
             continue;
         }
-        let rounds = hash_parts.get(2).copied().unwrap_or("");
+        let rounds_field = hash_parts.get(2).copied().unwrap_or("");
         let salt_hex = hash_parts.get(3).copied().unwrap_or("");
         let hash_hex = hash_parts.get(4).copied().unwrap_or("");
         let salt = hex_decode_salt(salt_hex);
         let hash = hex_decode(hash_hex).unwrap_or([0u8; 32]);
-        let legacy = rounds == "legacy";
+        let legacy = rounds_field == "legacy";
+        let rounds = if legacy {
+            1
+        } else {
+            rounds_field.parse::<u32>().unwrap_or(0)
+        };
+        if !legacy && rounds == 0 {
+            continue;
+        }
         entries.push(ShadowEntry {
             username,
             salt,
             hash,
+            rounds,
             legacy,
         });
     }
@@ -171,7 +204,7 @@ fn parse_shadow(data: &[u8]) -> Vec<ShadowEntry> {
 pub fn verify_login(username: &str, password: &str) -> Option<UserEntry> {
     let data = read_shadow_file();
     let entries = parse_shadow(&data);
-    let entry = entries.into_iter().find(|e| e.username == username)?;
+    let entry = entries.into_iter().rev().find(|e| e.username == username)?;
     let seed = TOPO_SEED.lock();
     if entry.legacy {
         // Legacy migration: old direct SHA-256(password)
@@ -197,6 +230,89 @@ pub fn make_shadow_line(username: &str, password: &str, uid: u32) -> String {
     let salt_hex = hex_encode(&salt);
     let hash_hex = hex_encode(&hash);
     format!("{}:$topo$5000${}${}\n", username, salt_hex, hash_hex)
+}
+
+/// Append a fresh topological shadow entry for an existing user.
+///
+/// Verification reads the newest entry for a username, so this updates the
+/// live password without needing truncation support from the early VFS.
+pub fn set_password(username: &str, password: &str) -> bool {
+    let Some(user) = crate::security::passwd::get_user(username) else {
+        return false;
+    };
+    let shadow_line = make_shadow_line(username, password, user.uid);
+    with_vfs(|vfs| {
+        let handle = vfs.lookup_follow("/etc/shadow").ok()?;
+        let size = vfs.stat(handle).map(|n| n.size).unwrap_or(0);
+        vfs.write(handle, shadow_line.as_bytes(), size).ok()?;
+        Some(true)
+    })
+    .unwrap_or(false)
+}
+
+pub fn auth_shadow_proof() -> AuthShadowProof {
+    let shadow_data = read_shadow_file();
+    let shadow_entries = parse_shadow(&shadow_data);
+    let default = shadow_entries
+        .iter()
+        .rev()
+        .find(|entry| entry.username == "seal");
+    let proof_user = make_shadow_line("__proof_new_user", "proof-password", 65_500);
+    let proof_entry = parse_shadow(proof_user.as_bytes())
+        .into_iter()
+        .find(|entry| entry.username == "__proof_new_user");
+
+    AuthShadowProof {
+        shadow_present: !shadow_data.is_empty(),
+        default_user_present: default.is_some(),
+        default_rounds_5000: default
+            .map(|entry| !entry.legacy && entry.rounds >= 5000)
+            .unwrap_or(false),
+        default_legacy: default.map(|entry| entry.legacy).unwrap_or(true),
+        default_password_rejected: verify_login("seal", "seal").is_none(),
+        new_user_rounds_5000: proof_entry
+            .map(|entry| !entry.legacy && entry.rounds >= 5000)
+            .unwrap_or(false),
+        passwd_embedded_hashes: passwd_embedded_hash_count(),
+    }
+}
+
+pub fn emit_auth_shadow_proof() {
+    let proof = auth_shadow_proof();
+    crate::serial_println!(
+        "[SECURITY] auth proof version=1 shadow={} default_user=seal default_present={} default_topo5000={} default_legacy={} default_password_rejected={} new_user_topo5000={} passwd_embedded_hashes={} result={}",
+        if proof.shadow_present { 1 } else { 0 },
+        if proof.default_user_present { 1 } else { 0 },
+        if proof.default_rounds_5000 { 1 } else { 0 },
+        if proof.default_legacy { 1 } else { 0 },
+        if proof.default_password_rejected { 1 } else { 0 },
+        if proof.new_user_rounds_5000 { 1 } else { 0 },
+        proof.passwd_embedded_hashes,
+        if proof.passes() { "pass" } else { "fail" }
+    );
+}
+
+fn passwd_embedded_hash_count() -> u64 {
+    with_vfs(|vfs| {
+        let handle = vfs.lookup_follow("/etc/passwd").ok()?;
+        let size = vfs.stat(handle).map(|n| n.size).unwrap_or(0) as usize;
+        let mut buf = alloc::vec![0u8; size];
+        vfs.read(handle, &mut buf, 0).ok()?;
+        let count = buf
+            .split(|&b| b == b'\n')
+            .filter(|line| {
+                let parts: Vec<&[u8]> = line.split(|&b| b == b':').collect();
+                parts.len() == 6
+                    && parts
+                        .get(5)
+                        .and_then(|hash| core::str::from_utf8(hash).ok())
+                        .map(|hash| hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+                        .unwrap_or(false)
+            })
+            .count() as u64;
+        Some(count)
+    })
+    .unwrap_or(u64::MAX)
 }
 
 /// T1/T5: Create /etc/shadow from existing /etc/passwd hashes at boot.

@@ -6,7 +6,6 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use sha2::{Digest, Sha256};
 use spin::Mutex;
 
 use crate::fs::vfs::with_vfs;
@@ -55,24 +54,6 @@ pub fn get_current_user() -> Option<UserEntry> {
 /// Re-export shadow-based login verification.
 pub use super::shadow::verify_login;
 
-/// Compute SHA-256 of input bytes.
-fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().into()
-}
-
-/// Encode bytes as lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0xf) as usize] as char);
-    }
-    s
-}
-
 fn read_passwd_file() -> Vec<u8> {
     with_vfs(|vfs| {
         let handle = vfs.lookup_follow("/etc/passwd").ok()?;
@@ -117,22 +98,27 @@ fn parse_passwd(data: &[u8]) -> Vec<UserEntry> {
     entries
 }
 
-/// Create /etc/passwd with a default user if the file does not exist.
-/// Default password is "seal" — change immediately after first boot.
-/// Writes the old 6-field format so that shadow_init() can migrate the
-/// hash into /etc/shadow on first boot.
+const LOCKED_BOOTSTRAP_PASSWORD: &str = "__seal_locked_bootstrap_password__";
+
+/// Create /etc/passwd and /etc/shadow with a locked bootstrap user if absent.
+/// The historical `seal`/`seal` credential is deliberately not generated.
 pub fn init_passwd() {
     let exists = with_vfs(|vfs| vfs.lookup_follow("/etc/passwd")).is_ok();
     if exists {
         return;
     }
     let _ = with_vfs(|vfs| vfs.mkdir("/etc"));
-    let hash = sha256(b"seal");
-    let hash_hex = hex_encode(&hash);
-    let line = format!("seal:1000:1000:/home/seal:/bin/shell:{}\n", hash_hex);
+    let line = String::from("seal:1000:1000:/home/seal:/bin/shell\n");
     with_vfs(|vfs| {
         let handle = vfs.create("/etc/passwd").ok()?;
         vfs.write(handle, line.as_bytes(), 0).ok()?;
+        Some(())
+    });
+    let shadow_line =
+        crate::security::shadow::make_shadow_line("seal", LOCKED_BOOTSTRAP_PASSWORD, 1000);
+    with_vfs(|vfs| {
+        let handle = vfs.create("/etc/shadow").ok()?;
+        vfs.write(handle, shadow_line.as_bytes(), 0).ok()?;
         Some(())
     });
 }

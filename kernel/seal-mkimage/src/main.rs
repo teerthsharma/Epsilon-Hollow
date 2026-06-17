@@ -39,6 +39,20 @@ fn main() {
         println!("[seal-audit] THEOREM LOG OK: {}", log_path.display());
         return;
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-installer-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os-installer.log"));
+        let text = fs::read_to_string(&log_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", log_path.display()));
+        check_installer_proof_text(&text).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] INSTALLER PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] INSTALLER PROOF OK: {}", log_path.display());
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--check-vm-proof") {
         let log_path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from("../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log")
@@ -999,12 +1013,21 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[ALLOC] O(1) proof:",
         "[BENCH] toporam-alloc",
         "[BENCH] alloc-frame",
+        "[BENCH] slab-alloc",
         "[BENCH] manifold-teleport",
+        "[BENCH] manifold-lookup",
         "[BENCH] scheduler-select-next",
         "[BENCH] tcp-packet-demux",
+        "[BENCH] tcp-roundtrip",
+        "[BENCH] tls-encrypt",
         "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
+        "[SECURITY] hardening proof",
+        "[SECURITY] audit proof",
+        "[SECURITY] auth proof",
+        "[MM] cow-proof",
+        "[ManifoldPkg] proof",
         "[BOOT] Desktop proof frame blit done",
         "[GFX] desktop-proof",
         "[GFX] desktop-live-proof",
@@ -1052,6 +1075,197 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
     check_benchmark_text(&text)?;
     check_aether_runtime_text(&text)?;
     check_laamba_app_proof_text(&text)?;
+    check_security_hardening_text(&text)?;
+    check_security_audit_text(&text)?;
+    check_auth_shadow_proof_text(&text)?;
+    check_cow_proof_text(&text)?;
+    check_manifoldpkg_proof_text(&text)?;
+    Ok(())
+}
+
+fn check_cow_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[MM] cow-proof")?;
+    require_field_eq(line, "version=", "1", "COW proof")?;
+    require_field_eq(line, "rollback_guard=", "1", "COW proof")?;
+    require_field_eq(line, "fork_fallback=", "0", "COW proof")?;
+    require_field_eq(line, "clone_fallback=", "0", "COW proof")?;
+    require_field_eq(line, "leaked_frames=", "0", "COW proof")?;
+    require_field_eq(line, "result=", "pass", "COW proof")?;
+    let samples = parse_metric(line, "samples=")?;
+    let rollback_ok = parse_metric(line, "rollback_ok=")?;
+    let tracked = parse_metric(line, "tracked_frames=")?;
+    let freed = parse_metric(line, "rollback_frees=")?;
+    if samples == 0 || samples != rollback_ok {
+        return Err(format!(
+            "COW proof rollback samples incomplete: samples={samples}, rollback_ok={rollback_ok}"
+        ));
+    }
+    if tracked == 0 || tracked != freed {
+        return Err(format!(
+            "COW proof rollback accounting mismatch: tracked_frames={tracked}, rollback_frees={freed}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] auth proof")?;
+    require_field_eq(line, "version=", "1", "auth shadow proof")?;
+    require_field_eq(line, "shadow=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_user=", "seal", "auth shadow proof")?;
+    require_field_eq(line, "default_present=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_topo5000=", "1", "auth shadow proof")?;
+    require_field_eq(line, "default_legacy=", "0", "auth shadow proof")?;
+    require_field_eq(
+        line,
+        "default_password_rejected=",
+        "1",
+        "auth shadow proof",
+    )?;
+    require_field_eq(line, "new_user_topo5000=", "1", "auth shadow proof")?;
+    require_field_eq(line, "result=", "pass", "auth shadow proof")?;
+
+    let embedded = parse_metric(line, "passwd_embedded_hashes=")?;
+    if embedded != 0 {
+        return Err(String::from(
+            "auth shadow proof found embedded password hashes in /etc/passwd",
+        ));
+    }
+    Ok(())
+}
+
+fn check_installer_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[INSTALLER] proof")?;
+    require_field_eq(line, "version=", "1", "installer proof")?;
+    require_field_eq(line, "mode=", "safe_vfs", "installer proof")?;
+    require_field_eq(line, "boot_marker=", "1", "installer proof")?;
+    require_field_eq(line, "home=", "1", "installer proof")?;
+    require_field_eq(line, "profile=", "1", "installer proof")?;
+    require_field_eq(line, "user=", "1", "installer proof")?;
+    require_field_eq(line, "auth_topo5000=", "1", "installer proof")?;
+    require_field_eq(line, "raw_gpt=", "0", "installer proof")?;
+    require_field_eq(line, "raw_format=", "0", "installer proof")?;
+    require_field_eq(line, "result=", "pass", "installer proof")?;
+    parse_field(line, "selected_disk=")?;
+
+    let banned = [
+        "Would create GPT",
+        "Would format",
+        "Would copy",
+        "Would install",
+        "Installation simulation complete",
+        "SHA-256 hash",
+    ];
+    let hits: Vec<&str> = text
+        .lines()
+        .filter(|line| banned.iter().any(|marker| line.contains(marker)))
+        .collect();
+    if !hits.is_empty() {
+        return Err(format!(
+            "installer proof log contains simulation markers: {}",
+            hits.join(" | ")
+        ));
+    }
+    Ok(())
+}
+
+fn check_manifoldpkg_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[ManifoldPkg] proof")?;
+    require_field_eq(line, "version=", "1", "ManifoldPkg proof")?;
+    require_field_eq(line, "source=", "embedded_eph", "ManifoldPkg proof")?;
+    require_field_eq(line, "parse=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(
+        line,
+        "registry_index=",
+        "ed25519_fixture",
+        "ManifoldPkg proof",
+    )?;
+    require_field_eq(line, "install=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "extract=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "list=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "remove=", "ok", "ManifoldPkg proof")?;
+    require_field_eq(line, "metadata_only=", "0", "ManifoldPkg proof")?;
+    require_field_eq(line, "signature=", "ed25519_fixture", "ManifoldPkg proof")?;
+    require_field_eq(line, "result=", "pass", "ManifoldPkg proof")?;
+
+    let files = parse_metric(line, "files=")?;
+    let bytes = parse_metric(line, "bytes=")?;
+    let before = parse_metric(line, "package_count_before=")?;
+    let after_install = parse_metric(line, "package_count_after_install=")?;
+    let after_remove = parse_metric(line, "package_count_after_remove=")?;
+    if files == 0 {
+        return Err(String::from("ManifoldPkg proof must extract at least one file"));
+    }
+    if bytes == 0 {
+        return Err(String::from("ManifoldPkg proof must extract nonempty bytes"));
+    }
+    if after_install != before + 1 {
+        return Err(String::from(
+            "ManifoldPkg proof package count must increase by one after install",
+        ));
+    }
+    if after_remove != before {
+        return Err(String::from(
+            "ManifoldPkg proof package count must return to baseline after remove",
+        ));
+    }
+    Ok(())
+}
+
+fn check_security_hardening_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] hardening proof")?;
+    require_field_eq(line, "version=", "1", "security hardening proof")?;
+    require_field_eq(line, "kpti=", "1", "security hardening proof")?;
+    require_field_eq(line, "kpti_distinct=", "1", "security hardening proof")?;
+    require_field_eq(line, "user_lower_zero=", "1", "security hardening proof")?;
+    require_field_eq(
+        line,
+        "kernel_upper_mirrored=",
+        "1",
+        "security hardening proof",
+    )?;
+    require_field_eq(line, "result=", "pass", "security hardening proof")?;
+
+    let kernel_cr3 = parse_hex_metric(line, "kernel_cr3=")?;
+    let user_cr3 = parse_hex_metric(line, "user_cr3=")?;
+    if kernel_cr3 == 0 || user_cr3 == 0 {
+        return Err(String::from(
+            "security hardening proof CR3 roots must be nonzero",
+        ));
+    }
+    if kernel_cr3 == user_cr3 {
+        return Err(String::from(
+            "security hardening proof kernel/user CR3 roots must differ",
+        ));
+    }
+
+    let smap_supported = parse_metric(line, "smap_smep_supported=")?;
+    let smap_enabled = parse_metric(line, "smap_smep_enabled=")?;
+    if smap_supported > 1 || smap_enabled > 1 {
+        return Err(String::from(
+            "security hardening proof SMAP/SMEP fields must be booleans",
+        ));
+    }
+    if smap_supported == 1 && smap_enabled != 1 {
+        return Err(String::from(
+            "security hardening proof reports SMAP/SMEP support without enablement",
+        ));
+    }
+    parse_metric(line, "user_access_faults=")?;
+    Ok(())
+}
+
+fn check_security_audit_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY] audit proof")?;
+    require_field_eq(line, "version=", "1", "security audit proof")?;
+    require_field_eq(line, "vfs=", "1", "security audit proof")?;
+    require_field_eq(line, "dirs=", "1", "security audit proof")?;
+    require_field_eq(line, "buffered_after=", "0", "security audit proof")?;
+    require_field_eq(line, "file=", "/var/log/audit.log", "security audit proof")?;
+    require_field_eq(line, "readback=", "1", "security audit proof")?;
+    require_field_eq(line, "flushed=", "1", "security audit proof")?;
+    require_field_eq(line, "result=", "pass", "security audit proof")?;
+    parse_metric(line, "buffered_before=")?;
     Ok(())
 }
 
@@ -1121,9 +1335,13 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_alloc_o1_proof(text)?;
     parse_toporam_alloc_benchmark(text)?;
     parse_seal_alloc_benchmark(text)?;
+    parse_slab_alloc_benchmark(text)?;
     parse_manifold_teleport_benchmark(text)?;
+    parse_manifold_lookup_benchmark(text)?;
     parse_scheduler_select_benchmark(text)?;
     parse_tcp_packet_demux_benchmark(text)?;
+    parse_tcp_roundtrip_benchmark(text)?;
+    parse_tls_encrypt_benchmark(text)?;
     parse_gpu_topology_benchmark(text)?;
     Ok(())
 }
@@ -1327,6 +1545,60 @@ fn parse_toporam_alloc_benchmark(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_slab_alloc_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] slab-alloc")?;
+    let bench = parse_alloc_bench_metrics(line, "Slab allocation benchmark")?;
+    let classes = parse_metric(line, "classes=")?;
+    let refill_ok = parse_metric(line, "refill_ok=")?;
+    let reuse_ok = parse_metric(line, "reuse_ok=")?;
+    let free_ok = parse_metric(line, "free_ok=")?;
+    let realloc_ok = parse_metric(line, "realloc_ok=")?;
+    let refill_pages_delta = parse_metric(line, "refill_pages_delta=")?;
+    let free_list_hits_delta = parse_metric(line, "free_list_hits_delta=")?;
+    let alloc_calls_delta = parse_metric(line, "alloc_calls_delta=")?;
+    let free_calls_delta = parse_metric(line, "free_calls_delta=")?;
+    let free_before = parse_metric(line, "free_before=")?;
+    let free_after_refill = parse_metric(line, "free_after_refill=")?;
+    let free_after_reuse = parse_metric(line, "free_after_reuse=")?;
+
+    if classes != 6 {
+        return Err(format!("slab benchmark must cover 6 classes, got {classes}"));
+    }
+    if refill_ok != classes || reuse_ok != classes || free_ok != classes || realloc_ok != 2 {
+        return Err(format!(
+            "slab benchmark coverage incomplete: refill_ok={refill_ok}, reuse_ok={reuse_ok}, free_ok={free_ok}, realloc_ok={realloc_ok}"
+        ));
+    }
+    if refill_pages_delta < classes {
+        return Err(format!(
+            "slab benchmark did not force one refill page per class: refill_pages_delta={refill_pages_delta}, classes={classes}"
+        ));
+    }
+    if free_list_hits_delta < bench.iterations {
+        return Err(format!(
+            "slab benchmark did not use free-list fast path enough: free_list_hits_delta={free_list_hits_delta}, iterations={}",
+            bench.iterations
+        ));
+    }
+    if alloc_calls_delta < bench.iterations || free_calls_delta < bench.iterations {
+        return Err(format!(
+            "slab benchmark call accounting too low: alloc_calls_delta={alloc_calls_delta}, free_calls_delta={free_calls_delta}, iterations={}",
+            bench.iterations
+        ));
+    }
+    if free_before <= free_after_refill {
+        return Err(format!(
+            "slab benchmark did not consume refill frames: free_before={free_before}, free_after_refill={free_after_refill}"
+        ));
+    }
+    if free_after_refill != free_after_reuse {
+        return Err(format!(
+            "slab benchmark reuse allocated more frames: free_after_refill={free_after_refill}, free_after_reuse={free_after_reuse}"
+        ));
+    }
+    Ok(())
+}
+
 fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
     let line = find_marker_line(text, "[BENCH] manifold-teleport")?;
     let api = parse_field(line, "api=")?;
@@ -1386,6 +1658,63 @@ fn parse_manifold_teleport_benchmark(text: &str) -> Result<(), String> {
     if persistence_bytes != 0 {
         return Err(format!(
             "ManifoldFS teleport rewrote file bytes: persistence_bytes_per_move={persistence_bytes}, payload_bytes={payload_bytes}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_manifold_lookup_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] manifold-lookup")?;
+    let api = parse_field(line, "api=")?;
+    let fs_mode = parse_field(line, "fs_mode=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let samples = parse_metric(line, "samples=")?;
+    let ok = parse_metric(line, "ok=")?;
+    let entries = parse_metric(line, "entries=")?;
+    let path_depth = parse_metric(line, "path_depth=")?;
+    let components_max = parse_metric(line, "components_max=")?;
+    let payload_bytes = parse_metric(line, "payload_bytes=")?;
+    let dirhash_probes_total_max = parse_metric(line, "dirhash_probes_total_max=")?;
+    let dirhash_probes_max = parse_metric(line, "dirhash_probes_max=")?;
+    let dirhash_probe_bound = parse_metric(line, "dirhash_probe_bound=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "resolve_path_with_proof"
+        || fs_mode != "mock_block"
+        || fixture != "dirhash_path_walk"
+    {
+        return Err(format!(
+            "ManifoldFS lookup benchmark identifies the wrong API/path: api={api}, fs_mode={fs_mode}, fixture={fixture}"
+        ));
+    }
+    if samples < 64 || ok != samples || result != "pass" {
+        return Err(format!(
+            "ManifoldFS lookup benchmark failed samples: ok={ok}, samples={samples}, result={result}"
+        ));
+    }
+    if entries < 64 || path_depth < 4 || components_max != path_depth {
+        return Err(format!(
+            "ManifoldFS lookup fixture too weak: entries={entries}, path_depth={path_depth}, components_max={components_max}"
+        ));
+    }
+    if payload_bytes == 0 {
+        return Err("ManifoldFS lookup benchmark used empty payloads".to_string());
+    }
+    if dirhash_probe_bound == 0
+        || dirhash_probes_max == 0
+        || dirhash_probes_total_max < dirhash_probes_max
+        || dirhash_probes_max > dirhash_probe_bound
+    {
+        return Err(format!(
+            "ManifoldFS lookup DirHash probes invalid: total_max={dirhash_probes_total_max}, max={dirhash_probes_max}, bound={dirhash_probe_bound}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "ManifoldFS lookup cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
         ));
     }
     Ok(())
@@ -1545,6 +1874,108 @@ fn parse_tcp_packet_demux_benchmark(text: &str) -> Result<(), String> {
         ));
     }
 
+    Ok(())
+}
+
+fn parse_tcp_roundtrip_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tcp-roundtrip")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let connections = parse_metric(line, "connections=")?;
+    let established = parse_metric(line, "established=")?;
+    let payload_bytes = parse_metric(line, "payload_bytes=")?;
+    let client_tx = parse_metric(line, "client_tx=")?;
+    let server_rx = parse_metric(line, "server_rx=")?;
+    let server_echo = parse_metric(line, "server_echo=")?;
+    let client_rx = parse_metric(line, "client_rx=")?;
+    let listener_accept = parse_metric(line, "listener_accept=")?;
+    let exact_flow = parse_metric(line, "exact_flow=")?;
+    let listener_index_hit = parse_metric(line, "listener_index_hit=")?;
+    let client_index_hit = parse_metric(line, "client_index_hit=")?;
+    let index_lookup_probes_max = parse_metric(line, "index_lookup_probes_max=")?;
+    let index_probe_bound = parse_metric(line, "index_probe_bound=")?;
+    let cleanup = parse_field(line, "cleanup=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "tcp_loopback_echo_fixture" || fixture != "loopback_echo" {
+        return Err(format!(
+            "TCP roundtrip benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if connections < 8 || established != connections || listener_accept != connections {
+        return Err(format!(
+            "TCP roundtrip did not establish/accept all connections: connections={connections}, established={established}, listener_accept={listener_accept}"
+        ));
+    }
+    if payload_bytes < 64 {
+        return Err(format!(
+            "TCP roundtrip payload too small: payload_bytes={payload_bytes}"
+        ));
+    }
+    let expected_bytes = connections * payload_bytes;
+    if client_tx != expected_bytes
+        || server_rx != expected_bytes
+        || server_echo != expected_bytes
+        || client_rx != expected_bytes
+    {
+        return Err(format!(
+            "TCP roundtrip byte mismatch: expected={expected_bytes}, client_tx={client_tx}, server_rx={server_rx}, server_echo={server_echo}, client_rx={client_rx}"
+        ));
+    }
+    if exact_flow != connections || listener_index_hit != connections || client_index_hit != connections {
+        return Err(format!(
+            "TCP roundtrip did not use bounded indexes for all flows: exact_flow={exact_flow}, listener_index_hit={listener_index_hit}, client_index_hit={client_index_hit}, connections={connections}"
+        ));
+    }
+    if index_lookup_probes_max == 0 || index_lookup_probes_max > index_probe_bound {
+        return Err(format!(
+            "TCP roundtrip index probes exceeded bound: max={index_lookup_probes_max}, bound={index_probe_bound}"
+        ));
+    }
+    if cleanup != "ok" || result != "pass" {
+        return Err(format!(
+            "TCP roundtrip cleanup/result failed: cleanup={cleanup}, result={result}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_tls_encrypt_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tls-encrypt")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let plaintext_bytes = parse_metric(line, "plaintext_bytes=")?;
+    let record_bytes = parse_metric(line, "record_bytes=")?;
+    let tag_bytes = parse_metric(line, "tag_bytes=")?;
+    let decrypt_match = parse_metric(line, "decrypt_match=")?;
+    let write_seq = parse_metric(line, "write_seq=")?;
+    let read_seq = parse_metric(line, "read_seq=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "TlsSession::encrypt" || fixture != "psk_aes_128_gcm_record" {
+        return Err(format!(
+            "TLS encrypt benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if plaintext_bytes != 1024 || tag_bytes != 16 || record_bytes != plaintext_bytes + tag_bytes + 5
+    {
+        return Err(format!(
+            "TLS encrypt record size invalid: plaintext={plaintext_bytes}, record={record_bytes}, tag={tag_bytes}"
+        ));
+    }
+    if decrypt_match != 1 || write_seq != 1 || read_seq != 1 || result != "pass" {
+        return Err(format!(
+            "TLS encrypt roundtrip/auth failed: decrypt_match={decrypt_match}, write_seq={write_seq}, read_seq={read_seq}, result={result}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "TLS encrypt cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
+        ));
+    }
     Ok(())
 }
 
@@ -2463,6 +2894,14 @@ fn parse_metric(line: &str, key: &str) -> Result<u64, String> {
         .map_err(|e| format!("invalid metric `{key}{value}`: {e}"))
 }
 
+fn parse_hex_metric(line: &str, key: &str) -> Result<u64, String> {
+    let value = parse_field(line, key)?;
+    let hex = value
+        .strip_prefix("0x")
+        .ok_or_else(|| format!("invalid hex metric `{key}{value}`: missing 0x prefix"))?;
+    u64::from_str_radix(hex, 16).map_err(|e| format!("invalid hex metric `{key}{value}`: {e}"))
+}
+
 fn parse_field<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
     let value = line
         .split_whitespace()
@@ -2752,9 +3191,13 @@ mod tests {
     const ALLOC_PROOF_LOG: &str = "[ALLOC] O(1) proof: topo_cells=8 l3_word_probes_per_cell=2 single_word_probes_per_cell=8192 contiguous_candidate_probes=128 contiguous_max_run_pages=64 toporam_max_run_pages=64 marking=bounded_by_contiguous_max_run_pages\n";
     const TOPORAM_ALLOC_LOG: &str = "[BENCH] toporam-alloc iterations=64 ok=64 p50_cycles=90 p95_cycles=130 max_cycles=150 target_cell_hits_delta=64 target_cell_fallbacks_delta=0 low_to_high_fallbacks_delta=0 high_to_low_fallbacks_delta=0 pcie_to_high_fallbacks_delta=0 pcie_to_low_fallbacks_delta=0 free_before=10 free_after=10\n";
     const SEAL_ALLOC_LOG: &str = "[BENCH] alloc-frame iterations=64 ok=64 p50_cycles=100 p95_cycles=140 max_cycles=160 fast_hits_delta=64 bounded_misses_delta=0 max_contiguous_probes_seen_delta=0 free_before=10 free_after=10\n";
+    const SLAB_ALLOC_LOG: &str = "[BENCH] slab-alloc iterations=64 ok=64 classes=6 refill_ok=6 reuse_ok=6 free_ok=6 realloc_ok=2 p50_cycles=80 p95_cycles=120 max_cycles=150 refill_pages_delta=6 free_list_hits_delta=64 alloc_calls_delta=80 free_calls_delta=80 free_before=100 free_after_refill=94 free_after_reuse=94\n";
     const MANIFOLD_TELEPORT_LOG: &str = "[BENCH] manifold-teleport api=teleport fs_mode=mock_block persistence=metadata_only samples=3 ok=3 same_inode=3 src_gone=3 dst_present=3 entries_min=8 entries_max=256 payload_bytes=64 p50_cycles=1000 p95_cycles=2000 max_cycles=2000 ticks_max=1 metadata_ops_max=7 persistence_bytes_per_move=0 payload_points=4\n";
+    const MANIFOLD_LOOKUP_LOG: &str = "[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples=64 ok=64 entries=64 path_depth=4 components_max=4 payload_bytes=64 dirhash_probes_total_max=8 dirhash_probes_max=3 dirhash_probe_bound=256 p50_cycles=100 p95_cycles=180 max_cycles=220 result=pass\n";
     const SCHEDULER_SELECT_LOG: &str = "[BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=10 p50_cycles=80 p95_cycles=120 max_cycles=140\n";
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
+    const TCP_ROUNDTRIP_LOG: &str = "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=4 index_probe_bound=256 cleanup=ok result=pass\n";
+    const TLS_ENCRYPT_LOG: &str = "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=900 p95_cycles=900 max_cycles=900 result=pass\n";
     const GPU_TOPOLOGY_BENCH_LOG: &str = "\
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
 [GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
@@ -2767,6 +3210,12 @@ mod tests {
     const GFX_DESKTOP_SOAK_LOG: &str = "[GFX] desktop-soak frames=24 p50_cycles=100 p95_cycles=160 max_cycles=220 missed_16ms=unscaled input_events=0 dirty_px_max=786432\n";
     const AETHER_RUNTIME_LOG: &str = "[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok\n";
     const LAAMBA_APP_PROOF_LOG: &str = "[LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=11 launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=12 runtime_bridge=rust_native_manifest python_runtime=0 result=pass\n";
+    const SECURITY_HARDENING_LOG: &str = "[SECURITY] hardening proof version=1 kpti=1 kernel_cr3=0x1000 user_cr3=0x2000 kpti_distinct=1 user_lower_zero=1 kernel_upper_mirrored=1 smap_smep_supported=1 smap_smep_enabled=1 user_access_faults=0 result=pass\n";
+    const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
+    const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 default_password_rejected=1 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
+    const COW_PROOF_LOG: &str = "[MM] cow-proof version=1 rollback_guard=1 fork_fallback=0 clone_fallback=0 samples=4 rollback_ok=4 tracked_frames=10 rollback_frees=10 leaked_frames=0 result=pass\n";
+    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
+    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -3296,9 +3745,13 @@ gate_benchmark_log=ok\n",
             ALLOC_PROOF_LOG,
             TOPORAM_ALLOC_LOG,
             SEAL_ALLOC_LOG,
+            SLAB_ALLOC_LOG,
             MANIFOLD_TELEPORT_LOG,
+            MANIFOLD_LOOKUP_LOG,
             SCHEDULER_SELECT_LOG,
             TCP_PACKET_DEMUX_LOG,
+            TCP_ROUNDTRIP_LOG,
+            TLS_ENCRYPT_LOG,
             GPU_TOPOLOGY_BENCH_LOG,
         ]
         .concat()
@@ -3572,9 +4025,13 @@ gate_proof_screen=ok
         for marker in [
             r"\[BENCH\] toporam-alloc",
             r"\[BENCH\] alloc-frame",
+            r"\[BENCH\] slab-alloc",
             r"\[BENCH\] manifold-teleport",
+            r"\[BENCH\] manifold-lookup",
             r"\[BENCH\] scheduler-select-next",
             r"\[BENCH\] tcp-packet-demux",
+            r"\[BENCH\] tcp-roundtrip",
+            r"\[BENCH\] tls-encrypt",
             r"\[GPU-BENCH\] suite",
             r"\[Aether-Lang\] runtime proof:",
             r"\[LAAMBA\] app proof:",
@@ -3805,6 +4262,7 @@ with:
     fn parses_seal_and_ubuntu_allocator_benchmarks() {
         assert!(parse_alloc_o1_proof(ALLOC_PROOF_LOG).is_ok());
         assert!(parse_toporam_alloc_benchmark(TOPORAM_ALLOC_LOG).is_ok());
+        assert!(parse_slab_alloc_benchmark(SLAB_ALLOC_LOG).is_ok());
         let seal = parse_seal_alloc_benchmark(SEAL_ALLOC_LOG).unwrap();
         let ubuntu = parse_ubuntu_alloc_benchmark(UBUNTU_ALLOC_LOG).unwrap();
 
@@ -3815,9 +4273,61 @@ with:
     }
 
     #[test]
+    fn rejects_weak_slab_allocator_proof() {
+        assert!(parse_slab_alloc_benchmark(SLAB_ALLOC_LOG).is_ok());
+
+        let missing_class = SLAB_ALLOC_LOG.replace("classes=6", "classes=5");
+        assert!(parse_slab_alloc_benchmark(&missing_class).is_err());
+
+        let no_reuse = SLAB_ALLOC_LOG.replace("free_list_hits_delta=64", "free_list_hits_delta=63");
+        assert!(parse_slab_alloc_benchmark(&no_reuse).is_err());
+
+        let extra_refill = SLAB_ALLOC_LOG.replace("free_after_reuse=94", "free_after_reuse=93");
+        assert!(parse_slab_alloc_benchmark(&extra_refill).is_err());
+
+        let no_realloc = SLAB_ALLOC_LOG.replace("realloc_ok=2", "realloc_ok=1");
+        assert!(parse_slab_alloc_benchmark(&no_realloc).is_err());
+    }
+
+    #[test]
+    fn rejects_weak_tcp_roundtrip_fixture() {
+        assert!(parse_tcp_roundtrip_benchmark(TCP_ROUNDTRIP_LOG).is_ok());
+
+        let too_few = TCP_ROUNDTRIP_LOG.replace("connections=8", "connections=7");
+        assert!(parse_tcp_roundtrip_benchmark(&too_few).is_err());
+
+        let byte_loss = TCP_ROUNDTRIP_LOG.replace("client_rx=512", "client_rx=511");
+        assert!(parse_tcp_roundtrip_benchmark(&byte_loss).is_err());
+
+        let no_index = TCP_ROUNDTRIP_LOG.replace("exact_flow=8", "exact_flow=7");
+        assert!(parse_tcp_roundtrip_benchmark(&no_index).is_err());
+
+        let bad_cleanup = TCP_ROUNDTRIP_LOG.replace("cleanup=ok", "cleanup=leak");
+        assert!(parse_tcp_roundtrip_benchmark(&bad_cleanup).is_err());
+    }
+
+    #[test]
+    fn parses_tls_encrypt_benchmark() {
+        assert!(parse_tls_encrypt_benchmark(TLS_ENCRYPT_LOG).is_ok());
+
+        let wrong_api =
+            TLS_ENCRYPT_LOG.replace("api=TlsSession::encrypt", "api=TlsSocket::send");
+        assert!(parse_tls_encrypt_benchmark(&wrong_api).is_err());
+
+        let wrong_size = TLS_ENCRYPT_LOG.replace("record_bytes=1045", "record_bytes=1024");
+        assert!(parse_tls_encrypt_benchmark(&wrong_size).is_err());
+
+        let auth_failed = TLS_ENCRYPT_LOG.replace("decrypt_match=1", "decrypt_match=0");
+        assert!(parse_tls_encrypt_benchmark(&auth_failed).is_err());
+
+        let seq_failed = TLS_ENCRYPT_LOG.replace("write_seq=1", "write_seq=0");
+        assert!(parse_tls_encrypt_benchmark(&seq_failed).is_err());
+    }
+
+    #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{TLS_ENCRYPT_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());
@@ -3833,7 +4343,7 @@ with:
             "mode=hardware backend=amd_gcn dispatch_path=hardware hardware_dispatch=1 shader_used=1",
         );
         let log = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{fake_hardware}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{fake_hardware}"
         );
 
         assert!(check_benchmark_text(&log).is_err());
@@ -3991,6 +4501,25 @@ with:
     }
 
     #[test]
+    fn parses_manifold_lookup_benchmark() {
+        assert!(parse_manifold_lookup_benchmark(MANIFOLD_LOOKUP_LOG).is_ok());
+
+        let wrong_api =
+            MANIFOLD_LOOKUP_LOG.replace("api=resolve_path_with_proof", "api=resolve_path");
+        assert!(parse_manifold_lookup_benchmark(&wrong_api).is_err());
+
+        let weak_fixture = MANIFOLD_LOOKUP_LOG.replace("entries=64", "entries=8");
+        assert!(parse_manifold_lookup_benchmark(&weak_fixture).is_err());
+
+        let unbounded_probe =
+            MANIFOLD_LOOKUP_LOG.replace("dirhash_probes_max=3", "dirhash_probes_max=512");
+        assert!(parse_manifold_lookup_benchmark(&unbounded_probe).is_err());
+
+        let failed_result = MANIFOLD_LOOKUP_LOG.replace("result=pass", "result=fail");
+        assert!(parse_manifold_lookup_benchmark(&failed_result).is_err());
+    }
+
+    #[test]
     fn parses_scheduler_select_benchmark() {
         assert!(parse_scheduler_select_benchmark(SCHEDULER_SELECT_LOG).is_ok());
 
@@ -4040,6 +4569,173 @@ with:
     }
 
     #[test]
+    fn security_hardening_proof_requires_real_kpti_invariants() {
+        assert!(check_security_hardening_text(SECURITY_HARDENING_LOG).is_ok());
+
+        let no_kpti = SECURITY_HARDENING_LOG.replace("kpti=1", "kpti=0");
+        assert!(check_security_hardening_text(&no_kpti).is_err());
+
+        let same_cr3 = SECURITY_HARDENING_LOG.replace("user_cr3=0x2000", "user_cr3=0x1000");
+        assert!(check_security_hardening_text(&same_cr3).is_err());
+
+        let mapped_lower =
+            SECURITY_HARDENING_LOG.replace("user_lower_zero=1", "user_lower_zero=0");
+        assert!(check_security_hardening_text(&mapped_lower).is_err());
+
+        let smap_claim =
+            SECURITY_HARDENING_LOG.replace("smap_smep_enabled=1", "smap_smep_enabled=0");
+        assert!(check_security_hardening_text(&smap_claim).is_err());
+    }
+
+    #[test]
+    fn security_audit_proof_requires_vfs_flush_and_readback() {
+        assert!(check_security_audit_text(SECURITY_AUDIT_LOG).is_ok());
+
+        let no_vfs = SECURITY_AUDIT_LOG.replace("vfs=1", "vfs=0");
+        assert!(check_security_audit_text(&no_vfs).is_err());
+
+        let no_dirs = SECURITY_AUDIT_LOG.replace("dirs=1", "dirs=0");
+        assert!(check_security_audit_text(&no_dirs).is_err());
+
+        let buffered = SECURITY_AUDIT_LOG.replace("buffered_after=0", "buffered_after=8");
+        assert!(check_security_audit_text(&buffered).is_err());
+
+        let no_readback = SECURITY_AUDIT_LOG.replace("readback=1", "readback=0");
+        assert!(check_security_audit_text(&no_readback).is_err());
+    }
+
+    #[test]
+    fn auth_shadow_proof_requires_topo5000_default_and_no_passwd_hashes() {
+        assert!(check_auth_shadow_proof_text(AUTH_SHADOW_PROOF_LOG).is_ok());
+
+        let no_shadow = AUTH_SHADOW_PROOF_LOG.replace("shadow=1", "shadow=0");
+        assert!(check_auth_shadow_proof_text(&no_shadow).is_err());
+
+        let no_default = AUTH_SHADOW_PROOF_LOG.replace("default_present=1", "default_present=0");
+        assert!(check_auth_shadow_proof_text(&no_default).is_err());
+
+        let weak_default =
+            AUTH_SHADOW_PROOF_LOG.replace("default_topo5000=1", "default_topo5000=0");
+        assert!(check_auth_shadow_proof_text(&weak_default).is_err());
+
+        let legacy_default = AUTH_SHADOW_PROOF_LOG.replace("default_legacy=0", "default_legacy=1");
+        assert!(check_auth_shadow_proof_text(&legacy_default).is_err());
+
+        let default_password_allowed =
+            AUTH_SHADOW_PROOF_LOG.replace("default_password_rejected=1", "default_password_rejected=0");
+        assert!(check_auth_shadow_proof_text(&default_password_allowed).is_err());
+
+        let weak_new_user =
+            AUTH_SHADOW_PROOF_LOG.replace("new_user_topo5000=1", "new_user_topo5000=0");
+        assert!(check_auth_shadow_proof_text(&weak_new_user).is_err());
+
+        let embedded_hashes =
+            AUTH_SHADOW_PROOF_LOG.replace("passwd_embedded_hashes=0", "passwd_embedded_hashes=1");
+        assert!(check_auth_shadow_proof_text(&embedded_hashes).is_err());
+    }
+
+    #[test]
+    fn cow_proof_requires_rollback_guard_and_no_parent_fallback() {
+        assert!(check_cow_proof_text(COW_PROOF_LOG).is_ok());
+
+        let no_guard = COW_PROOF_LOG.replace("rollback_guard=1", "rollback_guard=0");
+        assert!(check_cow_proof_text(&no_guard).is_err());
+
+        let fork_fallback = COW_PROOF_LOG.replace("fork_fallback=0", "fork_fallback=1");
+        assert!(check_cow_proof_text(&fork_fallback).is_err());
+
+        let clone_fallback = COW_PROOF_LOG.replace("clone_fallback=0", "clone_fallback=1");
+        assert!(check_cow_proof_text(&clone_fallback).is_err());
+
+        let leak = COW_PROOF_LOG.replace("leaked_frames=0", "leaked_frames=1");
+        assert!(check_cow_proof_text(&leak).is_err());
+
+        let partial = COW_PROOF_LOG.replace("rollback_ok=4", "rollback_ok=3");
+        assert!(check_cow_proof_text(&partial).is_err());
+
+        let bad_accounting = COW_PROOF_LOG.replace("rollback_frees=10", "rollback_frees=9");
+        assert!(check_cow_proof_text(&bad_accounting).is_err());
+    }
+
+    #[test]
+    fn panic_serial_contract_rejects_formatting_macro_in_panic_handler() {
+        let serial = r#"
+pub fn panic_write_byte(byte: u8) {
+    for _ in 0..PANIC_SERIAL_SPIN_LIMIT {
+        if ready { write(byte); return; }
+    }
+}
+pub fn panic_write_bytes(bytes: &[u8]) {}
+pub fn panic_write_line(line: &str) {}
+pub fn panic_write_fmt(args: fmt::Arguments) {}
+"#;
+        let main = r#"
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    seal_os::drivers::serial::panic_write_line("!!! SEAL OS KERNEL PANIC !!!");
+    seal_os::drivers::serial::panic_write_fmt(format_args!("{}", info));
+    loop { x86_64::instructions::hlt(); }
+}
+"#;
+        assert!(check_panic_serial_source_contract_text(serial, main).is_ok());
+
+        let macro_panic = main.replace(
+            "seal_os::drivers::serial::panic_write_line(\"!!! SEAL OS KERNEL PANIC !!!\");",
+            "seal_os::serial_println!(\"!!! SEAL OS KERNEL PANIC !!!\");",
+        );
+        assert!(check_panic_serial_source_contract_text(serial, &macro_panic).is_err());
+
+        let missing_bound = serial.replace("PANIC_SERIAL_SPIN_LIMIT", "UNBOUNDED_WAIT");
+        assert!(check_panic_serial_source_contract_text(&missing_bound, main).is_err());
+    }
+
+    #[test]
+    fn installer_proof_requires_real_safe_vfs_writes_not_simulation() {
+        assert!(check_installer_proof_text(INSTALLER_PROOF_LOG).is_ok());
+
+        let no_boot = INSTALLER_PROOF_LOG.replace("boot_marker=1", "boot_marker=0");
+        assert!(check_installer_proof_text(&no_boot).is_err());
+
+        let no_auth = INSTALLER_PROOF_LOG.replace("auth_topo5000=1", "auth_topo5000=0");
+        assert!(check_installer_proof_text(&no_auth).is_err());
+
+        let claims_raw = INSTALLER_PROOF_LOG.replace("raw_gpt=0", "raw_gpt=1");
+        assert!(check_installer_proof_text(&claims_raw).is_err());
+
+        let simulation_log = format!("{INSTALLER_PROOF_LOG}[INSTALLER] Would format ESP\n");
+        assert!(check_installer_proof_text(&simulation_log).is_err());
+    }
+
+    #[test]
+    fn manifoldpkg_proof_requires_real_eph_extract_and_registry_counts() {
+        assert!(check_manifoldpkg_proof_text(MANIFOLDPKG_PROOF_LOG).is_ok());
+
+        let metadata_only = MANIFOLDPKG_PROOF_LOG.replace("metadata_only=0", "metadata_only=1");
+        assert!(check_manifoldpkg_proof_text(&metadata_only).is_err());
+
+        let no_extract = MANIFOLDPKG_PROOF_LOG.replace("extract=ok", "extract=fail");
+        assert!(check_manifoldpkg_proof_text(&no_extract).is_err());
+
+        let no_files = MANIFOLDPKG_PROOF_LOG.replace("files=1", "files=0");
+        assert!(check_manifoldpkg_proof_text(&no_files).is_err());
+
+        let no_bytes = MANIFOLDPKG_PROOF_LOG.replace("bytes=19", "bytes=0");
+        assert!(check_manifoldpkg_proof_text(&no_bytes).is_err());
+
+        let bad_count =
+            MANIFOLDPKG_PROOF_LOG.replace("package_count_after_install=1", "package_count_after_install=0");
+        assert!(check_manifoldpkg_proof_text(&bad_count).is_err());
+
+        let skipped_sig =
+            MANIFOLDPKG_PROOF_LOG.replace("signature=ed25519_fixture", "signature=skipped_fixture");
+        assert!(check_manifoldpkg_proof_text(&skipped_sig).is_err());
+
+        let unsigned_index =
+            MANIFOLDPKG_PROOF_LOG.replace("registry_index=ed25519_fixture", "registry_index=none");
+        assert!(check_manifoldpkg_proof_text(&unsigned_index).is_err());
+    }
+
+    #[test]
     fn doc_claim_contract_requires_ubuntu_and_benchmark_guards() {
         let readme = "\
 not a blanket victory claim
@@ -4051,14 +4747,20 @@ fs_mode=mock_block
 Where Seal OS must still prove superiority
 Minimal TLS 1.3 PSK record path
 no X.509/PKI/ECDHE gate yet
-remote registry fixture and signed package gate are pending
-fixture gate pending before \"full filesystem parity\" claims
+`signature=ed25519_fixture`
+`registry_index=ed25519_fixture`
+Public remote release channel is still pending
+Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2
+[SECURITY] audit proof
+[MM] cow-proof
+`seal`/`seal` is rejected
+/var/log/audit.log
 TopCrypt is topological encoding/obfuscation, not cryptographic protection
 grid/value-height projection
 `seal-mkimage --check-aether-runtime
 [LAAMBA] app proof:
 `seal-mkimage --check-benchmark-log
-hardware dispatch still needs a proof artifact
+Hardware dispatch still needs a proof artifact
 ";
         let benchmark = "\
 That claim is not
@@ -4097,8 +4799,15 @@ hardware `[GPU-BENCH]` artifact proves otherwise
                 .is_err()
         );
 
+        let default_credential_overclaim =
+            format!("{readme}\nDefault credentials: `seal` / `seal`\n");
+        assert!(
+            check_doc_claim_contract_text(&default_credential_overclaim, benchmark, ci, gpu_doc)
+                .is_err()
+        );
+
         let gpu_overclaim = readme.replace(
-            "hardware dispatch still needs a proof artifact",
+            "Hardware dispatch still needs a proof artifact",
             "they execute (the GPU doesn't crash)",
         );
         assert!(check_doc_claim_contract_text(&gpu_overclaim, benchmark, ci, gpu_doc).is_err());
@@ -4115,6 +4824,142 @@ hardware `[GPU-BENCH]` artifact proves otherwise
             "Seal OS offloads topological computations to discrete GPUs",
         );
         assert!(check_doc_claim_contract_text(readme, benchmark, ci, &gpu_doc_overclaim).is_err());
+    }
+
+    #[test]
+    fn manifoldpkg_shell_contract_rejects_metadata_only_install() {
+        let shell = r#"
+fn cmd_install(&mut self, pkg: &str) -> String {
+    if pkg.ends_with(".eph") {
+        let Some(data) = self.fs.read_bytes(pkg, self.cwd) else { return String::new(); };
+        return match crate::pkg::GLOBAL_PKG.lock().install_bytes(&data, None) {
+            Ok(msg) => msg,
+            Err(e) => e,
+        };
+    }
+    crate::pkg::GLOBAL_PKG.lock().install(pkg).unwrap();
+}
+fn cmd_remove(&mut self, pkg: &str) -> String {
+    crate::pkg::GLOBAL_PKG.lock().remove(pkg).unwrap()
+}
+fn cmd_packages(&self) -> String {
+    let pkg = crate::pkg::GLOBAL_PKG.lock();
+    for manifest in pkg.list() {
+        manifest.carrier.name();
+    }
+    String::new()
+}
+"#;
+        let pkg = "parse_eph(data); verify_signature(&pkg, key); self.install_file";
+        let carrier = r#"
+pub enum CarrierType { Aether, Rust, C, Js }
+impl CarrierType {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s { "aether" => Some(Self::Aether), "rust" => Some(Self::Rust), "c" => Some(Self::C), "js" => Some(Self::Js), _ => None }
+    }
+}
+"#;
+        assert!(check_manifoldpkg_shell_contract_text(shell, pkg, carrier).is_ok());
+
+        let metadata_only = format!(
+            "{shell}\nlet manifest = \"status=metadata-only\";\nstore_text(&format!(\"{{}}.pkg\", pkg), manifest, self.cwd);\nStored package manifest\n"
+        );
+        assert!(check_manifoldpkg_shell_contract_text(&metadata_only, pkg, carrier).is_err());
+
+        let missing_core = "parse_eph(data);";
+        assert!(check_manifoldpkg_shell_contract_text(shell, missing_core, carrier).is_err());
+
+        let python_carrier = format!("{carrier}\npub struct PipCarrier;\n");
+        assert!(check_manifoldpkg_shell_contract_text(shell, pkg, &python_carrier).is_err());
+    }
+
+    #[test]
+    fn installer_source_contract_rejects_would_install_theater() {
+        let installer = r#"
+fn apply_safe_install(&self) -> bool {
+    write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", b"boot");
+    crate::security::passwd::add_user("seal2", "pw", 1001, 1001);
+    crate::security::shadow::auth_shadow_proof();
+    serial_println!("[INSTALLER] proof version=1 mode=safe_vfs raw_gpt=0 raw_format=0 result=pass");
+    true
+}
+"#;
+        assert!(check_installer_source_contract_text(installer).is_ok());
+
+        let theater = format!("{installer}\nserial_println!(\"[INSTALLER] Would format ESP\");\n");
+        assert!(check_installer_source_contract_text(&theater).is_err());
+    }
+
+    #[test]
+    fn ide_completion_contract_rejects_stub_completion() {
+        let ide = r#"
+const COMPLETION_CANDIDATES: &[&str] = &["SphericalVoronoiIndex", "serial_println!"];
+fn completion_suffix_for_line(line: Option<&String>, cursor_col: usize) -> Option<&'static str> {
+    let prefix = current_word_prefix(line?, cursor_col);
+    for candidate in COMPLETION_CANDIDATES {
+        if candidate.starts_with(prefix.as_str()) && candidate.len() > prefix.len() {
+            return candidate.get(prefix.len()..);
+        }
+    }
+    None
+}
+fn current_word_prefix(line: &str, cursor_col: usize) -> String { String::from(line) }
+fn completion_status(&self) -> String { String::from("Tab completes ln!") }
+fn key_press(&mut self, ch: u8) {
+    match ch {
+        b'\t' => {
+            if let Some(suffix) = completion_suffix_for_line(file.lines.get(self.cursor_line), self.cursor_col) {
+                line.insert_str(self.cursor_col, suffix);
+                self.cursor_col += suffix.len();
+            }
+        }
+        _ => {}
+    }
+}
+"#;
+        assert!(check_ide_completion_source_contract_text(ide).is_ok());
+
+        let stub = format!("{ide}\n//! AI code completion stub\n");
+        assert!(check_ide_completion_source_contract_text(&stub).is_err());
+    }
+
+    #[test]
+    fn filesystem_parity_contract_rejects_missing_write_paths() {
+        let fat = r#"
+//! FAT12/16/32 filesystem driver with VFS read/write/create/delete/rename support.
+impl FileSystem for FatFs {
+    fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> { self.read_file(2, buf, offset) }
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> { let written = self.write_clusters(2, buf, offset)?; self.write_dir_raw(0, buf)?; Ok(written) }
+    fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> { self.add_dir_entry(0, path, 0x20, 2, 0)?; Ok(VfsHandle { fs_idx: 0, inode: 2 }) }
+    fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> { self.add_dir_entry(0, path, 0x10, 2, 0)?; self.write_dir_raw(2, &[])?; Ok(VfsHandle { fs_idx: 0, inode: 2 }) }
+    fn unlink(&mut self, path: &str) -> Result<(), VfsError> { self.free_cluster_chain(2)?; self.remove_dir_entry(0, path) }
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> { self.remove_dir_entry(0, path) }
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> { self.write_dir_raw(0, &[])?; Ok(()) }
+    fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> { Ok(Vec::new()) }
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> { todo!() }
+}
+"#;
+        let ext2 = r#"
+impl FileSystem for Ext2Fs {
+    fn read(&self, handle: VfsHandle, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> { self.read_inode_data(&self.read_inode(handle.inode as u32)?, offset, buf) }
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> { let mut inode = self.read_inode(handle.inode as u32)?; let written = self.write_inode_data(&mut inode, offset, buf)?; self.write_inode(handle.inode as u32, &inode)?; Ok(written) }
+    fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> { let ino = self.allocate_inode()?; self.write_inode(ino, &inode)?; self.add_dir_entry(2, path, ino, 1)?; Ok(VfsHandle { fs_idx: 0, inode: ino as u64 }) }
+    fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> { let ino = self.allocate_inode()?; let block = self.allocate_block()?; self.write_disk_block(block, &[])?; self.add_dir_entry(2, path, ino, 2)?; Ok(VfsHandle { fs_idx: 0, inode: ino as u64 }) }
+    fn unlink(&mut self, path: &str) -> Result<(), VfsError> { self.free_inode_blocks(&mut inode)?; self.remove_dir_entry(2, path)?; self.free_inode(3) }
+    fn rmdir(&mut self, path: &str) -> Result<(), VfsError> { self.free_inode_blocks(&mut inode)?; self.remove_dir_entry(2, path)?; self.free_inode(3) }
+    fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> { self.remove_dir_entry(2, old)?; self.add_dir_entry(2, new, 3, 1) }
+    fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> { Ok(Vec::new()) }
+    fn stat(&self, handle: VfsHandle) -> Result<VfsNode, VfsError> { todo!() }
+    fn sync(&mut self) -> Result<(), VfsError> { self.buffer_cache.lock().flush_all() }
+}
+"#;
+        assert!(check_filesystem_parity_source_contract_text(fat, ext2).is_ok());
+
+        let read_only_fat = fat.replace("with VFS read/write/create/delete/rename support", "read-only v1");
+        assert!(check_filesystem_parity_source_contract_text(&read_only_fat, ext2).is_err());
+
+        let missing_ext2_write = ext2.replace("fn write(&mut self", "fn write_missing(&mut self");
+        assert!(check_filesystem_parity_source_contract_text(fat, &missing_ext2_write).is_err());
     }
 
     #[test]
@@ -4705,7 +5550,13 @@ fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
         fs::read_to_string(&ci_path).map_err(|e| format!("read {}: {e}", ci_path.display()))?;
     let gpu =
         fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
-    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)
+    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
+    check_manifoldpkg_shell_contract(root)?;
+    check_installer_source_contract(root)?;
+    check_ide_completion_source_contract(root)?;
+    check_filesystem_parity_source_contract(root)?;
+    check_cow_source_contract(root)?;
+    check_panic_serial_source_contract(root)
 }
 
 fn check_release_workflow_contract(root: &Path) -> Result<(), String> {
@@ -4974,14 +5825,50 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "remote registry fixture and signed package gate are pending",
-            "README must expose missing ManifoldPkg remote proof",
+            "`signature=ed25519_fixture`",
+            "README must expose signed ManifoldPkg boot fixture proof",
         ),
         (
             "README.md",
             readme,
-            "fixture gate pending before \"full filesystem parity\" claims",
-            "README must expose missing filesystem fixture proof",
+            "`registry_index=ed25519_fixture`",
+            "README must expose signed ManifoldPkg registry index fixture proof",
+        ),
+        (
+            "README.md",
+            readme,
+            "Public remote release channel is still pending",
+            "README must expose missing ManifoldPkg remote release proof",
+        ),
+        (
+            "README.md",
+            readme,
+            "[SECURITY] audit proof",
+            "README must expose audit flush boot proof marker",
+        ),
+        (
+            "README.md",
+            readme,
+            "[MM] cow-proof",
+            "README must expose COW rollback/no-fallback proof marker",
+        ),
+        (
+            "README.md",
+            readme,
+            "`seal`/`seal` is rejected",
+            "README must expose the blocked default credential proof",
+        ),
+        (
+            "README.md",
+            readme,
+            "/var/log/audit.log",
+            "README must expose audit log VFS readback path",
+        ),
+        (
+            "README.md",
+            readme,
+            "Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2",
+            "README must expose filesystem parity source gate before mounted fixture parity is claimed",
         ),
         (
             "README.md",
@@ -5016,7 +5903,7 @@ fn check_doc_claim_contract_text(
         (
             "README.md",
             readme,
-            "hardware dispatch still needs a proof artifact",
+            "Hardware dispatch still needs a proof artifact",
             "README must keep GPU acceleration scoped to unproven hardware dispatch",
         ),
         (
@@ -5178,6 +6065,14 @@ fn check_doc_claim_contract_text(
             "README ManifoldFS benchmark must not fall back to ramfs-only proof",
         ),
         (
+            "Default credentials: `seal` / `seal`",
+            "README must not instruct users to use the blocked default credential",
+        ),
+        (
+            "The default login is `seal`/`seal`",
+            "README must not claim the blocked default credential is accepted",
+        ),
+        (
             "they execute (the GPU doesn't crash)",
             "GPU hardware execution needs a real hardware proof artifact",
         ),
@@ -5231,6 +6126,407 @@ fn check_doc_claim_contract_text(
     }
 
     Ok(())
+}
+
+fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
+    let shell_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("shell.rs");
+    let pkg_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("mod.rs");
+    let carrier_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("carrier.rs");
+    let shell =
+        fs::read_to_string(&shell_path).map_err(|e| format!("read {}: {e}", shell_path.display()))?;
+    let pkg =
+        fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
+    let carrier = fs::read_to_string(&carrier_path)
+        .map_err(|e| format!("read {}: {e}", carrier_path.display()))?;
+    check_manifoldpkg_shell_contract_text(&shell, &pkg, &carrier)
+}
+
+fn check_manifoldpkg_shell_contract_text(
+    shell: &str,
+    pkg: &str,
+    carrier: &str,
+) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "pkg.ends_with(\".eph\")",
+        "self.fs.read_bytes(pkg, self.cwd)",
+        "crate::pkg::GLOBAL_PKG.lock().install_bytes(&data, None)",
+        "crate::pkg::GLOBAL_PKG.lock().install(pkg)",
+        "crate::pkg::GLOBAL_PKG.lock().remove(pkg)",
+        "pkg.list()",
+        "manifest.carrier.name()",
+    ] {
+        if !shell.contains(needle) {
+            findings.push(format!("shell ManifoldPkg path missing `{needle}`"));
+        }
+    }
+    for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
+        if !pkg.contains(needle) {
+            findings.push(format!("ManifoldPkg core missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "CarrierType::Python",
+        "Self::Python",
+        "\"python\" | \"pip\"",
+        "PipCarrier",
+    ] {
+        if pkg.contains(needle) || carrier.contains(needle) {
+            findings.push(format!(
+                "ManifoldPkg core exposes Python/Pip carrier marker `{needle}`"
+            ));
+        }
+    }
+    for needle in [
+        "status=metadata-only",
+        "store_text(&format!(\"{}.pkg\"",
+        "packages are local metadata only",
+        "Stored package manifest",
+    ] {
+        if shell.contains(needle) {
+            findings.push(format!(
+                "shell ManifoldPkg path still contains fake metadata install marker `{needle}`"
+            ));
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_cow_source_contract(root: &Path) -> Result<(), String> {
+    let virt_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("memory")
+        .join("virt.rs");
+    let scheduler_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("process")
+        .join("scheduler.rs");
+    let lib_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("lib.rs");
+    let virt =
+        fs::read_to_string(&virt_path).map_err(|e| format!("read {}: {e}", virt_path.display()))?;
+    let scheduler = fs::read_to_string(&scheduler_path)
+        .map_err(|e| format!("read {}: {e}", scheduler_path.display()))?;
+    let lib =
+        fs::read_to_string(&lib_path).map_err(|e| format!("read {}: {e}", lib_path.display()))?;
+    check_cow_source_contract_text(&virt, &scheduler, &lib)
+}
+
+fn check_cow_source_contract_text(
+    virt: &str,
+    scheduler: &str,
+    lib: &str,
+) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "struct CowCloneRollback",
+        "fn track(&mut self, frame: PhysAddr)",
+        "fn commit(mut self)",
+        "impl Drop for CowCloneRollback",
+        "fn cow_alloc_frame(",
+        "clone_page_table_cow_with_budget",
+        "COW_ROLLBACK_TRACKED_TOTAL",
+        "COW_ROLLBACK_FREED_TOTAL",
+        "rollback.track(",
+        "rollback.commit()",
+        "emit_cow_proof",
+        "[MM] cow-proof version=1",
+    ] {
+        if !virt.contains(needle) {
+            findings.push(format!("COW clone source missing `{needle}`"));
+        }
+    }
+    for needle in [".unwrap_or(parent.page_table)"] {
+        if scheduler.contains(needle) {
+            findings.push(format!(
+                "scheduler still falls back to parent page table after COW clone failure: `{needle}`"
+            ));
+        }
+    }
+    if !lib.contains("memory::virt::emit_cow_proof()") {
+        findings.push(String::from("boot path does not emit COW proof marker"));
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_panic_serial_source_contract(root: &Path) -> Result<(), String> {
+    let serial_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("drivers")
+        .join("serial.rs");
+    let main_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("main.rs");
+    let serial = fs::read_to_string(&serial_path)
+        .map_err(|e| format!("read {}: {e}", serial_path.display()))?;
+    let main = fs::read_to_string(&main_path)
+        .map_err(|e| format!("read {}: {e}", main_path.display()))?;
+    check_panic_serial_source_contract_text(&serial, &main)
+}
+
+fn check_panic_serial_source_contract_text(serial: &str, main: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "pub fn panic_write_byte(byte: u8)",
+        "PANIC_SERIAL_SPIN_LIMIT",
+        "pub fn panic_write_bytes(bytes: &[u8])",
+        "pub fn panic_write_line(line: &str)",
+        "pub fn panic_write_fmt(args: fmt::Arguments)",
+    ] {
+        if !serial.contains(needle) {
+            findings.push(format!("panic serial source missing `{needle}`"));
+        }
+    }
+
+    let panic_start = main
+        .find("#[panic_handler]")
+        .ok_or_else(|| String::from("kernel main missing #[panic_handler]"))?;
+    let panic_body = &main[panic_start..];
+    if panic_body.contains("serial_println!") || panic_body.contains("serial_print!") {
+        findings.push(String::from(
+            "panic handler must not use normal serial formatting macros",
+        ));
+    }
+    for needle in [
+        "panic_write_line(\"!!! SEAL OS KERNEL PANIC !!!\")",
+        "panic_write_fmt(format_args!(\"{}\", info))",
+    ] {
+        if !panic_body.contains(needle) {
+            findings.push(format!("panic handler missing `{needle}`"));
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_installer_source_contract(root: &Path) -> Result<(), String> {
+    let installer_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("installer.rs");
+    let installer = fs::read_to_string(&installer_path)
+        .map_err(|e| format!("read {}: {e}", installer_path.display()))?;
+    check_installer_source_contract_text(&installer)
+}
+
+fn check_installer_source_contract_text(installer: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "fn apply_safe_install(&self) -> bool",
+        "write_file_verified(\"/boot/EFI/BOOT/BOOTX64.EFI\"",
+        "crate::security::passwd::add_user",
+        "crate::security::shadow::auth_shadow_proof",
+        "[INSTALLER] proof version=1 mode=safe_vfs",
+        "raw_gpt=0 raw_format=0",
+    ] {
+        if !installer.contains(needle) {
+            findings.push(format!("installer missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "Would create GPT",
+        "Would format",
+        "Would copy",
+        "Would install",
+        "Installation simulation complete",
+        "SHA-256 hash",
+    ] {
+        if installer.contains(needle) {
+            findings.push(format!(
+                "installer still contains simulation marker `{needle}`"
+            ));
+        }
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_ide_completion_source_contract(root: &Path) -> Result<(), String> {
+    let ide_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("apps")
+        .join("seal_ide.rs");
+    let ide =
+        fs::read_to_string(&ide_path).map_err(|e| format!("read {}: {e}", ide_path.display()))?;
+    check_ide_completion_source_contract_text(&ide)
+}
+
+fn check_ide_completion_source_contract_text(ide: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for needle in [
+        "const COMPLETION_CANDIDATES",
+        "fn completion_suffix_for_line",
+        "fn current_word_prefix",
+        "candidate.starts_with(prefix.as_str())",
+        "return candidate.get(prefix.len()..)",
+        "b'\\t'",
+        "line.insert_str(self.cursor_col, suffix)",
+        "self.cursor_col += suffix.len()",
+        "Tab completes",
+    ] {
+        if !ide.contains(needle) {
+            findings.push(format!("Seal IDE completion missing `{needle}`"));
+        }
+    }
+    for needle in [
+        "AI code completion stub",
+        "completion stub",
+        "stub completion",
+        "TODO completion",
+        "fake completion",
+    ] {
+        if ide.contains(needle) {
+            findings.push(format!(
+                "Seal IDE completion still contains theater marker `{needle}`"
+            ));
+        }
+    }
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
+}
+
+fn check_filesystem_parity_source_contract(root: &Path) -> Result<(), String> {
+    let fat_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("fs")
+        .join("fat.rs");
+    let ext2_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("fs")
+        .join("ext2.rs");
+    let fat =
+        fs::read_to_string(&fat_path).map_err(|e| format!("read {}: {e}", fat_path.display()))?;
+    let ext2 = fs::read_to_string(&ext2_path)
+        .map_err(|e| format!("read {}: {e}", ext2_path.display()))?;
+    check_filesystem_parity_source_contract_text(&fat, &ext2)
+}
+
+fn check_filesystem_parity_source_contract_text(fat: &str, ext2: &str) -> Result<(), String> {
+    let mut findings = Vec::new();
+    for (label, text, needles) in [
+        (
+            "FAT",
+            fat,
+            &[
+                "filesystem driver with VFS read/write/create/delete/rename support",
+                "impl FileSystem for FatFs",
+                "fn read(&self",
+                "fn write(&mut self",
+                "self.write_clusters",
+                "self.write_dir_raw",
+                "fn create(&mut self",
+                "self.add_dir_entry",
+                "fn mkdir(&mut self",
+                "fn unlink(&mut self",
+                "self.free_cluster_chain",
+                "fn rmdir(&mut self",
+                "fn rename(&mut self",
+                "fn readdir(&self",
+                "fn stat(&self",
+            ] as &[&str],
+        ),
+        (
+            "ext2",
+            ext2,
+            &[
+                "impl FileSystem for Ext2Fs",
+                "fn read(&self",
+                "self.read_inode_data",
+                "fn write(&mut self",
+                "self.write_inode_data",
+                "self.write_inode",
+                "fn create(&mut self",
+                "self.allocate_inode",
+                "self.add_dir_entry",
+                "fn mkdir(&mut self",
+                "self.allocate_block",
+                "self.write_disk_block",
+                "fn unlink(&mut self",
+                "self.free_inode_blocks",
+                "self.remove_dir_entry",
+                "fn rmdir(&mut self",
+                "fn rename(&mut self",
+                "fn readdir(&self",
+                "fn stat(&self",
+                "fn sync(&mut self",
+            ] as &[&str],
+        ),
+    ] {
+        for needle in needles {
+            if !text.contains(needle) {
+                findings.push(format!("{label} filesystem parity source missing `{needle}`"));
+            }
+        }
+    }
+
+    for needle in [
+        "read-only v1",
+        "write paths exist; fixture gate pending",
+        "full filesystem parity",
+    ] {
+        if fat.contains(needle) {
+            findings.push(format!("FAT source still contains stale marker `{needle}`"));
+        }
+    }
+
+    if findings.is_empty() {
+        Ok(())
+    } else {
+        Err(findings.join("\n"))
+    }
 }
 
 fn check_aether_migration(root: &Path) -> Result<(), String> {

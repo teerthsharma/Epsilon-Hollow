@@ -8,6 +8,7 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 const COM1: u16 = 0x3F8;
+const PANIC_SERIAL_SPIN_LIMIT: usize = 100_000;
 
 pub static SERIAL: Mutex<SerialPort> = Mutex::new(SerialPort::new(COM1));
 
@@ -70,6 +71,41 @@ impl fmt::Write for SerialPort {
     }
 }
 
+struct PanicSerialPort {
+    base: u16,
+}
+
+impl PanicSerialPort {
+    const fn new(base: u16) -> Self {
+        Self { base }
+    }
+
+    fn write_byte(&self, byte: u8) {
+        unsafe {
+            let mut status_port = Port::<u8>::new(self.base + 5);
+            let mut data_port = Port::<u8>::new(self.base);
+            for _ in 0..PANIC_SERIAL_SPIN_LIMIT {
+                if status_port.read() & 0x20 != 0 {
+                    data_port.write(byte);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Write for PanicSerialPort {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for byte in s.bytes() {
+            if byte == b'\n' {
+                self.write_byte(b'\r');
+            }
+            self.write_byte(byte);
+        }
+        Ok(())
+    }
+}
+
 pub fn init() {
     SERIAL.lock().init();
 }
@@ -79,6 +115,31 @@ pub fn try_read() -> Option<u8> {
     x86_64::instructions::interrupts::without_interrupts(|| {
         SERIAL.lock().try_read_byte()
     })
+}
+
+/// Best-effort emergency write path for panic handling.
+///
+/// This path avoids the normal serial mutex and uses bounded polling, so a
+/// panic cannot recurse or hang forever just because COM1 is unavailable.
+pub fn panic_write_byte(byte: u8) {
+    PanicSerialPort::new(COM1).write_byte(byte);
+}
+
+pub fn panic_write_bytes(bytes: &[u8]) {
+    for &byte in bytes {
+        panic_write_byte(byte);
+    }
+}
+
+pub fn panic_write_line(line: &str) {
+    panic_write_bytes(line.as_bytes());
+    panic_write_bytes(b"\r\n");
+}
+
+pub fn panic_write_fmt(args: fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = PanicSerialPort::new(COM1).write_fmt(args);
+    panic_write_bytes(b"\r\n");
 }
 
 #[macro_export]
