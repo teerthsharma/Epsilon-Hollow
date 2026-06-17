@@ -191,7 +191,7 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
     // -----------------------------------------------------------------------
     // 3. T3 — Betti mesh integrity
     // -----------------------------------------------------------------------
-    let final_triangles = if betti_one_check(&lod_triangles) {
+    let final_triangles = if !lod_triangles.is_empty() && betti_one_check(&lod_triangles) {
         lod_triangles
     } else if let Some(prev) = &state.prev_lod_triangles {
         prev.clone()
@@ -471,11 +471,15 @@ fn compute_lod(mesh: &TopoMesh, camera: &Camera, quality: u8) -> Vec<[u32; 3]> {
         let y2 = vec3_dot(&t2, &up);
 
         let area = ((x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)).abs() * 0.5;
+        // LOD thresholds are expressed in approximate screen-pixel units, not
+        // camera-plane square units. 4096 is a conservative 64x64 reference
+        // surface that keeps quality 2 from collapsing dense proof fixtures.
+        let screen_area_estimate = area * 4096.0;
 
         let avg_deg =
             (degrees[tri[0] as usize] + degrees[tri[1] as usize] + degrees[tri[2] as usize]) as f32
                 / (3.0 * max_degree as f32);
-        let importance = area * (1.0 + avg_deg);
+        let importance = screen_area_estimate * (1.0 + avg_deg);
 
         if importance >= threshold || threshold == 0.0 {
             result.push(*tri);
