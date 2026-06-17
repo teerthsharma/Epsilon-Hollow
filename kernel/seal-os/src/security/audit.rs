@@ -116,12 +116,18 @@ fn flush_audit_log() {
             let size = with_vfs(|vfs| vfs.stat(handle))
                 .map(|n| n.size)
                 .unwrap_or(0);
-            let _ = with_vfs(|vfs| vfs.write(handle, &data, size));
+            if with_vfs(|vfs| vfs.write(handle, &data, size)).is_err() {
+                let mut buf = AUDIT_BUF.lock();
+                buf.extend_from_slice(&data);
+            }
         }
         Err(_) => {
             match with_vfs(|vfs| vfs.create("/var/log/audit.log")) {
                 Ok(handle) => {
-                    let _ = with_vfs(|vfs| vfs.write(handle, &data, 0));
+                    if with_vfs(|vfs| vfs.write(handle, &data, 0)).is_err() {
+                        let mut buf = AUDIT_BUF.lock();
+                        buf.extend_from_slice(&data);
+                    }
                 }
                 Err(_) => {
                     // Re-buffer for next attempt.
@@ -136,6 +142,44 @@ fn flush_audit_log() {
 /// Initialize the audit log subsystem. Safe to call before VFS is ready.
 pub fn init_audit_log() {
     // Directories are created lazily on first flush.
+}
+
+pub fn emit_flush_proof() {
+    let before = AUDIT_BUF.lock().len();
+    let proof_path = "/security/audit-flush-proof";
+    audit_log(AuditEvent::Open {
+        uid: 0,
+        path: String::from(proof_path),
+        perms: String::from("proof"),
+    });
+    flush_audit_log();
+    let after = AUDIT_BUF.lock().len();
+    let vfs_ok = crate::fs::vfs::is_vfs_initialized();
+    let read_ok = crate::fs::vfs::with_vfs(|vfs| {
+        let handle = vfs.lookup_follow("/var/log/audit.log").ok()?;
+        let size = vfs.stat(handle).ok()?.size as usize;
+        let mut buf = alloc::vec![0u8; size.min(4096)];
+        let read = vfs.read(handle, &mut buf, 0).ok()?;
+        let text = core::str::from_utf8(&buf[..read]).ok()?;
+        Some(text.contains("\"event\":\"open\"") && text.contains(proof_path))
+    })
+    .unwrap_or(false);
+    let dirs_ok = crate::fs::vfs::with_vfs(|vfs| {
+        Some(vfs.lookup_follow("/var").is_ok() && vfs.lookup_follow("/var/log").is_ok())
+    })
+    .unwrap_or(false);
+    let flushed = after == 0 && read_ok;
+    let result = if dirs_ok && flushed { "pass" } else { "fail" };
+    crate::serial_println!(
+        "[SECURITY] audit proof version=1 vfs={} dirs={} buffered_before={} buffered_after={} file=/var/log/audit.log readback={} flushed={} result={}",
+        if vfs_ok { 1 } else { 0 },
+        if dirs_ok { 1 } else { 0 },
+        before,
+        after,
+        if read_ok { 1 } else { 0 },
+        if flushed { 1 } else { 0 },
+        result
+    );
 }
 
 #[cfg(any(test, feature = "test-mode"))]

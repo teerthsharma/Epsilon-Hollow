@@ -213,7 +213,9 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     );
     run_topo_ram_hotpath_bench();
     run_allocator_hotpath_bench();
+    run_slab_allocator_bench();
     run_manifold_teleport_bench();
+    run_manifold_lookup_bench();
 
     // Layer 1.1: Bring up application processors (GS base for this_cpu)
     cpu::smp::smp_init();
@@ -379,8 +381,11 @@ fn boot_graphical(fb: &'static Framebuffer) {
         );
     }
     memory::swap::init();
+    memory::virt::emit_cow_proof();
+    security::audit::emit_flush_proof();
     security::passwd::init_passwd();
     security::shadow::shadow_init();
+    security::shadow::emit_auth_shadow_proof();
     security::group::init_group();
 
     // First-boot login screen with mascot splash
@@ -427,8 +432,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
         serial_println!("[LOGIN] Authenticated");
     }
 
-    // Default password reminder (shown every boot for v1)
-    serial_println!("[Lypnos Guard] Default login: seal / seal");
+    serial_println!("[Lypnos Guard] Default password seal/seal is blocked.");
     serial_println!("[Lypnos Guard] Press Ctrl+L to lock files into topological sleep.");
 
     if run_installer {
@@ -507,6 +511,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
     graphics::splash::draw_progress_bar(fb, 40, "");
 
     init_manifold_pkg();
+    pkg::emit_boot_proof();
     graphics::splash::draw_progress_bar(fb, 50, "Network stack");
 
     init_aether_lang();
@@ -1217,6 +1222,152 @@ fn run_allocator_hotpath_bench() {
     );
 }
 
+fn run_slab_allocator_bench() {
+    const ITERS: usize = 64;
+    const CLASSES: [usize; 6] = [64, 128, 256, 512, 1024, 2048];
+    const MAX_PROBE_ALLOCS: usize = 256;
+
+    let stats_before = memory::slab::stats();
+    let free_before = memory::phys::free_count();
+    let mut refill_ok = 0usize;
+    let mut reuse_ok = 0usize;
+    let mut free_ok = 0usize;
+
+    for &size in &CLASSES {
+        let refill_before = memory::slab::stats().refill_pages;
+        let mut ptrs = [core::ptr::null_mut::<u8>(); MAX_PROBE_ALLOCS];
+        let mut count = 0usize;
+
+        while count < MAX_PROBE_ALLOCS {
+            let ptr = unsafe { memory::slab::slab_alloc(size) };
+            if ptr.is_null() {
+                break;
+            }
+            ptrs[count] = ptr;
+            count += 1;
+            if memory::slab::stats().refill_pages > refill_before {
+                refill_ok += 1;
+                break;
+            }
+        }
+
+        for &ptr in ptrs.iter().take(count) {
+            unsafe {
+                memory::slab::slab_free(ptr, size);
+            }
+        }
+        if count != 0 {
+            free_ok += 1;
+        }
+
+        let hits_before = memory::slab::stats().free_list_hits;
+        let reuse_ptr = unsafe { memory::slab::slab_alloc(size) };
+        let hits_after = memory::slab::stats().free_list_hits;
+        if !reuse_ptr.is_null() && hits_after > hits_before {
+            reuse_ok += 1;
+            unsafe {
+                memory::slab::slab_free(reuse_ptr, size);
+            }
+        }
+    }
+
+    let free_after_refill = memory::phys::free_count();
+
+    let mut realloc_ok = 0usize;
+    let grow_src = unsafe { memory::slab::slab_alloc(128) };
+    let grow_dst = unsafe { memory::slab::slab_alloc(256) };
+    if !grow_src.is_null() && !grow_dst.is_null() {
+        unsafe {
+            for i in 0..128 {
+                *grow_src.add(i) = i as u8;
+            }
+            core::ptr::copy_nonoverlapping(grow_src, grow_dst, 128);
+            if (0..128).all(|i| *grow_dst.add(i) == i as u8) {
+                realloc_ok += 1;
+            }
+            memory::slab::slab_free(grow_dst, 256);
+            memory::slab::slab_free(grow_src, 128);
+        }
+    }
+
+    let shrink_src = unsafe { memory::slab::slab_alloc(256) };
+    let shrink_dst = unsafe { memory::slab::slab_alloc(64) };
+    if !shrink_src.is_null() && !shrink_dst.is_null() {
+        unsafe {
+            for i in 0..64 {
+                *shrink_src.add(i) = (255 - i) as u8;
+            }
+            core::ptr::copy_nonoverlapping(shrink_src, shrink_dst, 64);
+            if (0..64).all(|i| *shrink_dst.add(i) == (255 - i) as u8) {
+                realloc_ok += 1;
+            }
+            memory::slab::slab_free(shrink_dst, 64);
+            memory::slab::slab_free(shrink_src, 256);
+        }
+    }
+
+    let mut samples = [0u64; ITERS];
+    let mut ok = 0usize;
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let size = CLASSES[idx % CLASSES.len()];
+        let before = read_desktop_soak_cycles();
+        let ptr = unsafe { memory::slab::slab_alloc(size) };
+        if !ptr.is_null() {
+            unsafe {
+                *ptr = idx as u8;
+                memory::slab::slab_free(ptr, size);
+            }
+            ok += 1;
+        }
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+    }
+
+    for i in 1..ITERS {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let stats_after = memory::slab::stats();
+    let free_after_reuse = memory::phys::free_count();
+    let p50_cycles = samples[ITERS / 2];
+    let p95_cycles = samples[(ITERS * 95 / 100).min(ITERS - 1)];
+    let max_cycles = samples[ITERS - 1];
+    serial_println!(
+        "[BENCH] slab-alloc iterations={} ok={} classes={} refill_ok={} reuse_ok={} free_ok={} realloc_ok={} p50_cycles={} p95_cycles={} max_cycles={} refill_pages_delta={} free_list_hits_delta={} alloc_calls_delta={} free_calls_delta={} free_before={} free_after_refill={} free_after_reuse={}",
+        ITERS,
+        ok,
+        CLASSES.len(),
+        refill_ok,
+        reuse_ok,
+        free_ok,
+        realloc_ok,
+        p50_cycles,
+        p95_cycles,
+        max_cycles,
+        stats_after
+            .refill_pages
+            .saturating_sub(stats_before.refill_pages),
+        stats_after
+            .free_list_hits
+            .saturating_sub(stats_before.free_list_hits),
+        stats_after
+            .alloc_calls
+            .saturating_sub(stats_before.alloc_calls),
+        stats_after
+            .free_calls
+            .saturating_sub(stats_before.free_calls),
+        free_before,
+        free_after_refill,
+        free_after_reuse
+    );
+}
+
 fn run_topo_ram_hotpath_bench() {
     const ITERS: usize = 64;
     let mut samples = [0u64; ITERS];
@@ -1386,6 +1537,94 @@ fn run_manifold_teleport_bench() {
     );
 }
 
+fn run_manifold_lookup_bench() {
+    const SAMPLES: usize = 64;
+    const PAYLOAD_BYTES: usize = 64;
+    const MOCK_BLOCK_SECTORS: usize = 4096;
+
+    let mut samples = [0u64; SAMPLES];
+    let mut ok = 0usize;
+    let mut components_max = 0usize;
+    let mut dirhash_probes_total_max = 0usize;
+    let mut dirhash_probes_max = 0usize;
+    let mut dirhash_probe_bound = 0usize;
+    let payload = [0x35u8; PAYLOAD_BYTES];
+    let mut fs = fs::manifold_fs::ManifoldFS::new_with_mock_store(MOCK_BLOCK_SECTORS);
+    let root = fs.root_id();
+    let bench = match fs.mkdir("bench", root) {
+        Ok(id) => id,
+        Err(_) => root,
+    };
+    let hot = match fs.mkdir("hot", bench) {
+        Ok(id) => id,
+        Err(_) => bench,
+    };
+    let leaf = match fs.mkdir("leaf", hot) {
+        Ok(id) => id,
+        Err(_) => hot,
+    };
+
+    for i in 0..SAMPLES {
+        let name = alloc::format!("f{}", i);
+        let _ = fs.store(name.as_str(), &payload, leaf);
+    }
+
+    for (idx, sample) in samples.iter_mut().enumerate() {
+        let path = alloc::format!("/bench/hot/leaf/f{}", idx);
+        let before = read_desktop_soak_cycles();
+        let proof = fs.resolve_path_with_proof(path.as_str());
+        let after = read_desktop_soak_cycles();
+        *sample = after.saturating_sub(before);
+
+        if let Ok(proof) = proof {
+            if proof.inode_id != root && proof.components == 4 {
+                ok += 1;
+            }
+            components_max = components_max.max(proof.components);
+            dirhash_probes_total_max = dirhash_probes_total_max.max(proof.dirhash_probes);
+            dirhash_probes_max = dirhash_probes_max.max(proof.dirhash_probes_max);
+            dirhash_probe_bound = dirhash_probe_bound.max(proof.dirhash_probe_bound);
+        }
+    }
+
+    for i in 1..SAMPLES {
+        let value = samples[i];
+        let mut j = i;
+        while j > 0 && samples[j - 1] > value {
+            samples[j] = samples[j - 1];
+            j -= 1;
+        }
+        samples[j] = value;
+    }
+
+    let result = if ok == SAMPLES
+        && components_max == 4
+        && dirhash_probes_max <= dirhash_probe_bound
+        && dirhash_probe_bound > 0
+    {
+        "pass"
+    } else {
+        "fail"
+    };
+
+    serial_println!(
+        "[BENCH] manifold-lookup api=resolve_path_with_proof fs_mode=mock_block fixture=dirhash_path_walk samples={} ok={} entries={} path_depth={} components_max={} payload_bytes={} dirhash_probes_total_max={} dirhash_probes_max={} dirhash_probe_bound={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+        SAMPLES,
+        ok,
+        SAMPLES,
+        4,
+        components_max,
+        PAYLOAD_BYTES,
+        dirhash_probes_total_max,
+        dirhash_probes_max,
+        dirhash_probe_bound,
+        samples[SAMPLES / 2],
+        samples[(SAMPLES * 95 / 100).min(SAMPLES - 1)],
+        samples[SAMPLES - 1],
+        result
+    );
+}
+
 fn run_scheduler_select_bench() {
     const ITERS: usize = 64;
     let mut samples = [0u64; ITERS];
@@ -1542,6 +1781,8 @@ fn boot_serial() {
     if let Err(e) = fs::init_vfs() {
         serial_println!("[WARN] VFS init failed: {:?}", e);
     }
+    security::audit::emit_flush_proof();
+    pkg::emit_boot_proof();
     memory::swap::init();
     init_usb();
     init_prefetch();
@@ -1768,6 +2009,8 @@ fn init_drivers() {
     serial_println!("[BOOT] driver init: xhci done");
     net::init();
     run_tcp_packet_demux_bench();
+    run_tcp_roundtrip_bench();
+    run_tls_encrypt_bench();
     serial_println!("[BOOT] driver init: net done");
 }
 
@@ -1816,6 +2059,81 @@ fn run_tcp_packet_demux_bench() {
         if proof.exact_scan { 1 } else { 0 },
         if proof.cleanup_ok { "ok" } else { "leak" }
     );
+}
+
+#[cfg(not(test))]
+fn run_tcp_roundtrip_bench() {
+    net::tcp::reset_for_benchmark();
+    let proof = net::tcp::loopback_echo_fixture_proof();
+    let result = proof.established == proof.connections
+        && proof.client_tx == proof.connections * proof.payload_bytes
+        && proof.server_rx == proof.client_tx
+        && proof.server_echo == proof.client_tx
+        && proof.client_rx == proof.client_tx
+        && proof.listener_accept == proof.connections
+        && proof.exact_flow == proof.connections
+        && proof.listener_index_hit == proof.connections
+        && proof.client_index_hit == proof.connections
+        && proof.cleanup_ok;
+    serial_println!(
+        "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections={} established={} payload_bytes={} client_tx={} server_rx={} server_echo={} client_rx={} listener_accept={} exact_flow={} listener_index_hit={} client_index_hit={} index_lookup_probes_max={} index_probe_bound={} cleanup={} result={}",
+        proof.connections,
+        proof.established,
+        proof.payload_bytes,
+        proof.client_tx,
+        proof.server_rx,
+        proof.server_echo,
+        proof.client_rx,
+        proof.listener_accept,
+        proof.exact_flow,
+        proof.listener_index_hit,
+        proof.client_index_hit,
+        proof.index_lookup_probes_max,
+        proof.index_probe_bound,
+        if proof.cleanup_ok { "ok" } else { "leak" },
+        if result { "pass" } else { "fail" }
+    );
+}
+
+#[cfg(not(test))]
+fn run_tls_encrypt_bench() {
+    const PAYLOAD_BYTES: usize = 1024;
+    let payload = [0x5Au8; PAYLOAD_BYTES];
+    let before = read_desktop_soak_cycles();
+    let proof = drivers::net::tls::TlsSession::benchmark_psk_record_roundtrip(&payload);
+    let after = read_desktop_soak_cycles();
+    let cycles = after.saturating_sub(before);
+
+    match proof {
+        Ok(proof) => {
+            let result = proof.plaintext_bytes == PAYLOAD_BYTES
+                && proof.record_bytes == PAYLOAD_BYTES + proof.tag_bytes + 5
+                && proof.tag_bytes == 16
+                && proof.decrypt_match
+                && proof.write_seq == 1
+                && proof.read_seq == 1;
+            serial_println!(
+                "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes={} record_bytes={} tag_bytes={} decrypt_match={} write_seq={} read_seq={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+                proof.plaintext_bytes,
+                proof.record_bytes,
+                proof.tag_bytes,
+                if proof.decrypt_match { 1 } else { 0 },
+                proof.write_seq,
+                proof.read_seq,
+                cycles,
+                cycles,
+                cycles,
+                if result { "pass" } else { "fail" }
+            );
+        }
+        Err(_) => serial_println!(
+            "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes={} record_bytes=0 tag_bytes=16 decrypt_match=0 write_seq=0 read_seq=0 p50_cycles={} p95_cycles={} max_cycles={} result=fail",
+            PAYLOAD_BYTES,
+            cycles,
+            cycles,
+            cycles
+        ),
+    }
 }
 
 #[cfg(not(test))]

@@ -14,14 +14,14 @@
 
 1. **Aether-Lang cannot self-host** — needs bootstrap compiler, richer stdlib, build system integration
 2. **Not faster than Linux** — Ubuntu artifact missing, side-by-side harness incomplete
-3. **Not production-secure** — KPTI boot selftest pending, no X.509/TLS, no security audit
+3. **Not production-secure** — KPTI, audit flush, and blocked `seal`/`seal` credential boot gates exist; no X.509/TLS PKI/ECDHE, KASLR, or external security audit
 4. **GPU not proven hardware compute** — shader stubs need real GCN ISA, hardware dispatch proof missing
 5. **No browser** — no HTML parser, DOM, CSS, JS, or renderer
 6. **Not self-hosting build** — needs Aether-Lang cross-compiler to break Linux/Windows/macOS dependency
 7. **Legacy host wrappers remain** — scripts/ and host Python still outside runtime path
-8. **Package manager remote registry pending** — `.eph` remote fetch + signed gate missing
+8. **Package manager public registry pending** — `.eph` package and registry index fixtures are gated with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; hosted public release channel remains missing
 9. **Installer lacks GPT/formatting** — UI exists, no raw block write path
-10. **FAT/ext2 fixture gates missing** — write paths exist, no comprehensive parity tests
+10. **FAT/ext2 mounted fixture parity pending** — read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are `--check-doc-claim-contract` gated; byte-for-byte mounted fixture images still need coverage
 11. **Kernel modules framework missing** — everything built-in, no LKM ABI
 12. **WiFi/Bluetooth simulated** — acceptable as vendor IP, but state machines need real firmware path docs
 
@@ -108,7 +108,7 @@
 **Goal:** Make the benchmark harness produce rigorous, reproducible comparisons against Linux on identical hardware.  
 **Independence:** New files in `.benchmarks/` and additive bench code.
 
-- [ ] **Step 1: Create `.benchmarks/harness.py`** — Python harness (acceptable as host-side tool) that boots Seal OS in QEMU and Ubuntu in QEMU side-by-side, runs identical workloads, collects `rdtsc` and wall-clock metrics.
+- [ ] **Step 1: Create a Rust `.benchmarks/harness` runner** — Boots Seal OS in QEMU and Ubuntu in QEMU side-by-side, runs identical workloads, collects `rdtsc` and wall-clock metrics.
 - [ ] **Step 2: Define 5 standard workloads** — `alloc_stress`, `file_walk`, `context_switch`, `syscall_loop`, `tcp_echo`.
 - [ ] **Step 3: Add `kernel/seal-os/src/bench/external_harness.rs`** — Serial protocol for harness to inject benchmark commands and read JSON results from Seal OS serial.
 - [ ] **Step 4: Commit**
@@ -159,11 +159,11 @@
 **Goal:** Produce a runnable security audit suite that checks ASLR, seccomp, KPTI, SMAP/SMEP, stack canaries, and reports JSON.  
 **Independence:** New `tests/security/` directory and additive audit code.
 
-- [ ] **Step 1: Create `tests/security/audit_suite.py`** — Host-side runner that launches Seal OS in QEMU and runs security probes via serial.
+- [ ] **Step 1: Create a Rust `tests/security-audit` host runner** — Launch Seal OS in QEMU and run security probes via serial without Python.
 - [ ] **Step 2: Add `kernel/seal-os/src/security/audit_runtime.rs`** — Kernel-side runtime that responds to audit probes: report ASLR entropy bits, seccomp filter count, KPTI status.
-- [ ] **Step 3: Create `tests/security/test_aslr.py`** — Verifies mmap base shifts across 10 runs.
-- [ ] **Step 4: Create `tests/security/test_seccomp.py`** — Verifies seccomp kills forbidden syscalls.
-- [ ] **Step 5: Create `tests/security/test_kpti.py`** — Verifies user-mode cannot read kernel pages.
+- [ ] **Step 3: Add Rust ASLR probe tests** — Verifies mmap base shifts across 10 runs.
+- [ ] **Step 4: Add Rust seccomp probe tests** — Verifies seccomp kills forbidden syscalls.
+- [ ] **Step 5: Add Rust KPTI probe tests** — Verifies user-mode cannot read kernel pages.
 - [ ] **Step 6: Update `CRYPTO_AUDIT.md` and `THREAT_MODEL.md`** with completed status.
 - [ ] **Step 7: Commit**
 
@@ -180,7 +180,7 @@
 - [ ] **Step 1: Create `kernel/seal-os/src/drivers/gpu/shaders/voronoi.cl`** — OpenCL C implementing spherical Voronoi computation.
 - [ ] **Step 2: Create `kernel/seal-os/src/drivers/gpu/shaders/jl_project.cl`** — OpenCL C implementing Johnson-Lindenstrauss projection.
 - [ ] **Step 3: Create `kernel/seal-os/src/drivers/gpu/shaders/spectral_contract.cl`** — OpenCL C implementing spectral contraction.
-- [ ] **Step 4: Create `scripts/compile_shaders.py`** — Host-side script using ROCm/LLVM to compile `.cl` → `.bin` (GCN ISA binaries) at build time.
+- [ ] **Step 4: Create `tools/compile-shaders` Rust CLI** — Host-side tool using ROCm/LLVM to compile `.cl` → `.bin` (GCN ISA binaries) at build time.
 - [ ] **Step 5: Replace stub arrays in `pm4.rs`** with `include_bytes!()` of compiled `.bin` files.
 - [ ] **Step 6: Commit**
 
@@ -191,7 +191,7 @@
 **Independence:** New files only.
 
 - [ ] **Step 1: Create `kernel/seal-os/src/drivers/gpu/dispatch.rs`** — Hardware dispatch ring management: map PM4 ring, submit compute packet, wait for completion interrupt.
-- [ ] **Step 2: Create `tests/gpu/test_amd_compute.py`** — Host-side test that runs Seal OS on AMD GPU hardware (or QEMU with GPU passthrough), submits compute job, reads back result.
+- [ ] **Step 2: Create `tests/gpu-amd-compute` Rust runner** — Host-side test that runs Seal OS on AMD GPU hardware (or QEMU with GPU passthrough), submits compute job, reads back result.
 - [ ] **Step 3: Add `[GPU-BENCH]` serial sentinel** — Seal OS prints `[GPU-BENCH] voronoi result=OK cycles=<n>` after hardware dispatch.
 - [ ] **Step 4: Update `NVIDIA_4060_TEST_PLAN.md`** → rename to `GPU_TEST_PLAN.md`, add AMD test matrix.
 - [ ] **Step 5: Commit**
@@ -314,13 +314,16 @@
 
 ### Stream 23: Installer GPT Partitioning + Formatting
 **Agent:** Installer-Agent  
-**Scope:** `userspace/installer/src/partition.rs` (create), `userspace/installer/src/format.rs` (create)  
+**Scope:** `kernel/seal-os/src/apps/installer.rs`, future raw block helpers under the kernel installer path
 **Goal:** Make the Installer UI actually write GPT partitions and format FAT/ext2/ManifoldFS on raw block devices.  
-**Independence:** New files in existing `userspace/installer/`.
+**Independence:** Installer UI path plus future raw block helpers.
+
+**Current bridge:** Kernel Installer now has a real safe VFS install proof path, not old "would install" theater. It writes the boot marker, home directory, profile file, passwd entry, and shadow-auth proof, then emits `[INSTALLER] proof version=1 mode=safe_vfs ... result=pass`. Use `seal-mkimage --check-installer-proof <installer.log>` to reject simulation-only logs. The remaining cliff is raw disk GPT/format/boot-after-install.
 
 - [ ] **Step 1: Create `userspace/installer/src/partition.rs`** — GPT header creation, partition entry writing, protective MBR.
 - [ ] **Step 2: Create `userspace/installer/src/format.rs`** — `mkfs.fat` equivalent, `mkfs.ext2` equivalent, ManifoldFS superblock init.
-- [ ] **Step 3: Wire into Installer UI** — When user clicks "Install", write GPT, create Seal OS partition, format it, copy kernel + EFI.
+- [x] **Step 3a: Wire safe install proof into Installer UI** — When user clicks "Install", perform safe VFS writes and emit the install proof.
+- [ ] **Step 3b: Wire raw disk install into Installer UI** — Write GPT, create Seal OS partition, format it, copy kernel + EFI to a selected block device.
 - [ ] **Step 4: Test** — Run installer in QEMU on blank disk, verify bootable afterwards.
 - [ ] **Step 5: Commit**
 

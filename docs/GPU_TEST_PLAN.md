@@ -231,7 +231,7 @@ Steps 1–4 are documented in `kernel/seal-os/src/drivers/gpu/nvidia.rs` as stub
 | Display Core Next (DCN) | ❌ Blocked | Requires signed SMU firmware |
 | UVD/VCN video engines | ❌ Blocked | Requires firmware blobs |
 
-**Bottom line:** Seal OS can run a real compute kernel on AMD hardware and verify the output. This is a **proof artifact**, not a full OpenCL/ROCm stack.
+**Bottom line:** Seal OS has the PM4/ring/scanner plan for AMD compute, but the current gated proof is still CPU fallback correctness. A hardware `[GPU-BENCH]` artifact with real checked-in shader blobs must exist before this document can claim AMD execution.
 
 ### 6.2 Test Matrix
 
@@ -241,7 +241,7 @@ Steps 1–4 are documented in `kernel/seal-os/src/drivers/gpu/nvidia.rs` as stub
 | L2 | Firmware scanner | Boot Seal OS, watch serial | `[FWSCAN] AMD 1002:xxxx — compute=true sdma=true` |
 | L3 | Ring init | Boot Seal OS with AMD GPU | `[COMPUTE] Ring buffer initialised: phys=... size=... DW` |
 | L4 | Hardware dispatch | Boot Seal OS with AMD GPU | `[GPU-BENCH] voronoi result=OK cycles=<n>` |
-| L5 | QEMU passthrough | `test_amd_compute.py --gpu-bdf ...` | `pytest` reports PASS |
+| L5 | QEMU passthrough | `cargo run --manifest-path tests/gpu-amd-compute/Cargo.toml -- --gpu-bdf ...` | Rust runner reports PASS |
 
 ### 6.3 QEMU AMD Passthrough Steps
 
@@ -260,7 +260,7 @@ Steps 1–4 are documented in `kernel/seal-os/src/drivers/gpu/nvidia.rs` as stub
 2. **Run host test:**
    ```bash
    cd Epsilon-Hollow
-   pytest tests/gpu/test_amd_compute.py --gpu-bdf 0000:0a:00.0
+   cargo run --manifest-path tests/gpu-amd-compute/Cargo.toml -- --gpu-bdf 0000:0a:00.0
    ```
 
 3. **Expected output:**

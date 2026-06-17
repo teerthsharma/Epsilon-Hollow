@@ -916,6 +916,23 @@ pub struct TcpPacketFixtureProof {
     pub cleanup_ok: bool,
 }
 
+pub struct TcpRoundTripProof {
+    pub connections: usize,
+    pub established: usize,
+    pub payload_bytes: usize,
+    pub client_tx: usize,
+    pub server_rx: usize,
+    pub server_echo: usize,
+    pub client_rx: usize,
+    pub listener_accept: usize,
+    pub exact_flow: usize,
+    pub listener_index_hit: usize,
+    pub client_index_hit: usize,
+    pub index_lookup_probes_max: usize,
+    pub index_probe_bound: usize,
+    pub cleanup_ok: bool,
+}
+
 pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     const PAYLOAD: &[u8] = b"tick";
 
@@ -1083,6 +1100,183 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         accepted_state,
         cleanup_ok,
     }
+}
+
+pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
+    const CONNECTIONS: usize = 8;
+    const PAYLOAD_BYTES: usize = 64;
+    let client_ip = crate::net::IpAddr::V4([127, 0, 0, 1]);
+    let server_ip = crate::net::IpAddr::V4([127, 0, 0, 1]);
+
+    let mut proof = TcpRoundTripProof {
+        connections: CONNECTIONS,
+        established: 0,
+        payload_bytes: PAYLOAD_BYTES,
+        client_tx: 0,
+        server_rx: 0,
+        server_echo: 0,
+        client_rx: 0,
+        listener_accept: 0,
+        exact_flow: 0,
+        listener_index_hit: 0,
+        client_index_hit: 0,
+        index_lookup_probes_max: 0,
+        index_probe_bound: TCP_FLOW_INDEX_MAX_PROBES,
+        cleanup_ok: true,
+    };
+
+    for conn in 0..CONNECTIONS {
+        let server_port = 49_200u16 + conn as u16;
+        let client_port = 40_200u16 + conn as u16;
+        let client_seq = 10_000u32 + (conn as u32 * 1_000);
+        let server_seq = 1_000u32;
+        let base_len = {
+            let mut sockets = TCP_SOCKETS.lock();
+            let base_len = sockets.len();
+
+            let mut listener = TcpSocket::new(server_port);
+            listener.listen();
+
+            let mut client = TcpSocket::new(client_port);
+            client.remote_ip = server_ip;
+            client.remote_port = server_port;
+            client.state = TcpState::SynSent;
+            client.seq_num = client_seq;
+
+            sockets.push(listener);
+            sockets.push(client);
+            if let Some(sock) = sockets.get(base_len) {
+                index_listener_socket(base_len, sock);
+            }
+            if let Some(sock) = sockets.get(base_len + 1) {
+                index_exact_flow_socket(base_len + 1, sock);
+            }
+            base_len
+        };
+
+        let syn = make_tcp_packet(client_port, server_port, FLAG_SYN, client_seq, 0, &[]);
+        handle_tcp_packet(client_ip, &syn);
+        let listener_proof = tcp_listener_index_proof();
+        if listener_proof.hit {
+            proof.listener_index_hit += 1;
+        }
+        proof.index_lookup_probes_max = proof
+            .index_lookup_probes_max
+            .max(listener_proof.probes);
+
+        poll();
+        let Some(accepted_idx) = accept(base_len) else {
+            proof.cleanup_ok &= cleanup_tcp_fixture(base_len);
+            continue;
+        };
+        proof.listener_accept += 1;
+
+        let syn_ack = make_tcp_packet(
+            server_port,
+            client_port,
+            FLAG_SYN | FLAG_ACK,
+            server_seq,
+            client_seq + 1,
+            &[],
+        );
+        handle_tcp_packet(server_ip, &syn_ack);
+        let client_syn_ack_proof = tcp_flow_index_proof();
+        proof.index_lookup_probes_max = proof
+            .index_lookup_probes_max
+            .max(client_syn_ack_proof.probes);
+
+        let ack = make_tcp_packet(
+            client_port,
+            server_port,
+            FLAG_ACK,
+            client_seq + 1,
+            server_seq + 1,
+            &[],
+        );
+        handle_tcp_packet(client_ip, &ack);
+
+        let payload = loopback_payload(conn);
+        let data = make_tcp_packet(
+            client_port,
+            server_port,
+            FLAG_ACK | FLAG_PSH,
+            client_seq + 1,
+            server_seq + 1,
+            &payload,
+        );
+        handle_tcp_packet(client_ip, &data);
+        let server_data_proof = tcp_flow_index_proof();
+        if server_data_proof.hit {
+            proof.exact_flow += 1;
+        }
+        proof.index_lookup_probes_max = proof
+            .index_lookup_probes_max
+            .max(server_data_proof.probes);
+        proof.client_tx += payload.len();
+
+        let mut server_buf = [0u8; PAYLOAD_BYTES];
+        let server_rx = recv(accepted_idx, &mut server_buf);
+        proof.server_rx += server_rx;
+
+        let echo = make_tcp_packet(
+            server_port,
+            client_port,
+            FLAG_ACK | FLAG_PSH,
+            server_seq + 1,
+            client_seq + 1 + payload.len() as u32,
+            &server_buf[..server_rx],
+        );
+        handle_tcp_packet(server_ip, &echo);
+        let client_echo_proof = tcp_flow_index_proof();
+        if client_echo_proof.hit {
+            proof.client_index_hit += 1;
+        }
+        proof.index_lookup_probes_max = proof
+            .index_lookup_probes_max
+            .max(client_echo_proof.probes);
+        proof.server_echo += server_rx;
+
+        let mut client_buf = [0u8; PAYLOAD_BYTES];
+        let client_rx = recv(base_len + 1, &mut client_buf);
+        proof.client_rx += client_rx;
+
+        if state(base_len + 1) == TcpState::Established
+            && state(accepted_idx) == TcpState::Established
+            && server_rx == PAYLOAD_BYTES
+            && client_rx == PAYLOAD_BYTES
+            && server_buf[..server_rx] == payload[..]
+            && client_buf[..client_rx] == payload[..]
+        {
+            proof.established += 1;
+        }
+
+        proof.cleanup_ok &= cleanup_tcp_fixture(base_len);
+    }
+
+    proof
+}
+
+fn loopback_payload(conn: usize) -> [u8; 64] {
+    let mut payload = [0u8; 64];
+    for (idx, byte) in payload.iter_mut().enumerate() {
+        *byte = (conn as u8).wrapping_mul(17).wrapping_add(idx as u8);
+    }
+    payload
+}
+
+fn cleanup_tcp_fixture(base_len: usize) -> bool {
+    let mut sockets = TCP_SOCKETS.lock();
+    let mut idx = base_len;
+    while idx < sockets.len() {
+        if let Some(sock) = sockets.get(idx) {
+            remove_exact_flow_socket(idx, sock);
+            remove_listener_socket(idx, sock);
+        }
+        idx += 1;
+    }
+    sockets.truncate(base_len);
+    PENDING_SYN_QUEUE.lock().clear();
+    sockets.len() == base_len
 }
 
 fn make_tcp_packet(
@@ -1481,6 +1675,29 @@ mod tests {
         assert_eq!(proof.listener_index_capacity, TCP_LISTENER_INDEX_BUCKETS);
         assert!(!proof.exact_scan);
         assert_eq!(proof.accepted_state, TcpState::Established);
+        assert!(proof.cleanup_ok);
+        assert!(TCP_SOCKETS.lock().is_empty());
+    }
+
+    #[test]
+    fn loopback_echo_fixture_proves_roundtrip_and_cleanup() {
+        reset_tcp_for_test();
+
+        let proof = loopback_echo_fixture_proof();
+
+        assert_eq!(proof.connections, 8);
+        assert_eq!(proof.established, proof.connections);
+        assert_eq!(proof.payload_bytes, 64);
+        assert_eq!(proof.client_tx, proof.connections * proof.payload_bytes);
+        assert_eq!(proof.server_rx, proof.client_tx);
+        assert_eq!(proof.server_echo, proof.client_tx);
+        assert_eq!(proof.client_rx, proof.client_tx);
+        assert_eq!(proof.listener_accept, proof.connections);
+        assert_eq!(proof.exact_flow, proof.connections);
+        assert_eq!(proof.listener_index_hit, proof.connections);
+        assert_eq!(proof.client_index_hit, proof.connections);
+        assert!(proof.index_lookup_probes_max > 0);
+        assert!(proof.index_lookup_probes_max <= proof.index_probe_bound);
         assert!(proof.cleanup_ok);
         assert!(TCP_SOCKETS.lock().is_empty());
     }

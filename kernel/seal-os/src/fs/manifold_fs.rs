@@ -637,6 +637,34 @@ impl ManifoldFS {
         Ok(current)
     }
 
+    pub fn resolve_path_with_proof(&self, path: &str) -> Result<PathLookupProof, FsError> {
+        let mut current = self.root_id;
+        let mut components = 0usize;
+        let mut dirhash_probes = 0usize;
+        let mut dirhash_probes_max = 0usize;
+        let mut dirhash_probe_bound = 0usize;
+
+        for part in path.split('/').filter(|s| !s.is_empty()) {
+            components += 1;
+            let (next, probe) = self.dirs.lookup_with_probe(current, part);
+            dirhash_probes += probe.probes;
+            dirhash_probes_max = dirhash_probes_max.max(probe.probes);
+            dirhash_probe_bound = dirhash_probe_bound.max(probe.probe_bound);
+            if !probe.found {
+                return Err(FsError::NotFound);
+            }
+            current = next.ok_or(FsError::NotFound)?;
+        }
+
+        Ok(PathLookupProof {
+            inode_id: current,
+            components,
+            dirhash_probes,
+            dirhash_probes_max,
+            dirhash_probe_bound,
+        })
+    }
+
     fn update_prefetch_state(&mut self, accessed: &ManifoldPayload) {
         if accessed.points.is_empty() {
             return;
@@ -821,6 +849,12 @@ impl ManifoldFS {
         let inode_id = self.dirs.lookup(dir_id, name)?;
         let inode = self.inodes.get(inode_id)?;
         String::from_utf8(inode.data.clone()).ok()
+    }
+
+    pub fn read_bytes(&self, name: &str, dir_id: u64) -> Option<Vec<u8>> {
+        let inode_id = self.dirs.lookup(dir_id, name)?;
+        let inode = self.inodes.get(inode_id)?;
+        Some(inode.data.clone())
     }
 
     pub fn file_info(&self, name: &str, dir_id: u64) -> Option<String> {
@@ -1393,6 +1427,15 @@ pub struct TeleportResult {
     pub governor_epsilon: f64,
     pub metadata_ops: u64,
     pub persistence_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathLookupProof {
+    pub inode_id: u64,
+    pub components: usize,
+    pub dirhash_probes: usize,
+    pub dirhash_probes_max: usize,
+    pub dirhash_probe_bound: usize,
 }
 
 #[derive(Debug, Clone)]

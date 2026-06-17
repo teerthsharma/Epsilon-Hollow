@@ -35,8 +35,8 @@ impl<'a> Write for BufWriter<'a> {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    seal_os::serial_println!("!!! SEAL OS KERNEL PANIC !!!");
-    seal_os::serial_println!("{}", info);
+    seal_os::drivers::serial::panic_write_line("!!! SEAL OS KERNEL PANIC !!!");
+    seal_os::drivers::serial::panic_write_fmt(format_args!("{}", info));
 
     if let Some(fb) = seal_os::framebuffer() {
         // Fill screen red
