@@ -41,7 +41,7 @@ const ThoughtItem = memo(function ThoughtItem({ thought }: { thought: string }) 
 )});
 
 export default function ChatInterface() {
-    const { messages, sendMessage, isLearning, pulseType, thoughts } = useApeiron();
+    const { messages, sendMessage, isLearning, pulseType, thoughts, tunnelStatus } = useApeiron();
     const [input, setInput] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -135,15 +135,16 @@ export default function ChatInterface() {
                         <input
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
-                            placeholder="Inject knowledge into the kernel..."
+                            placeholder={tunnelStatus !== 'LOCKED' ? "Reconnecting to kernel..." : "Inject knowledge into the kernel..."}
                             aria-label="Message input"
-                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white"
+                            disabled={tunnelStatus !== 'LOCKED'}
+                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white disabled:opacity-50 disabled:cursor-not-allowed"
                         />
                         <button
                             type="submit"
-                            disabled={!input.trim()}
-                            aria-label={!input.trim() ? "Cannot send empty message" : "Send message"}
-                            title={!input.trim() ? "Enter a message to send" : "Send message"}
+                            disabled={tunnelStatus !== 'LOCKED' || !input.trim()}
+                            aria-label={tunnelStatus !== 'LOCKED' ? "Waiting for connection" : !input.trim() ? "Cannot send empty message" : "Send message"}
+                            title={tunnelStatus !== 'LOCKED' ? "Waiting for kernel connection..." : !input.trim() ? "Enter a message to send" : "Send message"}
                             className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
                         >
                             <Send size={20} />
