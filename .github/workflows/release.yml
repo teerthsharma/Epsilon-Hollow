@@ -94,6 +94,55 @@ jobs:
           chmod +x scripts/build_iso.sh
           scripts/build_iso.sh
 
+      - name: Boot release ISO in QEMU and capture serial output
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          timeout 240 qemu-system-x86_64 \
+            -machine q35 \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -cdrom seal-os.iso \
+            -boot d \
+            -nographic \
+            -m 4G \
+            -no-reboot \
+            -no-shutdown 2>&1 | tee /tmp/seal-os-release-iso.log
+          QEMU_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$QEMU_STATUS" -ne 0 ] && [ "$QEMU_STATUS" -ne 124 ]; then
+            echo "FAIL: ISO QEMU exited with status $QEMU_STATUS"
+            exit "$QEMU_STATUS"
+          fi
+
+      - name: Verify release ISO boot proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG=/tmp/seal-os-release-iso.log
+          EXPECTED_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          check() {
+            if ! grep -q "$1" "$LOG"; then
+              echo "FAIL: missing ISO boot marker: $2 ($1)"
+              exit 1
+            fi
+            echo "PASS: $2"
+          }
+          check "UEFI boot complete" "UEFI boot"
+          check "Seal OS ${EXPECTED_TAG}" "release banner"
+          check "No persistent disk found. Falling back to ramfs." "live ISO ramfs fallback"
+          check "All T1-T10 theorems VERIFIED" "theorem gates"
+          check "\\[BENCH\\] topo-render-3d .*result=pass" "topological render benchmark"
+          check "\\[BENCH\\] tensor-render .*result=pass" "tensor render benchmark"
+          check "\\[GFX\\] desktop-live-proof .*result=pass" "desktop live input proof"
+          check "\\[BOOT\\] Seal OS desktop ready." "desktop ready"
+          check "Entering real event loop" "event loop"
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log "$LOG"
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-aether-runtime "$LOG"
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-laamba-app-proof "$LOG"
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-desktop-soak "$LOG"
+          cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log "$LOG"
+
       - name: Check release workflow contract
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-release-workflow-contract .
 
@@ -171,6 +220,7 @@ jobs:
         run: |
           mkdir -p release-proof
           cp /tmp/seal-os-release.log release-proof/serial.log
+          cp /tmp/seal-os-release-iso.log release-proof/iso-serial.log
           cp /tmp/seal-os-screen.log release-proof/screen-serial.log
           cp /tmp/seal-os-screen.ppm release-proof/screen.ppm
           cp kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.efi release-proof/seal-os.efi
@@ -179,6 +229,7 @@ jobs:
           cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-current-proof-manifest release-proof/proof-manifest.txt .
           {
             echo "QEMU serial and captured desktop pixel proof passed for this release image."
+            echo "QEMU ISO boot proof passed for seal-os.iso with live ramfs fallback, desktop, runtime, and benchmark gates."
             echo "Not an any-VM, hardware-GPU, or Ubuntu-superiority proof."
             echo "Proof gates: VM, theorem, Aether runtime, LAAMBA app proof, desktop soak, captured proof-screen pixels, proof manifest provenance, benchmark, doc claims, runtime theorems, Seal ABI, language hygiene, Aether migration, O(1) allocator, and O(1) TCP demux indexes."
           } > release-proof/proof-summary.txt
@@ -188,6 +239,7 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img \
             seal-os.iso \
             release-proof/serial.log \
+            release-proof/iso-serial.log \
             release-proof/screen.ppm \
             release-proof/proof-manifest.txt \
             release-proof/proof-summary.txt \
@@ -215,6 +267,7 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/iso-serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
@@ -231,6 +284,7 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/iso-serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
@@ -244,6 +298,7 @@ jobs:
 
             ### Release proof
             - VM proof, theorem proof, Aether runtime proof, LAAMBA app proof, desktop live input proof, desktop soak, and benchmark proof ran against `release-proof/serial.log`.
+            - ISO boot proof ran against `release-proof/iso-serial.log`, proving `seal-os.iso` reaches desktop/event loop with live ramfs fallback plus theorem, Aether, LAAMBA, desktop, and benchmark gates.
             - Captured QEMU framebuffer pixels in `release-proof/screen.ppm` passed `seal-mkimage --check-proof-screen`.
             - `release-proof/proof-manifest.txt` passed `seal-mkimage --check-current-proof-manifest`, binding image, EFI, serial log, screen PPM, commit, and clean/dirty state.
             - Source gates ran for doc claims, runtime theorems, Seal ABI/no-POSIX discipline, language hygiene, Aether migration, O(1) allocator hot path, and O(1) TCP demux indexes.
@@ -279,6 +334,7 @@ jobs:
             kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os-efi.img
             seal-os.iso
             release-proof/serial.log
+            release-proof/iso-serial.log
             release-proof/screen-serial.log
             release-proof/screen.ppm
             release-proof/proof-manifest.txt
@@ -298,6 +354,7 @@ jobs:
             - `seal-os.efi`
             - `seal-os-efi.img`
             - `serial.log`
+            - `iso-serial.log`
             - `screen-serial.log`
             - `screen.ppm`
             - `proof-manifest.txt`
@@ -309,6 +366,9 @@ jobs:
             QEMU framebuffer pixels in `screen.ppm` passed `seal-mkimage
             --check-proof-screen`. The proof manifest passed `seal-mkimage
             --check-current-proof-manifest`.
+            The ISO boot proof in `iso-serial.log` proves `seal-os.iso` reaches
+            desktop/event loop with live ramfs fallback plus theorem, Aether,
+            LAAMBA, desktop, and benchmark gates.
 
             ### Run it
             ```bash
