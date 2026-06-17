@@ -146,7 +146,9 @@ pub unsafe fn parse_madt(madt_phys: u64) {
             2 => {
                 // Interrupt Source Override — parsed but not stored.
             }
-            _ => {}
+            _ => {
+                // Unknown MADT entry type; skip
+            }
         }
 
         offset += entry_len;

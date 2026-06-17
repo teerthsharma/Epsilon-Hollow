@@ -94,7 +94,9 @@ impl Installer {
             STEP_USER => self.render_user(fb),
             STEP_INSTALL => self.render_install(fb),
             STEP_DONE => self.render_done(fb),
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 
@@ -121,7 +123,9 @@ impl Installer {
             } => {
                 return self.handle_click();
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
         false
     }
@@ -355,7 +359,9 @@ impl Installer {
                         self.confirm_len -= 1;
                     }
                 }
-                _ => {}
+                _ => {
+                // Unhandled input; no-op
+            }
             },
             0x09 => {
                 self.active_field = (self.active_field + 1) % 3;
@@ -379,9 +385,13 @@ impl Installer {
                         self.confirm_len += 1;
                     }
                 }
-                _ => {}
+                _ => {
+                // Unhandled input; no-op
+            }
             },
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 
@@ -469,7 +479,9 @@ impl Installer {
                     interrupts::reboot();
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
         false
     }

@@ -418,7 +418,9 @@ fn parse_dynamic_link_info(
             DT_RELA => info.rela_addr = val,
             DT_RELASZ => info.rela_size = val,
             DT_RELAENT => info.rela_ent = val.max(24),
-            _ => {}
+            _ => {
+                // Unknown dynamic tag; skip per ELF spec
+            }
         }
     }
 

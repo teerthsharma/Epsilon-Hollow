@@ -155,7 +155,9 @@ pub fn process_packet(frame: &[u8]) {
                 }
             }
         }
-        _ => {}
+        _ => {
+            // Unknown ethertype (not ARP, IPv4, or IPv6); drop silently
+        }
     }
 }
 

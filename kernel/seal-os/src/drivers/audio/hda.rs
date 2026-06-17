@@ -346,16 +346,14 @@ impl HdaController {
     }
 }
 
-static mut HDA_CTRL: Option<HdaController> = None;
+static HDA_CTRL: spin::Mutex<Option<HdaController>> = spin::Mutex::new(None);
 
 pub fn init() -> Option<()> {
     let mut ctrl = HdaController::probe()?;
     match ctrl.reset_and_init() {
         Ok(()) => {
             serial_println!("[HDA] Initialized and stream ready");
-            unsafe {
-                HDA_CTRL = Some(ctrl);
-            }
+            *HDA_CTRL.lock() = Some(ctrl);
             Some(())
         }
         Err(e) => {
@@ -369,8 +367,5 @@ pub fn with_hda<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut HdaController) -> R,
 {
-    unsafe {
-        let ptr = core::ptr::addr_of_mut!(HDA_CTRL);
-        (*ptr).as_mut().map(f)
-    }
+    HDA_CTRL.lock().as_mut().map(f)
 }

@@ -299,23 +299,22 @@ impl BlockDevice for UsbMassStorage {
 }
 
 // Global MSC device storage
-static mut USB_MSC: Option<UsbMassStorage> = None;
+static USB_MSC: spin::Mutex<Option<UsbMassStorage>> = spin::Mutex::new(None);
 
 /// Register a newly enumerated USB mass storage device.
 pub fn register_device(slot_id: u8, bulk_in: u8, bulk_out: u8, max_packet: u16) {
-    unsafe {
-        if USB_MSC.is_some() {
-            serial_println!("[MSC] Device already registered; ignoring new device");
-            return;
-        }
-        serial_println!(
-            "[MSC] Registering slot={} in={:02X} out={:02X}",
-            slot_id,
-            bulk_in,
-            bulk_out
-        );
-        USB_MSC = Some(UsbMassStorage::new(slot_id, bulk_in, bulk_out, max_packet));
+    let mut guard = USB_MSC.lock();
+    if guard.is_some() {
+        serial_println!("[MSC] Device already registered; ignoring new device");
+        return;
     }
+    serial_println!(
+        "[MSC] Registering slot={} in={:02X} out={:02X}",
+        slot_id,
+        bulk_in,
+        bulk_out
+    );
+    *guard = Some(UsbMassStorage::new(slot_id, bulk_in, bulk_out, max_packet));
 }
 
 /// Access the global MSC device.
@@ -323,7 +322,7 @@ pub fn with_usb_msc<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut UsbMassStorage) -> R,
 {
-    unsafe { USB_MSC.as_mut().map(f) }
+    USB_MSC.lock().as_mut().map(f)
 }
 
 /// Initialize the MSC subsystem (call after xHCI is ready).
@@ -333,18 +332,19 @@ pub fn init() {
 
 /// Poll: initialize any pending MSC device and register it as a block device.
 pub fn poll() {
-    unsafe {
-        if let Some(ref mut msc) = USB_MSC.as_mut() {
-            if msc.initialized() {
-                return;
-            }
-            if let Err(e) = msc.init() {
-                serial_println!("[MSC] Init failed: {}", e);
-                return;
-            }
-            let msc_ref: &'static UsbMassStorage = USB_MSC.as_ref().unwrap();
-            crate::drivers::block::register_block_device(1, msc_ref);
-            serial_println!("[MSC] Registered as block device 1");
+    let mut guard = USB_MSC.lock();
+    if let Some(msc) = guard.as_mut() {
+        if msc.initialized() {
+            return;
         }
+        if let Err(e) = msc.init() {
+            serial_println!("[MSC] Init failed: {}", e);
+            return;
+        }
+        // Register as block device by leaking a reference (block device registry copies data)
+        let msc_ptr: *mut UsbMassStorage = msc as *mut _;
+        let msc_ref: &'static UsbMassStorage = unsafe { &*msc_ptr };
+        crate::drivers::block::register_block_device(1, msc_ref);
+        serial_println!("[MSC] Registered as block device 1");
     }
 }

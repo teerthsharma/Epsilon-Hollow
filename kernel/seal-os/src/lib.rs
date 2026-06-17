@@ -104,9 +104,10 @@ fn pin_kernel_static_page_range(name: &str, ptr: *const u8, len: usize) {
 /// that memory may be re-allocated and overwritten.  We copy it here before
 /// any frame allocations can clobber it.
 #[cfg(not(test))]
-static mut BOOT_INFO: core::mem::MaybeUninit<BootInfo> = core::mem::MaybeUninit::uninit();
+static BOOT_INFO: spin::Once<BootInfo> = spin::Once::new();
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Live governor epsilon value (stored as u64 bits).
@@ -145,11 +146,8 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 
     // Copy boot_info into static storage before the physical allocator can
     // re-use the UEFI stack pages that hold the original.
-    let info = unsafe {
-        let ptr = core::ptr::addr_of_mut!(BOOT_INFO).cast::<BootInfo>();
-        core::ptr::write(ptr, *info);
-        &*ptr
-    };
+    BOOT_INFO.call_once(|| *info);
+    let info = BOOT_INFO.get().expect("BOOT_INFO not initialized");
 
     // Layer 1: Memory
     unsafe {
@@ -245,7 +243,7 @@ pub fn kernel_main(info: &BootInfo) -> ! {
 /// Must not be inlined so the `jmp` target has a stable address.
 #[inline(never)]
 extern "C" fn kernel_main_continue() -> ! {
-    let info = unsafe { &*core::ptr::addr_of!(BOOT_INFO).cast::<BootInfo>() };
+    let info = BOOT_INFO.get().expect("BOOT_INFO not initialized");
     // Layer 1.2: ACPI (needed for SMP APIC discovery)
     drivers::acpi::init(info);
     serial_println!(
@@ -329,6 +327,7 @@ extern "C" fn kernel_main_continue() -> ! {
         }
 
         graphics::topo_render::init();
+        run_topological_render_benches();
 
         if let Some(fb) = crate::FRAMEBUFFER.get() {
             serial_println!("[BOOT] Framebuffer available — graphical mode");
@@ -667,10 +666,14 @@ fn boot_graphical(fb: &'static Framebuffer) {
                             frame_dirty = true;
                             continue;
                         }
-                        _ => {}
+                        _ => {
+                            // Unhandled key code in Ctrl+key chord
+                        }
                     }
                 }
-                _ => {}
+                _ => {
+                    // Unhandled event type (not keyboard)
+                }
             }
 
             if !wm::desktop::handle_input(event, fb, &mut compositor, &mut app_state) {
@@ -1171,6 +1174,240 @@ fn run_desktop_soak_probe(
 #[inline]
 fn read_desktop_soak_cycles() -> u64 {
     unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+#[cfg(not(test))]
+fn run_topological_render_benches() {
+    run_topo_render_3d_bench();
+    run_tensor_render_bench();
+    graphics::topo_render::init();
+}
+
+#[cfg(not(test))]
+fn run_topo_render_3d_bench() {
+    const ROWS: usize = 17;
+    const COLS: usize = 33;
+    const TRIANGLES: usize = (ROWS - 1) * (COLS - 1) * 2;
+    const WIDTH: u32 = 256;
+    const HEIGHT: u32 = 256;
+
+    let mesh = build_topo_render_grid_mesh(ROWS, COLS);
+    let mut window = wm::window::Window::new(900, "Topo Render Bench", 0, 0, WIDTH, HEIGHT);
+    clear_window_client(&mut window, 0);
+    graphics::topo_render::init();
+    graphics::topo_render::with_render_state(|state| {
+        state.quality_level = 2;
+    });
+    graphics::topo_render::set_camera(graphics::topo_render::Camera {
+        position: [0.0, 1.8, 5.0],
+        look_at: [0.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+        fov_deg: 60.0,
+        near: 0.1,
+        far: 100.0,
+    });
+
+    let before = read_desktop_soak_cycles();
+    graphics::topo_render::render_mesh(&mesh, &mut window);
+    let after = read_desktop_soak_cycles();
+    let cycles = after.saturating_sub(before);
+    let (nonblack_px, sample_hash) = scan_window_client(&window);
+    let result = mesh.vertices.len() == ROWS * COLS
+        && mesh.triangles.len() == TRIANGLES
+        && nonblack_px > 0
+        && sample_hash != 0
+        && cycles > 0;
+
+    serial_println!(
+        "[BENCH] topo-render-3d api=topo_render::render_mesh fixture=grid_1024 quality=2 vertices={} triangles={} window={}x{} nonblack_px={} sample_hash={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+        mesh.vertices.len(),
+        mesh.triangles.len(),
+        WIDTH,
+        HEIGHT,
+        nonblack_px,
+        sample_hash,
+        cycles,
+        cycles,
+        cycles,
+        if result { "pass" } else { "fail" }
+    );
+}
+
+#[cfg(not(test))]
+fn run_tensor_render_bench() {
+    const ROWS: usize = 100;
+    const COLS: usize = 100;
+    const WIDTH: u32 = 220;
+    const HEIGHT: u32 = 180;
+
+    let csv = build_tensor_csv_fixture(ROWS, COLS);
+    let before = read_desktop_soak_cycles();
+    let tensor = ml_engine::tensor_viz::parse_csv(&csv);
+    let points = ml_engine::tensor_viz::tensor_to_point_cloud(&tensor);
+    let tensor_mesh =
+        ml_engine::tensor_viz::point_cloud_to_mesh_grid(&points, &tensor.data, ROWS, COLS);
+
+    let mut window = wm::window::Window::new(901, "Tensor Render Bench", 0, 0, WIDTH, HEIGHT);
+    clear_window_client(&mut window, 0);
+    graphics::topo_render::init();
+    graphics::topo_render::with_render_state(|state| {
+        state.quality_level = 0;
+    });
+    graphics::topo_render::set_camera(graphics::topo_render::Camera {
+        position: [0.0, 2.5, 4.0],
+        look_at: [0.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+        fov_deg: 60.0,
+        near: 0.1,
+        far: 100.0,
+    });
+    graphics::topo_render::render_mesh(&tensor_mesh.mesh, &mut window);
+    let after = read_desktop_soak_cycles();
+    let cycles = after.saturating_sub(before);
+    let (nonblack_px, sample_hash) = scan_window_client(&window);
+    let result = tensor.shape.len() == 2
+        && tensor.shape[0] == ROWS
+        && tensor.shape[1] == COLS
+        && tensor.data.len() == ROWS * COLS
+        && points.len() == ROWS * COLS
+        && tensor_mesh.mesh.triangles.len() == (ROWS - 1) * (COLS - 1) * 2
+        && nonblack_px > 0
+        && sample_hash != 0
+        && cycles > 0;
+
+    serial_println!(
+        "[BENCH] tensor-render api=tensor_viz_pipeline fixture=csv_100x100 quality=0 rows={} cols={} elements={} points={} triangles={} window={}x{} csv_bytes={} nonblack_px={} sample_hash={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
+        tensor.shape.get(0).copied().unwrap_or(0),
+        tensor.shape.get(1).copied().unwrap_or(0),
+        tensor.data.len(),
+        points.len(),
+        tensor_mesh.mesh.triangles.len(),
+        WIDTH,
+        HEIGHT,
+        csv.len(),
+        nonblack_px,
+        sample_hash,
+        cycles,
+        cycles,
+        cycles,
+        if result { "pass" } else { "fail" }
+    );
+}
+
+#[cfg(not(test))]
+fn build_topo_render_grid_mesh(rows: usize, cols: usize) -> graphics::topo_render::TopoMesh {
+    let mut vertices = Vec::with_capacity(rows * cols);
+    let mut normals = Vec::with_capacity(rows * cols);
+    let mut spherical_embedding = Vec::with_capacity(rows * cols);
+    let mut vertex_colors = Vec::with_capacity(rows * cols);
+    let mut bbox = graphics::topo_render::BoundingBox {
+        min: [f32::MAX, f32::MAX, f32::MAX],
+        max: [f32::MIN, f32::MIN, f32::MIN],
+    };
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = if cols > 1 {
+                (2.0 * col as f32 / (cols - 1) as f32) - 1.0
+            } else {
+                0.0
+            };
+            let z = if rows > 1 {
+                (2.0 * row as f32 / (rows - 1) as f32) - 1.0
+            } else {
+                0.0
+            };
+            let y = 0.25 * libm::sinf(x * core::f32::consts::PI * 2.0)
+                * libm::cosf(z * core::f32::consts::PI * 2.0);
+            let vertex = [x, y, z];
+            for axis in 0..3 {
+                if vertex[axis] < bbox.min[axis] {
+                    bbox.min[axis] = vertex[axis];
+                }
+                if vertex[axis] > bbox.max[axis] {
+                    bbox.max[axis] = vertex[axis];
+                }
+            }
+            vertices.push(vertex);
+            normals.push([0.0, 1.0, 0.0]);
+            let mut emb = [0u16; 32];
+            for (idx, cell) in emb.iter_mut().enumerate() {
+                *cell = ((row * 131 + col * 17 + idx * 257) & 0xffff) as u16;
+            }
+            spherical_embedding.push(emb);
+            vertex_colors.push(0x00A0D0);
+        }
+    }
+
+    let mut triangles = Vec::with_capacity((rows - 1) * (cols - 1) * 2);
+    for row in 0..rows - 1 {
+        for col in 0..cols - 1 {
+            let a = (row * cols + col) as u32;
+            let b = (row * cols + col + 1) as u32;
+            let c = ((row + 1) * cols + col) as u32;
+            let d = ((row + 1) * cols + col + 1) as u32;
+            triangles.push([a, b, c]);
+            triangles.push([b, d, c]);
+        }
+    }
+
+    graphics::topo_render::TopoMesh {
+        vertices,
+        triangles,
+        normals,
+        spherical_embedding,
+        bbox,
+        vertex_colors,
+    }
+}
+
+#[cfg(not(test))]
+fn build_tensor_csv_fixture(rows: usize, cols: usize) -> String {
+    let mut csv = String::with_capacity(rows * cols * 2);
+    for row in 0..rows {
+        for col in 0..cols {
+            let digit = b'0' + ((row + col) % 10) as u8;
+            csv.push(digit as char);
+            if col + 1 < cols {
+                csv.push(',');
+            }
+        }
+        csv.push('\n');
+    }
+    csv
+}
+
+#[cfg(not(test))]
+fn clear_window_client(window: &mut wm::window::Window, color: u32) {
+    let cw = window.client_width();
+    let ch = window.client_height();
+    for y in 0..ch {
+        for x in 0..cw {
+            window.set_client_pixel(x, y, color);
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn scan_window_client(window: &wm::window::Window) -> (usize, u64) {
+    let mut nonblack = 0usize;
+    let mut hash = 0xcbf29ce484222325u64;
+    let cw = window.client_width();
+    let ch = window.client_height();
+    for y in 0..ch {
+        for x in 0..cw {
+            let bx = x + wm::window::BORDER_WIDTH;
+            let by = y + wm::window::TITLE_BAR_HEIGHT;
+            let color = window.buffer[(by * window.width + bx) as usize] & 0x00ff_ffff;
+            if color != 0 {
+                nonblack += 1;
+                hash ^= color as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+                hash ^= ((x as u64) << 32) ^ y as u64;
+            }
+        }
+    }
+    (nonblack, hash)
 }
 
 fn run_allocator_hotpath_bench() {

@@ -163,7 +163,9 @@ impl SealIde {
                     self.cursor_col += 1;
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 
@@ -233,7 +235,9 @@ impl SealIde {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

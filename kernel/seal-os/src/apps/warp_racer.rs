@@ -72,7 +72,9 @@ impl WarpRacer {
             b's' | 0x50 => self.ship_y = (self.ship_y + 8).min(self.height as i32 - SHIP_H as i32),
             b'a' | 0x4B => self.ship_x = (self.ship_x - 8).max(0),
             b'd' | 0x4D => self.ship_x = (self.ship_x + 8).min(self.width as i32 - SHIP_W as i32),
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

@@ -169,7 +169,9 @@ impl DirHash {
                     self.len += 1;
                     return;
                 }
-                _ => {}
+                Bucket::Occupied { .. } => {
+                    // Occupied bucket with hash collision; continue probing
+                }
             }
             idx = (idx + 1) & self.cap_mask;
         }

@@ -175,7 +175,9 @@ pub fn poll() {
             dhcp_discover();
             *DHCP_STATE.lock() = DhcpState::Discover;
         }
-        _ => {}
+        DhcpState::Discover | DhcpState::Request | DhcpState::Bound => {
+            // No action required in these states during poll
+        }
     }
 }
 
@@ -278,7 +280,9 @@ pub fn handle_dhcp_packet(pkt: &[u8]) {
             1 => subnet.copy_from_slice(&pkt[i..i + 4]),
             3 => router.copy_from_slice(&pkt[i..i + 4]),
             6 => dns.copy_from_slice(&pkt[i..i + 4]),
-            _ => {}
+            _ => {
+                // Unknown DHCP option; skip per RFC 2131
+            }
         }
         i += len;
     }
@@ -320,7 +324,12 @@ pub fn handle_dhcp_packet(pkt: &[u8]) {
                 );
             }
         }
-        _ => {}
+        DhcpState::Init => {
+            // Unexpected response in Init state; ignore
+        }
+        DhcpState::Bound => {
+            // Already bound; ignore duplicate ACKs
+        }
     }
 }
 

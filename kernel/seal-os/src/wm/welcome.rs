@@ -199,7 +199,9 @@ impl WelcomeScreen {
                     return true;
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
         false
     }

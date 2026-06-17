@@ -196,7 +196,9 @@ impl AppState {
                 match special {
                     SpecialKey::Up => self.terminal.key_press(0x48),
                     SpecialKey::Down => self.terminal.key_press(0x50),
-                    _ => {}
+                    _ => {
+                // Unhandled input; no-op
+            }
                 }
             } else {
                 let ch = scancode_to_char(scancode);
@@ -373,7 +375,9 @@ impl AppState {
             9 => self.dirty[9] = true,
             10 => self.dirty[10] = true,
             11 => self.dirty[11] = true,
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

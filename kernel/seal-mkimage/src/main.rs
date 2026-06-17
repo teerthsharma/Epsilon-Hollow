@@ -1020,6 +1020,8 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "[BENCH] tcp-packet-demux",
         "[BENCH] tcp-roundtrip",
         "[BENCH] tls-encrypt",
+        "[BENCH] topo-render-3d",
+        "[BENCH] tensor-render",
         "[GPU-BENCH] suite",
         "[Aether-Lang] runtime proof:",
         "[LAAMBA] app proof:",
@@ -1342,6 +1344,8 @@ fn check_benchmark_text(text: &str) -> Result<(), String> {
     parse_tcp_packet_demux_benchmark(text)?;
     parse_tcp_roundtrip_benchmark(text)?;
     parse_tls_encrypt_benchmark(text)?;
+    parse_topo_render_3d_benchmark(text)?;
+    parse_tensor_render_benchmark(text)?;
     parse_gpu_topology_benchmark(text)?;
     Ok(())
 }
@@ -1974,6 +1978,94 @@ fn parse_tls_encrypt_benchmark(text: &str) -> Result<(), String> {
     if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
         return Err(format!(
             "TLS encrypt cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_topo_render_3d_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] topo-render-3d")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let quality = parse_metric(line, "quality=")?;
+    let vertices = parse_metric(line, "vertices=")?;
+    let triangles = parse_metric(line, "triangles=")?;
+    let window = parse_field(line, "window=")?;
+    let nonblack_px = parse_metric(line, "nonblack_px=")?;
+    let sample_hash = parse_metric(line, "sample_hash=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "topo_render::render_mesh" || fixture != "grid_1024" {
+        return Err(format!(
+            "3D render benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if quality != 2 || vertices != 561 || triangles != 1024 || window != "256x256" {
+        return Err(format!(
+            "3D render benchmark fixture invalid: quality={quality}, vertices={vertices}, triangles={triangles}, window={window}"
+        ));
+    }
+    if nonblack_px == 0 || sample_hash == 0 || result != "pass" {
+        return Err(format!(
+            "3D render output proof failed: nonblack_px={nonblack_px}, sample_hash={sample_hash}, result={result}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "3D render cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
+        ));
+    }
+    Ok(())
+}
+
+fn parse_tensor_render_benchmark(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[BENCH] tensor-render")?;
+    let api = parse_field(line, "api=")?;
+    let fixture = parse_field(line, "fixture=")?;
+    let quality = parse_metric(line, "quality=")?;
+    let rows = parse_metric(line, "rows=")?;
+    let cols = parse_metric(line, "cols=")?;
+    let elements = parse_metric(line, "elements=")?;
+    let points = parse_metric(line, "points=")?;
+    let triangles = parse_metric(line, "triangles=")?;
+    let window = parse_field(line, "window=")?;
+    let csv_bytes = parse_metric(line, "csv_bytes=")?;
+    let nonblack_px = parse_metric(line, "nonblack_px=")?;
+    let sample_hash = parse_metric(line, "sample_hash=")?;
+    let p50 = parse_metric(line, "p50_cycles=")?;
+    let p95 = parse_metric(line, "p95_cycles=")?;
+    let max = parse_metric(line, "max_cycles=")?;
+    let result = parse_field(line, "result=")?;
+
+    if api != "tensor_viz_pipeline" || fixture != "csv_100x100" {
+        return Err(format!(
+            "tensor render benchmark identifies wrong path: api={api}, fixture={fixture}"
+        ));
+    }
+    if quality != 0
+        || rows != 100
+        || cols != 100
+        || elements != rows * cols
+        || points != elements
+        || triangles != (rows - 1) * (cols - 1) * 2
+        || window != "220x180"
+        || csv_bytes < elements
+    {
+        return Err(format!(
+            "tensor render benchmark fixture invalid: quality={quality}, rows={rows}, cols={cols}, elements={elements}, points={points}, triangles={triangles}, window={window}, csv_bytes={csv_bytes}"
+        ));
+    }
+    if nonblack_px == 0 || sample_hash == 0 || result != "pass" {
+        return Err(format!(
+            "tensor render output proof failed: nonblack_px={nonblack_px}, sample_hash={sample_hash}, result={result}"
+        ));
+    }
+    if p50 == 0 || p95 == 0 || max == 0 || p50 > p95 || p95 > max {
+        return Err(format!(
+            "tensor render cycle metrics invalid: p50={p50}, p95={p95}, max={max}"
         ));
     }
     Ok(())
@@ -3198,6 +3290,8 @@ mod tests {
     const TCP_PACKET_DEMUX_LOG: &str = "[BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=1 index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=1 listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok\n";
     const TCP_ROUNDTRIP_LOG: &str = "[BENCH] tcp-roundtrip api=tcp_loopback_echo_fixture fixture=loopback_echo connections=8 established=8 payload_bytes=64 client_tx=512 server_rx=512 server_echo=512 client_rx=512 listener_accept=8 exact_flow=8 listener_index_hit=8 client_index_hit=8 index_lookup_probes_max=4 index_probe_bound=256 cleanup=ok result=pass\n";
     const TLS_ENCRYPT_LOG: &str = "[BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=900 p95_cycles=900 max_cycles=900 result=pass\n";
+    const TOPO_RENDER_3D_LOG: &str = "[BENCH] topo-render-3d api=topo_render::render_mesh fixture=grid_1024 quality=2 vertices=561 triangles=1024 window=256x256 nonblack_px=1200 sample_hash=42 p50_cycles=1000 p95_cycles=1000 max_cycles=1000 result=pass\n";
+    const TENSOR_RENDER_LOG: &str = "[BENCH] tensor-render api=tensor_viz_pipeline fixture=csv_100x100 quality=0 rows=100 cols=100 elements=10000 points=10000 triangles=19602 window=220x180 csv_bytes=20000 nonblack_px=2400 sample_hash=99 p50_cycles=2000 p95_cycles=2000 max_cycles=2000 result=pass\n";
     const GPU_TOPOLOGY_BENCH_LOG: &str = "\
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software accelerator=cpu_fallback hardware_dispatch=0 shader_used=0 shader_status=placeholder_ok_not_claimed warmup=4 iterations=32 kernels=3 status=begin
 [GPU-BENCH] kernel=voronoi_assign mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_points=64 n_cells=8 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=2 download_ok=1 verify=pass reference=cpu_recompute checked=64 mismatches=0 invalid_ids=0 checksum=12345 first_cell=0 avg_cycles=100
@@ -3752,6 +3846,8 @@ gate_benchmark_log=ok\n",
             TCP_PACKET_DEMUX_LOG,
             TCP_ROUNDTRIP_LOG,
             TLS_ENCRYPT_LOG,
+            TOPO_RENDER_3D_LOG,
+            TENSOR_RENDER_LOG,
             GPU_TOPOLOGY_BENCH_LOG,
         ]
         .concat()
@@ -4032,6 +4128,8 @@ gate_proof_screen=ok
             r"\[BENCH\] tcp-packet-demux",
             r"\[BENCH\] tcp-roundtrip",
             r"\[BENCH\] tls-encrypt",
+            r"\[BENCH\] topo-render-3d",
+            r"\[BENCH\] tensor-render",
             r"\[GPU-BENCH\] suite",
             r"\[Aether-Lang\] runtime proof:",
             r"\[LAAMBA\] app proof:",
@@ -4325,9 +4423,42 @@ with:
     }
 
     #[test]
+    fn parses_topo_render_3d_benchmark() {
+        assert!(parse_topo_render_3d_benchmark(TOPO_RENDER_3D_LOG).is_ok());
+
+        let wrong_api =
+            TOPO_RENDER_3D_LOG.replace("api=topo_render::render_mesh", "api=draw_fake");
+        assert!(parse_topo_render_3d_benchmark(&wrong_api).is_err());
+
+        let wrong_triangles = TOPO_RENDER_3D_LOG.replace("triangles=1024", "triangles=512");
+        assert!(parse_topo_render_3d_benchmark(&wrong_triangles).is_err());
+
+        let blank = TOPO_RENDER_3D_LOG.replace("nonblack_px=1200", "nonblack_px=0");
+        assert!(parse_topo_render_3d_benchmark(&blank).is_err());
+    }
+
+    #[test]
+    fn parses_tensor_render_benchmark() {
+        assert!(parse_tensor_render_benchmark(TENSOR_RENDER_LOG).is_ok());
+
+        let wrong_fixture =
+            TENSOR_RENDER_LOG.replace("fixture=csv_100x100", "fixture=demo_16x16");
+        assert!(parse_tensor_render_benchmark(&wrong_fixture).is_err());
+
+        let wrong_shape = TENSOR_RENDER_LOG.replace("rows=100", "rows=16");
+        assert!(parse_tensor_render_benchmark(&wrong_shape).is_err());
+
+        let wrong_mesh = TENSOR_RENDER_LOG.replace("triangles=19602", "triangles=512");
+        assert!(parse_tensor_render_benchmark(&wrong_mesh).is_err());
+
+        let blank = TENSOR_RENDER_LOG.replace("sample_hash=99", "sample_hash=0");
+        assert!(parse_tensor_render_benchmark(&blank).is_err());
+    }
+
+    #[test]
     fn benchmark_log_requires_gpu_topology_proof() {
         let no_gpu = format!(
-            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{TLS_ENCRYPT_LOG}"
+            "{ALLOC_PROOF_LOG}{TOPORAM_ALLOC_LOG}{SEAL_ALLOC_LOG}{SLAB_ALLOC_LOG}{MANIFOLD_TELEPORT_LOG}{MANIFOLD_LOOKUP_LOG}{SCHEDULER_SELECT_LOG}{TCP_PACKET_DEMUX_LOG}{TCP_ROUNDTRIP_LOG}{TLS_ENCRYPT_LOG}{TOPO_RENDER_3D_LOG}{TENSOR_RENDER_LOG}"
         );
 
         assert!(check_benchmark_text(&no_gpu).is_err());

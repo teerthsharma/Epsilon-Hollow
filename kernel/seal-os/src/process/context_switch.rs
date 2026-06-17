@@ -23,8 +23,11 @@ pub const KERNEL_STACK_SIZE: usize = 256 * 1024;
 #[repr(align(64))]
 struct AlignedXsaveArea([u8; XSAVE_MAX_SIZE + 64]);
 
-static mut EMERGENCY_XSAVE_AREAS: [AlignedXsaveArea; 2] =
-    [AlignedXsaveArea([0; XSAVE_MAX_SIZE + 64]); 2];
+struct SyncUnsafeCell<T>(core::cell::UnsafeCell<T>);
+unsafe impl<T> Sync for SyncUnsafeCell<T> {}
+
+static EMERGENCY_XSAVE_AREAS: SyncUnsafeCell<[AlignedXsaveArea; 2]> =
+    SyncUnsafeCell(core::cell::UnsafeCell::new([AlignedXsaveArea([0; XSAVE_MAX_SIZE + 64]); 2]));
 
 static XSAVE_SUPPORTED: AtomicBool = AtomicBool::new(false);
 static XSAVE_AREA_SIZE: AtomicUsize = AtomicUsize::new(FXSAVE_SIZE);
@@ -158,7 +161,7 @@ unsafe fn sanitize_xsave_ptr(ctx: *mut TaskContext, slot: usize) {
         return;
     }
 
-    let fallback = core::ptr::addr_of_mut!(EMERGENCY_XSAVE_AREAS[slot].0).cast::<u8>();
+    let fallback = unsafe { (*EMERGENCY_XSAVE_AREAS.0.get())[slot].0.as_mut_ptr() };
     (*ctx).xsave_ptr = fallback;
     crate::serial_println!(
         "[scheduler] repaired invalid xsave_ptr: slot={} old_ptr={:#x} new_ptr={:#x}",

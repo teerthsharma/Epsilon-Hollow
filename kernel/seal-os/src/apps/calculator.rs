@@ -68,7 +68,9 @@ impl Calculator {
             b'c' | b'C' => {
                 self.input_buf.clear();
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 
@@ -160,7 +162,9 @@ impl Calculator {
                     last_op = Some((i, b'-'));
                     break;
                 }
-                _ => {}
+                _ => {
+                // Unhandled input; no-op
+            }
             }
         }
 
@@ -198,7 +202,9 @@ impl Calculator {
                     last_op = Some((i, b'%'));
                     break;
                 }
-                _ => {}
+                _ => {
+                // Unhandled input; no-op
+            }
             }
         }
 
@@ -241,7 +247,9 @@ impl Calculator {
                     let exp = self.eval_power(&expr[i + 1..])?;
                     return Ok(libm::pow(base, exp));
                 }
-                _ => {}
+                _ => {
+                // Unhandled input; no-op
+            }
             }
         }
 
@@ -278,7 +286,9 @@ impl Calculator {
                             break;
                         }
                     }
-                    _ => {}
+                    _ => {
+                // Unhandled input; no-op
+            }
                 }
             }
             if valid && depth == 0 {

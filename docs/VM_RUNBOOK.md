@@ -84,6 +84,8 @@ Seal OS - UEFI boot complete, boot services exited
 [BENCH] scheduler-select-next selector=select_next_task mode=live_requeue clock=rdtsc iterations=64 ok=64 ready_before=3 ready_after=3 cells=8 priority_buckets=256 voronoi_locate_probes=8 max_cell_bitmap_tests=9 max_priority_bucket_scan=256 context_switches=0 selected_priority_max=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n>
 [BENCH] tcp-packet-demux api=handle_tcp_packet fixture=listener_first accepted_state=established ok=1 listener_first=1 exact_flow=1 decoy_rx_bytes=0 listener_fallback=1 payload_bytes=4 rx_bytes=4 o1_index=1 index_hit=1 index_lookup_probes=<n> index_probe_bound=256 index_capacity=256 listener_index_hit=1 listener_lookup_probes=<n> listener_probe_bound=256 listener_index_capacity=256 exact_scan=0 cleanup=ok
 [BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
+[BENCH] topo-render-3d api=topo_render::render_mesh fixture=grid_1024 quality=2 vertices=561 triangles=1024 window=256x256 nonblack_px=<n> sample_hash=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
+[BENCH] tensor-render api=tensor_viz_pipeline fixture=csv_100x100 quality=0 rows=100 cols=100 elements=10000 points=10000 triangles=19602 window=220x180 csv_bytes=<n> nonblack_px=<n> sample_hash=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
@@ -173,8 +175,9 @@ The benchmark log gate requires the current benchmark markers:
 `[BENCH] toporam-alloc`, `[BENCH] alloc-frame`,
 `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`,
 `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`,
-`[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`, and
-`[BENCH] tls-encrypt`.
+`[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`,
+`[BENCH] tls-encrypt`, `[BENCH] topo-render-3d`, and
+`[BENCH] tensor-render`.
 The Aether runtime gate requires the parser/interpreter/app-host boot marker.
 
 Expected:

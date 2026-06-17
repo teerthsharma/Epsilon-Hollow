@@ -292,7 +292,9 @@ impl MediaPlayer {
                 let v = self.volume.saturating_sub(5);
                 self.volume_set(v);
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

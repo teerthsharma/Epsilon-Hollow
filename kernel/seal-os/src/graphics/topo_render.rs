@@ -54,16 +54,13 @@ pub struct VoronoiCell {
     pub triangle_indices: Vec<usize>,
 }
 
-static mut RENDER_STATE: Option<RenderState> = None;
+static RENDER_STATE: spin::Mutex<Option<RenderState>> = spin::Mutex::new(None);
 
 pub fn with_render_state<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut RenderState) -> R,
 {
-    unsafe {
-        let ptr = core::ptr::addr_of_mut!(RENDER_STATE);
-        (*ptr).as_mut().map(f)
-    }
+    RENDER_STATE.lock().as_mut().map(f)
 }
 
 // ---------------------------------------------------------------------------
@@ -120,9 +117,7 @@ pub fn init() {
         prev_view_dir: None,
         prev_lod_triangles: None,
     };
-    unsafe {
-        RENDER_STATE = Some(state);
-    }
+    *RENDER_STATE.lock() = Some(state);
 }
 
 pub fn set_camera(cam: Camera) {
@@ -149,12 +144,10 @@ pub fn project_vertex(
 pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
     let frame_start = crate::drivers::interrupts::ticks();
 
-    let state = unsafe {
-        let ptr = core::ptr::addr_of_mut!(RENDER_STATE);
-        match (*ptr).as_mut() {
-            Some(s) => s,
-            None => return,
-        }
+    let mut guard = RENDER_STATE.lock();
+    let state = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
     };
 
     let cw = target.client_width();

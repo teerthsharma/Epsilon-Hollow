@@ -517,16 +517,14 @@ impl NvmeController {
     }
 }
 
-static mut NVME_CTRL: Option<NvmeController> = None;
+static NVME_CTRL: spin::Mutex<Option<NvmeController>> = spin::Mutex::new(None);
 
 pub fn init() -> Option<()> {
     let mut ctrl = NvmeController::probe()?;
     match ctrl.reset_and_init() {
         Ok(()) => {
             serial_println!("[NVMe] Initialized successfully — NS1 ready for I/O");
-            unsafe {
-                NVME_CTRL = Some(ctrl);
-            }
+            *NVME_CTRL.lock() = Some(ctrl);
             Some(())
         }
         Err(e) => {
@@ -540,10 +538,7 @@ pub fn with_nvme<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut NvmeController) -> R,
 {
-    unsafe {
-        let ptr = core::ptr::addr_of_mut!(NVME_CTRL);
-        (*ptr).as_mut().map(f)
-    }
+    NVME_CTRL.lock().as_mut().map(f)
 }
 
 #[cfg(test)]

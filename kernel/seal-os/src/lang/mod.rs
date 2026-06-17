@@ -130,7 +130,8 @@ impl AetherRuntime {
 // Global compositor pointer for window callbacks
 // ═══════════════════════════════════════════════════════════════════════════════
 
-static mut AETHER_COMPOSITOR: *mut crate::wm::compositor::Compositor = core::ptr::null_mut();
+static AETHER_COMPOSITOR: core::sync::atomic::AtomicPtr<crate::wm::compositor::Compositor> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 #[derive(Clone, Copy)]
 struct AetherMmioRange {
@@ -145,7 +146,7 @@ static AETHER_MMIO_RANGES: Mutex<Vec<AetherMmioRange>> = Mutex::new(Vec::new());
 /// Must be called once after the compositor is created, with a pointer that
 /// remains valid for the lifetime of the desktop session.
 pub unsafe fn set_compositor_ptr(ptr: *mut crate::wm::compositor::Compositor) {
-    AETHER_COMPOSITOR = ptr;
+    AETHER_COMPOSITOR.store(ptr, core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Mint a hardware capability for Aether-Lang MMIO callbacks.
@@ -296,10 +297,11 @@ extern "C" fn aether_pci_read_config(bus: u8, slot: u8, func: u8, offset: u8) ->
 
 extern "C" fn aether_gfx_clear(win_id: u32, color: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::fill_solid(
                 win,
                 0,
@@ -314,10 +316,11 @@ extern "C" fn aether_gfx_clear(win_id: u32, color: u32) {
 
 extern "C" fn aether_gfx_fill_rect(win_id: u32, x: u32, y: u32, w: u32, h: u32, color: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::fill_solid(win, x, y, w, h, color);
         }
     }
@@ -333,10 +336,11 @@ extern "C" fn aether_gfx_fill_rounded_rect(
     color: u32,
 ) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::fill_rounded_rect(win, x, y, w, h, r, color);
         }
     }
@@ -351,11 +355,12 @@ extern "C" fn aether_gfx_draw_text(
     color: u32,
 ) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
         let text = core::str::from_utf8_unchecked(core::slice::from_raw_parts(text, text_len));
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::render_text_small(win, x, y, text, color);
         }
     }
@@ -363,10 +368,11 @@ extern "C" fn aether_gfx_draw_text(
 
 extern "C" fn aether_gfx_draw_line(win_id: u32, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::draw_aa_line(win, x0, y0, x1, y1, color, 255);
         }
     }
@@ -374,10 +380,11 @@ extern "C" fn aether_gfx_draw_line(win_id: u32, x0: i32, y0: i32, x1: i32, y1: i
 
 extern "C" fn aether_gfx_draw_circle(win_id: u32, cx: u32, cy: u32, r: u32, color: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::draw_circle_filled(win, cx, cy, r, color);
         }
     }
@@ -385,10 +392,11 @@ extern "C" fn aether_gfx_draw_circle(win_id: u32, cx: u32, cy: u32, r: u32, colo
 
 extern "C" fn aether_gfx_set_pixel(win_id: u32, x: u32, y: u32, color: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             win.set_client_pixel(x, y, color);
         }
     }
@@ -404,10 +412,11 @@ extern "C" fn aether_gfx_gradient_v(
     bottom: u32,
 ) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::fill_gradient_v(win, x, y, w, h, top, bottom);
         }
     }
@@ -423,10 +432,11 @@ extern "C" fn aether_gfx_glow_rect(
     color: u32,
 ) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(win_id) {
+        if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::glow_rect(win, x, y, w, h, spread, color);
         }
     }
@@ -443,20 +453,22 @@ extern "C" fn aether_win_create(
     height: u32,
 ) -> u32 {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return 0;
         }
         let title = core::str::from_utf8_unchecked(core::slice::from_raw_parts(title, title_len));
-        (*AETHER_COMPOSITOR).create_window(title, 100, 100, width, height)
+        (*comp).create_window(title, 100, 100, width, height)
     }
 }
 
 extern "C" fn aether_win_close(id: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(id) {
+        if let Some(win) = (*comp).window_mut(id) {
             use crate::wm::window::WindowState;
             win.state = WindowState::Closed;
         }
@@ -465,11 +477,12 @@ extern "C" fn aether_win_close(id: u32) {
 
 extern "C" fn aether_win_set_title(id: u32, title: *const u8, title_len: usize) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
         let title = core::str::from_utf8_unchecked(core::slice::from_raw_parts(title, title_len));
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(id) {
+        if let Some(win) = (*comp).window_mut(id) {
             win.title = String::from(title);
             win.render_decorations();
         }
@@ -478,19 +491,21 @@ extern "C" fn aether_win_set_title(id: u32, title: *const u8, title_len: usize) 
 
 extern "C" fn aether_win_focus(id: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        (*AETHER_COMPOSITOR).focus_window(id);
+        (*comp).focus_window(id);
     }
 }
 
 extern "C" fn aether_win_width(id: u32) -> u32 {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return 0;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(id) {
+        if let Some(win) = (*comp).window_mut(id) {
             win.client_width()
         } else {
             0
@@ -500,10 +515,11 @@ extern "C" fn aether_win_width(id: u32) -> u32 {
 
 extern "C" fn aether_win_height(id: u32) -> u32 {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return 0;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(id) {
+        if let Some(win) = (*comp).window_mut(id) {
             win.client_height()
         } else {
             0
@@ -513,10 +529,11 @@ extern "C" fn aether_win_height(id: u32) -> u32 {
 
 extern "C" fn aether_win_set_dirty(id: u32) {
     unsafe {
-        if AETHER_COMPOSITOR.is_null() {
+        let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
+        if comp.is_null() {
             return;
         }
-        if let Some(win) = (*AETHER_COMPOSITOR).window_mut(id) {
+        if let Some(win) = (*comp).window_mut(id) {
             win.dirty = true;
         }
     }

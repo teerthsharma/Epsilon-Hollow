@@ -76,7 +76,9 @@ impl BreakoutGame {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

@@ -88,7 +88,9 @@ impl SnakeGame {
                 }
             }
             b' ' => self.paused = !self.paused,
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 
