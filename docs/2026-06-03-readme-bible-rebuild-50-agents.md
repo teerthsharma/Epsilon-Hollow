@@ -68,7 +68,7 @@ Every section must answer five questions:
 | 28 | GPU chapter | Keep CPU fallback and hardware gap exact | `[GPU-BENCH]`, GPU docs | no hardware dispatch claim |
 | 29 | VRAM chapter | Define VRAM teleport proof contract | GPU/memory docs | GART/BAR proof required |
 | 30 | Aether chapter | Present Aether-Lang as OS language with proof map | Aether runtime marker | builder gaps named |
-| 31 | LAAMBA chapter | Explain governor app as native kernel app | `[LAAMBA] app proof` | no Python runtime claim |
+| 31 | LAAMBA chapter | Explain governor app as native kernel app | `[LAAMBA] app proof` | no legacy host-runtime claim |
 | 32 | Apps chapter | Inventory daily-driver apps and proof level | app modules | each app has status |
 | 33 | Shell chapter | Map shell commands to proof status | `apps/shell.rs` | command matrix owner |
 | 34 | IDE chapter | Align IDE completion claim with contract | `seal_ide.rs`, checker | no completion hype without marker |
@@ -79,7 +79,7 @@ Every section must answer five questions:
 | 39 | Security chapter | Threat model, unsafe inventory, entropy | threat/security docs | audit owners named |
 | 40 | Crypto chapter | TLS, random, Lypnos crypto | crypto audit | production gaps named |
 | 41 | Build chapter | Rust/Aether/Lean build surfaces | build docs | no host-language confusion |
-| 42 | Language hygiene chapter | Explain Python quarantine and Rust/Aether surface | language hygiene checker | no production Python claim |
+| 42 | Language hygiene chapter | Explain legacy host-script quarantine and Rust/Aether surface | language hygiene checker | no production host-script claim |
 | 43 | Mermaid agent | Fix every broken Mermaid diagram | README diagrams | Mermaid render-safe syntax |
 | 44 | Tables agent | Fix broken numbering and wide tables | README, docs/CI | no duplicate numbering |
 | 45 | Anti-slop agent | Remove hype that lacks proof | README | vivid but exact prose |
@@ -96,7 +96,7 @@ Use this prompt for all 50 README agents:
 ```text
 You own Agent <NN> in docs/superpowers/plans/2026-06-03-readme-bible-rebuild-50-agents.md.
 Read only unless explicitly promoted to writer.
-No Python. Use rg and PowerShell.
+No host scripts. Use rg and PowerShell.
 Return:
 1. current README lines for your section,
 2. exact source files proving or disproving each claim,

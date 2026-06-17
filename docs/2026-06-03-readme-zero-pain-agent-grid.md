@@ -21,7 +21,7 @@ Use these exact parameters for every agent in this document.
 | Persona | `caveman-genius`: short words, exact code names, hard truth |
 | Process skills | `superpowers:subagent-driven-development`, `superpowers:systematic-debugging`, `superpowers:verification-before-completion` |
 | Rust skills | `rust-router`, `m10-performance`, `unsafe-checker` when touching `unsafe`, `domain-embedded` for kernel/no_std |
-| Forbidden | Python, fake pass markers, mock-only hardware claims, broad rewrites, deleting existing work to hide pain |
+| Forbidden | Host-script shortcuts, fake pass markers, mock-only hardware claims, broad rewrites, deleting existing work to hide pain |
 | Required proof style | Serial marker + `seal-mkimage` parser + rejection tests + README/doc row update |
 | Required commands | `cargo +stable fmt --all`; `cargo test --manifest-path kernel\seal-mkimage\Cargo.toml`; `cargo +nightly check --manifest-path .\kernel\seal-os\Cargo.toml -Z build-std=core,alloc --target x86_64-unknown-uefi`; `cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml -- --check-doc-claim-contract .`; `cargo +stable run --manifest-path kernel\seal-mkimage\Cargo.toml -- --check-language-hygiene .`; `git diff --check` |
 | VM proof command | `.\kernel\seal-os\run-qemu.ps1 -HeadlessProof -ProofSeconds 240` when boot path changed |
@@ -112,7 +112,7 @@ For each agent in the matrix, send this exact prompt:
 
 ```text
 You own Agent <NN> from docs/superpowers/plans/2026-06-03-readme-zero-pain-agent-grid.md.
-Read only. No Python. Do not edit files.
+Read only. No host scripts. Do not edit files.
 Return: current evidence, exact files to modify, proof marker fields, commands to verify, and whether the README claim must be narrowed instead of implemented.
 ```
 
