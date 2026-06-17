@@ -260,7 +260,7 @@ Steps 1–4 are documented in `kernel/seal-os/src/drivers/gpu/nvidia.rs` as stub
 2. **Run host test:**
    ```bash
    cd Epsilon-Hollow
-   python3 tests/gpu/test_amd_compute.py --gpu-bdf 0000:0a:00.0
+   pytest tests/gpu/test_amd_compute.py --gpu-bdf 0000:0a:00.0
    ```
 
 3. **Expected output:**
