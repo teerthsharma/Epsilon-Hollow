@@ -100,7 +100,7 @@ Prompt:
 
 ```text
 You own Agent <NN> from docs/superpowers/plans/2026-06-03-runtime-proof-max-parallel-agents.md.
-Read only. No Python. Inspect the listed files. Return the smallest real runtime proof, exact marker fields, parser rejection cases, and commands. If hardware is required, say the exact VM/device requirement.
+Read only. No host scripts. Inspect the listed files. Return the smallest real runtime proof, exact marker fields, parser rejection cases, and commands. If hardware is required, say the exact VM/device requirement.
 ```
 
 Expected: 50 reports with no file edits.
