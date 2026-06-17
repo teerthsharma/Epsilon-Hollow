@@ -1,0 +1,3 @@
+## 2024-03-24 - Streaming Array Re-render Bottleneck
+**Learning:** In Next.js/React apps where large text streams are rendered as chunks, appending text directly to an array of message objects will trigger an O(N^2) re-rendering cycle for all `<li>`/`<div>` elements in the array unless specific memoization is implemented.
+**Action:** When working on streaming chats or live UI list updates, always extract the individual row/message into its own component and wrap it in `React.memo()`. This ensures that only the element whose text property changed gets re-rendered, not the entire list.

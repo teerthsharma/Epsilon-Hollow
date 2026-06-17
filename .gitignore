@@ -205,3 +205,4 @@ flamegraph*.svg
 *.bbl
 *.blg
 *.synctex.gz
+kernel/aether/aether-verified/lean/.lake/
