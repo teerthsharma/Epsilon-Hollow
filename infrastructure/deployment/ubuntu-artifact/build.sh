@@ -78,19 +78,25 @@ VMLINUZ="$SCRIPT_DIR/vmlinuz"
 if [ ! -f "$VMLINUZ" ]; then
     SYS_KERNEL=""
     for path in /boot/vmlinuz-*; do
-        if [ -r "$path" ]; then
+        if [ -e "$path" ]; then
             SYS_KERNEL="$path"
             break
         fi
-        if [ -e "$path" ]; then
-            echo "[build] Skipping unreadable kernel: $path"
-        fi
     done
     if [ -n "$SYS_KERNEL" ]; then
-        cp "$SYS_KERNEL" "$VMLINUZ"
+        if [ -r "$SYS_KERNEL" ]; then
+            cp "$SYS_KERNEL" "$VMLINUZ"
+        elif command -v sudo &>/dev/null; then
+            echo "[build] Copying restricted kernel with sudo: $SYS_KERNEL"
+            sudo cp "$SYS_KERNEL" "$VMLINUZ"
+            sudo chown "$(id -u):$(id -g)" "$VMLINUZ" 2>/dev/null || true
+        else
+            echo "[build] ERROR: Kernel exists but is not readable: $SYS_KERNEL"
+            exit 1
+        fi
         echo "[build] Using system kernel: $SYS_KERNEL"
     else
-        echo "[build] ERROR: No readable kernel found at /boot/vmlinuz-*"
+        echo "[build] ERROR: No kernel found at /boot/vmlinuz-*"
         echo "[build] Install linux-image-generic and retry."
         exit 1
     fi
