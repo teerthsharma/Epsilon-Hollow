@@ -963,7 +963,9 @@ impl XhciController {
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    // Non-bulk endpoint type; skip for mass-storage
+                }
             }
             off += len;
         }
@@ -1222,20 +1224,15 @@ pub fn init() -> Option<()> {
     serial_println!("[xHCI] Controller initialized and running");
     // Store controller in USB subsystem for polling
     // For now, return success; usb/mod.rs will store it globally
-    unsafe {
-        XHCI_GLOBAL = Some(ctrl);
-    }
+    *XHCI_GLOBAL.lock() = Some(ctrl);
     Some(())
 }
 
-static mut XHCI_GLOBAL: Option<XhciController> = None;
+static XHCI_GLOBAL: spin::Mutex<Option<XhciController>> = spin::Mutex::new(None);
 
 pub fn with_xhci<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut XhciController) -> R,
 {
-    unsafe {
-        let ptr = core::ptr::addr_of_mut!(XHCI_GLOBAL);
-        (*ptr).as_mut().map(f)
-    }
+    XHCI_GLOBAL.lock().as_mut().map(f)
 }

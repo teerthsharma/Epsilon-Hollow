@@ -161,7 +161,11 @@ pub fn handle_arp_packet(pkt: &[u8]) {
                 let _ = send_arp_reply(arp.sha, arp.spa);
             }
         }
-        ARP_OP_REPLY => {}
-        _ => {}
+        ARP_OP_REPLY => {
+            // Reply processed above by updating cache; no further action
+        }
+        _ => {
+            // Unknown ARP operation; drop
+        }
     }
 }

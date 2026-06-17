@@ -80,7 +80,9 @@ impl Terminal {
             ch if ch >= 0x20 && ch < 0x7F => {
                 self.input_buf.push(ch as char);
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

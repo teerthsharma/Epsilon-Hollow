@@ -12,6 +12,8 @@ param(
         '\[BENCH\] tcp-packet-demux',
         '\[BENCH\] tcp-roundtrip',
         '\[BENCH\] tls-encrypt',
+        '\[BENCH\] topo-render-3d',
+        '\[BENCH\] tensor-render',
         '\[GPU-BENCH\] suite',
         '\[Aether-Lang\] runtime proof:',
         '\[LAAMBA\] app proof:',

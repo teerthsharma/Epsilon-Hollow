@@ -1448,7 +1448,17 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
                             sock.state = TcpState::Closed;
                         }
                     }
-                    _ => {}
+                    TcpState::Closing => {
+                        if flags & FLAG_ACK != 0 {
+                            sock.state = TcpState::TimeWait;
+                        }
+                    }
+                    TcpState::TimeWait => {
+                        // RFC 793: remain in TIME-WAIT for 2*MSL; ignore further data
+                    }
+                    TcpState::Closed => {
+                        // No-op: closed sockets ignore all incoming packets
+                    }
                 }
                 refresh_exact_flow_socket(idx, old_key, sock);
                 refresh_listener_socket(idx, old_listener_key, sock);

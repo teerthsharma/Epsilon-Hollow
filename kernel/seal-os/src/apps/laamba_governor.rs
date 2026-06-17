@@ -123,7 +123,9 @@ impl LaambaGovernor {
                 self.active_tool = 2;
                 self.log(String::from("[REGRESS] Starting regression..."));
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
     }
 

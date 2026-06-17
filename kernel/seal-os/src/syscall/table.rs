@@ -257,7 +257,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         crate::security::seccomp::SECCOMP_RET_ERRNO => {
             return SyscallResult::err(1); // EPERM
         }
-        _ => {}
+        crate::security::seccomp::SECCOMP_RET_ALLOW | _ => {}
     }
 
     let result = match num {
@@ -1107,7 +1107,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 new_uid: arg0 as u32,
             });
         }
-        _ => {}
+        _ => {
+            // Syscall not audited explicitly; no audit record generated
+        }
     }
 
     result

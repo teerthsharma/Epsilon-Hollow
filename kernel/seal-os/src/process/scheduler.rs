@@ -1220,7 +1220,9 @@ impl ManifoldScheduler {
                     4 => {}
                     5 => {}
                     9 => {}
-                    _ => {}
+                    _ => {
+                        // Unknown rlimit resource; ignore per POSIX
+                    }
                 }
             }
         }

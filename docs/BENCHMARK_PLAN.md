@@ -457,7 +457,8 @@ The first benchmark milestone is modest and measurable:
    `[BENCH] alloc-frame`, `[BENCH] slab-alloc`, `[BENCH] manifold-teleport`,
    `[BENCH] manifold-lookup`, `[BENCH] scheduler-select-next`,
    `[BENCH] tcp-packet-demux`, `[BENCH] tcp-roundtrip`,
-   `[BENCH] tls-encrypt`, and
+   `[BENCH] tls-encrypt`, `[BENCH] topo-render-3d`,
+   `[BENCH] tensor-render`, and
    `[GFX] desktop-proof` / `[GFX] desktop-live-proof` /
    `[GFX] desktop-soak` markers.
 5. Run `seal-mkimage --check-proof-screen` against the captured `screen.ppm`.

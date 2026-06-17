@@ -181,6 +181,8 @@ pub fn handle_ipv4_packet(pkt: &[u8]) {
         1 => crate::net::icmp::handle_icmp_packet(src, payload),
         6 => crate::net::tcp::handle_tcp_packet(crate::net::IpAddr::V4(src), payload),
         17 => crate::net::udp::handle_udp_packet(crate::net::IpAddr::V4(src), payload),
-        _ => {}
+        _ => {
+            // Unknown IPv4 protocol; drop silently
+        }
     }
 }

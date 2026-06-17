@@ -3,9 +3,10 @@
 
 #![allow(dead_code)] // REASON: USB Bluetooth class constants for future HCI driver completion
 
-//! Bluetooth driver — PCI probe + topological device simulation.
-//! Real HCI firmware upload is out of scope; this driver provides a fully
-//! functional state machine and simulated device topology.
+//! Bluetooth driver — PCI probe and honest status reporting.
+//! Real HCI firmware upload and L2CAP/ATT processing are not yet implemented;
+//! the driver detects hardware but returns empty scans until firmware support
+//! is added.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -90,68 +91,28 @@ impl BluetoothDriver {
         }
     }
 
-    /// Topological scan: generate deterministic simulated BLE devices.
+    /// Scan for nearby Bluetooth devices.
+    /// Currently returns empty because HCI firmware upload and inquiry/page
+    /// procedures are not yet implemented. Hardware detection works.
     pub fn scan(&mut self) -> Vec<BtDevice> {
         if self.state == BtState::NoHardware {
             return Vec::new();
         }
         let prev = self.state;
         self.state = BtState::Scanning;
-
-        let devices = vec![
-            BtDevice {
-                name: String::from("TopoMouse"),
-                device_type: BtDeviceType::Hid,
-                rssi_dbm: -42,
-                paired: false,
-            },
-            BtDevice {
-                name: String::from("SpectralHeadset"),
-                device_type: BtDeviceType::Audio,
-                rssi_dbm: -55,
-                paired: false,
-            },
-            BtDevice {
-                name: String::from("ManifoldSensor"),
-                device_type: BtDeviceType::Le,
-                rssi_dbm: -68,
-                paired: false,
-            },
-        ];
-
-        // Merge with already-paired devices, marking them paired.
-        let mut result = self.paired_devices.clone();
-        for d in &devices {
-            if !result.iter().any(|p| p.name == d.name) {
-                result.push(d.clone());
-            }
-        }
-
+        // TODO: implement real HCI inquiry and LE scanning once firmware
+        // upload and L2CAP/ATT layers are available.
         self.state = prev;
-        self.last_scan = result.clone();
-        result
+        Vec::new()
     }
 
-    pub fn pair(&mut self, name: &str) -> Result<(), String> {
+    pub fn pair(&mut self, _name: &str) -> Result<(), String> {
         if self.state == BtState::NoHardware {
             return Err(String::from("Bluetooth: no adapter detected"));
         }
-        if self.last_scan.is_empty() {
-            let _ = self.scan();
-        }
-        if let Some(dev) = self.last_scan.iter().find(|d| d.name == name) {
-            if self.paired_devices.iter().any(|p| p.name == name) {
-                return Ok(());
-            }
-            self.state = BtState::Pairing;
-            let mut paired = dev.clone();
-            paired.paired = true;
-            self.paired_devices.push(paired);
-            self.state = BtState::Enabled;
-            Ok(())
-        } else {
-            Err(alloc::format!("Bluetooth: device '{}' not found", name))
-        }
+        Err(String::from(
+            "Bluetooth: pairing not implemented — HCI firmware and L2CAP/ATT are pending",
+        ))
     }
 
     pub fn unpair(&mut self, name: &str) {

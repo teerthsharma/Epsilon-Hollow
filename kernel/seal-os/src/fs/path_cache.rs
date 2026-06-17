@@ -96,7 +96,9 @@ impl PathCache {
                     });
                     return;
                 }
-                _ => {}
+                Some(_) => {
+                    // Occupied slot with hash collision; continue probing
+                }
             }
         }
         // No empty slot — CLOCK eviction

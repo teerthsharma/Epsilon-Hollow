@@ -125,7 +125,9 @@ pub fn handle_ipv6_packet(pkt: &[u8]) {
         58 => handle_icmpv6_packet(src, payload),
         6 => crate::net::tcp::handle_tcp_packet(crate::net::IpAddr::V6(src), payload),
         17 => crate::net::udp::handle_udp_packet(crate::net::IpAddr::V6(src), payload),
-        _ => {}
+        _ => {
+            // Unknown IPv6 next-header; drop silently
+        }
     }
 }
 
@@ -373,6 +375,8 @@ pub fn handle_icmpv6_packet(src: [u8; 16], pkt: &[u8]) {
             }
             insert_ndp(target, mac);
         }
-        _ => {}
+        _ => {
+            // Unknown ICMPv6 type; drop silently
+        }
     }
 }

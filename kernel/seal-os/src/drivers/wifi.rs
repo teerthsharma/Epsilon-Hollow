@@ -1,9 +1,10 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! WiFi driver — PCI probe + topological scan simulation.
-//! Real firmware upload is out of scope; this driver provides a fully
-//! functional state machine and simulated network topology.
+//! WiFi driver — PCI probe and honest status reporting.
+//! Real firmware upload and 802.11 frame processing are not yet implemented;
+//! the driver detects hardware but returns empty scans until firmware support
+//! is added.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -70,7 +71,6 @@ pub struct WifiDriver {
     chipset_name: Option<&'static str>,
     vendor_id: u16,
     device_id: u16,
-    last_scan: Vec<WifiNetwork>,
 }
 
 impl WifiDriver {
@@ -83,7 +83,6 @@ impl WifiDriver {
             chipset_name: None,
             vendor_id: 0,
             device_id: 0,
-            last_scan: Vec::new(),
         }
     }
 
@@ -143,79 +142,28 @@ impl WifiDriver {
         }
     }
 
-    /// Topological scan: generate a deterministic set of simulated networks
-    /// based on the PCI vendor/device hash.  No firmware required.
+    /// Scan for available networks.
+    /// Currently returns empty because firmware upload and 802.11 frame
+    /// processing are not yet implemented. Hardware detection works.
     pub fn scan(&mut self) -> Vec<WifiNetwork> {
         if self.state == WifiState::NoHardware {
             return Vec::new();
         }
         let prev = self.state;
         self.state = WifiState::Scanning;
-
-        let seed = (self.vendor_id as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(self.device_id as u64);
-        let mut networks = Vec::new();
-
-        let ssids = [
-            "AlphaNet",
-            "BetaWave",
-            "GammaLink",
-            "DeltaCore",
-            "EpsilonMesh",
-        ];
-        let securities = [
-            WifiSecurity::Wpa3,
-            WifiSecurity::Wpa2,
-            WifiSecurity::Wpa2,
-            WifiSecurity::Open,
-            WifiSecurity::Wpa3,
-        ];
-
-        for i in 0..ssids.len() {
-            let s = seed.wrapping_add(i as u64);
-            let signal = -30 - ((s % 60) as i32); // -30 to -90 dBm
-            let channel = 1 + ((s >> 8) % 11) as u8; // 1-11
-            networks.push(WifiNetwork {
-                ssid: String::from(ssids[i]),
-                signal_dbm: signal,
-                security: securities[i],
-                channel,
-            });
-        }
-
+        // TODO: implement real 802.11 active/passive scan once firmware
+        // upload and frame construction are available.
         self.state = prev;
-        self.last_scan = networks.clone();
-        networks
+        Vec::new()
     }
 
-    pub fn connect(&mut self, ssid: &str, password: &str) -> Result<(), String> {
+    pub fn connect(&mut self, _ssid: &str, _password: &str) -> Result<(), String> {
         if self.state == WifiState::NoHardware {
             return Err(String::from("WiFi: no wireless hardware detected"));
         }
-        if self.last_scan.is_empty() {
-            let _ = self.scan();
-        }
-        let net = self.last_scan.iter().find(|n| n.ssid == ssid);
-        if net.is_none() {
-            return Err(alloc::format!("WiFi: network '{}' not found", ssid));
-        }
-        let net = net.unwrap();
-        if net.security != WifiSecurity::Open && password.is_empty() {
-            return Err(alloc::format!("WiFi: password required for '{}'", ssid));
-        }
-        self.state = WifiState::Connecting;
-        self.connected_ssid = Some(String::from(ssid));
-        // Simulate DHCP assignment: IP derived from SSID hash.
-        let ip = [
-            192,
-            168,
-            1 + (ssid.bytes().fold(0u8, |a, b| a.wrapping_add(b)) % 250),
-            100 + (password.len() as u8 % 100),
-        ];
-        self.ip_addr = Some(ip);
-        self.state = WifiState::Connected;
-        Ok(())
+        Err(String::from(
+            "WiFi: connection not implemented — firmware upload and 802.11 association are pending",
+        ))
     }
 
     pub fn disconnect(&mut self) {

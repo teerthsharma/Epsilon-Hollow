@@ -293,7 +293,9 @@ impl LoginScreen {
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled input; no-op
+            }
         }
         false
     }
