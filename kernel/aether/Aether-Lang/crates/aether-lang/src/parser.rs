@@ -1234,7 +1234,11 @@ fn render() {
             // Mix of statement types to exercise the parser
             match i % 5 {
                 0 => source.push_str(&format!("let var_{} = {}~\n", i, i)),
-                1 => source.push_str(&format!("manifold M_{} = embed(data, dim={})~\n", i, i % 10 + 1)),
+                1 => source.push_str(&format!(
+                    "manifold M_{} = embed(data, dim={})~\n",
+                    i,
+                    i % 10 + 1
+                )),
                 2 => source.push_str(&format!("fn f_{}() {{ return {}~ }}~\n", i, i)),
                 3 => source.push_str(&format!("block B_{} = M_{}.cluster(0:{})~\n", i, i, i)),
                 4 => source.push_str(&format!("if var_{} > 0 {{ render M_{}~ }}~\n", i, i)),
@@ -1247,7 +1251,11 @@ fn render() {
         let (program, errors) = parser.parse_recoverable();
         let elapsed = start.elapsed();
 
-        assert!(errors.is_empty(), "10k benchmark should parse without errors: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "10k benchmark should parse without errors: {:?}",
+            errors
+        );
         assert!(
             program.statements.len() >= 9_000,
             "expected most statements to parse, got {}",
