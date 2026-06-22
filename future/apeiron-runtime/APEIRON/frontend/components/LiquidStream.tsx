@@ -3,7 +3,7 @@
 
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, memo } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -13,6 +13,52 @@ type Message = {
     content: string;
     isHot?: boolean; // Did this update weights?
 };
+
+// ⚡ Bolt: Performance optimization
+// Wrapped MessageItem in React.memo to prevent unnecessary re-renders of the entire message list
+// when the parent component's state (like the 'input' field) changes.
+// Also initialized the timestamp in a local state hook so it is frozen upon creation
+// and not recalculated on every render.
+const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) {
+    const [timestamp] = useState(() => new Date().toLocaleTimeString());
+
+    return (
+        <div
+            className={cn(
+                "flex flex-col max-w-[80%]",
+                msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
+            )}
+        >
+            <div className={cn(
+                "p-4 rounded-2xl text-sm leading-relaxed backdrop-blur-sm relative transition-all duration-300",
+                msg.role === 'user'
+                    ? "bg-zinc-900 border border-white/10 text-white rounded-tr-sm"
+                    : "bg-black border border-green-500/20 text-green-100 rounded-tl-sm shadow-[0_0_15px_rgba(34,197,94,0.05)]"
+            )}>
+                {msg.content}
+
+                {/* Synapse Firing Effect */}
+                {msg.isHot && (
+                    <div className="absolute -top-1 -right-1 w-3 h-3">
+                        <span className="absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75 animate-ping"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+                    </div>
+                )}
+            </div>
+
+            {/* Meta Data */}
+            <div className="flex gap-2 mt-2 text-[10px] items-center text-zinc-600 font-mono uppercase">
+                <span>{timestamp}</span>
+                {msg.isHot && (
+                    <span className="flex items-center gap-1 text-yellow-600">
+                        <Sparkles size={10} />
+                        WEIGHT_UPDATE
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+});
 
 export const LiquidStream = () => {
     const [input, setInput] = useState('');
@@ -67,41 +113,7 @@ export const LiquidStream = () => {
                 aria-label="Thought stream"
             >
                 {messages.map((msg) => (
-                    <div
-                        key={msg.id}
-                        className={cn(
-                            "flex flex-col max-w-[80%]",
-                            msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
-                        )}
-                    >
-                        <div className={cn(
-                            "p-4 rounded-2xl text-sm leading-relaxed backdrop-blur-sm relative transition-all duration-300",
-                            msg.role === 'user'
-                                ? "bg-zinc-900 border border-white/10 text-white rounded-tr-sm"
-                                : "bg-black border border-green-500/20 text-green-100 rounded-tl-sm shadow-[0_0_15px_rgba(34,197,94,0.05)]"
-                        )}>
-                            {msg.content}
-
-                            {/* Synapse Firing Effect */}
-                            {msg.isHot && (
-                                <div className="absolute -top-1 -right-1 w-3 h-3">
-                                    <span className="absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75 animate-ping"></span>
-                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Meta Data */}
-                        <div className="flex gap-2 mt-2 text-[10px] items-center text-zinc-600 font-mono uppercase">
-                            <span>{new Date().toLocaleTimeString()}</span>
-                            {msg.isHot && (
-                                <span className="flex items-center gap-1 text-yellow-600">
-                                    <Sparkles size={10} />
-                                    WEIGHT_UPDATE
-                                </span>
-                            )}
-                        </div>
-                    </div>
+                    <MessageItem key={msg.id} msg={msg} />
                 ))}
 
                 {/* Ghost Text / Daemon Suggestion */}
