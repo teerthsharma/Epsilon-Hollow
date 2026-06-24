@@ -1,0 +1,3 @@
+## 2024-03-21 - Prevent Ghost Interactions
+**Learning:** When components utilize real-time connections (like the `useApeiron` hook's DSP Bus), failing to link user input and button `disabled` states to the connection `tunnelStatus` (e.g., `!== 'LOCKED'`) allows for "ghost interactions". Users might attempt to interact while offline, leading to silent failures and a confusing experience without visual feedback.
+**Action:** Always link input/button `disabled` states to the connection status and provide clear visual feedback (e.g., placeholder text, disabled styles, and ARIA labels) to indicate when the system is offline or connecting.
