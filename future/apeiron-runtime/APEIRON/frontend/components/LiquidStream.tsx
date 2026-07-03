@@ -7,19 +7,75 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+import { memo } from 'react';
+
 type Message = {
     id: number;
     role: 'user' | 'apeiron';
     content: string;
     isHot?: boolean; // Did this update weights?
+    timestamp?: string; // Captured at creation time
 };
+
+// ⚡ Bolt: Performance optimization
+// Extracted message item into memoized component.
+// This prevents O(N^2) re-renders of the entire list when typing in the input field,
+// and ensures we don't recalculate things like new Date() on every re-render of the parent.
+const LiquidMessageItem = memo(function LiquidMessageItem({ msg }: { msg: Message }) {
+    return (
+        <div
+            className={cn(
+                "flex flex-col max-w-[80%]",
+                msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
+            )}
+        >
+            <div className={cn(
+                "p-4 rounded-2xl text-sm leading-relaxed backdrop-blur-sm relative transition-all duration-300",
+                msg.role === 'user'
+                    ? "bg-zinc-900 border border-white/10 text-white rounded-tr-sm"
+                    : "bg-black border border-green-500/20 text-green-100 rounded-tl-sm shadow-[0_0_15px_rgba(34,197,94,0.05)]"
+            )}>
+                {msg.content}
+
+                {/* Synapse Firing Effect */}
+                {msg.isHot && (
+                    <div className="absolute -top-1 -right-1 w-3 h-3">
+                        <span className="absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75 animate-ping"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+                    </div>
+                )}
+            </div>
+
+            {/* Meta Data */}
+            <div className="flex gap-2 mt-2 text-[10px] items-center text-zinc-600 font-mono uppercase">
+                <span>{msg.timestamp}</span>
+                {msg.isHot && (
+                    <span className="flex items-center gap-1 text-yellow-600">
+                        <Sparkles size={10} />
+                        WEIGHT_UPDATE
+                    </span>
+                )}
+            </div>
+        </div>
+    );
+});
 
 export const LiquidStream = () => {
     const [input, setInput] = useState('');
-    const [messages, setMessages] = useState<Message[]>([
-        { id: 1, role: 'apeiron', content: 'Cognitive Runtime Online. Akashic Link Established.' }
-    ]);
+    const [messages, setMessages] = useState<Message[]>([]);
     const scrollRef = useRef<HTMLDivElement>(null);
+
+    // Initial message setup to avoid hydration mismatches with timestamps
+    useEffect(() => {
+        setTimeout(() => {
+            setMessages([{
+                id: 1,
+                role: 'apeiron',
+                content: 'Cognitive Runtime Online. Akashic Link Established.',
+                timestamp: new Date().toLocaleTimeString()
+            }]);
+        }, 0);
+    }, []);
 
     useEffect(() => {
         if (scrollRef.current) {
@@ -30,18 +86,21 @@ export const LiquidStream = () => {
     const handleSend = () => {
         if (!input.trim()) return;
 
-        const userMsg: Message = { id: Date.now(), role: 'user', content: input };
+        const timestamp = new Date().toLocaleTimeString();
+        const userMsg: Message = { id: Date.now(), role: 'user', content: input, timestamp };
         setMessages(prev => [...prev, userMsg]);
         setInput('');
 
         // Simulate Response
         setTimeout(() => {
             const isLearning = Math.random() > 0.5; // Simulate learning trigger
+            const responseTimestamp = new Date().toLocaleTimeString();
             const responseMsg: Message = {
                 id: Date.now() + 1,
                 role: 'apeiron',
                 content: isLearning ? `Acknowledged. Updating Manifold with new axiom: "${input}".` : `Query resolved from Cluster #42F.`,
-                isHot: isLearning
+                isHot: isLearning,
+                timestamp: responseTimestamp
             };
             setMessages(prev => [...prev, responseMsg]);
         }, 1000);
@@ -67,41 +126,7 @@ export const LiquidStream = () => {
                 aria-label="Thought stream"
             >
                 {messages.map((msg) => (
-                    <div
-                        key={msg.id}
-                        className={cn(
-                            "flex flex-col max-w-[80%]",
-                            msg.role === 'user' ? "ml-auto items-end" : "mr-auto items-start"
-                        )}
-                    >
-                        <div className={cn(
-                            "p-4 rounded-2xl text-sm leading-relaxed backdrop-blur-sm relative transition-all duration-300",
-                            msg.role === 'user'
-                                ? "bg-zinc-900 border border-white/10 text-white rounded-tr-sm"
-                                : "bg-black border border-green-500/20 text-green-100 rounded-tl-sm shadow-[0_0_15px_rgba(34,197,94,0.05)]"
-                        )}>
-                            {msg.content}
-
-                            {/* Synapse Firing Effect */}
-                            {msg.isHot && (
-                                <div className="absolute -top-1 -right-1 w-3 h-3">
-                                    <span className="absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75 animate-ping"></span>
-                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Meta Data */}
-                        <div className="flex gap-2 mt-2 text-[10px] items-center text-zinc-600 font-mono uppercase">
-                            <span>{new Date().toLocaleTimeString()}</span>
-                            {msg.isHot && (
-                                <span className="flex items-center gap-1 text-yellow-600">
-                                    <Sparkles size={10} />
-                                    WEIGHT_UPDATE
-                                </span>
-                            )}
-                        </div>
-                    </div>
+                    <LiquidMessageItem key={msg.id} msg={msg} />
                 ))}
 
                 {/* Ghost Text / Daemon Suggestion */}
