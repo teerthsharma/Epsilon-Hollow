@@ -1,3 +1,6 @@
-## 2024-06-01 - Dynamic Tooltips for Disabled States
-**Learning:** Found that static tooltips like "Send message" on disabled submit buttons can be confusing, particularly when users don't know *why* the button is disabled. In React/Next.js, toggling the `title` attribute dynamically based on the same condition that disables the button (`!input.trim() ? "Enter a message to send" : "Send message"`) provides immediate contextual feedback for screen reader and mouse users alike.
-**Action:** When creating form submit buttons, always tie the `title` or `aria-label` attribute dynamically to the validation state, and ensure visual disabled styling (`disabled:cursor-not-allowed`) is coupled with `focus-visible` styles for comprehensive accessibility.
+## Palette's Journal
+
+
+## 2024-05-16 - Prevent Ghost Interactions During Offline States
+**Learning:** In components connected to real-time streams (like useApeiron), users can attempt interactions when the system is offline if inputs aren't explicitly disabled, leading to ghost interactions and silent failures.
+**Action:** Always link user input and button disabled states to connection status (e.g., tunnelStatus) and provide clear visual/textual feedback (like dynamic placeholders and disabled styles) to explain why the element is disabled.
