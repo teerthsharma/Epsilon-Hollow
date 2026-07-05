@@ -1,3 +1,7 @@
-## 2026-06-01 - Prevented O(N^2) Rendering in Streaming Components
-**Learning:** React state arrays that update frequently (like appending chunks to streaming text) cause full list re-renders. This is an O(N^2) performance bottleneck, especially in long chat threads.
-**Action:** Always wrap list items in `React.memo()` when rendering frequently updated arrays, especially in streaming applications like DSP Bus chat messages.
+## 2024-07-06 - [React Performance Pattern - Unnecessary Re-renders on Input]
+**Learning:** In a React chat application, keeping input state (`input`, `setInput`) in the same top-level component that renders a large array of messages causes the entire component (and potentially all its children, unless perfectly memoized) to re-render on every single keystroke. This causes typing latency to scale with the number of messages O(N).
+**Action:** Extract the input field and its local state into a separate `ChatInput` child component. Pass a `sendMessage` callback down. This pushes the frequent keystroke state updates down a level, preventing the parent (and the large message list) from re-rendering until a message is actually sent.
+
+## 2024-07-06 - [React Performance Pattern - Unnecessary Re-renders on Input]
+**Learning:** In a React chat application, keeping input state (`input`, `setInput`) in the same top-level component that renders a large array of messages causes the entire component (and potentially all its children, unless perfectly memoized) to re-render on every single keystroke. This causes typing latency to scale with the number of messages O(N).
+**Action:** Extract the input field and its local state into a separate `ChatInput` child component. Pass a `sendMessage` callback down. This pushes the frequent keystroke state updates down a level, preventing the parent (and the large message list) from re-rendering until a message is actually sent.
