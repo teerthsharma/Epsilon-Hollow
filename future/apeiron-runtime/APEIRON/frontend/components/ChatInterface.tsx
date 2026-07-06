@@ -40,9 +40,56 @@ const ThoughtItem = memo(function ThoughtItem({ thought }: { thought: string }) 
     </div>
 )});
 
+// ⚡ Bolt: Performance optimization
+// Extract ChatInput into a separate memoized component.
+// Keeping input state (input, setInput) in the main ChatInterface causes the entire
+// component (including the large message list) to re-render on every keystroke,
+// causing O(N) typing latency. By moving local state here, we only re-render the input.
+const ChatInput = memo(function ChatInput({
+    sendMessage,
+    thoughts
+}: {
+    sendMessage: (text: string) => void,
+    thoughts: string[]
+}) {
+    const [input, setInput] = useState('');
+
+    return (
+        <div className="p-6 border-t border-gray-800 bg-black">
+            {/* Mobile Thought Stream (Optional, minimal version) */}
+            {thoughts.length > 0 && (
+                <div className="md:hidden text-[10px] text-gray-500 mb-2 font-mono truncate">
+                    {thoughts[thoughts.length - 1]}
+                </div>
+            )}
+
+            <form
+                onSubmit={(e) => { e.preventDefault(); sendMessage(input); setInput(''); }}
+                className="flex gap-4"
+            >
+                <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder="Inject knowledge into the kernel..."
+                    aria-label="Message input"
+                    className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white"
+                />
+                <button
+                    type="submit"
+                    disabled={!input.trim()}
+                    aria-label={!input.trim() ? "Cannot send empty message" : "Send message"}
+                    title={!input.trim() ? "Enter a message to send" : "Send message"}
+                    className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+                >
+                    <Send size={20} />
+                </button>
+            </form>
+        </div>
+    );
+});
+
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts } = useApeiron();
-    const [input, setInput] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom
@@ -120,36 +167,10 @@ export default function ChatInterface() {
                 </div>
 
                 {/* Input Zone */}
-                <div className="p-6 border-t border-gray-800 bg-black">
-                    {/* Mobile Thought Stream (Optional, minimal version) */}
-                    {thoughts.length > 0 && (
-                        <div className="md:hidden text-[10px] text-gray-500 mb-2 font-mono truncate">
-                            {thoughts[thoughts.length - 1]}
-                        </div>
-                    )}
-
-                    <form
-                        onSubmit={(e) => { e.preventDefault(); sendMessage(input); setInput(''); }}
-                        className="flex gap-4"
-                    >
-                        <input
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            placeholder="Inject knowledge into the kernel..."
-                            aria-label="Message input"
-                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white"
-                        />
-                        <button
-                            type="submit"
-                            disabled={!input.trim()}
-                            aria-label={!input.trim() ? "Cannot send empty message" : "Send message"}
-                            title={!input.trim() ? "Enter a message to send" : "Send message"}
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                        >
-                            <Send size={20} />
-                        </button>
-                    </form>
-                </div>
+                <ChatInput
+                    sendMessage={sendMessage}
+                    thoughts={thoughts}
+                />
             </div>
         </div>
     );
