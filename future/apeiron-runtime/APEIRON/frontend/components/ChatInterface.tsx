@@ -113,9 +113,29 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center opacity-70 space-y-4">
+                            {tunnelStatus !== 'LOCKED' ? (
+                                <Cpu size={48} className="animate-pulse text-gray-500 mb-2" />
+                            ) : (
+                                <Zap size={48} className="text-green-500 mb-2" />
+                            )}
+                            <div>
+                                <p className="text-lg font-bold text-gray-300">
+                                    {tunnelStatus !== 'LOCKED' ? "Waiting for neuro-link..." : "System Ready"}
+                                </p>
+                                <p className="text-sm text-gray-500 mt-2 max-w-md mx-auto">
+                                    {tunnelStatus !== 'LOCKED'
+                                        ? "Establishing connection to the DSP backend."
+                                        : "Inject knowledge to begin the thought stream."}
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        messages.map((msg) => (
+                            <MessageItem key={msg.id} msg={msg} />
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
