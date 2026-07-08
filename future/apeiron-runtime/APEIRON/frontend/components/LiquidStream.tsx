@@ -14,8 +14,43 @@ type Message = {
     isHot?: boolean; // Did this update weights?
 };
 
-export const LiquidStream = () => {
+const LiquidInput = React.memo(function LiquidInput({ onSend }: { onSend: (text: string) => void }) {
     const [input, setInput] = useState('');
+
+    const handleSend = () => {
+        if (!input.trim()) return;
+        onSend(input);
+        setInput('');
+    };
+
+    return (
+        <div className="relative group">
+            <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                placeholder="inject_thought( ... )"
+                aria-label="Inject thought"
+                className="w-full bg-zinc-900/50 border border-white/10 rounded-xl py-4 pl-6 pr-14 text-white placeholder:text-zinc-600 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/50 transition-all font-mono text-sm"
+            />
+            <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                aria-label={!input.trim() ? "Cannot send empty thought" : "Send thought"}
+                title={!input.trim() ? "Type a thought to send" : "Send thought"}
+                className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
+            >
+                <Send size={16} />
+            </button>
+
+            {/* Decorative Line */}
+            <div className="absolute bottom-0 left-6 right-6 h-[1px] bg-gradient-to-r from-transparent via-green-500/20 to-transparent group-focus-within:via-green-500/50 transition-all" />
+        </div>
+    );
+});
+
+export const LiquidStream = () => {
     const [messages, setMessages] = useState<Message[]>([
         { id: 1, role: 'apeiron', content: 'Cognitive Runtime Online. Akashic Link Established.' }
     ]);
@@ -27,12 +62,9 @@ export const LiquidStream = () => {
         }
     }, [messages]);
 
-    const handleSend = () => {
-        if (!input.trim()) return;
-
-        const userMsg: Message = { id: Date.now(), role: 'user', content: input };
+    const handleSend = (text: string) => {
+        const userMsg: Message = { id: Date.now(), role: 'user', content: text };
         setMessages(prev => [...prev, userMsg]);
-        setInput('');
 
         // Simulate Response
         setTimeout(() => {
@@ -40,7 +72,7 @@ export const LiquidStream = () => {
             const responseMsg: Message = {
                 id: Date.now() + 1,
                 role: 'apeiron',
-                content: isLearning ? `Acknowledged. Updating Manifold with new axiom: "${input}".` : `Query resolved from Cluster #42F.`,
+                content: isLearning ? `Acknowledged. Updating Manifold with new axiom: "${text}".` : `Query resolved from Cluster #42F.`,
                 isHot: isLearning
             };
             setMessages(prev => [...prev, responseMsg]);
@@ -113,29 +145,7 @@ export const LiquidStream = () => {
 
             {/* Input Area */}
             <div className="p-6 pt-0">
-                <div className="relative group">
-                    <input
-                        type="text"
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                        placeholder="inject_thought( ... )"
-                        aria-label="Inject thought"
-                        className="w-full bg-zinc-900/50 border border-white/10 rounded-xl py-4 pl-6 pr-14 text-white placeholder:text-zinc-600 focus:outline-none focus:border-green-500/50 focus:ring-1 focus:ring-green-500/50 transition-all font-mono text-sm"
-                    />
-                    <button
-                        onClick={handleSend}
-                        disabled={!input.trim()}
-                        aria-label={!input.trim() ? "Cannot send empty thought" : "Send thought"}
-                        title={!input.trim() ? "Type a thought to send" : "Send thought"}
-                        className="absolute right-2 top-2 p-2 bg-gradient-to-br from-green-600 to-green-900 rounded-lg text-white opacity-80 hover:opacity-100 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900"
-                    >
-                        <Send size={16} />
-                    </button>
-
-                    {/* Decorative Line */}
-                    <div className="absolute bottom-0 left-6 right-6 h-[1px] bg-gradient-to-r from-transparent via-green-500/20 to-transparent group-focus-within:via-green-500/50 transition-all" />
-                </div>
+                <LiquidInput onSend={handleSend} />
             </div>
         </div>
     );
