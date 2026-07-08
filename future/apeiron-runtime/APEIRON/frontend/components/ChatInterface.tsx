@@ -40,9 +40,37 @@ const ThoughtItem = memo(function ThoughtItem({ thought }: { thought: string }) 
     </div>
 )});
 
+const ChatInput = memo(function ChatInput({ sendMessage, tunnelStatus }: { sendMessage: (text: string) => void, tunnelStatus: string }) {
+    const [input, setInput] = useState('');
+
+    return (
+        <form
+            onSubmit={(e) => { e.preventDefault(); sendMessage(input); setInput(''); }}
+            className="flex gap-4"
+        >
+            <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={tunnelStatus !== 'LOCKED' ? "System offline. Reconnecting..." : "Inject knowledge into the kernel..."}
+                aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : "Message input"}
+                disabled={tunnelStatus !== 'LOCKED'}
+                className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            />
+            <button
+                type="submit"
+                disabled={!input.trim() || tunnelStatus !== 'LOCKED'}
+                aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : (!input.trim() ? "Cannot send empty message" : "Send message")}
+                title={tunnelStatus !== 'LOCKED' ? "Cannot send message while offline" : (!input.trim() ? "Enter a message to send" : "Send message")}
+                className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
+            >
+                <Send size={20} />
+            </button>
+        </form>
+    );
+});
+
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts, tunnelStatus } = useApeiron();
-    const [input, setInput] = useState('');
     const scrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom
@@ -128,28 +156,7 @@ export default function ChatInterface() {
                         </div>
                     )}
 
-                    <form
-                        onSubmit={(e) => { e.preventDefault(); sendMessage(input); setInput(''); }}
-                        className="flex gap-4"
-                    >
-                        <input
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            placeholder={tunnelStatus !== 'LOCKED' ? "System offline. Reconnecting..." : "Inject knowledge into the kernel..."}
-                            aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : "Message input"}
-                            disabled={tunnelStatus !== 'LOCKED'}
-                            className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                        />
-                        <button
-                            type="submit"
-                            disabled={!input.trim() || tunnelStatus !== 'LOCKED'}
-                            aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : (!input.trim() ? "Cannot send empty message" : "Send message")}
-                            title={tunnelStatus !== 'LOCKED' ? "Cannot send message while offline" : (!input.trim() ? "Enter a message to send" : "Send message")}
-                            className="p-3 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-green-500 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black"
-                        >
-                            <Send size={20} />
-                        </button>
-                    </form>
+                    <ChatInput sendMessage={sendMessage} tunnelStatus={tunnelStatus} />
                 </div>
             </div>
         </div>
