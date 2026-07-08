@@ -108,14 +108,30 @@ export default function ChatInterface() {
                             pulseType === 'red' ? 'bg-red-500 opacity-100 shadow-[0_0_30px_rgba(239,68,68,0.8)]' : 'opacity-0'}`} />
 
                 <div
-                    className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6"
+                    className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 flex flex-col"
                     role="log"
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
+                    {messages.length === 0 ? (
+                        <div className="flex-1 flex flex-col items-center justify-center text-gray-500 space-y-4">
+                            {tunnelStatus !== 'LOCKED' ? (
+                                <>
+                                    <Cpu size={32} className="animate-spin text-gray-700" />
+                                    <p>Establishing Downlink Connection...</p>
+                                </>
+                            ) : (
+                                <>
+                                    <Zap size={32} className="text-gray-700" />
+                                    <p>System Ready. Awaiting knowledge injection.</p>
+                                </>
+                            )}
+                        </div>
+                    ) : (
+                        messages.map((msg) => (
+                            <MessageItem key={msg.id} msg={msg} />
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
