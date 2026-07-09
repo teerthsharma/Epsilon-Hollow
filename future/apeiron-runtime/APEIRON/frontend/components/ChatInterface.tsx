@@ -141,9 +141,21 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
+                    {messages.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-4">
+                            <Cpu size={48} className={`mb-4 ${tunnelStatus !== 'LOCKED' ? 'opacity-50 animate-pulse' : 'text-green-500/50'}`} />
+                            <p className="text-lg text-center">
+                                {tunnelStatus !== 'LOCKED' ? 'Establishing secure tunnel...' : 'System ready. Awaiting input...'}
+                            </p>
+                            <p className="text-sm opacity-50 text-center max-w-md">
+                                Inject knowledge into the kernel to begin neuroplasticity sequence.
+                            </p>
+                        </div>
+                    ) : (
+                        messages.map((msg) => (
+                            <MessageItem key={msg.id} msg={msg} />
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 

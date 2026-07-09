@@ -4,3 +4,7 @@
 ## 2024-06-01 - Prevent ghost interactions during offline states
 **Learning:** Found that leaving input fields active while the system is offline leads to ghost interactions. In React/Next.js applications, inputs and buttons should be disabled based on network connection state, providing clear dynamic feedback (like "System offline. Reconnecting...") via placeholder and aria-label attributes for accessibility.
 **Action:** When implementing chat interfaces that rely on external connections, always tie input and submit button disabled states to the connection status (e.g. `tunnelStatus !== 'LOCKED'`). Also provide visual disabled styling (`disabled:opacity-50 disabled:cursor-not-allowed`).
+
+## 2024-07-09 - Dynamic Empty States
+**Learning:** Blank screens can be confusing, especially when there's an initial connection delay. Empty states should utilize existing connection variables (like `tunnelStatus`) to clearly communicate if the system is loading/offline or ready for input.
+**Action:** When implementing chat interfaces or data lists, never leave a completely blank screen for empty states. Always provide a dynamic empty state providing system context.
