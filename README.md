@@ -1792,6 +1792,7 @@ Every claim in this README has a supplementary document. Every document traces t
 
 | Document | What it covers |
 |----------|---------------|
+| [kernel/aether/Aether-Lang/docs/index.md](kernel/aether/Aether-Lang/docs/index.md) | Canonical MkDocs entrypoint with evidence policy, Epsilon Hollow context, backend gates, and neutral systems-engineering docs |
 | [kernel/aether/Aether-Lang/docs/LANGUAGE.md](kernel/aether/Aether-Lang/docs/LANGUAGE.md) | Syntax, semantics, topological primitives |
 | [kernel/aether/Aether-Lang/docs/GETTING_STARTED.md](kernel/aether/Aether-Lang/docs/GETTING_STARTED.md) | Setup, first program, REPL usage |
 | [kernel/aether/Aether-Lang/docs/ARCHITECTURE.md](kernel/aether/Aether-Lang/docs/ARCHITECTURE.md) | Parser, Bio mode, Titan VM, AEGIS memory |

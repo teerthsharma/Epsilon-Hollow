@@ -1,36 +1,26 @@
-# ⚡ AETHER Performance Benchmarks
+# AETHER Benchmark Policy
 
-Comparisons between AETHER (Candle/Rust) and Python (Torch/Transformers).
+Benchmark documentation records evidence. It does not create evidence.
 
-## 1. Large Language Models (LLM)
+The active MkDocs benchmark page is `benchmarks/index.md`. This legacy page is
+kept as a pointer for readers who open the flat Markdown tree directly.
 
-**Model:** `TinyLlama/TinyLlama-1.1B-Chat-v1.0`
-**Hardware:** Docker Container (CPU)
+## Current Position
 
-| Metric | Python (Transformers) | AETHER (Native) | Improvement |
-|--------|----------------------|----------------|-------------|
-| **Load Time** | TBD | TBD | TBD |
-| **Inference Speed** | TBD tokens/sec | TBD tokens/sec | TBD |
-| **Memory Usage** | TBD | TBD | TBD |
+No broad Aether speedup claim is active from this page. Timing claims require a
+raw artifact with:
 
-> *Note: AETHER uses quantized models (GGUF/SafeTensors) optimized for edge deployment, resulting in significantly lower memory footprint and faster startup times.*
+- repository commit;
+- command;
+- hardware and software environment;
+- baseline implementation;
+- input size and seed;
+- correctness metric;
+- timing distribution.
 
-## 2. Geometric Core
+## Active Claim Boundary
 
-**Task:** Escalating Regression (Sine Wave, 10k points)
-
-| Implementation | Execution Time |
-|----------------|----------------|
-| **Python (NumPy)** | 90.1 ms |
-| **AETHER (Manifold)** | **0.12 ms** |
-| **Speedup** | **~750x** |
-
-## 3. Topology
-
-**Task:** Betti Number Calculation (Persistent Homology)
-
-| Implementation | Execution Time |
-|----------------|----------------|
-| **GUDHI (Python)** | 50.0 ms |
-| **AETHER (Sparse)** | **0.005 ms** |
-| **Speedup** | **~10,000x** |
+The repository contains parser, interpreter, VM, kernel-adjacent, and example
+code that can be tested at crate scope. It does not currently publish a
+reproducible artifact here that proves LLM, geometric-regression, or topology
+speed leadership.
