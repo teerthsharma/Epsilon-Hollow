@@ -45,10 +45,10 @@ impl HardwareTopology {
         // Calculate total memory
         boot_info.walk_memory_map(|region| {
             if region.kind == super::bios::MemoryRegionKind::Usable {
-                mem_total += region.end - region.start;
+                mem_total += region.end.0.saturating_sub(region.start.0);
             }
         });
-        
+
         let mut caps = IoCaps::default();
         if boot_info.framebuffer().is_some() {
             caps.has_framebuffer = true;

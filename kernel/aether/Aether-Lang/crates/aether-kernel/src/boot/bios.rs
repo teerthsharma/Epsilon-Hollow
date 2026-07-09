@@ -1,7 +1,6 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-use core::iter::Iterator;
 use aether_core::os::PhysAddr;
 use multiboot2::{BootInformation, BootInformationHeader};
 
@@ -54,7 +53,7 @@ impl BootInfo {
     }
 
     /// Access the raw multiboot information.
-    fn raw(&self) -> Option<BootInformation> {
+    fn raw(&self) -> Option<BootInformation<'_>> {
         unsafe {
             BootInformation::load(self.multiboot_start.0 as *const BootInformationHeader).ok()
         }
@@ -63,32 +62,35 @@ impl BootInfo {
     /// Iterate over the memory map using a callback.
     /// This avoids returning complex iterators with lifetimes.
     pub fn walk_memory_map<F>(&self, mut f: F)
-    where F: FnMut(MemoryRegion)
+    where
+        F: FnMut(MemoryRegion),
     {
-         if let Some(info) = self.raw() {
+        if let Some(info) = self.raw() {
             if let Some(tag) = info.memory_map_tag() {
                 for area in tag.memory_areas() {
                     f(MemoryRegion {
-                        start: area.start_address(),
-                        end: area.end_address(),
+                        start: PhysAddr(area.start_address()),
+                        end: PhysAddr(area.end_address()),
                         kind: match multiboot2::MemoryAreaType::from(area.typ()) {
-                             multiboot2::MemoryAreaType::Available => MemoryRegionKind::Usable,
-                             multiboot2::MemoryAreaType::Reserved => MemoryRegionKind::Reserved,
-                             multiboot2::MemoryAreaType::AcpiAvailable => MemoryRegionKind::Acpi,
-                             multiboot2::MemoryAreaType::ReservedHibernate => MemoryRegionKind::Reserved,
-                             _ => MemoryRegionKind::Unknown,
-                        }
+                            multiboot2::MemoryAreaType::Available => MemoryRegionKind::Usable,
+                            multiboot2::MemoryAreaType::Reserved => MemoryRegionKind::Reserved,
+                            multiboot2::MemoryAreaType::AcpiAvailable => MemoryRegionKind::Acpi,
+                            multiboot2::MemoryAreaType::ReservedHibernate => {
+                                MemoryRegionKind::Reserved
+                            }
+                            _ => MemoryRegionKind::Unknown,
+                        },
                     });
                 }
             }
-         }
+        }
     }
 
     pub fn framebuffer(&self) -> Option<Framebuffer> {
         let info = self.raw()?;
-        let tag = info.framebuffer_tag()?;
+        let tag = info.framebuffer_tag()?.ok()?;
         Some(Framebuffer {
-            address: tag.address(),
+            address: PhysAddr(tag.address()),
             width: tag.width(),
             height: tag.height(),
             pitch: tag.pitch(),

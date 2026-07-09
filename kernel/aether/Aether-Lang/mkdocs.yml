@@ -1,0 +1,64 @@
+site_name: Aether Language
+site_description: Evidence-gated documentation for Aether-Lang inside the Epsilon Hollow research system.
+site_url: https://teerthsharma.github.io/Epsilon-Hollow/aether/
+repo_url: https://github.com/teerthsharma/Epsilon-Hollow
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+exclude_docs: |
+  AEGIS_LLM_SPECS.md
+  API.md
+  ARCHITECTURE.md
+  BENCHMARKS.md
+  BIO_CLOCK_PRD.md
+  EXAMPLES.md
+  FAQ.md
+  GETTING_STARTED.md
+  HARDWARE_SPEC.md
+  LANGUAGE.md
+  MATHEMATICS.md
+  ML_AETHER.md
+  ML_FROM_SCRATCH.md
+  ML_LIBRARY.md
+  ML_TASKS.md
+  OS_DEVELOPMENT.md
+  SYNTAX.md
+  TUTORIAL.md
+  paper/*
+nav:
+  - Home: index.md
+  - Concepts:
+      - Epsilon Hollow: concepts/epsilon-hollow.md
+      - Manifold Model: concepts/manifold-model.md
+      - Evidence Policy: concepts/evidence-policy.md
+  - Language:
+      - Syntax: language/syntax.md
+      - Runtime Surface: language/runtime-surface.md
+  - Runtime:
+      - Architecture: runtime/architecture.md
+      - OS Integration: runtime/os-integration.md
+  - Tutorials:
+      - Runnable Examples: tutorials/index.md
+  - Benchmarks:
+      - Benchmark Policy: benchmarks/index.md
+  - Backends:
+      - Compatibility Matrix: backends/compatibility.md
+  - Reference:
+      - API: reference/api.md
+      - Contribution Standard: reference/contributing.md

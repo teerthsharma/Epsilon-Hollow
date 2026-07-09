@@ -9,6 +9,7 @@ dependencies = [
  "heapless",
  "libm",
  "nalgebra",
+ "spin",
 ]
 
 [[package]]
