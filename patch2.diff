@@ -1,0 +1,60 @@
+<<<<<<< SEARCH
+export const LiquidStream = () => {
+    const [messages, setMessages] = useState<Message[]>([
+        { id: 1, role: 'apeiron', content: 'Cognitive Runtime Online. Akashic Link Established.' }
+    ]);
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+    }, [messages]);
+
+    const handleSend = (text: string) => {
+        const userMsg: Message = { id: Date.now(), role: 'user', content: text };
+        setMessages(prev => [...prev, userMsg]);
+
+        // Simulate Response
+        setTimeout(() => {
+            const isLearning = Math.random() > 0.5; // Simulate learning trigger
+            const responseMsg: Message = {
+                id: Date.now() + 1,
+                role: 'apeiron',
+                content: isLearning ? `Acknowledged. Updating Manifold with new axiom: "${text}".` : `Query resolved from Cluster #42F.`,
+                isHot: isLearning
+            };
+            setMessages(prev => [...prev, responseMsg]);
+        }, 1000);
+    };
+=======
+export const LiquidStream = () => {
+    const [messages, setMessages] = useState<Message[]>([
+        { id: 1, role: 'apeiron', content: 'Cognitive Runtime Online. Akashic Link Established.', timestamp: new Date().toLocaleTimeString() }
+    ]);
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (scrollRef.current) {
+            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+        }
+    }, [messages]);
+
+    const handleSend = (text: string) => {
+        const userMsg: Message = { id: Date.now(), role: 'user', content: text, timestamp: new Date().toLocaleTimeString() };
+        setMessages(prev => [...prev, userMsg]);
+
+        // Simulate Response
+        setTimeout(() => {
+            const isLearning = Math.random() > 0.5; // Simulate learning trigger
+            const responseMsg: Message = {
+                id: Date.now() + 1,
+                role: 'apeiron',
+                content: isLearning ? `Acknowledged. Updating Manifold with new axiom: "${text}".` : `Query resolved from Cluster #42F.`,
+                isHot: isLearning,
+                timestamp: new Date().toLocaleTimeString()
+            };
+            setMessages(prev => [...prev, responseMsg]);
+        }, 1000);
+    };
+>>>>>>> REPLACE
