@@ -141,9 +141,18 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-gray-500 space-y-4">
+                            <Cpu size={48} className={`opacity-50 ${tunnelStatus !== 'LOCKED' ? 'animate-pulse' : ''}`} />
+                            <p className="font-mono text-sm">
+                                {tunnelStatus !== 'LOCKED' ? "System offline. Reconnecting..." : "System ready for input."}
+                            </p>
+                        </div>
+                    ) : (
+                        messages.map((msg) => (
+                            <MessageItem key={msg.id} msg={msg} />
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 

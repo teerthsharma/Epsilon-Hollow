@@ -21,7 +21,7 @@ aether-lang = { path = "../aether/Aether-Lang/crates/aether-lang", default-featu
 aether_verified = { path = "../aether/aether-verified", default-features = false }
 spin = "0.9"
 volatile = "0.4"
-x86_64 = "0.15"
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 libm = { version = "0.2", default-features = false }
 uefi = { version = "0.32", features = ["alloc"] }
 sha2 = { version = "0.10", default-features = false }
