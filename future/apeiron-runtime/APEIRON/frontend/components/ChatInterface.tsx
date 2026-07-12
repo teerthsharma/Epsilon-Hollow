@@ -141,9 +141,25 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center opacity-70">
+                            <div className="mb-4">
+                                <Cpu size={48} className={`mx-auto mb-4 ${tunnelStatus !== 'LOCKED' ? 'text-gray-600 animate-pulse' : 'text-green-500'}`} />
+                            </div>
+                            <h3 className={`text-lg font-bold mb-2 ${tunnelStatus !== 'LOCKED' ? 'text-gray-500' : 'text-green-400'}`}>
+                                {tunnelStatus !== 'LOCKED' ? 'Establishing Neural Link...' : 'System Ready'}
+                            </h3>
+                            <p className="text-sm text-gray-500 max-w-md">
+                                {tunnelStatus !== 'LOCKED'
+                                    ? 'Connecting to the Apeiron kernel. Please wait for the uplink to stabilize.'
+                                    : 'The runtime is active. Inject knowledge or query the manifold.'}
+                            </p>
+                        </div>
+                    ) : (
+                        messages.map((msg) => (
+                            <MessageItem key={msg.id} msg={msg} />
+                        ))
+                    )}
                     <div ref={scrollRef} />
                 </div>
 
