@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { useApeiron, Message } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
 
@@ -87,6 +87,18 @@ export default function ChatInterface() {
         }
     };
 
+    // ⚡ Bolt: Performance optimization
+    // Wrapping thoughts.map in useMemo to prevent O(N) re-render overhead when other streaming states update
+    const renderedThoughts = useMemo(() => thoughts.map((t, i) => (
+        <ThoughtItem key={i} thought={t} />
+    )), [thoughts]);
+
+    // ⚡ Bolt: Performance optimization
+    // Wrapping messages.map in useMemo to prevent O(N) re-render overhead when other streaming states update
+    const renderedMessages = useMemo(() => messages.map((msg) => (
+        <MessageItem key={msg.id} msg={msg} />
+    )), [messages]);
+
     return (
         <div className="flex h-screen bg-black text-gray-100 font-mono overflow-hidden selection:bg-green-500/30">
 
@@ -111,9 +123,7 @@ export default function ChatInterface() {
                     <div className="p-4 rounded border border-gray-800 bg-gray-900/50 h-64 overflow-hidden flex flex-col">
                         <div className="text-xs text-gray-500 mb-2 border-b border-gray-800 pb-1">THOUGHT STREAM</div>
                         <div className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide">
-                            {thoughts.map((t, i) => (
-                                <ThoughtItem key={i} thought={t} />
-                            ))}
+                            {renderedThoughts}
                             <div ref={scrollRef} />
                         </div>
                     </div>
@@ -156,9 +166,7 @@ export default function ChatInterface() {
                             </p>
                         </div>
                     ) : (
-                        messages.map((msg) => (
-                            <MessageItem key={msg.id} msg={msg} />
-                        ))
+                        renderedMessages
                     )}
                     <div ref={scrollRef} />
                 </div>
