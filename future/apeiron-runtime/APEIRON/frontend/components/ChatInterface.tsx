@@ -71,11 +71,13 @@ const ChatInput = memo(function ChatInput({ sendMessage, tunnelStatus }: { sendM
 
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts, tunnelStatus } = useApeiron();
-    const scrollRef = useRef<HTMLDivElement>(null);
+    const chatScrollRef = useRef<HTMLDivElement>(null);
+    const thoughtScrollRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom
     useEffect(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+        chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+        thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, thoughts]);
 
     const getPulseColor = () => {
@@ -110,11 +112,16 @@ export default function ChatInterface() {
 
                     <div className="p-4 rounded border border-gray-800 bg-gray-900/50 h-64 overflow-hidden flex flex-col">
                         <div className="text-xs text-gray-500 mb-2 border-b border-gray-800 pb-1">THOUGHT STREAM</div>
-                        <div className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide">
+                        <div
+                            className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide"
+                            role="log"
+                            aria-live="polite"
+                            aria-label="Thought stream"
+                        >
                             {thoughts.map((t, i) => (
                                 <ThoughtItem key={i} thought={t} />
                             ))}
-                            <div ref={scrollRef} />
+                            <div ref={thoughtScrollRef} />
                         </div>
                     </div>
 
@@ -160,7 +167,7 @@ export default function ChatInterface() {
                             <MessageItem key={msg.id} msg={msg} />
                         ))
                     )}
-                    <div ref={scrollRef} />
+                    <div ref={chatScrollRef} />
                 </div>
 
                 {/* Input Zone */}
