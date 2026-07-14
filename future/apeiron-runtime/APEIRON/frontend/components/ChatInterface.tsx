@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { useApeiron, Message } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
 
@@ -73,6 +73,15 @@ export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts, tunnelStatus } = useApeiron();
     const chatScrollRef = useRef<HTMLDivElement>(null);
     const thoughtScrollRef = useRef<HTMLDivElement>(null);
+
+    // ⚡ Bolt: Performance optimization
+    // Wrapping the map over messages in useMemo prevents O(N) re-calculation
+    // on every render triggered by unrelated state updates (e.g., from pulseType, thoughts).
+    // MessageItem itself is already wrapped in React.memo, but without this parent-level memoization,
+    // the array mapping executes redundantly on every parent re-render.
+    const renderedMessages = useMemo(() =>
+        messages.map((msg) => <MessageItem key={msg.id} msg={msg} />),
+    [messages]);
 
     // Auto-scroll to bottom
     useEffect(() => {
@@ -163,9 +172,7 @@ export default function ChatInterface() {
                             </p>
                         </div>
                     ) : (
-                        messages.map((msg) => (
-                            <MessageItem key={msg.id} msg={msg} />
-                        ))
+                        renderedMessages
                     )}
                     <div ref={chatScrollRef} />
                 </div>
