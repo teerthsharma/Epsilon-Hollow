@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { useApeiron, Message } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
 
@@ -89,6 +89,18 @@ export default function ChatInterface() {
         }
     };
 
+    // ⚡ Bolt: Performance optimization
+    // The parent component frequently re-renders due to unrelated state like `isLearning` or `pulseType`.
+    // Wrapping the mapped array directly inside useMemo prevents the expensive O(N) `.map`
+    // execution over large message and thought arrays on every single parent re-render.
+    const memoizedMessages = useMemo(() => messages.map((msg) => (
+        <MessageItem key={msg.id} msg={msg} />
+    )), [messages]);
+
+    const memoizedThoughts = useMemo(() => thoughts.map((t, i) => (
+        <ThoughtItem key={i} thought={t} />
+    )), [thoughts]);
+
     return (
         <div className="flex h-screen bg-black text-gray-100 font-mono overflow-hidden selection:bg-green-500/30">
 
@@ -118,9 +130,7 @@ export default function ChatInterface() {
                             aria-live="polite"
                             aria-label="Thought stream"
                         >
-                            {thoughts.map((t, i) => (
-                                <ThoughtItem key={i} thought={t} />
-                            ))}
+                            {memoizedThoughts}
                             <div ref={thoughtScrollRef} />
                         </div>
                     </div>
@@ -163,9 +173,7 @@ export default function ChatInterface() {
                             </p>
                         </div>
                     ) : (
-                        messages.map((msg) => (
-                            <MessageItem key={msg.id} msg={msg} />
-                        ))
+                        memoizedMessages
                     )}
                     <div ref={chatScrollRef} />
                 </div>
