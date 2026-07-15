@@ -12,3 +12,7 @@
 ## 2026-07-13 - Independent Scrolling Refs and Dynamic ARIA Attributes for Thought Streams
 **Learning:** Found that attaching the same `useRef` (e.g., `scrollRef`) to multiple independent scrolling DOM elements (like a chat history and a side thought stream) causes the ref to only point to the last rendered element. This breaks auto-scrolling for all but one container. Additionally, dynamic side streams (like the thought stream) must have appropriate ARIA attributes (`role="log"`, `aria-live="polite"`) for screen readers to announce new thoughts as they arrive.
 **Action:** When implementing multiple independent scrolling areas (such as chat and telemetry streams), always create distinct `useRef` hooks for each container. Additionally, ensure all live-updating dynamic content areas have proper `role="log"` and `aria-live="polite"` attributes for accessibility.
+
+## 2026-07-15 - Explicit Screen Reader Announcement for Message Authorship
+**Learning:** In chat interfaces, visual alignment (left for user, right for system) is insufficient for screen readers. Without explicit context, messages are read aloud as continuous text, making it impossible to distinguish authorship.
+**Action:** When creating message list items, always include explicit visually hidden text (e.g., `<span className="sr-only">User:</span>`) before the message content to ensure screen readers clearly announce who sent the message.
