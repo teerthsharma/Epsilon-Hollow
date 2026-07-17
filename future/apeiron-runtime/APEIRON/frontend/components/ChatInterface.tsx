@@ -80,7 +80,9 @@ export default function ChatInterface() {
         thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, thoughts]);
 
-    // Pre-calculate memoized arrays at the top level to obey rules of hooks
+    // ⚡ Bolt: Performance optimization
+    // Pre-calculate memoized arrays at the top level to prevent O(N) re-renders
+    // and obey rules of hooks
     const memoizedThoughts = useMemo(() => thoughts.map((t, i) => (
         <ThoughtItem key={i} thought={t} />
     )), [thoughts]);
