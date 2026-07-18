@@ -33,6 +33,7 @@ const MessageItem = React.memo(function MessageItem({ msg }: { msg: Message }) {
                     ? "bg-zinc-900 border border-white/10 text-white rounded-tr-sm"
                     : "bg-black border border-green-500/20 text-green-100 rounded-tl-sm shadow-[0_0_15px_rgba(34,197,94,0.05)]"
             )}>
+                <span className="sr-only">{msg.role === 'user' ? 'User: ' : 'System: '}</span>
                 {msg.content}
 
                 {/* Synapse Firing Effect */}
