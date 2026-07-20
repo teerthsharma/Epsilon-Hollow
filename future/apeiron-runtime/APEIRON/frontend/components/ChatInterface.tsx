@@ -1,7 +1,7 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { useApeiron, Message } from '../hooks/useApeiron';
 import { Send, Zap, Cpu } from 'lucide-react';
 
@@ -74,6 +74,23 @@ export default function ChatInterface() {
     const chatScrollRef = useRef<HTMLDivElement>(null);
     const thoughtScrollRef = useRef<HTMLDivElement>(null);
 
+    // ⚡ Bolt: Performance optimization
+    // Extract array mapping logic into useMemo hooks. A parent component rendering a large array
+    // directly in its render function executes that O(N) mapping on every single parent re-render.
+    // Since ChatInterface re-renders frequently (e.g., when pulseType or tunnelStatus change),
+    // memoizing the mappings prevents unnecessary O(N) overhead.
+    const memoizedThoughts = useMemo(() => {
+        return thoughts.map((t, i) => (
+            <ThoughtItem key={i} thought={t} />
+        ));
+    }, [thoughts]);
+
+    const memoizedMessages = useMemo(() => {
+        return messages.map((msg) => (
+            <MessageItem key={msg.id} msg={msg} />
+        ));
+    }, [messages]);
+
     // Auto-scroll to bottom
     useEffect(() => {
         chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -118,9 +135,7 @@ export default function ChatInterface() {
                             aria-live="polite"
                             aria-label="Thought stream"
                         >
-                            {thoughts.map((t, i) => (
-                                <ThoughtItem key={i} thought={t} />
-                            ))}
+                            {memoizedThoughts}
                             <div ref={thoughtScrollRef} />
                         </div>
                     </div>
@@ -163,9 +178,7 @@ export default function ChatInterface() {
                             </p>
                         </div>
                     ) : (
-                        messages.map((msg) => (
-                            <MessageItem key={msg.id} msg={msg} />
-                        ))
+                        memoizedMessages
                     )}
                     <div ref={chatScrollRef} />
                 </div>
