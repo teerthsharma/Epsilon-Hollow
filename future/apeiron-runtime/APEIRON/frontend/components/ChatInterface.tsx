@@ -12,6 +12,7 @@ import { Send, Zap, Cpu } from 'lucide-react';
 // that actually changed (the one currently being streamed).
 const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) { return (
     <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+        <span className="sr-only">{msg.sender === 'user' ? 'User:' : 'System:'}</span>
         <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
             ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
             : msg.sender === 'user'
