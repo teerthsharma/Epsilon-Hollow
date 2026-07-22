@@ -10,3 +10,7 @@
 ## 2026-07-11 - Prevented O(N^2) Rendering in LiquidStream
 **Learning:** In streaming chat applications like LiquidStream, rendering an entire array of messages directly within the parent component via `messages.map` causes full-list re-renders every time a new message (or message chunk) is added. This creates an O(N^2) performance bottleneck. Furthermore, recalculating dynamic values like timestamps (`new Date().toLocaleTimeString()`) inline causes hydration mismatches or recalculates values for older messages unexpectedly.
 **Action:** Always extract message rendering into a dedicated child component (e.g., `MessageItem`) wrapped in `React.memo()`. Also, freeze dynamic values like timestamps by adding them to the message model state upon creation rather than calculating them during render. Fix hydration mismatches by wrapping initial state-setting logic within a `useEffect` and a `setTimeout(() => { ... }, 0)`.
+
+## 2026-07-22 - Memoized Array Mapping
+**Learning:** Even when child components are memoized with `React.memo()`, a parent component doing a direct mapping operation via `.map` within its JSX render cycle still executes an O(N) operation on every single re-render. If that parent re-renders frequently due to unrelated state (e.g. streaming telemetry), the cost of repeated mapping becomes a bottleneck.
+**Action:** Extract expensive array mappings from the JSX return block and wrap them in a `useMemo` hook at the top level of the component to prevent unnecessary mapping cycles.
