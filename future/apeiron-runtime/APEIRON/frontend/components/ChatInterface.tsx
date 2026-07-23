@@ -18,6 +18,7 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) { retur
                 ? 'border-gray-700 bg-gray-800'
                 : 'border-blue-900/30 bg-blue-900/10'
             }`}>
+            <span className="sr-only">{msg.sender === 'user' ? 'User:' : 'Apeiron:'}</span>
             {msg.isPlasticityEvent && (
                 <div className="flex items-center gap-2 text-xs text-green-400 mb-2 uppercase tracking-wide">
                     <Zap size={12} fill="currentColor" />

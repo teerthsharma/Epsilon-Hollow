@@ -19,7 +19,7 @@ test-mode = []
 aether-core = { path = "../epsilon/epsilon/crates/aether-core", default-features = false, features = ["no_std"] }
 aether-lang = { path = "../aether/Aether-Lang/crates/aether-lang", default-features = false, features = ["no_std"] }
 aether_verified = { path = "../aether/aether-verified", default-features = false }
-spin = "0.9"
+spin = "0.9.9"
 volatile = "0.4"
 x86_64 = "0.15.5"
 libm = { version = "0.2", default-features = false }

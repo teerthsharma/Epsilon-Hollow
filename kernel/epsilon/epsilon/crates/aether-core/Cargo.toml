@@ -32,7 +32,7 @@ libm = { workspace = true }
 # serde = { workspace = true }
 nalgebra = { workspace = true }
 heapless = { workspace = true }
-spin = { version = "0.9", default-features = false, features = ["mutex", "spin_mutex"] }
+spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [dev-dependencies]
 # Pin to 1.5 to avoid pulling rand 0.9 / getrandom 0.4 which require
