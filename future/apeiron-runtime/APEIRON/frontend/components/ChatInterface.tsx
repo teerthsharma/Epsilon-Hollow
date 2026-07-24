@@ -24,7 +24,10 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) { retur
                     <span>Weights Updated</span>
                 </div>
             )}
-            <p className="whitespace-pre-wrap">{msg.text}</p>
+            <p className="whitespace-pre-wrap">
+                <span className="sr-only">{msg.sender === 'user' ? 'User: ' : 'System: '}</span>
+                {msg.text}
+            </p>
         </div>
     </div>
 )}, (prevProps, nextProps) => {
