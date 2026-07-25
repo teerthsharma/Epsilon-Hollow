@@ -14,3 +14,7 @@
 ## 2026-07-24 - Extracted Map Operations from Render Loop
 **Learning:** Even if child components are memoized with `React.memo()`, a parent component mapping over a large array directly in its render function executes that O(N) mapping on every parent re-render. If the parent re-renders frequently due to unrelated state (e.g., streaming telemetry), the array mapping logic should be extracted and wrapped in a `useMemo` hook at the top level of the component to prevent unnecessary overhead.
 **Action:** Always wrap array mapping logic in `useMemo` if the parent component frequently re-renders due to unrelated state.
+
+## 2024-07-25 - React.memo Component Referential Equality
+**Learning:** Even if a child component is wrapped in `React.memo` (like `LiquidInput`), if the parent passes an inline or standard function (like `handleSend`) as a prop, that function gets a new reference on every parent render. This defeats the `React.memo` because the props will shallow-compare as unequal, causing unnecessary re-renders of the memoized child.
+**Action:** Always wrap event handlers passed as props to `React.memo` components in `useCallback` to preserve referential equality and actually realize the performance benefits of memoization.
