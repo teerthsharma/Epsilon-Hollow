@@ -3,7 +3,7 @@
 
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -116,7 +116,12 @@ export const LiquidStream = () => {
         }
     }, [messages]);
 
-    const handleSend = (text: string) => {
+    // ⚡ Bolt: Performance optimization
+    // Wrap handleSend in useCallback to preserve referential equality.
+    // LiquidInput is a memoized component (React.memo), but without useCallback,
+    // handleSend creates a new function reference on every messages array update,
+    // breaking the memoization and causing LiquidInput to re-render unnecessarily.
+    const handleSend = useCallback((text: string) => {
         const userMsg: Message = { id: Date.now(), role: 'user', content: text, timestamp: new Date().toLocaleTimeString() };
         setMessages(prev => [...prev, userMsg]);
 
@@ -132,7 +137,7 @@ export const LiquidStream = () => {
             };
             setMessages(prev => [...prev, responseMsg]);
         }, 1000);
-    };
+    }, []);
 
     return (
         <div className="h-full flex flex-col bg-black relative">
