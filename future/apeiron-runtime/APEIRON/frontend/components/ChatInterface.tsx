@@ -173,6 +173,20 @@ export default function ChatInterface() {
                                     ? 'Connecting to the Apeiron kernel. Please wait for the uplink to stabilize.'
                                     : 'The runtime is active. Inject knowledge or query the manifold.'}
                             </p>
+                            <div className="mt-8 flex flex-wrap justify-center gap-3">
+                                {['Run system diagnostic', 'Query manifold clusters', 'Initialize neuroplasticity'].map((suggestion) => (
+                                    <button
+                                        key={suggestion}
+                                        onClick={() => sendMessage(suggestion)}
+                                        disabled={tunnelStatus !== 'LOCKED'}
+                                        aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : `Send suggestion: ${suggestion}`}
+                                        title={tunnelStatus !== 'LOCKED' ? "Cannot send message while offline" : suggestion}
+                                        className="px-4 py-2 text-sm bg-gray-900 border border-gray-700 rounded-full text-gray-300 hover:bg-gray-800 hover:text-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+                                    >
+                                        {suggestion}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     ) : (
                         renderedMessages
