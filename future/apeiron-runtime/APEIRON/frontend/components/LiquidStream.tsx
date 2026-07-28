@@ -3,7 +3,7 @@
 
 'use client';
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Send, Sparkles } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -140,6 +140,14 @@ export const LiquidStream = () => {
         }, 1000);
     }, []);
 
+    // ⚡ Bolt: Performance optimization
+    // Extracted array mapping out of the main render loop into useMemo.
+    // Mapping over a large array directly in the render function executes O(N) mapping on every parent re-render.
+    // Wrapping it in useMemo prevents unnecessary mapping overhead.
+    const renderedMessages = useMemo(() => messages.map((msg) => (
+        <MessageItem key={msg.id} msg={msg} />
+    )), [messages]);
+
     return (
         <div className="h-full flex flex-col bg-black relative">
             {/* Header */}
@@ -159,9 +167,7 @@ export const LiquidStream = () => {
                 aria-live="polite"
                 aria-label="Thought stream"
             >
-                {messages.map((msg) => (
-                    <MessageItem key={msg.id} msg={msg} />
-                ))}
+                {renderedMessages}
 
                 {/* Ghost Text / Daemon Suggestion */}
                 <div className="text-center py-8 opacity-20 hover:opacity-100 transition-opacity duration-700">
