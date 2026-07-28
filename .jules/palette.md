@@ -16,3 +16,7 @@
 ## 2026-07-28 - Dynamic Suggestion Chips for Empty States
 **Learning:** In conversational UIs, users often experience "blank canvas paralysis" when faced with a completely empty chat, even if the system states it is "Ready". Providing quick-start suggestion chips significantly improves the initial UX. However, in connection-dependent apps, these chips must correctly bind their `disabled` state and dynamic accessibility attributes (`aria-label`, `title`) to the connection status (e.g. `tunnelStatus !== 'LOCKED'`) to prevent users from attempting actions before the system is actually ready.
 **Action:** When implementing empty states in chat interfaces, always include clickable suggestion chips for common initial actions, ensuring their interactivity and accessibility properties are strictly governed by the underlying connection state.
+
+## 2024-07-28 - Dynamic Disabled States During Processing
+**Learning:** Adding a visible loading state (like a spinner) and explicitly disabling inputs during async processing (e.g., `isLearning`) prevents double submissions and provides immediate feedback. In Next.js/React applications, when replacing a static icon with a conditionally rendered one, it is critical to verify the icon is imported to prevent runtime `ReferenceError` crashes.
+**Action:** When conditionally replacing components (like swapping `Send` for `Cpu`), always search the file's imports to ensure the new component is available before finalizing the change.
