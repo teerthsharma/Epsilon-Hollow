@@ -89,10 +89,17 @@ export default function ChatInterface() {
     )), [thoughts]);
 
     // Auto-scroll to bottom
+    // ⚡ Bolt: Performance optimization
+    // Separated the scroll effects for messages and thoughts.
+    // Previously, grouping them caused layout thrashing: whenever thoughts streamed in (high frequency),
+    // React would needlessly recalculate the layout and trigger scroll behavior for the chat container as well.
     useEffect(() => {
         chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    useEffect(() => {
         thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, thoughts]);
+    }, [thoughts]);
 
     const getPulseColor = () => {
         switch (pulseType) {
