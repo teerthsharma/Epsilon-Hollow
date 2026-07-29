@@ -18,3 +18,8 @@
 ## 2024-07-25 - React.memo Component Referential Equality
 **Learning:** Even if a child component is wrapped in `React.memo` (like `LiquidInput`), if the parent passes an inline or standard function (like `handleSend`) as a prop, that function gets a new reference on every parent render. This defeats the `React.memo` because the props will shallow-compare as unequal, causing unnecessary re-renders of the memoized child.
 **Action:** Always wrap event handlers passed as props to `React.memo` components in `useCallback` to preserve referential equality and actually realize the performance benefits of memoization.
+
+
+## 2026-07-29 - Prevented Layout Thrashing in Auto-Scroll
+**Learning:** In chat interfaces with multiple independent streams (like messages and thoughts), grouping their auto-scroll `scrollIntoView` calls into a single `useEffect` dependent on both state arrays causes layout thrashing. Updating one stream forces the browser to needlessly recalculate layout and scroll for the other.
+**Action:** Always separate `useEffect` scroll handlers for independent DOM containers so they only trigger when their specific data dependency changes.
