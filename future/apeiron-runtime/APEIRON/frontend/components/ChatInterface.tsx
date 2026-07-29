@@ -43,20 +43,35 @@ const ThoughtItem = memo(function ThoughtItem({ thought }: { thought: string }) 
 
 const ChatInput = memo(function ChatInput({ sendMessage, tunnelStatus }: { sendMessage: (text: string) => void, tunnelStatus: string }) {
     const [input, setInput] = useState('');
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    useEffect(() => {
+        if (tunnelStatus === 'LOCKED') {
+            inputRef.current?.focus();
+        }
+    }, [tunnelStatus]);
 
     return (
         <form
             onSubmit={(e) => { e.preventDefault(); sendMessage(input); setInput(''); }}
             className="flex gap-4"
         >
-            <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={tunnelStatus !== 'LOCKED' ? "System offline. Reconnecting..." : "Inject knowledge into the kernel..."}
-                aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : "Message input"}
-                disabled={tunnelStatus !== 'LOCKED'}
-                className="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            />
+            <div className="relative flex-1 flex items-center">
+                <input
+                    ref={inputRef}
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder={tunnelStatus !== 'LOCKED' ? "System offline. Reconnecting..." : "Inject knowledge into the kernel..."}
+                    aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : "Message input"}
+                    disabled={tunnelStatus !== 'LOCKED'}
+                    className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:border-green-500 transition-colors text-white disabled:opacity-50 disabled:cursor-not-allowed pr-16"
+                />
+                {tunnelStatus === 'LOCKED' && !input && (
+                    <div className="absolute right-3 pointer-events-none text-gray-500 flex items-center">
+                        <kbd className="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-[10px] font-mono">Enter ↵</kbd>
+                    </div>
+                )}
+            </div>
             <button
                 type="submit"
                 disabled={!input.trim() || tunnelStatus !== 'LOCKED'}

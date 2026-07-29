@@ -16,3 +16,7 @@
 ## 2026-07-28 - Dynamic Suggestion Chips for Empty States
 **Learning:** In conversational UIs, users often experience "blank canvas paralysis" when faced with a completely empty chat, even if the system states it is "Ready". Providing quick-start suggestion chips significantly improves the initial UX. However, in connection-dependent apps, these chips must correctly bind their `disabled` state and dynamic accessibility attributes (`aria-label`, `title`) to the connection status (e.g. `tunnelStatus !== 'LOCKED'`) to prevent users from attempting actions before the system is actually ready.
 **Action:** When implementing empty states in chat interfaces, always include clickable suggestion chips for common initial actions, ensuring their interactivity and accessibility properties are strictly governed by the underlying connection state.
+
+## 2024-07-29 - Auto-focus and inline keyboard hints
+**Learning:** Auto-focusing inputs upon async system readiness prevents unnecessary user clicks. Additionally, inline keyboard hints (<kbd>) improve discoverability for power users without cluttering the UI when only shown on empty input.
+**Action:** When implementing chat or command inputs, always auto-focus when ready and use inline hints inside the input container for better accessibility and efficiency.
