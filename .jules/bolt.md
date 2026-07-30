@@ -18,3 +18,8 @@
 ## 2024-07-25 - React.memo Component Referential Equality
 **Learning:** Even if a child component is wrapped in `React.memo` (like `LiquidInput`), if the parent passes an inline or standard function (like `handleSend`) as a prop, that function gets a new reference on every parent render. This defeats the `React.memo` because the props will shallow-compare as unequal, causing unnecessary re-renders of the memoized child.
 **Action:** Always wrap event handlers passed as props to `React.memo` components in `useCallback` to preserve referential equality and actually realize the performance benefits of memoization.
+
+## 2024-07-30 - Expensive Initialization in React
+
+**Learning:** `useMemo` should not be used for expensive, one-time initialization if the logic contains impure functions (like `Math.random()`), as React can throw away memoized values or linting rules (like `react-hooks/purity`) will flag the impure function. The computation will rerun unexpectedly on re-renders, causing performance drops or UI flashes (e.g. regenerating 3D coordinates).
+**Action:** Use a lazy `useState` initializer (`useState(() => expensiveInitialization())`) for data that must be calculated once and kept stable across all re-renders.
