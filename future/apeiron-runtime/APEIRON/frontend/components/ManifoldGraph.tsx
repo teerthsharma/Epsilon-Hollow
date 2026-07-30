@@ -3,7 +3,7 @@
 
 'use client';
 
-import React, { useRef, useMemo } from 'react';
+import React, { useRef, useState } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import * as THREE from 'three';
@@ -13,7 +13,13 @@ const PointCloud = () => {
 
     // Generate random manifold points
     const count = 2000;
-    const [positions, colors] = useMemo(() => {
+
+    // ⚡ Bolt: Performance optimization
+    // Replaced useMemo with lazy useState for expensive one-time initialization.
+    // useMemo may throw away its cached value, and React's strict linting (react-hooks/purity)
+    // forbids impure functions like Math.random() inside useMemo. This ensures the expensive
+    // geometry calculation is only ever run exactly once, on initial mount.
+    const [[positions, colors]] = useState(() => {
         const positions = new Float32Array(count * 3);
         const colors = new Float32Array(count * 3);
         const color = new THREE.Color();
@@ -39,7 +45,7 @@ const PointCloud = () => {
             colors[i * 3 + 2] = color.b;
         }
         return [positions, colors];
-    }, [count]);
+    });
 
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
