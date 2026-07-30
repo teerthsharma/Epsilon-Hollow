@@ -16,3 +16,7 @@
 ## 2026-07-28 - Dynamic Suggestion Chips for Empty States
 **Learning:** In conversational UIs, users often experience "blank canvas paralysis" when faced with a completely empty chat, even if the system states it is "Ready". Providing quick-start suggestion chips significantly improves the initial UX. However, in connection-dependent apps, these chips must correctly bind their `disabled` state and dynamic accessibility attributes (`aria-label`, `title`) to the connection status (e.g. `tunnelStatus !== 'LOCKED'`) to prevent users from attempting actions before the system is actually ready.
 **Action:** When implementing empty states in chat interfaces, always include clickable suggestion chips for common initial actions, ensuring their interactivity and accessibility properties are strictly governed by the underlying connection state.
+
+## 2025-01-01 - Copy Button Overlay Constraints
+**Learning:** When adding absolute positioned interactive elements (like a Copy button) to message elements, it's critical to add sufficient padding (e.g., `pr-8`) to the main text container. Otherwise, long text lines will overlap and obscure the button, rendering it inaccessible and ugly.
+**Action:** Always verify text flow and add appropriate padding when using `absolute` positioned interactive UI elements inside content containers.
