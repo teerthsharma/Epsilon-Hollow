@@ -105,11 +105,18 @@ export default function ChatInterface() {
         <ThoughtItem key={i} thought={t} />
     )), [thoughts]);
 
-    // Auto-scroll to bottom
+    // ⚡ Bolt: Performance optimization
+    // Separated the auto-scroll `useEffect` into two distinct hooks.
+    // Previously, `thoughts` (high-frequency telemetry) and `messages` (low-frequency chat)
+    // were bundled in the same dependency array. This caused layout thrashing and forced
+    // the chat container to re-evaluate scrolling on every single thought stream update.
     useEffect(() => {
         chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    useEffect(() => {
         thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, thoughts]);
+    }, [thoughts]);
 
     const getPulseColor = () => {
         switch (pulseType) {
