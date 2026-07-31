@@ -1,13 +1,22 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! WiFi driver — PCI probe and honest status reporting.
-//! Real firmware upload and 802.11 frame processing are not yet implemented;
-//! the driver detects hardware but returns empty scans until firmware support
-//! is added.
+//! WiFi driver — PCI probe, atlas chart request, honest status reporting.
+//!
+//! The driver detects hardware and then asks the atlas for the vendor chart
+//! (firmware) matching the PCI IDs. No chart, no radio: the driver reports
+//! `chart_missing` and every operation fails with the chart name. Seal OS ships
+//! no vendor charts, so on an unprovisioned system this is the normal outcome.
+//!
+//! Even with a chart resident, 802.11 association is not implemented — the
+//! chart is fetched and verified, not yet uploaded to the device. `scan()`
+//! returns nothing in either case, and nothing in this file generates network
+//! entries.
 
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::atlas::{self, ChartError, ChartRef};
 
 const WIFI_CHIPSETS: &[(u16, u16, &str)] = &[
     (0x8086, 0x2723, "Intel Wi-Fi 6 AX200"),
@@ -56,6 +65,8 @@ impl WifiSecurity {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WifiState {
     Disabled,
+    /// Hardware present, vendor chart refused or absent. The radio stays down.
+    ChartMissing,
     Disconnected,
     Scanning,
     Connecting,
@@ -71,6 +82,14 @@ pub struct WifiDriver {
     chipset_name: Option<&'static str>,
     vendor_id: u16,
     device_id: u16,
+    chart_name: Option<String>,
+    chart: Option<ChartRef>,
+    chart_error: Option<ChartError>,
+}
+
+/// Atlas chart name for a wireless controller, derived from its PCI IDs.
+pub fn chart_name_for(vendor_id: u16, device_id: u16) -> String {
+    alloc::format!("wifi-{:04x}-{:04x}.chart", vendor_id, device_id)
 }
 
 impl WifiDriver {
@@ -83,6 +102,9 @@ impl WifiDriver {
             chipset_name: None,
             vendor_id: 0,
             device_id: 0,
+            chart_name: None,
+            chart: None,
+            chart_error: None,
         }
     }
 
@@ -97,22 +119,89 @@ impl WifiDriver {
                     .iter()
                     .find(|(v, d, _)| *v == dev.vendor_id && *d == dev.device_id)
                     .map(|(_, _, name)| *name);
-                self.state = WifiState::Disconnected;
+                self.request_chart();
                 return;
             }
         }
         self.state = WifiState::NoHardware;
     }
 
+    /// Ask the atlas for this controller's chart. Fail-closed: on any error the
+    /// radio stays down and the error is kept for reporting.
+    fn request_chart(&mut self) {
+        let name = chart_name_for(self.vendor_id, self.device_id);
+        match atlas::request_chart(&name) {
+            Ok(chart) => {
+                self.chart = Some(chart);
+                self.chart_error = None;
+                self.state = WifiState::Disconnected;
+            }
+            Err(e) => {
+                self.chart = None;
+                self.chart_error = Some(e);
+                self.state = WifiState::ChartMissing;
+            }
+        }
+        self.chart_name = Some(name);
+    }
+
     pub fn init_from_pci(&mut self, bar0: u32) {
         self.pci_bar = bar0 as u64;
-        self.state = WifiState::Disconnected;
+        self.request_chart();
+    }
+
+    /// Chart name this controller needs, once probed.
+    pub fn chart_name(&self) -> Option<&str> {
+        self.chart_name.as_deref()
+    }
+
+    pub fn chart_error(&self) -> Option<ChartError> {
+        self.chart_error
+    }
+
+    /// Size of the resident chart, or 0 when none is provisioned.
+    pub fn chart_bytes(&self) -> usize {
+        self.chart.as_ref().map(|c| c.bytes.len()).unwrap_or(0)
+    }
+
+    /// True only when the radio has a verified chart resident.
+    pub fn is_up(&self) -> bool {
+        self.chart.is_some()
+            && matches!(
+                self.state,
+                WifiState::Disconnected
+                    | WifiState::Scanning
+                    | WifiState::Connecting
+                    | WifiState::Connected
+            )
+    }
+
+    pub fn state_tag(&self) -> &'static str {
+        match self.state {
+            WifiState::NoHardware => "no_hardware",
+            WifiState::Disabled => "disabled",
+            WifiState::ChartMissing => "chart_missing",
+            WifiState::Disconnected => "disconnected",
+            WifiState::Scanning => "scanning",
+            WifiState::Connecting => "connecting",
+            WifiState::Connected => "connected",
+        }
     }
 
     pub fn status_string(&self) -> String {
         match self.state {
             WifiState::NoHardware => String::from("WiFi: no wireless hardware detected"),
             WifiState::Disabled => String::from("WiFi: disabled"),
+            WifiState::ChartMissing => alloc::format!(
+                "WiFi: {} ({:04X}:{:04X}) down — atlas chart '{}' {}",
+                self.chipset_name.unwrap_or("unknown wireless controller"),
+                self.vendor_id,
+                self.device_id,
+                self.chart_name.as_deref().unwrap_or("?"),
+                self.chart_error
+                    .map(|e| e.tag())
+                    .unwrap_or("not_provisioned")
+            ),
             WifiState::Disconnected => match self.chipset_name {
                 Some(name) => alloc::format!(
                     "WiFi: {} ({:04X}:{:04X}) disconnected",
@@ -143,16 +232,17 @@ impl WifiDriver {
     }
 
     /// Scan for available networks.
-    /// Currently returns empty because firmware upload and 802.11 frame
-    /// processing are not yet implemented. Hardware detection works.
+    ///
+    /// Always empty. Without a chart the radio is down; with a chart the
+    /// upload and 802.11 frame path are still unimplemented. This function
+    /// never fabricates entries — an empty result means no scan happened.
     pub fn scan(&mut self) -> Vec<WifiNetwork> {
-        if self.state == WifiState::NoHardware {
+        if !self.is_up() {
             return Vec::new();
         }
         let prev = self.state;
         self.state = WifiState::Scanning;
-        // TODO: implement real 802.11 active/passive scan once firmware
-        // upload and frame construction are available.
+        // TODO: chart upload to device SRAM, then 802.11 active/passive scan.
         self.state = prev;
         Vec::new()
     }
@@ -161,14 +251,25 @@ impl WifiDriver {
         if self.state == WifiState::NoHardware {
             return Err(String::from("WiFi: no wireless hardware detected"));
         }
+        if !self.is_up() {
+            return Err(alloc::format!(
+                "WiFi: atlas chart '{}' {} — install the vendor chart package to bring the radio up",
+                self.chart_name.as_deref().unwrap_or("?"),
+                self.chart_error
+                    .map(|e| e.tag())
+                    .unwrap_or("not_provisioned")
+            ));
+        }
         Err(String::from(
-            "WiFi: connection not implemented — firmware upload and 802.11 association are pending",
+            "WiFi: chart resident but 802.11 association is not implemented",
         ))
     }
 
     pub fn disconnect(&mut self) {
-        self.state = if self.chipset_name.is_some() {
+        self.state = if self.chart.is_some() {
             WifiState::Disconnected
+        } else if self.chipset_name.is_some() {
+            WifiState::ChartMissing
         } else {
             WifiState::NoHardware
         };
