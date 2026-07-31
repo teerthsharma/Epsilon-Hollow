@@ -1758,6 +1758,7 @@ Every claim in this README has a supplementary document. Every document traces t
 | [Quick Start](#quick-start--boot-in-5-minutes) (this README) | 5-minute boot guide |
 | [docs/SEAL_OS_GUIDE.md](docs/SEAL_OS_GUIDE.md) | Practical build, VM proof, audit gates, allocator contract, benchmark runbook |
 | [docs/SEAL_OS_GUIDEBOOK.md](docs/SEAL_OS_GUIDEBOOK.md) | Book-scale Linux-inspired guide with proof-status ledgers, architecture tours, and ruthless honesty about unfinished parts |
+| [Root MkDocs system docs](docs/index.md) | Evidence-backed architecture, boot/runtime trace, repository map, and build/verification guide |
 | [docs/BUILD_SYSTEM.md](docs/BUILD_SYSTEM.md) | Workspace structure, toolchains, dependency policy, common errors |
 | [kernel/seal-os/README.md](kernel/seal-os/README.md) | Kernel overview, quick start, concepts |
 

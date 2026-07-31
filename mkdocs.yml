@@ -1,0 +1,51 @@
+site_name: Epsilon Hollow System Documentation
+site_description: Evidence-backed system documentation for Seal OS, Aether, Epsilon, and the repository build and proof pipeline.
+repo_url: https://github.com/teerthsharma/epsilon-hollow
+
+validation:
+  nav:
+    omitted_files: ignore
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js
+
+nav:
+  - Home: index.md
+  - System:
+      - System Architecture: system-architecture.md
+      - Boot and Runtime: boot-and-runtime.md
+      - Repository Layout: repository-layout.md
+  - Interfaces:
+      - Seal ABI / Syscalls: SYSCALLS.md
+      - Theorem Reference: THEOREMS.md
+      - Topological OS Contract: TOPOLOGICAL_OS_CONTRACT.md
+  - Build and Operations:
+      - Build and Verification: build-and-verify.md
+      - Build System: BUILD_SYSTEM.md
+      - CI Pipeline: CI.md
+      - VM Runbook: VM_RUNBOOK.md
+  - Existing References:
+      - API Index: API_INDEX.md
+      - Memory: MEMORY.md
+      - ManifoldFS: MANIFOLDFS.md
+      - Security: THREAT_MODEL.md

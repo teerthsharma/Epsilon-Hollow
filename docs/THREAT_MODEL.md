@@ -148,7 +148,8 @@ no DPDK-style offload). A compromised driver has full kernel privilege.
 
 The FastAPI backend is a host-side auxiliary process, not part of the bare-metal
 kernel. It is bound to loopback by default and gated by bearer tokens. See
-[`SECURITY.md`](../SECURITY.md) for the full backend threat model.
+[`SECURITY.md`](https://github.com/teerthsharma/epsilon-hollow/blob/main/SECURITY.md)
+for the full backend threat model.
 
 ---
 
