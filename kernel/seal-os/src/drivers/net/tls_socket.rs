@@ -4,8 +4,11 @@
 //! TLS-over-TCP socket — wraps TcpSocket with TlsSession encryption.
 
 use crate::drivers::net::tcp::TcpSocket;
-use crate::drivers::net::tls::{TlsSession, TlsState};
+use crate::drivers::net::tls::{KeyExchange, TlsSession, TlsState};
 use alloc::vec::Vec;
+
+/// Ticks spent waiting for the peer's Certificate message after ServerHello.
+const CERT_WAIT_TICKS: u64 = 1000;
 
 pub struct TlsSocket {
     tcp: TcpSocket,
@@ -13,6 +16,7 @@ pub struct TlsSocket {
     rx_encrypted: Vec<u8>,
     rx_plaintext: Vec<u8>,
     connected: bool,
+    require_peer_auth: bool,
 }
 
 impl TlsSocket {
@@ -23,11 +27,27 @@ impl TlsSocket {
             rx_encrypted: Vec::new(),
             rx_plaintext: Vec::new(),
             connected: false,
+            require_peer_auth: true,
         }
     }
 
     pub fn set_psk(&mut self, psk: &[u8; 32]) {
         self.tls.set_psk(psk);
+    }
+
+    /// Allow an ECDHE connection whose peer presented no valid certificate.
+    ///
+    /// Off by default. Turning it on gives an unauthenticated, trivially
+    /// man-in-the-middleable channel; it exists only for bring-up against a
+    /// peer with no PKI.
+    pub fn set_require_peer_auth(&mut self, require: bool) {
+        self.require_peer_auth = require;
+    }
+
+    /// Whether the peer's certificate chain validated against the embedded
+    /// trust store.
+    pub fn peer_verified(&self) -> bool {
+        self.tls.peer_verified()
     }
 
     pub fn connect(&mut self, ip: crate::net::IpAddr, port: u16) -> Result<(), &'static str> {
@@ -66,6 +86,40 @@ impl TlsSocket {
             }
             crate::net::tcp::poll();
             crate::net::poll();
+        }
+
+        // Read the peer's Certificate message and validate it against the
+        // embedded trust store before any application data moves.
+        let cert_start = crate::drivers::interrupts::ticks();
+        while !self.tls.peer_verified()
+            && crate::drivers::interrupts::ticks().wrapping_sub(cert_start) < CERT_WAIT_TICKS
+        {
+            let n = self.tcp.recv(&mut buf);
+            if n > 0 {
+                self.rx_encrypted.extend_from_slice(&buf[..n]);
+            }
+            // Consume handshake records only. Anything else stays buffered
+            // for `recv` rather than being dropped on the floor.
+            while self.rx_encrypted.first() == Some(&22) {
+                let Some(record) = Self::pop_record(&mut self.rx_encrypted) else {
+                    break;
+                };
+                if record.len() > 5
+                    && record[5] == 0x0b
+                    && self.tls.handle_certificate(&record[5..]).is_err()
+                {
+                    return Err("TLS peer certificate rejected");
+                }
+            }
+            crate::net::tcp::poll();
+            crate::net::poll();
+        }
+
+        if self.require_peer_auth
+            && self.tls.key_exchange() == KeyExchange::Ecdhe
+            && !self.tls.peer_verified()
+        {
+            return Err("TLS peer presented no valid certificate chain");
         }
 
         self.connected = true;
