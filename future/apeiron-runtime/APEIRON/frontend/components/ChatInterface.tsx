@@ -37,11 +37,18 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) {
             <p className="whitespace-pre-wrap pr-8">{msg.text}</p>
             <button
                 onClick={handleCopy}
-                aria-label="Copy message to clipboard"
-                title="Copy message to clipboard"
+                aria-label={copied ? "Copied!" : "Copy message to clipboard"}
+                title={copied ? "Copied!" : "Copy message to clipboard"}
                 className={`absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 text-gray-400 hover:text-white border border-gray-700 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500`}
             >
-                {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                {copied ? (
+                    <>
+                        <Check size={14} className="text-green-400" />
+                        <span className="sr-only" aria-live="polite">Copied!</span>
+                    </>
+                ) : (
+                    <Copy size={14} />
+                )}
             </button>
         </div>
     </div>
