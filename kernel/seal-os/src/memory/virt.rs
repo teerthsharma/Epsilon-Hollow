@@ -22,13 +22,15 @@ use x86_64::{
     PhysAddr, VirtAddr,
 };
 
-const KERNEL_HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
 /// Size of the identity-mapped region (16 GiB).  Frames below this line can be
 /// accessed directly via `phys.as_u64() as *mut T`.
 pub const IDENTITY_MAP_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
 
-const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
+/// Build-constant floor of the kernel heap virtual window.  KASLR slides the
+/// bump start forward inside this window; the floor itself is what the
+/// page-fault heap-growth path range-checks against, so it stays fixed.
+const HEAP_VIRTUAL_BASE: u64 = crate::security::kaslr::HEAP_WINDOW_BASE;
 
 /// Error returned when a page-table allocation or mapping fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,22 @@ pub fn alloc_virtual_pages(pages: usize, align_pages: usize) -> Option<VirtAddr>
 /// # Safety
 /// Must be called once after the physical allocator is ready.
 pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) -> Result<(), MapError> {
+    // KASLR must draw its slides before any mapping is laid down.  It fails
+    // closed to zero slides when hardware entropy is unavailable, so this call
+    // can never move a window outside its build-constant range.
+    crate::security::kaslr::init(kernel_base.as_u64(), kernel_size);
+    let kernel_higher_half = crate::security::kaslr::kernel_alias_base();
+    {
+        // Slide the heap bump start forward.  Only ever moves forward and only
+        // while the bump is untouched, so any allocation that already happened
+        // keeps its mapping.
+        let mut bump = VIRTUAL_BUMP.lock();
+        let slid = crate::security::kaslr::heap_window_base();
+        if *bump == HEAP_VIRTUAL_BASE && slid > *bump {
+            *bump = slid;
+        }
+    }
+
     let pml4_frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
     let pml4 = &mut *(pml4_frame.as_u64() as *mut PageTable);
     pml4.zero();
@@ -81,7 +99,7 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) -> Result<(), MapErr
     let kernel_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
     for offset in (0..kernel_size).step_by(4096) {
         let phys = kernel_base + offset;
-        let virt = VirtAddr::new(KERNEL_HIGHER_HALF + offset);
+        let virt = VirtAddr::new(kernel_higher_half + offset);
         map_page_inner(virt, phys, kernel_flags, pml4)?;
     }
 
