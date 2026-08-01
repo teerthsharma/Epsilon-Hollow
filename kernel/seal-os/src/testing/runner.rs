@@ -12,15 +12,23 @@ use super::harness::run_all_tests_and_exit;
 /// Entry point for the in-kernel test runner.
 pub fn test_main() -> ! {
     // Register all in-kernel tests from each module
+    crate::apps::installer::tests::register_all();
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
+    crate::fs::parity::tests::register_all();
     crate::process::scheduler::tests::register_all();
     crate::security::tests::register_all();
     crate::syscall::table::tests::register_all();
+    crate::atlas::tests::register_all();
+    crate::bundle::tests::register_all();
+    crate::pkg::channel::tests::register_all();
     crate::drivers::apic::tests::register_all();
+    crate::drivers::gpu::gpu_bench::tests::register_all();
     crate::cpu::tests::register_all();
     crate::sync::tests::register_all();
+    crate::ml_engine::stratum::tests::register_all();
+    crate::ml_engine::foliation::tests::register_all();
 
     run_all_tests_and_exit()
 }

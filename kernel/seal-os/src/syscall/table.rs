@@ -102,6 +102,36 @@ pub const SYS_BT_SCAN: u64 = 108;
 pub const SYS_BT_PAIR: u64 = 109;
 pub const SYS_SETTING_GET: u64 = 110;
 pub const SYS_SETTING_SET: u64 = 111;
+/// Atlas: graft a signed chart onto the kernel manifold.
+pub const SYS_CHART_GRAFT: u64 = 112;
+/// Atlas: prune a chart back off the manifold.
+pub const SYS_CHART_PRUNE: u64 = 113;
+/// Atlas: list grafted charts with their reference counts.
+pub const SYS_CHART_LIST: u64 = 114;
+
+// stratum — topological fit control (see ml_engine::stratum).
+/// Register the calling task as a training workload. Returns the handle.
+pub const SYS_FIT_REGISTER: u64 = 120;
+/// Push one step: arg0 = handle, arg1 = train loss bits, arg2 = val loss bits
+/// (both `f64::to_bits`). Returns the last computed regime code.
+pub const SYS_FIT_OBSERVE: u64 = 121;
+/// Recompute and return the regime. arg0 = handle. `code` is the regime, `data`
+/// carries the measured signals and the planned actuator settings.
+pub const SYS_FIT_REGIME: u64 = 122;
+/// Set one calibration field: arg0 = handle, arg1 = field id, arg2 = f64 bits.
+pub const SYS_FIT_CALIBRATE: u64 = 123;
+/// Drop the workload's fit state. arg0 = handle.
+pub const SYS_FIT_UNREGISTER: u64 = 124;
+
+// Foliated KV cache — kernel-managed paged attention for inference processes.
+// Prefix sharing is implicit: appending identical tokens descends to the same
+// foliation leaf, so two sequences with the same prompt share plaques without
+// any explicit share call.
+pub const SYS_KV_SEQ_CREATE: u64 = 130;
+pub const SYS_KV_SEQ_APPEND: u64 = 131;
+pub const SYS_KV_SEQ_RELEASE: u64 = 132;
+pub const SYS_KV_SEQ_STATS: u64 = 133;
+pub const SYS_KV_POLICY_STATS: u64 = 134;
 
 #[derive(Debug)]
 pub struct SyscallResult {
@@ -244,6 +274,35 @@ unsafe fn copy_path_from_user(ptr: *const u8) -> Result<String, ()> {
     crate::security::smap_smep::copy_from_user(&mut buf, ptr)?;
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     Ok(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+/// Slurp a whole VFS file. Returns `None` if the path does not resolve or a
+/// read fails part-way through.
+fn read_vfs_file(path: &str) -> Option<Vec<u8>> {
+    let handle = with_vfs(|vfs| vfs.lookup_follow(path)).ok()?;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut offset = 0u64;
+    loop {
+        match with_vfs(|vfs| vfs.read(handle, &mut chunk, offset)) {
+            Ok(0) => break,
+            Ok(n) => {
+                out.extend_from_slice(&chunk[..n]);
+                offset += n as u64;
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Chart registry name for a path: the final component with any suffix removed.
+fn chart_name_from_path(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    match base.rfind('.') {
+        Some(dot) if dot > 0 => String::from(&base[..dot]),
+        _ => String::from(base),
+    }
 }
 
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
@@ -743,6 +802,40 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             };
             SyscallResult::with_data(0, list)
         }
+        SYS_CHART_GRAFT => {
+            // arg0 = chart object path, arg1 = detached ed25519 signature path.
+            let object_path = unsafe { copy_path_from_user(arg0 as *const u8).unwrap_or_default() };
+            let sig_path = unsafe { copy_path_from_user(arg1 as *const u8).unwrap_or_default() };
+            if object_path.is_empty() || sig_path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            let (Some(object), Some(signature)) =
+                (read_vfs_file(&object_path), read_vfs_file(&sig_path))
+            else {
+                return SyscallResult::err(2); // ENOENT
+            };
+            let name = chart_name_from_path(&object_path);
+            match crate::atlas::abi_graft(&name, &object, &signature) {
+                Ok(code) => {
+                    SyscallResult::with_data(0, format!("grafted '{}' init={:#x}", name, code))
+                }
+                Err(e) => SyscallResult::with_data(-1, format!("graft '{}': {}", name, e.tag())),
+            }
+        }
+        SYS_CHART_PRUNE => {
+            let name = unsafe { copy_path_from_user(arg0 as *const u8).unwrap_or_default() };
+            if name.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            match crate::atlas::abi_prune(&name) {
+                Ok(code) => {
+                    SyscallResult::with_data(0, format!("pruned '{}' exit={:#x}", name, code))
+                }
+                Err(e) => SyscallResult::with_data(-1, format!("prune '{}': {}", name, e.tag())),
+            }
+        }
+        SYS_CHART_LIST => SyscallResult::with_data(0, crate::atlas::abi_list()),
+
         SYS_WIFI_SCAN => {
             SyscallResult::with_data(0, String::from("wifi_scan: no wireless hardware detected"))
         }
@@ -773,6 +866,40 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let mut settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
             settings.set(&key, &val);
             SyscallResult::ok(0)
+        }
+
+        // arg0 = block budget. Returns the sequence id.
+        SYS_KV_SEQ_CREATE => {
+            let budget = arg0.min(u64::from(u16::MAX)) as u16;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_create(budget)) {
+                Ok(id) => SyscallResult::ok(id as i64),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id, arg1 = token. Returns blocks sealed so far.
+        SYS_KV_SEQ_APPEND => {
+            let id = arg0 as usize;
+            let token = arg1 as u32;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, token)) {
+                Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id. Returns blocks released; shared blocks survive.
+        SYS_KV_SEQ_RELEASE => {
+            let id = arg0 as usize;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_release(id)) {
+                Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id. Reports how much of it was shared on entry.
+        SYS_KV_SEQ_STATS => match crate::ml_engine::foliation::seq_stats_line(arg0 as usize) {
+            Some(line) => SyscallResult::with_data(0, line),
+            None => SyscallResult::err(2), // ENOENT
+        },
+        SYS_KV_POLICY_STATS => {
+            SyscallResult::with_data(0, crate::ml_engine::foliation::global_stats_line())
         }
 
         SYS_SETUID => {
@@ -1065,6 +1192,48 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 SyscallResult::ok(0)
             } else {
                 SyscallResult::err(22) // EINVAL
+            }
+        }
+
+        SYS_FIT_REGISTER => {
+            let handle = crate::process::scheduler::current_task_id();
+            SyscallResult::ok(crate::ml_engine::stratum::register(handle) as i64)
+        }
+
+        SYS_FIT_OBSERVE => {
+            let train = f64::from_bits(arg1);
+            let val = f64::from_bits(arg2);
+            match crate::ml_engine::stratum::observe(arg0, train, val) {
+                Some(regime) => SyscallResult::ok(regime.code()),
+                None => SyscallResult::err(2), // ENOENT: not registered
+            }
+        }
+
+        SYS_FIT_REGIME => match crate::ml_engine::stratum::regime_of(arg0) {
+            Some((regime, _signals, action)) => {
+                // Actuate the real knobs in the caller's own context, then
+                // return the full state (advisory knobs included) as data.
+                crate::ml_engine::stratum::apply_action(&action);
+                let data = crate::ml_engine::stratum::report(arg0).unwrap_or_default();
+                SyscallResult::with_data(regime.code(), data)
+            }
+            None => SyscallResult::err(2), // ENOENT
+        },
+
+        SYS_FIT_CALIBRATE => {
+            let value = f64::from_bits(arg2);
+            if crate::ml_engine::stratum::calibrate(arg0, arg1 as u32, value) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(22) // EINVAL
+            }
+        }
+
+        SYS_FIT_UNREGISTER => {
+            if crate::ml_engine::stratum::unregister(arg0) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(2) // ENOENT
             }
         }
 

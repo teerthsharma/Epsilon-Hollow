@@ -1335,7 +1335,8 @@ impl FileSystem for Ext2Fs {
 
         let mut inode = self.read_inode(ino)?;
         if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
-            return Err(VfsError::NotADirectory);
+            // The target *is* a directory; NotADirectory says the opposite.
+            return Err(VfsError::InvalidOperation);
         }
 
         self.free_inode_blocks(&mut inode)?;
