@@ -1242,12 +1242,7 @@ fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
     require_field_eq(line, "default_present=", "1", "auth shadow proof")?;
     require_field_eq(line, "default_topo5000=", "1", "auth shadow proof")?;
     require_field_eq(line, "default_legacy=", "0", "auth shadow proof")?;
-    require_field_eq(
-        line,
-        "default_password_rejected=",
-        "1",
-        "auth shadow proof",
-    )?;
+    require_field_eq(line, "default_password_rejected=", "1", "auth shadow proof")?;
     require_field_eq(line, "new_user_topo5000=", "1", "auth shadow proof")?;
     require_field_eq(line, "result=", "pass", "auth shadow proof")?;
 
@@ -1368,10 +1363,14 @@ fn check_manifoldpkg_proof_text(text: &str) -> Result<(), String> {
     let after_install = parse_metric(line, "package_count_after_install=")?;
     let after_remove = parse_metric(line, "package_count_after_remove=")?;
     if files == 0 {
-        return Err(String::from("ManifoldPkg proof must extract at least one file"));
+        return Err(String::from(
+            "ManifoldPkg proof must extract at least one file",
+        ));
     }
     if bytes == 0 {
-        return Err(String::from("ManifoldPkg proof must extract nonempty bytes"));
+        return Err(String::from(
+            "ManifoldPkg proof must extract nonempty bytes",
+        ));
     }
     if after_install != before + 1 {
         return Err(String::from(
@@ -1862,7 +1861,9 @@ fn check_gpu_bench_text(text: &str) -> Result<(), String> {
     ] {
         let (exact, total) = parse_ratio(line, key)?;
         if exact != total {
-            return Err(format!("GPU bench numeric parity failed: {key}{exact}/{total}"));
+            return Err(format!(
+                "GPU bench numeric parity failed: {key}{exact}/{total}"
+            ));
         }
         require_field_eq(line, ulp, "0", label)?;
     }
@@ -2097,10 +2098,14 @@ fn parse_unsafe_audit_fixture(text: &str) -> Result<UnsafeAuditFixture, String> 
                 let justified = justified
                     .parse::<u64>()
                     .map_err(|e| format!("unsafe-audit fixture `{line}`: {e}"))?;
-                fixture.per_file.insert(String::from(*path), (sites, justified));
+                fixture
+                    .per_file
+                    .insert(String::from(*path), (sites, justified));
             }
             [key, value] => {
-                let Ok(n) = value.parse::<u64>() else { continue };
+                let Ok(n) = value.parse::<u64>() else {
+                    continue;
+                };
                 match *key {
                     "total" => fixture.total = n,
                     "justified" => fixture.justified = n,
@@ -2583,7 +2588,9 @@ fn parse_slab_alloc_benchmark(text: &str) -> Result<(), String> {
     let free_after_reuse = parse_metric(line, "free_after_reuse=")?;
 
     if classes != 6 {
-        return Err(format!("slab benchmark must cover 6 classes, got {classes}"));
+        return Err(format!(
+            "slab benchmark must cover 6 classes, got {classes}"
+        ));
     }
     if refill_ok != classes || reuse_ok != classes || free_ok != classes || realloc_ok != 2 {
         return Err(format!(
@@ -2703,9 +2710,7 @@ fn parse_manifold_lookup_benchmark(text: &str) -> Result<(), String> {
     let max = parse_metric(line, "max_cycles=")?;
     let result = parse_field(line, "result=")?;
 
-    if api != "resolve_path_with_proof"
-        || fs_mode != "mock_block"
-        || fixture != "dirhash_path_walk"
+    if api != "resolve_path_with_proof" || fs_mode != "mock_block" || fixture != "dirhash_path_walk"
     {
         return Err(format!(
             "ManifoldFS lookup benchmark identifies the wrong API/path: api={api}, fs_mode={fs_mode}, fixture={fixture}"
@@ -2943,7 +2948,10 @@ fn parse_tcp_roundtrip_benchmark(text: &str) -> Result<(), String> {
             "TCP roundtrip byte mismatch: expected={expected_bytes}, client_tx={client_tx}, server_rx={server_rx}, server_echo={server_echo}, client_rx={client_rx}"
         ));
     }
-    if exact_flow != connections || listener_index_hit != connections || client_index_hit != connections {
+    if exact_flow != connections
+        || listener_index_hit != connections
+        || client_index_hit != connections
+    {
         return Err(format!(
             "TCP roundtrip did not use bounded indexes for all flows: exact_flow={exact_flow}, listener_index_hit={listener_index_hit}, client_index_hit={client_index_hit}, connections={connections}"
         ));
@@ -3212,7 +3220,7 @@ fn parse_gpu_topology_benchmark(text: &str) -> Result<(), String> {
 
     let kernel_lines = text
         .lines()
-        .filter(|line| line.starts_with("[GPU-BENCH] kernel="))
+        .filter(|line| line.starts_with("[GPU-BENCH] kernel=") && line.contains("mode="))
         .count();
     if kernel_lines != 3 {
         return Err(format!(
@@ -5259,7 +5267,10 @@ with:
         let no_proof_asset = good.replace("release-proof/serial.log", "release-proof/missing.log");
         assert!(check_release_workflow_contract_text(&no_proof_asset).is_err());
 
-        let no_screen_gate = good.replace("--check-proof-screen /tmp/seal-os-screen.ppm", "echo screen");
+        let no_screen_gate = good.replace(
+            "--check-proof-screen /tmp/seal-os-screen.ppm",
+            "echo screen",
+        );
         assert!(check_release_workflow_contract_text(&no_screen_gate).is_err());
 
         let no_screen_asset = good.replace("release-proof/screen.ppm", "release-proof/missing.ppm");
@@ -5441,8 +5452,7 @@ with:
     fn parses_tls_encrypt_benchmark() {
         assert!(parse_tls_encrypt_benchmark(TLS_ENCRYPT_LOG).is_ok());
 
-        let wrong_api =
-            TLS_ENCRYPT_LOG.replace("api=TlsSession::encrypt", "api=TlsSocket::send");
+        let wrong_api = TLS_ENCRYPT_LOG.replace("api=TlsSession::encrypt", "api=TlsSocket::send");
         assert!(parse_tls_encrypt_benchmark(&wrong_api).is_err());
 
         let wrong_size = TLS_ENCRYPT_LOG.replace("record_bytes=1045", "record_bytes=1024");
@@ -5459,8 +5469,7 @@ with:
     fn parses_topo_render_3d_benchmark() {
         assert!(parse_topo_render_3d_benchmark(TOPO_RENDER_3D_LOG).is_ok());
 
-        let wrong_api =
-            TOPO_RENDER_3D_LOG.replace("api=topo_render::render_mesh", "api=draw_fake");
+        let wrong_api = TOPO_RENDER_3D_LOG.replace("api=topo_render::render_mesh", "api=draw_fake");
         assert!(parse_topo_render_3d_benchmark(&wrong_api).is_err());
 
         let wrong_triangles = TOPO_RENDER_3D_LOG.replace("triangles=1024", "triangles=512");
@@ -5474,8 +5483,7 @@ with:
     fn parses_tensor_render_benchmark() {
         assert!(parse_tensor_render_benchmark(TENSOR_RENDER_LOG).is_ok());
 
-        let wrong_fixture =
-            TENSOR_RENDER_LOG.replace("fixture=csv_100x100", "fixture=demo_16x16");
+        let wrong_fixture = TENSOR_RENDER_LOG.replace("fixture=csv_100x100", "fixture=demo_16x16");
         assert!(parse_tensor_render_benchmark(&wrong_fixture).is_err());
 
         let wrong_shape = TENSOR_RENDER_LOG.replace("rows=100", "rows=16");
@@ -5742,8 +5750,7 @@ with:
         let same_cr3 = SECURITY_HARDENING_LOG.replace("user_cr3=0x2000", "user_cr3=0x1000");
         assert!(check_security_hardening_text(&same_cr3).is_err());
 
-        let mapped_lower =
-            SECURITY_HARDENING_LOG.replace("user_lower_zero=1", "user_lower_zero=0");
+        let mapped_lower = SECURITY_HARDENING_LOG.replace("user_lower_zero=1", "user_lower_zero=0");
         assert!(check_security_hardening_text(&mapped_lower).is_err());
 
         let smap_claim =
@@ -5785,8 +5792,8 @@ with:
         let legacy_default = AUTH_SHADOW_PROOF_LOG.replace("default_legacy=0", "default_legacy=1");
         assert!(check_auth_shadow_proof_text(&legacy_default).is_err());
 
-        let default_password_allowed =
-            AUTH_SHADOW_PROOF_LOG.replace("default_password_rejected=1", "default_password_rejected=0");
+        let default_password_allowed = AUTH_SHADOW_PROOF_LOG
+            .replace("default_password_rejected=1", "default_password_rejected=0");
         assert!(check_auth_shadow_proof_text(&default_password_allowed).is_err());
 
         let weak_new_user =
@@ -5900,11 +5907,14 @@ fn panic(info: &PanicInfo) -> ! {
         assert!(check_installer_proof_text(&bad_magic).is_err());
 
         // The header CRC is `{:08x}` with no `0x` prefix.
-        let prefixed = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=0x1a2b3c4d");
+        let prefixed =
+            INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=0x1a2b3c4d");
         assert!(check_installer_proof_text(&prefixed).is_err());
-        let short_crc = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1a2b");
+        let short_crc =
+            INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1a2b");
         assert!(check_installer_proof_text(&short_crc).is_err());
-        let upper_crc = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1A2B3C4D");
+        let upper_crc =
+            INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1A2B3C4D");
         assert!(check_installer_proof_text(&upper_crc).is_err());
 
         let one_partition = INSTALLER_PROOF_LOG.replace("gpt_partitions=2", "gpt_partitions=1");
@@ -5913,7 +5923,11 @@ fn panic(info: &PanicInfo) -> ! {
         let empty_root = INSTALLER_PROOF_LOG.replace("ext2_root_entries=2", "ext2_root_entries=1");
         assert!(check_installer_proof_text(&empty_root).is_err());
 
-        for field in ["ext2_blocks=8192", "ext2_inodes=512", "ext2_free_blocks=7000"] {
+        for field in [
+            "ext2_blocks=8192",
+            "ext2_inodes=512",
+            "ext2_free_blocks=7000",
+        ] {
             let key = field.split('=').next().unwrap();
             let zeroed = INSTALLER_PROOF_LOG.replace(field, &format!("{key}=0"));
             assert!(
@@ -6005,7 +6019,10 @@ fn panic(info: &PanicInfo) -> ! {
 
         let no_relocs = ATLAS_PROOF_LOG
             .replace("relocations_applied=6", "relocations_applied=0")
-            .replace("r64=1 rpc32=3 rplt32=1 r32s=1", "r64=0 rpc32=0 rplt32=0 r32s=0");
+            .replace(
+                "r64=1 rpc32=3 rplt32=1 r32s=1",
+                "r64=0 rpc32=0 rplt32=0 r32s=0",
+            );
         assert!(check_atlas_proof_text(&no_relocs).is_err());
 
         let leaked = ATLAS_PROOF_LOG.replace("charts_after=0", "charts_after=1");
@@ -6047,7 +6064,8 @@ fn panic(info: &PanicInfo) -> ! {
         );
         assert!(check_bundle_proof_text(&corrupt_accepted).is_err());
 
-        let never_dropped = BUNDLE_PROOF_LOG.replace("refcount_after_drop=1", "refcount_after_drop=2");
+        let never_dropped =
+            BUNDLE_PROOF_LOG.replace("refcount_after_drop=1", "refcount_after_drop=2");
         assert!(check_bundle_proof_text(&never_dropped).is_err());
 
         let not_released = BUNDLE_PROOF_LOG.replace("released=1", "released=0");
@@ -6156,10 +6174,7 @@ fn panic(info: &PanicInfo) -> ! {
         assert!(check_mlfit_proof_text(&lying).is_err());
 
         // Dropping cases to hide a miss must fail too.
-        let truncated = MLFIT_PROOF_LOG.replace(
-            "case=monotone_exp truth=wellfit got=wellfit ",
-            "",
-        );
+        let truncated = MLFIT_PROOF_LOG.replace("case=monotone_exp truth=wellfit got=wellfit ", "");
         assert!(check_mlfit_proof_text(&truncated).is_err());
     }
 
@@ -6216,7 +6231,8 @@ fn panic(info: &PanicInfo) -> ! {
         let arch = GPU_BENCH_PROOF_LOG.replace("arch=gfx900", "arch=unknown");
         assert!(check_gpu_bench_text(&arch).is_err());
 
-        let mismatch = GPU_BENCH_PROOF_LOG.replace("blob_matches_encoder=1", "blob_matches_encoder=0");
+        let mismatch =
+            GPU_BENCH_PROOF_LOG.replace("blob_matches_encoder=1", "blob_matches_encoder=0");
         assert!(check_gpu_bench_text(&mismatch).is_err());
 
         let hash_drift = GPU_BENCH_PROOF_LOG.replace(
@@ -6345,7 +6361,8 @@ fn panic(info: &PanicInfo) -> ! {
         );
         assert!(check_kaslr_text(&same_nonce).is_err());
 
-        let no_image = KASLR_PROOF_LOG.replace("firmware_image_base=0x1000000", "firmware_image_base=0x0");
+        let no_image =
+            KASLR_PROOF_LOG.replace("firmware_image_base=0x1000000", "firmware_image_base=0x0");
         assert!(check_kaslr_text(&no_image).is_err());
 
         let no_size = KASLR_PROOF_LOG.replace("image_size=0x400000", "image_size=0x0");
@@ -6372,8 +6389,7 @@ fn panic(info: &PanicInfo) -> ! {
             );
         }
 
-        let dirty_guard =
-            SECURITY_FEATURES_LOG.replace("stackguard_dirty=0", "stackguard_dirty=1");
+        let dirty_guard = SECURITY_FEATURES_LOG.replace("stackguard_dirty=0", "stackguard_dirty=1");
         assert!(check_security_features_text(&dirty_guard).is_err());
 
         // A probe that degrades into a constant is the failure this catches.
@@ -6401,7 +6417,8 @@ fn panic(info: &PanicInfo) -> ! {
         assert!(check_security_features_text(&thin_kaslr).is_err());
 
         // Supported-but-inactive, and decoded bits that contradict the registers.
-        let smep_off = SECURITY_FEATURES_LOG.replace("smep_supported=1 smep=1", "smep_supported=1 smep=0");
+        let smep_off =
+            SECURITY_FEATURES_LOG.replace("smep_supported=1 smep=1", "smep_supported=1 smep=0");
         assert!(check_security_features_text(&smep_off).is_err());
 
         let cr4_lies = SECURITY_FEATURES_LOG.replace("cr4=0x3506f0", "cr4=0x2506f0");
@@ -6457,9 +6474,7 @@ fn panic(info: &PanicInfo) -> ! {
             (String::from("lib.rs"), (3u64, 1u64)),
             (String::from("drivers/pci.rs"), (1, 0)),
         ]);
-        assert!(
-            check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &scanned).is_ok()
-        );
+        assert!(check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &scanned).is_ok());
 
         for field in [
             "version=1",
@@ -6478,9 +6493,7 @@ fn panic(info: &PanicInfo) -> ! {
 
         // The logged census must be the checked-in one.
         let lying_log = UNSAFE_AUDIT_LOG.replace("unjustified=3", "unjustified=2");
-        assert!(
-            check_unsafe_audit_text(&lying_log, UNSAFE_AUDIT_FIXTURE, &scanned).is_err()
-        );
+        assert!(check_unsafe_audit_text(&lying_log, UNSAFE_AUDIT_FIXTURE, &scanned).is_err());
 
         // A new unsafe block that the fixture does not record is drift.
         let grown = BTreeMap::from([
@@ -6496,7 +6509,10 @@ fn panic(info: &PanicInfo) -> ! {
         let shrunk = BTreeMap::from([(String::from("lib.rs"), (3u64, 1u64))]);
         let err = check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &shrunk)
             .expect_err("drift must fail");
-        assert!(err.contains("drivers/pci.rs"), "error must name the file: {err}");
+        assert!(
+            err.contains("drivers/pci.rs"),
+            "error must name the file: {err}"
+        );
 
         // Same total, one justification removed: the ratchet only turns down.
         let regressed = BTreeMap::from([
@@ -6512,9 +6528,7 @@ fn panic(info: &PanicInfo) -> ! {
             (String::from("lib.rs"), (3u64, 2u64)),
             (String::from("drivers/pci.rs"), (1, 0)),
         ]);
-        assert!(
-            check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &improved).is_ok()
-        );
+        assert!(check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &improved).is_ok());
 
         // A fixture whose parts do not add up is rejected outright.
         let broken_fixture = UNSAFE_AUDIT_FIXTURE.replace("justified 1", "justified 2");
@@ -6550,7 +6564,11 @@ fn panic(info: &PanicInfo) -> ! {
             token_total += text.matches(UNSAFE_BLOCK_TOKEN).count() as u64;
         }
         assert_eq!(scanned_total, token_total);
-        assert!(scanned_total > 0, "no unsafe blocks found under {}", src.display());
+        assert!(
+            scanned_total > 0,
+            "no unsafe blocks found under {}",
+            src.display()
+        );
     }
 
     #[test]
@@ -6569,8 +6587,10 @@ fn panic(info: &PanicInfo) -> ! {
         let no_bytes = MANIFOLDPKG_PROOF_LOG.replace("bytes=19", "bytes=0");
         assert!(check_manifoldpkg_proof_text(&no_bytes).is_err());
 
-        let bad_count =
-            MANIFOLDPKG_PROOF_LOG.replace("package_count_after_install=1", "package_count_after_install=0");
+        let bad_count = MANIFOLDPKG_PROOF_LOG.replace(
+            "package_count_after_install=1",
+            "package_count_after_install=0",
+        );
         assert!(check_manifoldpkg_proof_text(&bad_count).is_err());
 
         let skipped_sig =
@@ -6618,19 +6638,30 @@ fn panic(info: &PanicInfo) -> ! {
 
         // In CI nothing should answer on the channel host. A reachable probe means
         // an unexpected server responded, which is precisely what not to trust.
-        let reachable =
-            MANIFOLDPKG_PROOF_LOG.replace("channel_live_probe=no_network", "channel_live_probe=reachable");
+        let reachable = MANIFOLDPKG_PROOF_LOG.replace(
+            "channel_live_probe=no_network",
+            "channel_live_probe=reachable",
+        );
         assert!(check_manifoldpkg_proof_text(&reachable).is_err());
 
         // A live transport claim in CI is likewise not credible.
-        let live_transport = MANIFOLDPKG_PROOF_LOG
-            .replace("channel_transport=fixture_loopback", "channel_transport=https");
+        let live_transport = MANIFOLDPKG_PROOF_LOG.replace(
+            "channel_transport=fixture_loopback",
+            "channel_transport=https",
+        );
         assert!(check_manifoldpkg_proof_text(&live_transport).is_err());
 
         // The other typed refusals are all acceptable probe outcomes.
-        for probe in ["dns_failed", "transport_failed", "http_status", "insecure_scheme"] {
-            let variant = MANIFOLDPKG_PROOF_LOG
-                .replace("channel_live_probe=no_network", &format!("channel_live_probe={probe}"));
+        for probe in [
+            "dns_failed",
+            "transport_failed",
+            "http_status",
+            "insecure_scheme",
+        ] {
+            let variant = MANIFOLDPKG_PROOF_LOG.replace(
+                "channel_live_probe=no_network",
+                &format!("channel_live_probe={probe}"),
+            );
             assert!(
                 check_manifoldpkg_proof_text(&variant).is_ok(),
                 "{probe} is a typed refusal and must pass"
@@ -6704,10 +6735,13 @@ hardware `[GPU-BENCH]` artifact proves otherwise
 
         let default_credential_overclaim =
             format!("{readme}\nDefault credentials: `seal` / `seal`\n");
-        assert!(
-            check_doc_claim_contract_text(&default_credential_overclaim, benchmark, ci, gpu_doc)
-                .is_err()
-        );
+        assert!(check_doc_claim_contract_text(
+            &default_credential_overclaim,
+            benchmark,
+            ci,
+            gpu_doc
+        )
+        .is_err());
 
         let gpu_overclaim = readme.replace(
             "Hardware dispatch still needs a proof artifact",
@@ -6872,7 +6906,10 @@ impl FileSystem for Ext2Fs {
 "#;
         assert!(check_filesystem_parity_source_contract_text(fat, ext2).is_ok());
 
-        let read_only_fat = fat.replace("with VFS read/write/create/delete/rename support", "read-only v1");
+        let read_only_fat = fat.replace(
+            "with VFS read/write/create/delete/rename support",
+            "read-only v1",
+        );
         assert!(check_filesystem_parity_source_contract_text(&read_only_fat, ext2).is_err());
 
         let missing_ext2_write = ext2.replace("fn write(&mut self", "fn write_missing(&mut self");
@@ -8064,8 +8101,8 @@ fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
         .join("src")
         .join("pkg")
         .join("carrier.rs");
-    let shell =
-        fs::read_to_string(&shell_path).map_err(|e| format!("read {}: {e}", shell_path.display()))?;
+    let shell = fs::read_to_string(&shell_path)
+        .map_err(|e| format!("read {}: {e}", shell_path.display()))?;
     let pkg =
         fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
     let carrier = fs::read_to_string(&carrier_path)
@@ -8092,7 +8129,11 @@ fn check_manifoldpkg_shell_contract_text(
             findings.push(format!("shell ManifoldPkg path missing `{needle}`"));
         }
     }
-    for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
+    for needle in [
+        "parse_eph(data)",
+        "verify_signature(&pkg, key)",
+        "self.install_file",
+    ] {
         if !pkg.contains(needle) {
             findings.push(format!("ManifoldPkg core missing `{needle}`"));
         }
@@ -8156,11 +8197,7 @@ fn check_cow_source_contract(root: &Path) -> Result<(), String> {
     check_cow_source_contract_text(&virt, &scheduler, &lib)
 }
 
-fn check_cow_source_contract_text(
-    virt: &str,
-    scheduler: &str,
-    lib: &str,
-) -> Result<(), String> {
+fn check_cow_source_contract_text(virt: &str, scheduler: &str, lib: &str) -> Result<(), String> {
     let mut findings = Vec::new();
     for needle in [
         "struct CowCloneRollback",
@@ -8211,8 +8248,8 @@ fn check_panic_serial_source_contract(root: &Path) -> Result<(), String> {
         .join("main.rs");
     let serial = fs::read_to_string(&serial_path)
         .map_err(|e| format!("read {}: {e}", serial_path.display()))?;
-    let main = fs::read_to_string(&main_path)
-        .map_err(|e| format!("read {}: {e}", main_path.display()))?;
+    let main =
+        fs::read_to_string(&main_path).map_err(|e| format!("read {}: {e}", main_path.display()))?;
     check_panic_serial_source_contract_text(&serial, &main)
 }
 
@@ -8367,8 +8404,8 @@ fn check_filesystem_parity_source_contract(root: &Path) -> Result<(), String> {
         .join("ext2.rs");
     let fat =
         fs::read_to_string(&fat_path).map_err(|e| format!("read {}: {e}", fat_path.display()))?;
-    let ext2 = fs::read_to_string(&ext2_path)
-        .map_err(|e| format!("read {}: {e}", ext2_path.display()))?;
+    let ext2 =
+        fs::read_to_string(&ext2_path).map_err(|e| format!("read {}: {e}", ext2_path.display()))?;
     check_filesystem_parity_source_contract_text(&fat, &ext2)
 }
 
@@ -8425,7 +8462,9 @@ fn check_filesystem_parity_source_contract_text(fat: &str, ext2: &str) -> Result
     ] {
         for needle in needles {
             if !text.contains(needle) {
-                findings.push(format!("{label} filesystem parity source missing `{needle}`"));
+                findings.push(format!(
+                    "{label} filesystem parity source missing `{needle}`"
+                ));
             }
         }
     }
