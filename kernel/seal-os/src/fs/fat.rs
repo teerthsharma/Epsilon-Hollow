@@ -817,7 +817,9 @@ impl FatFs {
                 if e.first_cluster == cluster {
                     return Ok(e);
                 }
-                if e.attr & 0x10 != 0 && e.first_cluster >= 2 {
+                // "." points at the directory itself and ".." at its parent;
+                // descending into either turns the walk into an endless cycle.
+                if e.attr & 0x10 != 0 && e.first_cluster >= 2 && e.name != "." && e.name != ".." {
                     let sub = self.read_dir_cluster(e.first_cluster)?;
                     queue.push_back(sub);
                 }
@@ -857,7 +859,9 @@ impl FatFs {
                     if fc == cluster && cluster >= 2 {
                         return Ok((dir_cluster, offset));
                     }
-                    if raw.attr & 0x10 != 0 && fc >= 2 {
+                    // Skip "." and ".." — a valid 8.3 name never starts with a
+                    // dot, and descending into them cycles forever.
+                    if raw.attr & 0x10 != 0 && fc >= 2 && raw.name[0] != b'.' {
                         if let Ok(sub) = self.read_dir_raw(fc) {
                             queue.push_back((sub, fc));
                         }
@@ -896,7 +900,10 @@ impl FatFs {
 
             let mut found = false;
             for e in entries {
-                if e.name == *component {
+                // FAT stores 8.3 names upper-cased, so path resolution must fold
+                // case the same way `find_entry_in_dir` does — otherwise
+                // `create("/a.txt")` succeeds and `lookup("/a.txt")` then fails.
+                if e.name.eq_ignore_ascii_case(component) {
                     if i == components.len() - 1 {
                         return Ok(VfsHandle {
                             fs_idx: 0,

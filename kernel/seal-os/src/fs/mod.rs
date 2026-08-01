@@ -15,6 +15,7 @@ pub mod gpt;
 pub mod inode_slab;
 pub mod journal;
 pub mod manifold_fs;
+pub mod parity;
 pub mod path_cache;
 pub mod pipe;
 pub mod prefetch;
