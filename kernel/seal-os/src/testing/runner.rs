@@ -15,6 +15,7 @@ pub fn test_main() -> ! {
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
+    crate::fs::parity::tests::register_all();
     crate::process::scheduler::tests::register_all();
     crate::security::tests::register_all();
     crate::syscall::table::tests::register_all();
