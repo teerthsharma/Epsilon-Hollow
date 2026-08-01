@@ -6,7 +6,9 @@
 pub mod aslr;
 pub mod audit;
 pub mod audit_runtime;
+pub mod features;
 pub mod group;
+pub mod kaslr;
 pub mod kpti;
 pub mod mac;
 pub mod manifold_acl;
@@ -16,6 +18,7 @@ pub mod seccomp;
 pub mod shadow;
 pub mod smap_smep;
 pub mod topcrypt_guard;
+pub mod unsafe_audit;
 
 /// Initialize all security subsystems.
 ///
@@ -31,6 +34,21 @@ pub fn init_security() {
     kpti::init();
     retpoline::init();
     emit_hardening_proof();
+}
+
+/// Emit the per-feature security proofs.
+///
+/// Split out from [`emit_hardening_proof`] so each mitigation is gated on its
+/// own field rather than on one lumped verdict.
+///
+/// Call this **exactly once**, after `audit::emit_flush_proof()` — the image
+/// gate requires each `[KASLR]` / `[SECURITY-FEATURES]` / `[UNSAFE-AUDIT]`
+/// marker to be unique in the boot log, and the `audit=` field only reads 1
+/// once the VFS-backed audit log exists.
+pub fn emit_per_feature_proofs() {
+    kaslr::emit_kaslr_proof();
+    features::emit_security_feature_proof();
+    unsafe_audit::emit_unsafe_audit_proof();
 }
 
 fn emit_hardening_proof() {
@@ -77,6 +95,9 @@ pub mod tests {
         super::mac::tests::register_all();
         super::retpoline::tests::register_all();
         super::audit::tests::register_all();
+        super::kaslr::tests::register_all();
+        super::features::tests::register_all();
+        super::unsafe_audit::tests::register_all();
         crate::testing::register_test("security::init", test_security_init_does_not_panic);
     }
 }
