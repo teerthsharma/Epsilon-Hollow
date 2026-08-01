@@ -300,31 +300,20 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
         if !self.ready {
             return Err(GpuError::NotReady);
         }
-        let meta = find_kernel("spectral_step").ok_or(GpuError::KernelNotFound)?;
-        let shader_phys = unsafe { self.upload_kernel(meta)? };
-        let fence_phys = self.fence_buf.as_ref().ok_or(GpuError::NotReady)?.phys;
-        let ring = unsafe { self.ensure_ring()? };
-
-        let alpha_bits = alpha.to_bits();
-        unsafe {
-            ring.set_compute_pgm(shader_phys);
-            let grid_x = ((dim + 63) / 64) as u32;
-            ring.set_num_threads(64, 1, 1);
-            ring.set_user_data(
-                0,
-                &[
-                    (state.phys & 0xFFFFFFFF) as u32,
-                    ((state.phys >> 32) & 0xFFFFFFFF) as u32,
-                    (output.phys & 0xFFFFFFFF) as u32,
-                    ((output.phys >> 32) & 0xFFFFFFFF) as u32,
-                    dim as u32,
-                    alpha_bits as u32,
-                    (alpha_bits >> 32) as u32,
-                ],
-            );
-            ring.dispatch_direct(grid_x, 1, 1);
-            Ok(ring.submit(fence_phys))
-        }
+        // The checked-in `spectral_step` GCN blob implements the five-argument
+        // OpenCL kernel `(1-alpha)*state[i] + alpha*target[i]` and expects ten
+        // user SGPRs (see `gcn_asm::SPECTRAL_STEP_USER_SGPRS`).  This trait
+        // method carries no `target` buffer, so its arguments cannot be
+        // marshalled into that ABI.  Refuse loudly rather than dispatch real
+        // machine code against a layout it was not built for — a wrong
+        // `USER_SGPR` count shifts every pointer the shader reads.
+        let _ = (state, output, dim, alpha);
+        serial_println!(
+            "[TOPO-ACCEL] spectral_step hardware dispatch refused: trait supplies no target \
+             buffer, blob ABI needs {} user SGPRs — use gpu_bench::run_pm4_spectral_step",
+            super::gcn_asm::SPECTRAL_STEP_USER_SGPRS
+        );
+        Err(GpuError::InvalidArgument)
     }
 
     fn dispatch_s2_distance(

@@ -27,9 +27,17 @@ pub struct KernelMeta {
 
 include!(concat!(env!("OUT_DIR"), "/generated_shader_binaries.rs"));
 
-/// Find a kernel by name.
+/// Find a kernel by name, treating a zero-length blob as absent.
+///
+/// `build.rs` embeds any `shaders/*.bin` that exists, and three of them are
+/// still zero-length placeholders.  Handing an empty blob to a dispatcher would
+/// upload nothing and then set `COMPUTE_PGM` to whatever the allocator returned,
+/// which fails as a GPU hang rather than as an error.  Filtering here makes
+/// every caller take the documented `kernel_not_found` path instead.
 pub fn find_kernel(name: &str) -> Option<&'static KernelMeta> {
-    KERNELS.iter().find(|k| k.name == name)
+    KERNELS
+        .iter()
+        .find(|k| k.name == name && !k.binary.is_empty())
 }
 
 /// Reinterpret a `&[u8]` kernel binary for DMA upload (identity for &[u8]).
