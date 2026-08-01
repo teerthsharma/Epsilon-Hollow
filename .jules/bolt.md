@@ -23,3 +23,7 @@
 
 **Learning:** `useMemo` should not be used for expensive, one-time initialization if the logic contains impure functions (like `Math.random()`), as React can throw away memoized values or linting rules (like `react-hooks/purity`) will flag the impure function. The computation will rerun unexpectedly on re-renders, causing performance drops or UI flashes (e.g. regenerating 3D coordinates).
 **Action:** Use a lazy `useState` initializer (`useState(() => expensiveInitialization())`) for data that must be calculated once and kept stable across all re-renders.
+
+## 2024-08-01 - Prevented Layout Thrashing from Combined State Dependencies
+**Learning:** Combining unrelated state updates (e.g., a low-frequency chat `messages` list and a high-frequency `thoughts` telemetry stream) into a single `useEffect` dependency array for DOM layout calculations like `scrollIntoView` causes unnecessary layout thrashing. High-frequency state updates force the re-evaluation of unrelated layout calculations.
+**Action:** Separate side-effects into distinct `useEffect` hooks, each tightly scoped to its specific state dependency.
