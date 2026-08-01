@@ -14,6 +14,7 @@ pub mod apps;
 pub mod async_rt;
 pub mod atlas;
 pub mod boot;
+pub mod bundle;
 pub mod cpu;
 pub mod drivers;
 pub mod fs;
