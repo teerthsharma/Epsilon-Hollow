@@ -12,7 +12,7 @@ extern crate alloc;
 pub mod apps;
 #[cfg(not(test))]
 pub mod async_rt;
-pub mod atlas;
+pub mod bundle;
 pub mod boot;
 pub mod cpu;
 pub mod drivers;
