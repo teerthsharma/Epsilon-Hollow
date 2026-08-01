@@ -63,13 +63,21 @@ impl BufferCache {
         }
     }
 
+    /// Sectors spanned by one cache block. Callers index by filesystem block
+    /// number; block devices are addressed in 512-byte sectors, so the
+    /// translation belongs here rather than at every call site.
+    fn sectors_per_block(&self) -> u64 {
+        (self.block_size as u64 / 512).max(1)
+    }
+
     pub fn get_block(&mut self, dev: u32, block_id: u64) -> Option<&mut Buffer> {
         if !self.cache.contains_key(&(dev, block_id)) {
             if self.cache.len() >= self.capacity {
                 self.evict();
             }
+            let lba = block_id * self.sectors_per_block();
             let mut new_buf = Buffer::new(dev, block_id, self.block_size);
-            if read_block(dev, block_id, &mut new_buf.data).is_err() {
+            if read_block(dev, lba, &mut new_buf.data).is_err() {
                 return None;
             }
             self.cache.insert((dev, block_id), new_buf);
@@ -98,6 +106,7 @@ impl BufferCache {
     }
 
     pub fn flush(&mut self, dev: Option<u32>) {
+        let sectors_per_block = self.sectors_per_block();
         for buf in self.cache.values_mut() {
             if buf.dirty {
                 if let Some(d) = dev {
@@ -106,7 +115,7 @@ impl BufferCache {
                     }
                 }
                 // Flush data to the block device.
-                if write_block(buf.dev, buf.block_id, &buf.data).is_ok() {
+                if write_block(buf.dev, buf.block_id * sectors_per_block, &buf.data).is_ok() {
                     buf.state = BufferState::Clean;
                     buf.dirty = false;
                 }
@@ -146,10 +155,11 @@ impl BufferCache {
         // We must flush it before eviction.
         let evict_idx = evict_idx.unwrap_or(0);
 
+        let sectors_per_block = self.sectors_per_block();
         let key = self.lru.remove(evict_idx);
         if let Some(buf) = self.cache.remove(&key) {
             if buf.dirty {
-                let _ = write_block(buf.dev, buf.block_id, &buf.data);
+                let _ = write_block(buf.dev, buf.block_id * sectors_per_block, &buf.data);
             }
         }
     }
