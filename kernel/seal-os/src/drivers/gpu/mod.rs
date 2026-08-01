@@ -15,6 +15,8 @@ pub mod virtio_gpu;
 pub mod compute_queue;
 pub mod dispatch;
 pub mod firmware_scanner;
+pub mod gcn_asm;
+pub mod gpu_bench;
 pub mod gpu_mem;
 pub mod shader_binaries;
 pub mod topology_accel;

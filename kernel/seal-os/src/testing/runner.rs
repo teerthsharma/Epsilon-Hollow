@@ -19,6 +19,7 @@ pub fn test_main() -> ! {
     crate::security::tests::register_all();
     crate::syscall::table::tests::register_all();
     crate::drivers::apic::tests::register_all();
+    crate::drivers::gpu::gpu_bench::tests::register_all();
     crate::cpu::tests::register_all();
     crate::sync::tests::register_all();
 
