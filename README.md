@@ -4784,7 +4784,7 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**121754 lines of Rust** across 397 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **123577 total**
+**136438 lines of Rust** across 417 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **138261 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
