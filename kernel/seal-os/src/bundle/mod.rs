@@ -1,24 +1,26 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Atlas — device chart provisioning.
+//! Bundle — firmware section provisioning.
 //!
-//! A manifold is only usable once an atlas of charts covers it. A DMA-capable
-//! device is only usable once its vendor chart — the firmware image the device
-//! executes — is resident. Seal OS ships **no** vendor charts: they are vendor
-//! IP under redistribution terms this repository cannot accept. It ships the
-//! atlas instead: the request path, the signed chart index, the digest gate,
-//! and — the part that matters — the refusal.
+//! A fibre bundle over the space of devices: the fibre above each device is the
+//! set of images that device can execute, and a *section* picks exactly one of
+//! them. This subsystem is that selection mechanism. A DMA-capable device is
+//! only usable once its section — the firmware image the device executes — is
+//! resident. Seal OS ships **no** vendor sections: they are vendor IP under
+//! redistribution terms this repository cannot accept. It ships the bundle
+//! instead: the request path, the signed section index, the digest gate, and —
+//! the part that matters — the refusal.
 //!
-//! A chart that is not in the index, or not in the store, or whose bytes do not
-//! match the index digest, is refused. There is no simulation fallback in this
-//! kernel; a driver that cannot get its chart stays down and says so.
+//! A section that is not in the index, or not in the store, or whose bytes do
+//! not match the index digest, is refused. There is no simulation fallback in
+//! this kernel; a driver whose fibre has no section stays down and says so.
 //!
 //! Store layout (ManifoldFS, reachable through the VFS):
-//!   `/atlas/<chart-name>`   chart bytes
-//!   `/atlas/index.seal`     ed25519-signed chart index (optional, provisioned)
+//!   `/bundle/<section-name>`  section bytes
+//!   `/bundle/index.seal`      ed25519-signed section index (optional)
 //!
-//! Charts and the store index are installed with ManifoldPkg (`.eph`), so a
+//! Sections and the store index are installed with ManifoldPkg (`.eph`), so a
 //! user who legally obtains vendor firmware provisions it without rebuilding
 //! the kernel.
 
@@ -31,16 +33,16 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 use spin::Mutex;
 
-/// Directory the chart store lives in.
-pub const STORE_DIR: &str = "/atlas";
-/// Provisioned (optional) signed chart index inside the store.
-pub const STORE_INDEX_PATH: &str = "/atlas/index.seal";
+/// Directory the section store lives in.
+pub const STORE_DIR: &str = "/bundle";
+/// Provisioned (optional) signed section index inside the store.
+pub const STORE_INDEX_PATH: &str = "/bundle/index.seal";
 
-const INDEX_MAGIC: &str = "SEALATLAS1\n";
+const INDEX_MAGIC: &str = "SEALBNDL1\n";
 
 /// Fixture key. Real deployments replace this with the distributor key that
-/// signs the chart index shipped alongside vendor firmware.
-const ATLAS_INDEX_SIGNING_KEY: [u8; 32] = [
+/// signs the section index shipped alongside vendor firmware.
+const BUNDLE_INDEX_SIGNING_KEY: [u8; 32] = [
     0x2f, 0x14, 0xb8, 0x6c, 0x07, 0x9a, 0x5d, 0x31, 0xc4, 0x88, 0x1e, 0x73, 0xa0, 0x66, 0xd2, 0x4b,
     0x59, 0x0f, 0xe7, 0x35, 0x8a, 0x21, 0xcc, 0x76, 0x13, 0xbd, 0x42, 0x98, 0x6a, 0x0d, 0xf1, 0x57,
 ];
@@ -48,21 +50,22 @@ const ATLAS_INDEX_SIGNING_KEY: [u8; 32] = [
 /// Synthetic test fixture. This is NOT firmware and is not accepted by any
 /// device — it exists only so the positive path (index → store → digest →
 /// cache) is exercised at boot without shipping vendor IP.
-pub const FIXTURE_CHART_NAME: &str = "test-synthetic-fixture.chart";
-const FIXTURE_CHART_BYTES: &[u8] = b"SEAL-OS ATLAS SYNTHETIC TEST CHART v1 - NOT VENDOR FIRMWARE\n";
-/// Digest of `FIXTURE_CHART_BYTES`, written independently of the bytes so the
+pub const FIXTURE_SECTION_NAME: &str = "test-synthetic-fixture.section";
+const FIXTURE_SECTION_BYTES: &[u8] =
+    b"SEAL-OS BUNDLE SYNTHETIC TEST SECTION v1 - NOT VENDOR FIRMWARE\n";
+/// Digest of `FIXTURE_SECTION_BYTES`, written independently of the bytes so the
 /// comparison is a real check and not an identity.
-const FIXTURE_CHART_SHA256: &str =
-    "15a82a6da11f27c838a11976569480f3fddece9aeaea9c9bda25dd5670ba9b2b";
+const FIXTURE_SECTION_SHA256: &str =
+    "af26a8ddbbb199e82b0e91b0af255547dd0600093880d93b9adaa0a7881b627f";
 
 /// Indexed by the provisioned store index, deliberately never written to the
 /// store: proves the fail-closed path.
-pub const ABSENT_CHART_NAME: &str = "test-absent-fixture.chart";
+pub const ABSENT_SECTION_NAME: &str = "test-absent-fixture.section";
 /// Indexed with the fixture digest but provisioned with different bytes:
 /// proves the digest gate.
-pub const CORRUPT_CHART_NAME: &str = "test-corrupt-fixture.chart";
+pub const CORRUPT_SECTION_NAME: &str = "test-corrupt-fixture.section";
 
-static CACHE: Mutex<BTreeMap<String, Arc<Chart>>> = Mutex::new(BTreeMap::new());
+static CACHE: Mutex<BTreeMap<String, Arc<Section>>> = Mutex::new(BTreeMap::new());
 static REQUESTED: AtomicUsize = AtomicUsize::new(0);
 static PROVISIONED: AtomicUsize = AtomicUsize::new(0);
 static NOT_PROVISIONED: AtomicUsize = AtomicUsize::new(0);
@@ -70,22 +73,22 @@ static DIGEST_OK: AtomicUsize = AtomicUsize::new(0);
 static DIGEST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 static CACHE_HITS: AtomicUsize = AtomicUsize::new(0);
 
-/// A resident chart. Shared between drivers through `Arc`, so two drivers
-/// requesting the same chart share one allocation.
+/// A resident section. Shared between drivers through `Arc`, so two drivers
+/// requesting the same section share one allocation.
 #[derive(Debug)]
-pub struct Chart {
+pub struct Section {
     pub name: String,
     pub bytes: Vec<u8>,
 }
 
-/// Refcounted handle to a resident chart.
-pub type ChartRef = Arc<Chart>;
+/// Refcounted handle to a resident section.
+pub type SectionRef = Arc<Section>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChartError {
+pub enum SectionError {
     /// The VFS is not up yet; the store cannot be consulted.
     StoreUnavailable,
-    /// No signed index entry names this chart.
+    /// No signed index entry names this section.
     NotIndexed,
     /// Indexed, but the store has no bytes for it — the normal case for vendor
     /// firmware that the user has not provisioned.
@@ -96,13 +99,13 @@ pub enum ChartError {
     DigestMismatch,
     /// Index magic, encoding, or ed25519 signature failed.
     IndexRejected,
-    /// Chart names are flat store entries; `/` and empty names are rejected.
+    /// Section names are flat store entries; `/` and empty names are rejected.
     InvalidName,
     /// The store entry exists but could not be read.
     ReadFailed,
 }
 
-impl ChartError {
+impl SectionError {
     pub fn tag(&self) -> &'static str {
         match self {
             Self::StoreUnavailable => "store_unavailable",
@@ -117,7 +120,7 @@ impl ChartError {
     }
 }
 
-impl core::fmt::Display for ChartError {
+impl core::fmt::Display for SectionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.tag())
     }
@@ -131,19 +134,19 @@ struct IndexEntry {
 
 // ---------------------------------------------------------------- public API
 
-/// Request a chart by name.
+/// Request a section by name.
 ///
-/// Fail-closed: every failure mode returns an error naming the chart. Nothing
+/// Fail-closed: every failure mode returns an error naming the section. Nothing
 /// in this path substitutes generated data for firmware.
-pub fn request_chart(name: &str) -> Result<ChartRef, ChartError> {
+pub fn request_section(name: &str) -> Result<SectionRef, SectionError> {
     REQUESTED.fetch_add(1, Ordering::Relaxed);
     if name.is_empty() || name.contains('/') {
-        return Err(ChartError::InvalidName);
+        return Err(SectionError::InvalidName);
     }
-    if let Some(chart) = CACHE.lock().get(name) {
+    if let Some(section) = CACHE.lock().get(name) {
         CACHE_HITS.fetch_add(1, Ordering::Relaxed);
         PROVISIONED.fetch_add(1, Ordering::Relaxed);
-        return Ok(chart.clone());
+        return Ok(section.clone());
     }
 
     let entry = index()?
@@ -151,41 +154,41 @@ pub fn request_chart(name: &str) -> Result<ChartRef, ChartError> {
         .find(|e| e.name == name)
         .ok_or_else(|| {
             NOT_PROVISIONED.fetch_add(1, Ordering::Relaxed);
-            ChartError::NotIndexed
+            SectionError::NotIndexed
         })?;
 
     let path = alloc::format!("{}/{}", STORE_DIR, name);
     let bytes = read_store_file(&path).inspect_err(|e| {
-        if matches!(e, ChartError::NotProvisioned) {
+        if matches!(e, SectionError::NotProvisioned) {
             NOT_PROVISIONED.fetch_add(1, Ordering::Relaxed);
         }
     })?;
 
     if bytes.len() != entry.bytes {
         DIGEST_REFUSED.fetch_add(1, Ordering::Relaxed);
-        return Err(ChartError::SizeMismatch);
+        return Err(SectionError::SizeMismatch);
     }
     if sha256(&bytes) != entry.digest {
         DIGEST_REFUSED.fetch_add(1, Ordering::Relaxed);
-        return Err(ChartError::DigestMismatch);
+        return Err(SectionError::DigestMismatch);
     }
     DIGEST_OK.fetch_add(1, Ordering::Relaxed);
     PROVISIONED.fetch_add(1, Ordering::Relaxed);
 
-    let chart = Arc::new(Chart {
+    let section = Arc::new(Section {
         name: String::from(name),
         bytes,
     });
-    CACHE.lock().insert(String::from(name), chart.clone());
-    Ok(chart)
+    CACHE.lock().insert(String::from(name), section.clone());
+    Ok(section)
 }
 
-/// Drop the cache's reference to a chart, freeing the allocation once no driver
-/// still holds a `ChartRef`. Returns `true` if the entry was evicted.
-pub fn release_chart(name: &str) -> bool {
+/// Drop the cache's reference to a section, freeing the allocation once no driver
+/// still holds a `SectionRef`. Returns `true` if the entry was evicted.
+pub fn release_section(name: &str) -> bool {
     let mut cache = CACHE.lock();
     match cache.get(name) {
-        Some(chart) if Arc::strong_count(chart) == 1 => {
+        Some(section) if Arc::strong_count(section) == 1 => {
             cache.remove(name);
             true
         }
@@ -193,8 +196,8 @@ pub fn release_chart(name: &str) -> bool {
     }
 }
 
-/// Number of charts currently resident.
-pub fn cached_charts() -> usize {
+/// Number of sections currently resident.
+pub fn cached_sections() -> usize {
     CACHE.lock().len()
 }
 
@@ -211,7 +214,7 @@ pub const SIMULATION_PRESENT: bool = false;
 
 // ------------------------------------------------------------- index handling
 
-fn index() -> Result<Vec<IndexEntry>, ChartError> {
+fn index() -> Result<Vec<IndexEntry>, SectionError> {
     let mut entries = parse_index(&built_in_index(), &index_public_key())?;
     if let Ok(raw) = read_store_file(STORE_INDEX_PATH) {
         if let Ok(store) = parse_index(&raw, &index_public_key()) {
@@ -226,24 +229,24 @@ fn index() -> Result<Vec<IndexEntry>, ChartError> {
 }
 
 fn index_public_key() -> [u8; 32] {
-    SigningKey::from_bytes(&ATLAS_INDEX_SIGNING_KEY)
+    SigningKey::from_bytes(&BUNDLE_INDEX_SIGNING_KEY)
         .verifying_key()
         .to_bytes()
 }
 
-/// Index compiled into the kernel: the synthetic fixture only. Vendor charts
+/// Index compiled into the kernel: the synthetic fixture only. Vendor sections
 /// arrive with a provisioned store index.
 fn built_in_index() -> Vec<u8> {
     sign_index(&alloc::format!(
-        "chart={} bytes={} sha256={}\n",
-        FIXTURE_CHART_NAME,
-        FIXTURE_CHART_BYTES.len(),
-        FIXTURE_CHART_SHA256
+        "section={} bytes={} sha256={}\n",
+        FIXTURE_SECTION_NAME,
+        FIXTURE_SECTION_BYTES.len(),
+        FIXTURE_SECTION_SHA256
     ))
 }
 
 fn sign_index(body: &str) -> Vec<u8> {
-    let signature = SigningKey::from_bytes(&ATLAS_INDEX_SIGNING_KEY).sign(body.as_bytes());
+    let signature = SigningKey::from_bytes(&BUNDLE_INDEX_SIGNING_KEY).sign(body.as_bytes());
     let mut out = Vec::new();
     out.extend_from_slice(INDEX_MAGIC.as_bytes());
     out.extend_from_slice(body.as_bytes());
@@ -253,18 +256,18 @@ fn sign_index(body: &str) -> Vec<u8> {
     out
 }
 
-fn parse_index(raw: &[u8], public_key: &[u8; 32]) -> Result<Vec<IndexEntry>, ChartError> {
-    let text = core::str::from_utf8(raw).map_err(|_| ChartError::IndexRejected)?;
+fn parse_index(raw: &[u8], public_key: &[u8; 32]) -> Result<Vec<IndexEntry>, SectionError> {
+    let text = core::str::from_utf8(raw).map_err(|_| SectionError::IndexRejected)?;
     if !text.starts_with(INDEX_MAGIC) {
-        return Err(ChartError::IndexRejected);
+        return Err(SectionError::IndexRejected);
     }
-    let sig_pos = text.find("signature=").ok_or(ChartError::IndexRejected)?;
+    let sig_pos = text.find("signature=").ok_or(SectionError::IndexRejected)?;
     let body = &text[INDEX_MAGIC.len()..sig_pos];
     let sig_bytes = parse_hex64(text[sig_pos + "signature=".len()..].trim())
-        .ok_or(ChartError::IndexRejected)?;
-    let vk = VerifyingKey::from_bytes(public_key).map_err(|_| ChartError::IndexRejected)?;
+        .ok_or(SectionError::IndexRejected)?;
+    let vk = VerifyingKey::from_bytes(public_key).map_err(|_| SectionError::IndexRejected)?;
     vk.verify_strict(body.as_bytes(), &Signature::from_bytes(&sig_bytes))
-        .map_err(|_| ChartError::IndexRejected)?;
+        .map_err(|_| SectionError::IndexRejected)?;
 
     let mut entries = Vec::new();
     for line in body.lines() {
@@ -276,7 +279,7 @@ fn parse_index(raw: &[u8], public_key: &[u8; 32]) -> Result<Vec<IndexEntry>, Cha
         let mut bytes = None;
         let mut digest = None;
         for field in line.split_whitespace() {
-            if let Some(v) = field.strip_prefix("chart=") {
+            if let Some(v) = field.strip_prefix("section=") {
                 name = Some(String::from(v));
             } else if let Some(v) = field.strip_prefix("bytes=") {
                 bytes = v.parse::<usize>().ok();
@@ -292,7 +295,7 @@ fn parse_index(raw: &[u8], public_key: &[u8; 32]) -> Result<Vec<IndexEntry>, Cha
                     digest,
                 })
             }
-            _ => return Err(ChartError::IndexRejected),
+            _ => return Err(SectionError::IndexRejected),
         }
     }
     Ok(entries)
@@ -300,21 +303,21 @@ fn parse_index(raw: &[u8], public_key: &[u8; 32]) -> Result<Vec<IndexEntry>, Cha
 
 // ------------------------------------------------------------------ store I/O
 
-fn read_store_file(path: &str) -> Result<Vec<u8>, ChartError> {
+fn read_store_file(path: &str) -> Result<Vec<u8>, SectionError> {
     if !crate::fs::vfs::is_vfs_initialized() {
-        return Err(ChartError::StoreUnavailable);
+        return Err(SectionError::StoreUnavailable);
     }
     crate::fs::vfs::with_vfs(|vfs| {
         let handle = vfs
             .lookup_follow(path)
-            .map_err(|_| ChartError::NotProvisioned)?;
-        let node = vfs.stat(handle).map_err(|_| ChartError::ReadFailed)?;
+            .map_err(|_| SectionError::NotProvisioned)?;
+        let node = vfs.stat(handle).map_err(|_| SectionError::ReadFailed)?;
         let mut buf = alloc::vec![0u8; node.size as usize];
         let mut off = 0usize;
         while off < buf.len() {
             let n = vfs
                 .read(handle, &mut buf[off..], off as u64)
-                .map_err(|_| ChartError::ReadFailed)?;
+                .map_err(|_| SectionError::ReadFailed)?;
             if n == 0 {
                 break;
             }
@@ -327,33 +330,33 @@ fn read_store_file(path: &str) -> Result<Vec<u8>, ChartError> {
 
 // ------------------------------------------------------- provisioning fixture
 
-/// Build the `.eph` that provisions the test-fixture charts and a signed store
-/// index. This is the exact shape a vendor-firmware package takes: chart bytes
-/// under `/atlas/`, plus `/atlas/index.seal` signed by the distributor key.
+/// Build the `.eph` that provisions the test-fixture sections and a signed store
+/// index. This is the exact shape a vendor-firmware package takes: section bytes
+/// under `/bundle/`, plus `/bundle/index.seal` signed by the distributor key.
 fn fixture_package() -> Vec<u8> {
     let store_index = sign_index(&alloc::format!(
-        "chart={} bytes={} sha256={}\nchart={} bytes={} sha256={}\n",
-        CORRUPT_CHART_NAME,
-        FIXTURE_CHART_BYTES.len(),
-        FIXTURE_CHART_SHA256,
-        ABSENT_CHART_NAME,
-        FIXTURE_CHART_BYTES.len(),
-        FIXTURE_CHART_SHA256
+        "section={} bytes={} sha256={}\nsection={} bytes={} sha256={}\n",
+        CORRUPT_SECTION_NAME,
+        FIXTURE_SECTION_BYTES.len(),
+        FIXTURE_SECTION_SHA256,
+        ABSENT_SECTION_NAME,
+        FIXTURE_SECTION_BYTES.len(),
+        FIXTURE_SECTION_SHA256
     ));
     // Same length as the fixture, one byte different: digest must reject it.
-    let mut corrupt = FIXTURE_CHART_BYTES.to_vec();
+    let mut corrupt = FIXTURE_SECTION_BYTES.to_vec();
     let last = corrupt.len() - 1;
     corrupt[last] = b'!';
 
     let mut data = Vec::new();
     data.extend_from_slice(b"EPH\0");
-    let manifest = "name=\"seal-atlas-test-charts\"\nversion=\"0.0.1\"\ndescription=\"atlas synthetic test fixture — not vendor firmware\"";
+    let manifest = "name=\"seal-bundle-test-sections\"\nversion=\"0.0.1\"\ndescription=\"bundle synthetic test fixture — not vendor firmware\"";
     data.extend_from_slice(&(manifest.len() as u32).to_be_bytes());
     data.extend_from_slice(manifest.as_bytes());
     data.extend_from_slice(&[0u8; 64]);
     for (name, bytes) in [
-        (FIXTURE_CHART_NAME, FIXTURE_CHART_BYTES),
-        (CORRUPT_CHART_NAME, corrupt.as_slice()),
+        (FIXTURE_SECTION_NAME, FIXTURE_SECTION_BYTES),
+        (CORRUPT_SECTION_NAME, corrupt.as_slice()),
     ] {
         push_file(&mut data, &alloc::format!("{}/{}", STORE_DIR, name), bytes);
     }
@@ -373,13 +376,13 @@ fn push_file(data: &mut Vec<u8>, path: &str, bytes: &[u8]) {
 /// with a real vendor-firmware `.eph`.
 pub fn provision_test_fixture() -> bool {
     let mut pkg = crate::pkg::GLOBAL_PKG.lock();
-    let _ = pkg.remove("seal-atlas-test-charts");
+    let _ = pkg.remove("seal-bundle-test-sections");
     pkg.install_bytes(&fixture_package(), None).is_ok()
 }
 
 // ----------------------------------------------------------------- proof line
 
-/// Measured proof of the atlas contract. Every field below is read back at
+/// Measured proof of the bundle contract. Every field below is read back at
 /// runtime; nothing is asserted from a constant.
 pub fn firmware_proof_line() -> String {
     let index_ok = parse_index(&built_in_index(), &index_public_key()).is_ok();
@@ -393,8 +396,8 @@ pub fn firmware_proof_line() -> String {
     let index_entries = indexed_names().len();
 
     // Positive path.
-    let first = request_chart(FIXTURE_CHART_NAME);
-    let second = request_chart(FIXTURE_CHART_NAME);
+    let first = request_section(FIXTURE_SECTION_NAME);
+    let second = request_section(FIXTURE_SECTION_NAME);
     let (same_alloc, rc_peak, rc_after_drop) = match (&first, &second) {
         (Ok(a), Ok(b)) => {
             let same = Arc::ptr_eq(a, b);
@@ -406,13 +409,13 @@ pub fn firmware_proof_line() -> String {
     };
     let fixture_bytes = first.as_ref().map(|c| c.bytes.len()).unwrap_or(0);
     let fixture_ok = first.is_ok();
-    let cached_while_held = cached_charts();
+    let cached_while_held = cached_sections();
     drop(first);
-    let released = release_chart(FIXTURE_CHART_NAME);
+    let released = release_section(FIXTURE_SECTION_NAME);
 
     // Fail-closed controls.
-    let absent = request_chart(ABSENT_CHART_NAME).err();
-    let corrupt = request_chart(CORRUPT_CHART_NAME).err();
+    let absent = request_section(ABSENT_SECTION_NAME).err();
+    let corrupt = request_section(CORRUPT_SECTION_NAME).err();
 
     // Driver state, measured by running the real probe path.
     let mut wifi = crate::drivers::wifi::WifiDriver::new();
@@ -426,14 +429,14 @@ pub fn firmware_proof_line() -> String {
         && tampered_refused
         && installed
         && fixture_ok
-        && fixture_bytes == FIXTURE_CHART_BYTES.len()
+        && fixture_bytes == FIXTURE_SECTION_BYTES.len()
         && same_alloc
         && rc_peak == 3
         && rc_after_drop == 2
         && released
         && cached_while_held >= 1
-        && absent == Some(ChartError::NotProvisioned)
-        && corrupt == Some(ChartError::DigestMismatch)
+        && absent == Some(SectionError::NotProvisioned)
+        && corrupt == Some(SectionError::DigestMismatch)
         && !SIMULATION_PRESENT
         && wifi_scan == 0
         && bt_scan == 0
@@ -441,12 +444,12 @@ pub fn firmware_proof_line() -> String {
         && !bt.is_up();
 
     alloc::format!(
-        "[Atlas] proof version=1 store={} index=ed25519_fixture index_verify={} index_tampered={} index_entries={} store_index={} provision_pkg={} requested={} provisioned={} not_provisioned={} digest_ok={} digest_refused={} cache_hits={} fixture={} fixture_bytes={} cache_hit={} refcount_peak={} refcount_after_drop={} cached_while_held={} released={} cached_after_release={} absent_chart={}:{} corrupt_chart={}:{} simulation={} wifi={} wifi_chart={} wifi_scan_entries={} bt={} bt_chart={} bt_scan_entries={} result={}",
+        "[Bundle] proof version=1 store={} index=ed25519_fixture index_verify={} index_tampered={} index_entries={} store_index={} provision_pkg={} requested={} provisioned={} not_provisioned={} digest_ok={} digest_refused={} cache_hits={} fixture={} fixture_bytes={} cache_hit={} refcount_peak={} refcount_after_drop={} cached_while_held={} released={} cached_after_release={} absent_section={}:{} corrupt_section={}:{} simulation={} wifi={} wifi_section={} wifi_scan_entries={} bt={} bt_section={} bt_scan_entries={} result={}",
         STORE_DIR,
         if index_ok { "ok" } else { "fail" },
         if tampered_refused { "refused" } else { "accepted" },
         index_entries,
-        if indexed_names().iter().any(|n| n == ABSENT_CHART_NAME) { "ed25519_fixture" } else { "absent" },
+        if indexed_names().iter().any(|n| n == ABSENT_SECTION_NAME) { "ed25519_fixture" } else { "absent" },
         if installed { "eph_installed" } else { "fail" },
         REQUESTED.load(Ordering::Relaxed),
         PROVISIONED.load(Ordering::Relaxed),
@@ -461,23 +464,23 @@ pub fn firmware_proof_line() -> String {
         rc_after_drop,
         cached_while_held,
         if released { 1 } else { 0 },
-        cached_charts(),
-        ABSENT_CHART_NAME,
+        cached_sections(),
+        ABSENT_SECTION_NAME,
         absent.map(|e| e.tag()).unwrap_or("accepted"),
-        CORRUPT_CHART_NAME,
+        CORRUPT_SECTION_NAME,
         corrupt.map(|e| e.tag()).unwrap_or("accepted"),
         if SIMULATION_PRESENT { "present" } else { "absent" },
         wifi.state_tag(),
-        wifi.chart_name().unwrap_or("none"),
+        wifi.section_name().unwrap_or("none"),
         wifi_scan,
         bt.state_tag(),
-        bt.chart_name().unwrap_or("none"),
+        bt.section_name().unwrap_or("none"),
         bt_scan,
         if pass { "pass" } else { "fail" }
     )
 }
 
-/// Emit the atlas proof to serial, matching the `[ManifoldPkg] proof` style.
+/// Emit the bundle proof to serial, matching the `[ManifoldPkg] proof` style.
 pub fn emit_boot_proof() {
     crate::serial_println!("{}", firmware_proof_line());
 }
@@ -545,24 +548,24 @@ pub mod tests {
     use crate::testing::TestResult;
     use crate::{seal_test, test_assert, test_assert_eq};
 
-    fn test_absent_chart_fails_closed() -> TestResult {
+    fn test_absent_section_fails_closed() -> TestResult {
         test_assert!(provision_test_fixture(), "fixture package must install");
-        let result = request_chart(ABSENT_CHART_NAME);
-        test_assert!(result.is_err(), "absent chart must be refused");
-        test_assert_eq!(result.err(), Some(ChartError::NotProvisioned));
+        let result = request_section(ABSENT_SECTION_NAME);
+        test_assert!(result.is_err(), "absent section must be refused");
+        test_assert_eq!(result.err(), Some(SectionError::NotProvisioned));
         TestResult::Pass
     }
 
     fn test_digest_mismatch_refused() -> TestResult {
         test_assert!(provision_test_fixture(), "fixture package must install");
-        let result = request_chart(CORRUPT_CHART_NAME);
-        test_assert_eq!(result.err(), Some(ChartError::DigestMismatch));
+        let result = request_section(CORRUPT_SECTION_NAME);
+        test_assert_eq!(result.err(), Some(SectionError::DigestMismatch));
         TestResult::Pass
     }
 
-    fn test_unindexed_chart_refused() -> TestResult {
-        let result = request_chart("wifi-dead-beef.chart");
-        test_assert_eq!(result.err(), Some(ChartError::NotIndexed));
+    fn test_unindexed_section_refused() -> TestResult {
+        let result = request_section("wifi-dead-beef.section");
+        test_assert_eq!(result.err(), Some(SectionError::NotIndexed));
         TestResult::Pass
     }
 
@@ -585,11 +588,11 @@ pub mod tests {
 
     fn test_cache_shares_one_allocation() -> TestResult {
         test_assert!(provision_test_fixture(), "fixture package must install");
-        let first = match request_chart(FIXTURE_CHART_NAME) {
+        let first = match request_section(FIXTURE_SECTION_NAME) {
             Ok(c) => c,
-            Err(_) => return TestResult::Fail("fixture chart must be provisioned"),
+            Err(_) => return TestResult::Fail("fixture section must be provisioned"),
         };
-        let second = match request_chart(FIXTURE_CHART_NAME) {
+        let second = match request_section(FIXTURE_SECTION_NAME) {
             Ok(c) => c,
             Err(_) => return TestResult::Fail("repeat request must hit the cache"),
         };
@@ -606,58 +609,58 @@ pub mod tests {
 
     fn test_refcount_released() -> TestResult {
         test_assert!(provision_test_fixture(), "fixture package must install");
-        let held = match request_chart(FIXTURE_CHART_NAME) {
+        let held = match request_section(FIXTURE_SECTION_NAME) {
             Ok(c) => c,
-            Err(_) => return TestResult::Fail("fixture chart must be provisioned"),
+            Err(_) => return TestResult::Fail("fixture section must be provisioned"),
         };
         test_assert!(
-            !release_chart(FIXTURE_CHART_NAME),
+            !release_section(FIXTURE_SECTION_NAME),
             "must not evict while held"
         );
         drop(held);
         test_assert!(
-            release_chart(FIXTURE_CHART_NAME),
+            release_section(FIXTURE_SECTION_NAME),
             "must evict once unreferenced"
         );
         test_assert!(
-            !CACHE.lock().contains_key(FIXTURE_CHART_NAME),
-            "evicted chart must leave the cache"
+            !CACHE.lock().contains_key(FIXTURE_SECTION_NAME),
+            "evicted section must leave the cache"
         );
         TestResult::Pass
     }
 
-    fn test_wifi_stays_down_without_chart() -> TestResult {
+    fn test_wifi_stays_down_without_section() -> TestResult {
         let mut wifi = crate::drivers::wifi::WifiDriver::new();
         wifi.probe_pci();
-        test_assert!(!wifi.is_up(), "wifi must stay down without a chart");
+        test_assert!(!wifi.is_up(), "wifi must stay down without a section");
         test_assert!(wifi.scan().is_empty(), "wifi must not emit scan results");
         test_assert!(
             wifi.connect("any", "").is_err(),
-            "wifi connect must fail without a chart"
+            "wifi connect must fail without a section"
         );
         TestResult::Pass
     }
 
-    fn test_bluetooth_stays_down_without_chart() -> TestResult {
+    fn test_bluetooth_stays_down_without_section() -> TestResult {
         let mut bt = crate::drivers::bluetooth::BluetoothDriver::new();
         bt.probe_pci();
-        test_assert!(!bt.is_up(), "bluetooth must stay down without a chart");
+        test_assert!(!bt.is_up(), "bluetooth must stay down without a section");
         test_assert!(bt.scan().is_empty(), "bluetooth must not emit scan results");
         test_assert!(
             bt.pair("any").is_err(),
-            "bluetooth pair must fail without a chart"
+            "bluetooth pair must fail without a section"
         );
         TestResult::Pass
     }
 
     pub fn register_all() {
-        seal_test!(test_absent_chart_fails_closed);
+        seal_test!(test_absent_section_fails_closed);
         seal_test!(test_digest_mismatch_refused);
-        seal_test!(test_unindexed_chart_refused);
+        seal_test!(test_unindexed_section_refused);
         seal_test!(test_bad_index_signature_refused);
         seal_test!(test_cache_shares_one_allocation);
         seal_test!(test_refcount_released);
-        seal_test!(test_wifi_stays_down_without_chart);
-        seal_test!(test_bluetooth_stays_down_without_chart);
+        seal_test!(test_wifi_stays_down_without_section);
+        seal_test!(test_bluetooth_stays_down_without_section);
     }
 }

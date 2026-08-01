@@ -3,19 +3,19 @@
 
 #![allow(dead_code)] // REASON: USB Bluetooth class constants for future HCI driver completion
 
-//! Bluetooth driver — PCI probe, atlas chart request, honest status reporting.
+//! Bluetooth driver — PCI probe, bundle section request, honest status reporting.
 //!
-//! Same contract as the WiFi driver: the adapter's HCI chart is requested from
-//! the atlas by PCI ID. No chart, no adapter. Seal OS ships no vendor charts,
-//! so `chart_missing` is the normal state on an unprovisioned system.
+//! Same contract as the WiFi driver: the adapter's HCI section is requested from
+//! the bundle by PCI ID. No section, no adapter. Seal OS ships no vendor sections,
+//! so `section_missing` is the normal state on an unprovisioned system.
 //!
-//! Even with a chart resident, HCI upload and L2CAP/ATT are unimplemented.
+//! Even with a section resident, HCI upload and L2CAP/ATT are unimplemented.
 //! `scan()` returns nothing in either case and never fabricates devices.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::atlas::{self, ChartError, ChartRef};
+use crate::bundle::{self, SectionError, SectionRef};
 
 const USB_CLASS_WIRELESS: u8 = 0xE0;
 const USB_SUBCLASS_BT: u8 = 0x01;
@@ -50,8 +50,8 @@ impl BtDeviceType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BtState {
     Disabled,
-    /// Adapter present, HCI chart refused or absent. The adapter stays down.
-    ChartMissing,
+    /// Adapter present, HCI section refused or absent. The adapter stays down.
+    SectionMissing,
     Enabled,
     Scanning,
     Pairing,
@@ -65,14 +65,14 @@ pub struct BluetoothDriver {
     last_scan: Vec<BtDevice>,
     vendor_id: u16,
     device_id: u16,
-    chart_name: Option<String>,
-    chart: Option<ChartRef>,
-    chart_error: Option<ChartError>,
+    section_name: Option<String>,
+    section: Option<SectionRef>,
+    section_error: Option<SectionError>,
 }
 
-/// Atlas chart name for a Bluetooth adapter, derived from its PCI IDs.
-pub fn chart_name_for(vendor_id: u16, device_id: u16) -> String {
-    alloc::format!("bt-{:04x}-{:04x}.chart", vendor_id, device_id)
+/// Bundle section name for a Bluetooth adapter, derived from its PCI IDs.
+pub fn section_name_for(vendor_id: u16, device_id: u16) -> String {
+    alloc::format!("bt-{:04x}-{:04x}.section", vendor_id, device_id)
 }
 
 impl BluetoothDriver {
@@ -84,9 +84,9 @@ impl BluetoothDriver {
             last_scan: Vec::new(),
             vendor_id: 0,
             device_id: 0,
-            chart_name: None,
-            chart: None,
-            chart_error: None,
+            section_name: None,
+            section: None,
+            section_error: None,
         }
     }
 
@@ -97,48 +97,48 @@ impl BluetoothDriver {
                 self.detected = true;
                 self.vendor_id = dev.vendor_id;
                 self.device_id = dev.device_id;
-                self.request_chart();
+                self.request_section();
                 return;
             }
         }
         self.state = BtState::NoHardware;
     }
 
-    /// Ask the atlas for this adapter's HCI chart. Fail-closed.
-    fn request_chart(&mut self) {
-        let name = chart_name_for(self.vendor_id, self.device_id);
-        match atlas::request_chart(&name) {
-            Ok(chart) => {
-                self.chart = Some(chart);
-                self.chart_error = None;
+    /// Ask the bundle for this adapter's HCI section. Fail-closed.
+    fn request_section(&mut self) {
+        let name = section_name_for(self.vendor_id, self.device_id);
+        match bundle::request_section(&name) {
+            Ok(section) => {
+                self.section = Some(section);
+                self.section_error = None;
                 self.state = BtState::Enabled;
             }
             Err(e) => {
-                self.chart = None;
-                self.chart_error = Some(e);
-                self.state = BtState::ChartMissing;
+                self.section = None;
+                self.section_error = Some(e);
+                self.state = BtState::SectionMissing;
             }
         }
-        self.chart_name = Some(name);
+        self.section_name = Some(name);
     }
 
-    /// Chart name this adapter needs, once probed.
-    pub fn chart_name(&self) -> Option<&str> {
-        self.chart_name.as_deref()
+    /// Section name this adapter needs, once probed.
+    pub fn section_name(&self) -> Option<&str> {
+        self.section_name.as_deref()
     }
 
-    pub fn chart_error(&self) -> Option<ChartError> {
-        self.chart_error
+    pub fn section_error(&self) -> Option<SectionError> {
+        self.section_error
     }
 
-    /// Size of the resident chart, or 0 when none is provisioned.
-    pub fn chart_bytes(&self) -> usize {
-        self.chart.as_ref().map(|c| c.bytes.len()).unwrap_or(0)
+    /// Size of the resident section, or 0 when none is provisioned.
+    pub fn section_bytes(&self) -> usize {
+        self.section.as_ref().map(|c| c.bytes.len()).unwrap_or(0)
     }
 
-    /// True only when the adapter has a verified chart resident.
+    /// True only when the adapter has a verified section resident.
     pub fn is_up(&self) -> bool {
-        self.chart.is_some()
+        self.section.is_some()
             && matches!(
                 self.state,
                 BtState::Enabled | BtState::Scanning | BtState::Pairing
@@ -149,7 +149,7 @@ impl BluetoothDriver {
         match self.state {
             BtState::NoHardware => "no_hardware",
             BtState::Disabled => "disabled",
-            BtState::ChartMissing => "chart_missing",
+            BtState::SectionMissing => "section_missing",
             BtState::Enabled => "enabled",
             BtState::Scanning => "scanning",
             BtState::Pairing => "pairing",
@@ -160,12 +160,12 @@ impl BluetoothDriver {
         match self.state {
             BtState::NoHardware => String::from("Bluetooth: no adapter detected"),
             BtState::Disabled => String::from("Bluetooth: disabled"),
-            BtState::ChartMissing => alloc::format!(
-                "Bluetooth: adapter {:04X}:{:04X} down — atlas chart '{}' {}",
+            BtState::SectionMissing => alloc::format!(
+                "Bluetooth: adapter {:04X}:{:04X} down — bundle section '{}' {}",
                 self.vendor_id,
                 self.device_id,
-                self.chart_name.as_deref().unwrap_or("?"),
-                self.chart_error
+                self.section_name.as_deref().unwrap_or("?"),
+                self.section_error
                     .map(|e| e.tag())
                     .unwrap_or("not_provisioned")
             ),
@@ -179,7 +179,7 @@ impl BluetoothDriver {
 
     /// Scan for nearby Bluetooth devices.
     ///
-    /// Always empty. Without a chart the adapter is down; with a chart the HCI
+    /// Always empty. Without a section the adapter is down; with a section the HCI
     /// upload and inquiry/page procedures are still unimplemented. This
     /// function never fabricates devices.
     pub fn scan(&mut self) -> Vec<BtDevice> {
@@ -188,7 +188,7 @@ impl BluetoothDriver {
         }
         let prev = self.state;
         self.state = BtState::Scanning;
-        // TODO: chart upload over HCI, then inquiry and LE scanning.
+        // TODO: section upload over HCI, then inquiry and LE scanning.
         self.state = prev;
         Vec::new()
     }
@@ -199,15 +199,15 @@ impl BluetoothDriver {
         }
         if !self.is_up() {
             return Err(alloc::format!(
-                "Bluetooth: atlas chart '{}' {} — install the vendor chart package to bring the adapter up",
-                self.chart_name.as_deref().unwrap_or("?"),
-                self.chart_error
+                "Bluetooth: bundle section '{}' {} — install the vendor section package to bring the adapter up",
+                self.section_name.as_deref().unwrap_or("?"),
+                self.section_error
                     .map(|e| e.tag())
                     .unwrap_or("not_provisioned")
             ));
         }
         Err(String::from(
-            "Bluetooth: chart resident but L2CAP/ATT pairing is not implemented",
+            "Bluetooth: section resident but L2CAP/ATT pairing is not implemented",
         ))
     }
 
