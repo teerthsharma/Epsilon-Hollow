@@ -102,6 +102,12 @@ pub const SYS_BT_SCAN: u64 = 108;
 pub const SYS_BT_PAIR: u64 = 109;
 pub const SYS_SETTING_GET: u64 = 110;
 pub const SYS_SETTING_SET: u64 = 111;
+/// Atlas: graft a signed chart onto the kernel manifold.
+pub const SYS_CHART_GRAFT: u64 = 112;
+/// Atlas: prune a chart back off the manifold.
+pub const SYS_CHART_PRUNE: u64 = 113;
+/// Atlas: list grafted charts with their reference counts.
+pub const SYS_CHART_LIST: u64 = 114;
 
 #[derive(Debug)]
 pub struct SyscallResult {
@@ -244,6 +250,35 @@ unsafe fn copy_path_from_user(ptr: *const u8) -> Result<String, ()> {
     crate::security::smap_smep::copy_from_user(&mut buf, ptr)?;
     let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
     Ok(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+/// Slurp a whole VFS file. Returns `None` if the path does not resolve or a
+/// read fails part-way through.
+fn read_vfs_file(path: &str) -> Option<Vec<u8>> {
+    let handle = with_vfs(|vfs| vfs.lookup_follow(path)).ok()?;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut offset = 0u64;
+    loop {
+        match with_vfs(|vfs| vfs.read(handle, &mut chunk, offset)) {
+            Ok(0) => break,
+            Ok(n) => {
+                out.extend_from_slice(&chunk[..n]);
+                offset += n as u64;
+            }
+            Err(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Chart registry name for a path: the final component with any suffix removed.
+fn chart_name_from_path(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    match base.rfind('.') {
+        Some(dot) if dot > 0 => String::from(&base[..dot]),
+        _ => String::from(base),
+    }
 }
 
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
@@ -743,6 +778,40 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             };
             SyscallResult::with_data(0, list)
         }
+        SYS_CHART_GRAFT => {
+            // arg0 = chart object path, arg1 = detached ed25519 signature path.
+            let object_path = unsafe { copy_path_from_user(arg0 as *const u8).unwrap_or_default() };
+            let sig_path = unsafe { copy_path_from_user(arg1 as *const u8).unwrap_or_default() };
+            if object_path.is_empty() || sig_path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            let (Some(object), Some(signature)) =
+                (read_vfs_file(&object_path), read_vfs_file(&sig_path))
+            else {
+                return SyscallResult::err(2); // ENOENT
+            };
+            let name = chart_name_from_path(&object_path);
+            match crate::atlas::abi_graft(&name, &object, &signature) {
+                Ok(code) => {
+                    SyscallResult::with_data(0, format!("grafted '{}' init={:#x}", name, code))
+                }
+                Err(e) => SyscallResult::with_data(-1, format!("graft '{}': {}", name, e.tag())),
+            }
+        }
+        SYS_CHART_PRUNE => {
+            let name = unsafe { copy_path_from_user(arg0 as *const u8).unwrap_or_default() };
+            if name.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
+            match crate::atlas::abi_prune(&name) {
+                Ok(code) => {
+                    SyscallResult::with_data(0, format!("pruned '{}' exit={:#x}", name, code))
+                }
+                Err(e) => SyscallResult::with_data(-1, format!("prune '{}': {}", name, e.tag())),
+            }
+        }
+        SYS_CHART_LIST => SyscallResult::with_data(0, crate::atlas::abi_list()),
+
         SYS_WIFI_SCAN => {
             SyscallResult::with_data(0, String::from("wifi_scan: no wireless hardware detected"))
         }
