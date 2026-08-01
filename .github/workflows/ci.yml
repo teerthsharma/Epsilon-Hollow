@@ -421,6 +421,28 @@ jobs:
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-proof-screen /tmp/seal-os-screen.ppm
       - name: Verify benchmark proof markers
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-benchmark-log /tmp/seal-os.log
+      - name: Verify TLS X.509/ECDHE proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-tls-proof /tmp/seal-os.log
+      - name: Verify Atlas chart graft proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-atlas-proof /tmp/seal-os.log
+      - name: Verify firmware bundle proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-bundle-proof /tmp/seal-os.log
+      - name: Verify raw-block installer proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-installer-proof /tmp/seal-os.log
+      - name: Verify FAT/ext2 parity proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-fs-parity /tmp/seal-os.log
+      - name: Verify stratum fit-control proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-mlfit-proof /tmp/seal-os.log
+      - name: Verify foliation KV cache policy proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-kv-policy /tmp/seal-os.log
+      - name: Verify GCN ISA GPU bench proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-gpu-bench /tmp/seal-os.log
+      - name: Verify KASLR mapping proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-kaslr /tmp/seal-os.log
+      - name: Verify per-feature security proof
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-security-features /tmp/seal-os.log
+      - name: Verify unsafe-audit census against the source tree
+        run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-unsafe-audit /tmp/seal-os.log .
       - name: Verify T1-T5 runtime theorem coverage
         run: cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-runtime-theorems .
       - name: Verify Seal ABI/no-POSIX discipline

@@ -53,6 +53,130 @@ fn main() {
         println!("[seal-audit] INSTALLER PROOF OK: {}", log_path.display());
         return;
     }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-tls-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_tls_proof(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] TLS PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] TLS PROOF OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-atlas-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_atlas_proof(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] ATLAS PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] ATLAS PROOF OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-bundle-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_bundle_proof(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] BUNDLE PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] BUNDLE PROOF OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-fs-parity") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_fs_parity(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] FS PARITY FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] FS PARITY OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-mlfit-proof") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_mlfit_proof(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] MLFIT PROOF FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] MLFIT PROOF OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-kv-policy") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_kv_policy(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] KV POLICY FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] KV POLICY OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-gpu-bench") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_gpu_bench(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] GPU BENCH FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] GPU BENCH OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-kaslr") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_kaslr(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] KASLR FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] KASLR OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-security-features") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        check_security_features(&log_path).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] SECURITY FEATURES FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] SECURITY FEATURES OK: {}", log_path.display());
+        return;
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("--check-unsafe-audit") {
+        let log_path = args
+            .get(2)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/seal-os.log"));
+        let root = args
+            .get(3)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        check_unsafe_audit(&log_path, &root).unwrap_or_else(|e| {
+            eprintln!("[seal-audit] UNSAFE AUDIT FAIL: {e}");
+            std::process::exit(1);
+        });
+        println!("[seal-audit] UNSAFE AUDIT OK: {}", log_path.display());
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("--check-vm-proof") {
         let log_path = args.get(2).map(PathBuf::from).unwrap_or_else(|| {
             PathBuf::from("../seal-os/target/x86_64-unknown-uefi/release/qemu-proof/serial.log")
@@ -1138,17 +1262,65 @@ fn check_auth_shadow_proof_text(text: &str) -> Result<(), String> {
 
 fn check_installer_proof_text(text: &str) -> Result<(), String> {
     let line = find_marker_line(text, "[INSTALLER] proof")?;
-    require_field_eq(line, "version=", "1", "installer proof")?;
-    require_field_eq(line, "mode=", "safe_vfs", "installer proof")?;
-    require_field_eq(line, "boot_marker=", "1", "installer proof")?;
-    require_field_eq(line, "home=", "1", "installer proof")?;
-    require_field_eq(line, "profile=", "1", "installer proof")?;
-    require_field_eq(line, "user=", "1", "installer proof")?;
-    require_field_eq(line, "auth_topo5000=", "1", "installer proof")?;
-    require_field_eq(line, "raw_gpt=", "0", "installer proof")?;
-    require_field_eq(line, "raw_format=", "0", "installer proof")?;
-    require_field_eq(line, "result=", "pass", "installer proof")?;
+    let label = "installer proof";
+    require_field_eq(line, "version=", "2", label)?;
+    require_field_eq(line, "mode=", "raw_block", label)?;
+    require_field_eq(line, "boot_marker=", "1", label)?;
+    require_field_eq(line, "home=", "1", label)?;
+    require_field_eq(line, "profile=", "1", label)?;
+    require_field_eq(line, "user=", "1", label)?;
+    require_field_eq(line, "auth_topo5000=", "1", label)?;
+    require_field_eq(line, "raw_gpt=", "1", label)?;
+    require_field_eq(line, "raw_format=", "1", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
     parse_field(line, "selected_disk=")?;
+
+    // Every structure the raw path claims to have written is read back.
+    for key in [
+        "gpt_header_crc_ok=",
+        "gpt_entries_crc_ok=",
+        "gpt_backup_header_crc_ok=",
+        "gpt_backup_agree=",
+        "gpt_alt_lba_ok=",
+        "gpt_pmbr=",
+        "ext2_mount=",
+        "ext2_dot=",
+        "ext2_dotdot=",
+        "guard_unarmed_refused=",
+        "guard_boot_dev_refused=",
+        "guard_other_dev_refused=",
+    ] {
+        require_field_eq(line, key, "1", label)?;
+    }
+    require_field_eq(line, "ext2_magic=", "ef53", label)?;
+
+    // `{:08x}` with no `0x` prefix — the shape is part of the claim.
+    let header_crc = parse_field(line, "gpt_header_crc=")?;
+    if header_crc.len() != 8 || !is_lower_hex(header_crc) {
+        return Err(format!(
+            "installer proof gpt_header_crc must be 8 lowercase hex digits, got `{header_crc}`"
+        ));
+    }
+
+    require_metric_eq(line, "gpt_partitions=", 2, label)?;
+    require_metric_min(line, "ext2_root_entries=", 2, label)?;
+    require_metric_min(line, "ext2_blocks=", 1, label)?;
+    require_metric_min(line, "ext2_inodes=", 1, label)?;
+    require_metric_min(line, "ext2_free_blocks=", 1, label)?;
+
+    let first_usable = parse_metric(line, "gpt_first_usable=")?;
+    let last_usable = parse_metric(line, "gpt_last_usable=")?;
+    let first_part = parse_metric(line, "gpt_first_part_lba=")?;
+    if last_usable <= first_usable {
+        return Err(format!(
+            "installer proof GPT usable range is empty: gpt_first_usable={first_usable}, gpt_last_usable={last_usable}"
+        ));
+    }
+    if first_part < first_usable {
+        return Err(format!(
+            "installer proof first partition starts before the usable range: gpt_first_part_lba={first_part}, gpt_first_usable={first_usable}"
+        ));
+    }
 
     let banned = [
         "Would create GPT",
@@ -1269,6 +1441,764 @@ fn check_security_audit_text(text: &str) -> Result<(), String> {
     require_field_eq(line, "result=", "pass", "security audit proof")?;
     parse_metric(line, "buffered_before=")?;
     Ok(())
+}
+
+fn check_tls_proof(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_tls_proof_text(&text)
+}
+
+fn check_tls_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[TLS] proof")?;
+    let label = "TLS proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "x509=", "1", label)?;
+    require_field_eq(line, "chain_verify=", "1", label)?;
+    require_field_eq(line, "ecdhe=", "1", label)?;
+    require_field_eq(line, "curve=", "x25519", label)?;
+    require_field_eq(line, "psk_only=", "0", label)?;
+    require_field_eq(line, "cert_parse=", "ok", label)?;
+    require_field_eq(line, "expiry_check=", "1", label)?;
+    // `entropy=none` means the key exchange never drew from hardware.
+    require_field_eq(line, "entropy=", "hw", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    Ok(())
+}
+
+fn check_atlas_proof(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_atlas_proof_text(&text)
+}
+
+fn check_atlas_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[Atlas] proof")?;
+    let label = "Atlas proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "format=", "elf64_rel", label)?;
+    require_field_eq(line, "machine=", "x86_64", label)?;
+    require_field_eq(line, "signature=", "ed25519_fixture", label)?;
+    require_field_eq(line, "wx=", "text_rx_data_rw_nx", label)?;
+    // Negative controls: each malformed input must have been refused.
+    require_field_eq(line, "truncated_object=", "ok", label)?;
+    require_field_eq(line, "unresolved_germ=", "ok", label)?;
+    require_field_eq(line, "bad_signature=", "ok", label)?;
+    require_field_eq(line, "refcount_hold_guard=", "refused_busy", label)?;
+    require_field_eq(line, "refcount_dependency_guard=", "refused_busy", label)?;
+    require_field_eq(line, "nerve_cycle=", "refused", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let init_code = parse_hex_metric(line, "init_code=")?;
+    let init_expect = parse_hex_metric(line, "init_expect=")?;
+    if init_code != init_expect {
+        return Err(format!(
+            "Atlas proof grafted chart init returned {init_code:#x}, expected {init_expect:#x}"
+        ));
+    }
+    let exit_code = parse_hex_metric(line, "exit_code=")?;
+    let exit_expect = parse_hex_metric(line, "exit_expect=")?;
+    if exit_code != exit_expect {
+        return Err(format!(
+            "Atlas proof grafted chart exit returned {exit_code:#x}, expected {exit_expect:#x}"
+        ));
+    }
+
+    let applied = parse_metric(line, "relocations_applied=")?;
+    let r64 = parse_metric(line, "r64=")?;
+    let rpc32 = parse_metric(line, "rpc32=")?;
+    let rplt32 = parse_metric(line, "rplt32=")?;
+    let r32s = parse_metric(line, "r32s=")?;
+    if applied == 0 {
+        return Err(String::from(
+            "Atlas proof applied no relocations, so nothing was linked",
+        ));
+    }
+    if applied != r64 + rpc32 + rplt32 + r32s {
+        return Err(format!(
+            "Atlas proof relocation classes do not sum: relocations_applied={applied}, r64={r64}, rpc32={rpc32}, rplt32={rplt32}, r32s={r32s}"
+        ));
+    }
+
+    let before = parse_metric(line, "charts_before=")?;
+    let peak = parse_metric(line, "charts_peak=")?;
+    let after = parse_metric(line, "charts_after=")?;
+    if after != before {
+        return Err(format!(
+            "Atlas proof leaked charts: charts_before={before}, charts_after={after}"
+        ));
+    }
+    if peak <= before {
+        return Err(format!(
+            "Atlas proof never held a chart: charts_before={before}, charts_peak={peak}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_bundle_proof(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_bundle_proof_text(&text)
+}
+
+fn check_bundle_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[Bundle] proof")?;
+    let label = "Bundle proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "store=", "/bundle", label)?;
+    require_field_eq(line, "index_verify=", "ok", label)?;
+    require_field_eq(line, "index_tampered=", "refused", label)?;
+    require_field_eq(line, "simulation=", "absent", label)?;
+    require_field_eq(line, "cache_hit=", "same_alloc", label)?;
+    require_field_eq(line, "released=", "1", label)?;
+    require_field_eq(line, "cached_after_release=", "0", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let absent = parse_field(line, "absent_section=")?;
+    if !absent.ends_with(":not_provisioned") {
+        return Err(format!(
+            "Bundle proof absent section was not refused as unprovisioned: absent_section={absent}"
+        ));
+    }
+    let corrupt = parse_field(line, "corrupt_section=")?;
+    if !corrupt.ends_with(":digest_mismatch") {
+        return Err(format!(
+            "Bundle proof corrupt section was not refused on digest: corrupt_section={corrupt}"
+        ));
+    }
+
+    let peak = parse_metric(line, "refcount_peak=")?;
+    let after_drop = parse_metric(line, "refcount_after_drop=")?;
+    if peak <= after_drop {
+        return Err(format!(
+            "Bundle proof refcount never dropped: refcount_peak={peak}, refcount_after_drop={after_drop}"
+        ));
+    }
+    require_metric_min(line, "digest_refused=", 1, label)?;
+    require_metric_min(line, "index_entries=", 1, label)?;
+    Ok(())
+}
+
+fn check_fs_parity(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_fs_parity_text(&text)
+}
+
+fn check_fs_parity_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[FSPARITY] proof")?;
+    let label = "FS parity proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "fat_mounted=", "ok", label)?;
+    require_field_eq(line, "ext2_mounted=", "ok", label)?;
+    require_field_eq(line, "content_parity=", "byte_for_byte", label)?;
+    require_field_eq(line, "negative_control=", "detected", label)?;
+    require_field_eq(line, "negative_control_restored=", "ok", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let fat_digest = parse_field(line, "content_digest_fat=")?;
+    let ext2_digest = parse_field(line, "content_digest_ext2=")?;
+    if fat_digest != ext2_digest {
+        return Err(format!(
+            "FS parity content digests differ: content_digest_fat={fat_digest}, content_digest_ext2={ext2_digest}"
+        ));
+    }
+    let control_digest = parse_field(line, "negative_control_digest=")?;
+    if control_digest == fat_digest {
+        return Err(format!(
+            "FS parity negative control digest matches the content digest, so the comparison is blind: negative_control_digest={control_digest}"
+        ));
+    }
+
+    for (measured, matched) in [
+        ("dirs_compared=", "dirs_equal="),
+        ("stat_fields_compared=", "stat_fields_equal="),
+        ("error_cases=", "error_matches="),
+        ("ops_fat=", "ops_ext2="),
+    ] {
+        let left = parse_metric(line, measured)?;
+        let right = parse_metric(line, matched)?;
+        if left != right {
+            return Err(format!(
+                "FS parity mismatch: {measured}{left} vs {matched}{right}"
+            ));
+        }
+    }
+    require_metric_min(line, "files_compared=", 1, label)?;
+    require_metric_min(line, "bytes_compared=", 1, label)?;
+    Ok(())
+}
+
+fn check_mlfit_proof(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_mlfit_proof_text(&text)
+}
+
+fn check_mlfit_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[MLFIT] proof")?;
+    let label = "MLFIT proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "subsystem=", "stratum", label)?;
+    require_field_eq(line, "bounded=", "ok", label)?;
+    require_field_eq(line, "monotone_loop_zero=", "ok", label)?;
+    require_field_eq(line, "negctl_flagged=", "no", label)?;
+    // The negative control is only a control if the naive baseline misfires.
+    require_field_eq(line, "naive_gap_baseline_flagged=", "yes", label)?;
+    require_field_eq(line, "incremental_batch_agree=", "ok", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let (correct, cases) = parse_ratio(line, "correct=")?;
+    if correct != cases {
+        return Err(format!(
+            "MLFIT proof misclassified cases: correct={correct}/{cases}"
+        ));
+    }
+    if cases < 7 {
+        return Err(format!(
+            "MLFIT proof must cover at least 7 regime cases, got {cases}"
+        ));
+    }
+
+    // `case=`/`truth=`/`got=` repeat once per case; walk the tokens in order
+    // and hold each `truth=` until its `got=` arrives.
+    let mut pending: Option<&str> = None;
+    let mut pairs = 0u64;
+    for token in line.split_whitespace() {
+        if let Some(truth) = token.strip_prefix("truth=") {
+            if pending.is_some() {
+                return Err(String::from("MLFIT proof has a truth= with no got="));
+            }
+            pending = Some(truth);
+        } else if let Some(got) = token.strip_prefix("got=") {
+            let truth = pending
+                .take()
+                .ok_or_else(|| String::from("MLFIT proof has a got= with no preceding truth="))?;
+            if truth != got {
+                return Err(format!(
+                    "MLFIT proof classified a case wrong: truth={truth}, got={got}"
+                ));
+            }
+            pairs += 1;
+        }
+    }
+    if pending.is_some() {
+        return Err(String::from("MLFIT proof has a truth= with no got="));
+    }
+    if pairs != cases {
+        return Err(format!(
+            "MLFIT proof reported {pairs} truth/got pairs for correct={correct}/{cases}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_kv_policy(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_kv_policy_text(&text)
+}
+
+fn check_kv_policy_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[KVPOLICY] proof")?;
+    let label = "KV policy proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "subsystem=", "foliation", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    require_field_eq(line, "referenced_evictions=", "0", label)?;
+    require_field_eq(line, "collapse_violations=", "0", label)?;
+    require_field_eq(line, "refused_budget=", "1", label)?;
+    require_field_eq(line, "refused_exhaustion=", "1", label)?;
+    require_field_eq(line, "refused_referenced_free=", "1", label)?;
+    require_field_eq(line, "frames_failed=", "0", label)?;
+    require_field_eq(line, "probe_frames_identical=", "1", label)?;
+    require_field_eq(line, "probe_refcount_after_partial_free=", "1", label)?;
+
+    let backed = parse_metric(line, "frames_backed=")?;
+    let freed = parse_metric(line, "frames_freed=")?;
+    if backed != freed {
+        return Err(format!(
+            "KV policy proof leaked frames: frames_backed={backed}, frames_freed={freed}"
+        ));
+    }
+    require_metric_min(line, "shared_descents=", 1, label)?;
+
+    // Belady is the offline optimum: no online policy may beat it. The
+    // foliation-vs-LRU margin is recorded by the kernel and deliberately not
+    // gated here — gating on it would pay for a faked benchmark.
+    let belady = parse_metric(line, "hit_bp_belady=")?;
+    let foliation = parse_metric(line, "hit_bp_foliation=")?;
+    if belady < foliation {
+        return Err(format!(
+            "KV policy proof beats the offline optimum, so the benchmark is wrong: hit_bp_foliation={foliation}, hit_bp_belady={belady}"
+        ));
+    }
+    parse_metric(line, "hit_bp_lru=")?;
+    Ok(())
+}
+
+fn check_gpu_bench(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_gpu_bench_text(&text)
+}
+
+fn check_gpu_bench_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[GPU-BENCH] proof")?;
+    let label = "GPU bench proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "arch=", "gfx900", label)?;
+    require_field_eq(line, "blob_matches_encoder=", "1", label)?;
+    require_field_eq(line, "mnemonics_match=", "1", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let blob = parse_hex_metric(line, "blob_fnv1a=")?;
+    let encoder = parse_hex_metric(line, "encoder_fnv1a=")?;
+    if blob != encoder {
+        return Err(format!(
+            "GPU bench blob does not match the encoder: blob_fnv1a={blob:#x}, encoder_fnv1a={encoder:#x}"
+        ));
+    }
+    // The shipped blob used to be zero bytes; that is the failure this gate exists for.
+    require_metric_min(line, "spectral_step_bytes=", 1, label)?;
+
+    for key in ["golden_words=", "decoded_insts=", "roundtrip_words="] {
+        let (ok, total) = parse_ratio(line, key)?;
+        if ok != total {
+            return Err(format!("GPU bench ISA check incomplete: {key}{ok}/{total}"));
+        }
+    }
+    for (key, ulp) in [
+        ("cpu_ref_exact=", "cpu_ref_max_ulp="),
+        ("backend_exact=", "backend_max_ulp="),
+    ] {
+        let (exact, total) = parse_ratio(line, key)?;
+        if exact != total {
+            return Err(format!("GPU bench numeric parity failed: {key}{exact}/{total}"));
+        }
+        require_field_eq(line, ulp, "0", label)?;
+    }
+
+    let (kernels_real, kernels_total) = parse_ratio(line, "kernels_real=")?;
+    if kernels_real == 0 {
+        return Err(format!(
+            "GPU bench shipped no real kernel binaries: kernels_real={kernels_real}/{kernels_total}"
+        ));
+    }
+
+    let backend = parse_field(line, "backend=")?;
+    if backend != "cpu_fallback" && backend != "pm4_hw" {
+        return Err(format!("GPU bench unknown backend={backend}"));
+    }
+    let gpu_present = parse_metric(line, "gpu_present=")?;
+    let hw_attempted = parse_metric(line, "hw_attempted=")?;
+    if gpu_present > 1 || hw_attempted > 1 {
+        return Err(format!(
+            "GPU bench gpu_present/hw_attempted must be booleans: gpu_present={gpu_present}, hw_attempted={hw_attempted}"
+        ));
+    }
+    if gpu_present == 1 && hw_attempted != 1 {
+        return Err(String::from(
+            "GPU bench found a GPU and never attempted hardware dispatch",
+        ));
+    }
+    if gpu_present == 1 && backend == "cpu_fallback" {
+        return Err(String::from(
+            "GPU bench silently fell back to the CPU with a GPU present",
+        ));
+    }
+    Ok(())
+}
+
+fn check_kaslr(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_kaslr_text(&text)
+}
+
+fn check_kaslr_text(text: &str) -> Result<(), String> {
+    const GRANULE: u64 = 0x20_0000;
+    const ALIAS_LOW: u64 = 0xffff_ffff_8000_0000;
+    const ALIAS_HIGH: u64 = 0xffff_ffff_c000_0000;
+    const HEAP_LOW: u64 = 0xffff_9000_0000_0000;
+    const HEAP_HIGH: u64 = 0xffff_9800_0000_0000;
+
+    let line = find_marker_line(text, "[KASLR] proof")?;
+    let label = "KASLR proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "scope=", "mappings", label)?;
+    // The image base is not randomised; the proof must keep saying so.
+    require_field_eq(line, "image_base_randomised=", "0", label)?;
+    require_field_eq(line, "granule=", "0x200000", label)?;
+    require_field_eq(line, "cross_boot=", "external-diff", label)?;
+    require_field_eq(line, "active=", "1", label)?;
+    require_field_eq(line, "aligned=", "1", label)?;
+    require_field_eq(line, "in_range=", "1", label)?;
+    require_field_eq(line, "resample_differs=", "1", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let entropy = parse_field(line, "entropy=")?;
+    if entropy != "rdseed" && entropy != "rdrand" {
+        return Err(format!(
+            "KASLR proof drew slides from a non-hardware source: entropy={entropy}"
+        ));
+    }
+
+    require_metric_eq(line, "heap_window_slots=", 4_194_304, label)?;
+    require_metric_eq(line, "heap_window_bits=", 22, label)?;
+    require_metric_min(line, "kernel_alias_slots=", 2, label)?;
+    let alias_bits = require_metric_min(line, "kernel_alias_bits=", 8, label)?;
+    let heap_bits = parse_metric(line, "heap_window_bits=")?;
+    let total_bits = parse_metric(line, "total_bits=")?;
+    if total_bits != alias_bits + heap_bits {
+        return Err(format!(
+            "KASLR proof entropy budget does not add up: total_bits={total_bits}, kernel_alias_bits={alias_bits}, heap_window_bits={heap_bits}"
+        ));
+    }
+
+    let alias_base = parse_hex_metric(line, "kernel_alias_base=")?;
+    if !(ALIAS_LOW..ALIAS_HIGH).contains(&alias_base) {
+        return Err(format!(
+            "KASLR proof kernel_alias_base={alias_base:#x} is outside [{ALIAS_LOW:#x}, {ALIAS_HIGH:#x})"
+        ));
+    }
+    let heap_base = parse_hex_metric(line, "heap_window_base=")?;
+    if !(HEAP_LOW..HEAP_HIGH).contains(&heap_base) {
+        return Err(format!(
+            "KASLR proof heap_window_base={heap_base:#x} is outside [{HEAP_LOW:#x}, {HEAP_HIGH:#x})"
+        ));
+    }
+    if alias_base % GRANULE != 0 || heap_base % GRANULE != 0 {
+        return Err(format!(
+            "KASLR proof slides are not granule-aligned: kernel_alias_base={alias_base:#x}, heap_window_base={heap_base:#x}"
+        ));
+    }
+
+    let boot_nonce = parse_hex_metric(line, "boot_nonce=")?;
+    let resample_nonce = parse_hex_metric(line, "resample_nonce=")?;
+    if boot_nonce == 0 {
+        return Err(String::from("KASLR proof boot_nonce is zero"));
+    }
+    if boot_nonce == resample_nonce {
+        return Err(format!(
+            "KASLR proof entropy generator is stuck: boot_nonce={boot_nonce:#x} equals resample_nonce"
+        ));
+    }
+    if parse_hex_metric(line, "firmware_image_base=")? == 0 {
+        return Err(String::from("KASLR proof firmware_image_base is zero"));
+    }
+    if parse_hex_metric(line, "image_size=")? == 0 {
+        return Err(String::from("KASLR proof image_size is zero"));
+    }
+    Ok(())
+}
+
+fn check_security_features(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    check_security_features_text(&text)
+}
+
+fn check_security_features_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[SECURITY-FEATURES] proof")?;
+    let label = "security features proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    require_field_eq(line, "kpti=", "1", label)?;
+    require_field_eq(line, "kaslr=", "1", label)?;
+    require_field_eq(line, "wp=", "1", label)?;
+    require_field_eq(line, "retpoline=", "1", label)?;
+    require_field_eq(line, "stackguard=", "1", label)?;
+    require_field_eq(line, "stackguard_dirty=", "0", label)?;
+    require_field_eq(line, "audit=", "1", label)?;
+
+    // Naming the probe pins how each bit was measured; a probe that silently
+    // degrades into a constant shows up here.
+    for (key, expected) in [
+        ("kpti_probe=", "runtime-cr3"),
+        ("smep_probe=", "cpuid+cr4"),
+        ("smap_probe=", "cpuid+cr4"),
+        ("nx_probe=", "cpuid+efer"),
+        ("wp_probe=", "cr0"),
+        ("kaslr_probe=", "runtime-entropy"),
+        ("retpoline_probe=", "runtime-thunk-bytes"),
+        ("stackguard_probe=", "runtime-guardband"),
+        ("audit_probe=", "runtime-vfs"),
+        ("wx_probe=", "runtime-pagewalk"),
+        ("wx_scope=", "kernel-alias"),
+    ] {
+        require_field_eq(line, key, expected, label)?;
+    }
+    require_metric_min(line, "kaslr_bits=", 22, label)?;
+
+    for (supported_key, active_key) in [
+        ("smep_supported=", "smep="),
+        ("smap_supported=", "smap="),
+        ("nx_supported=", "nx="),
+    ] {
+        let supported = parse_metric(line, supported_key)?;
+        let active = parse_metric(line, active_key)?;
+        if supported > 1 || active > 1 {
+            return Err(format!(
+                "{label} {supported_key}/{active_key} must be booleans, got {supported}/{active}"
+            ));
+        }
+        if supported == 1 && active != 1 {
+            return Err(format!(
+                "{label} reports {supported_key}1 without {active_key}1"
+            ));
+        }
+    }
+
+    // Cross-check the decoded bits against the raw registers on the same line.
+    // Without this the decoded fields could be constants.
+    let cr0 = parse_hex_metric(line, "cr0=")?;
+    let cr4 = parse_hex_metric(line, "cr4=")?;
+    let efer = parse_hex_metric(line, "efer=")?;
+    for (name, raw, bit) in [
+        ("smep", cr4, 20u32),
+        ("smap", cr4, 21),
+        ("wp", cr0, 16),
+        ("nx", efer, 11),
+    ] {
+        let key = format!("{name}=");
+        let decoded = parse_metric(line, &key)?;
+        let raw_set = u64::from(raw & (1u64 << bit) != 0);
+        if decoded != raw_set {
+            return Err(format!(
+                "{label} {name}={decoded} disagrees with the raw register bit {bit} ({raw_set})"
+            ));
+        }
+    }
+
+    // W^X is measured, not gated: the kernel alias really is W+X today, so a
+    // passing `wx` would mean the field was faked.
+    parse_metric(line, "wx=")?;
+    parse_metric(line, "wx_violations=")?;
+    require_field_eq(line, "wx_enforced=", "0", label)?;
+    require_metric_min(line, "wx_pages_scanned=", 1, label)?;
+    Ok(())
+}
+
+/// The `unsafe` block-opening token, spelled in two pieces so this file cannot
+/// add phantom sites to any census that scans it.
+const UNSAFE_BLOCK_TOKEN: &str = concat!("unsa", "fe {");
+
+#[derive(Default)]
+struct UnsafeAuditFixture {
+    total: u64,
+    justified: u64,
+    unjustified: u64,
+    files: u64,
+    per_file: BTreeMap<String, (u64, u64)>,
+}
+
+fn parse_unsafe_audit_fixture(text: &str) -> Result<UnsafeAuditFixture, String> {
+    let mut fixture = UnsafeAuditFixture::default();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        match parts.as_slice() {
+            ["file", path, sites, justified] => {
+                let sites = sites
+                    .parse::<u64>()
+                    .map_err(|e| format!("unsafe-audit fixture `{line}`: {e}"))?;
+                let justified = justified
+                    .parse::<u64>()
+                    .map_err(|e| format!("unsafe-audit fixture `{line}`: {e}"))?;
+                fixture.per_file.insert(String::from(*path), (sites, justified));
+            }
+            [key, value] => {
+                let Ok(n) = value.parse::<u64>() else { continue };
+                match *key {
+                    "total" => fixture.total = n,
+                    "justified" => fixture.justified = n,
+                    "unjustified" => fixture.unjustified = n,
+                    "files" => fixture.files = n,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    if fixture.total == 0 || fixture.files == 0 {
+        return Err(String::from(
+            "unsafe-audit fixture is missing its total/files header",
+        ));
+    }
+    if fixture.justified + fixture.unjustified != fixture.total {
+        return Err(format!(
+            "unsafe-audit fixture totals do not add up: justified={} unjustified={} total={}",
+            fixture.justified, fixture.unjustified, fixture.total
+        ));
+    }
+    Ok(fixture)
+}
+
+/// Mirror of `seal_os::security::unsafe_audit::scan_source`. A host checker
+/// that disagrees with that function is measuring something else.
+fn scan_unsafe_source(text: &str) -> (u64, u64) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut total = 0u64;
+    let mut justified = 0u64;
+    for (i, line) in lines.iter().enumerate() {
+        let sites = line.matches(UNSAFE_BLOCK_TOKEN).count() as u64;
+        if sites == 0 {
+            continue;
+        }
+        total += sites;
+        let mut documented = line.contains("SAFETY:");
+        let mut j = i;
+        while !documented && j > 0 {
+            let above = lines[j - 1].trim_start();
+            if !above.starts_with("//") {
+                break;
+            }
+            documented = above.contains("SAFETY:");
+            j -= 1;
+        }
+        if documented {
+            justified += sites;
+        }
+    }
+    (total, justified)
+}
+
+fn scan_unsafe_tree(src_root: &Path) -> Result<BTreeMap<String, (u64, u64)>, String> {
+    let mut files = Vec::new();
+    collect_files_recursive_skip_target(src_root, &mut files)?;
+    let mut scanned = BTreeMap::new();
+    for path in files {
+        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+            continue;
+        }
+        let text =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        let (sites, justified) = scan_unsafe_source(&text);
+        if sites == 0 {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(src_root)
+            .map_err(|e| format!("strip_prefix {}: {e}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        scanned.insert(rel, (sites, justified));
+    }
+    Ok(scanned)
+}
+
+fn check_unsafe_audit(log_path: &Path, root: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    let seal_os = root.join("kernel").join("seal-os");
+    let fixture_path = seal_os.join("tests").join("unsafe-audit.fixture");
+    let fixture_text = fs::read_to_string(&fixture_path)
+        .map_err(|e| format!("read {}: {e}", fixture_path.display()))?;
+    let scanned = scan_unsafe_tree(&seal_os.join("src"))?;
+    check_unsafe_audit_text(&text, &fixture_text, &scanned)
+}
+
+fn check_unsafe_audit_text(
+    text: &str,
+    fixture_text: &str,
+    scanned: &BTreeMap<String, (u64, u64)>,
+) -> Result<(), String> {
+    let line = find_marker_line(text, "[UNSAFE-AUDIT] proof")?;
+    let label = "unsafe audit proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "fixture_version=", "1", label)?;
+    require_field_eq(line, "fixture=", "tests/unsafe-audit.fixture", label)?;
+    require_field_eq(line, "rule=", "safety-comment-above-block", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+
+    let fixture = parse_unsafe_audit_fixture(fixture_text)?;
+    for (key, recorded) in [
+        ("blocks=", fixture.total),
+        ("justified=", fixture.justified),
+        ("unjustified=", fixture.unjustified),
+        ("files=", fixture.files),
+    ] {
+        let logged = parse_metric(line, key)?;
+        if logged != recorded {
+            return Err(format!(
+                "{label} {key}{logged} disagrees with tests/unsafe-audit.fixture ({recorded})"
+            ));
+        }
+    }
+
+    let mut total = 0u64;
+    let mut unjustified = 0u64;
+    let mut drift: Vec<String> = Vec::new();
+    let mut ratchet: Vec<String> = Vec::new();
+    for (path, &(sites, justified)) in scanned {
+        total += sites;
+        unjustified += sites - justified;
+        let (was_sites, was_justified) = fixture.per_file.get(path).copied().unwrap_or((0, 0));
+        if sites != was_sites {
+            drift.push(format!(
+                "{path}: {was_sites} -> {sites} ({:+})",
+                sites as i64 - was_sites as i64
+            ));
+        }
+        if sites - justified > was_sites - was_justified {
+            ratchet.push(format!(
+                "{path}: unjustified {} -> {} (+{})",
+                was_sites - was_justified,
+                sites - justified,
+                (sites - justified) - (was_sites - was_justified)
+            ));
+        }
+    }
+    for (path, &(was_sites, _)) in &fixture.per_file {
+        if !scanned.contains_key(path) {
+            drift.push(format!("{path}: {was_sites} -> 0 (-{was_sites})"));
+        }
+    }
+
+    if total != fixture.total {
+        return Err(format!(
+            "unsafe audit re-scan counts {total} blocks, fixture records {} ({:+}); files: {}",
+            fixture.total,
+            total as i64 - fixture.total as i64,
+            join_or_none(&drift)
+        ));
+    }
+    if unjustified > fixture.unjustified {
+        return Err(format!(
+            "unsafe audit ratchet broken: re-scan counts {unjustified} unjustified blocks, fixture allows at most {} (+{}); files: {}",
+            fixture.unjustified,
+            unjustified - fixture.unjustified,
+            join_or_none(&ratchet)
+        ));
+    }
+    Ok(())
+}
+
+fn join_or_none(items: &[String]) -> String {
+    if items.is_empty() {
+        String::from("none")
+    } else {
+        items.join(" | ")
+    }
+}
+
+fn parse_ratio(line: &str, key: &str) -> Result<(u64, u64), String> {
+    let value = parse_field(line, key)?;
+    let (num, den) = value
+        .split_once('/')
+        .ok_or_else(|| format!("invalid ratio `{key}{value}`: expected N/M"))?;
+    let num = num
+        .parse::<u64>()
+        .map_err(|e| format!("invalid ratio `{key}{value}`: {e}"))?;
+    let den = den
+        .parse::<u64>()
+        .map_err(|e| format!("invalid ratio `{key}{value}`: {e}"))?;
+    Ok((num, den))
 }
 
 fn check_aether_runtime_log(log_path: &Path) -> Result<(), String> {
@@ -3308,7 +4238,18 @@ mod tests {
     const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 default_password_rejected=1 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const COW_PROOF_LOG: &str = "[MM] cow-proof version=1 rollback_guard=1 fork_fallback=0 clone_fallback=0 samples=4 rollback_ok=4 tracked_frames=10 rollback_frees=10 leaked_frames=0 result=pass\n";
-    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=1 mode=safe_vfs selected_disk=nvme0 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=0 raw_format=0 result=pass\n";
+    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=2 mode=raw_block selected_disk=seal-install-scratch target_dev=0x2 part_dev=0x3 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=1 raw_format=1 gpt_partitions=2 gpt_header_crc=1a2b3c4d gpt_header_crc_ok=1 gpt_entries_crc_ok=1 gpt_backup_header_crc_ok=1 gpt_backup_agree=1 gpt_alt_lba_ok=1 gpt_pmbr=1 gpt_first_usable=34 gpt_last_usable=65502 gpt_first_part_lba=2048 ext2_magic=ef53 ext2_block_size=1024 ext2_blocks=8192 ext2_inodes=512 ext2_free_blocks=7000 ext2_mount=1 ext2_root_entries=2 ext2_dot=1 ext2_dotdot=1 guard_unarmed_refused=1 guard_boot_dev_refused=1 guard_other_dev_refused=1 result=pass\n";
+    const TLS_PROOF_LOG: &str = "[TLS] proof version=1 x509=1 chain_verify=1 ecdhe=1 curve=x25519 psk_only=0 cert_parse=ok expiry_check=1 entropy=hw result=pass\n";
+    const ATLAS_PROOF_LOG: &str = "[Atlas] proof version=1 source=embedded_chart format=elf64_rel machine=x86_64 object_bytes=1120 sections_placed=2 symbols_resolved=7 germs_published=2 germs_bound=1 plt_veneers=1 relocations_applied=6 r64=1 rpc32=3 rplt32=1 r32s=1 image_bytes=8192 wx=text_rx_data_rw_nx signature=ed25519_fixture truncated_object=ok unresolved_germ=ok bad_signature=ok init_code=0x5ea10042 init_expect=0x5ea10042 exit_code=0x0 exit_expect=0x0 refcount_hold_guard=refused_busy refcount_dependency_guard=refused_busy nerve_cycle=refused charts_before=0 charts_peak=3 charts_after=0 result=pass\n";
+    const BUNDLE_PROOF_LOG: &str = "[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify=ok index_tampered=refused index_entries=4 store_index=ed25519_fixture provision_pkg=eph_installed requested=6 provisioned=4 not_provisioned=1 digest_ok=4 digest_refused=1 cache_hits=2 fixture=synthetic_test_fixture fixture_bytes=256 cache_hit=same_alloc refcount_peak=2 refcount_after_drop=1 cached_while_held=1 released=1 cached_after_release=0 absent_section=test-absent-fixture.section:not_provisioned corrupt_section=test-corrupt-fixture.section:digest_mismatch simulation=absent wifi=down wifi_section=none wifi_scan_entries=0 bt=down bt_section=none bt_scan_entries=0 result=pass\n";
+    const FS_PARITY_LOG: &str = "[FSPARITY] proof version=1 fat_image=fat16_fixture fat_mounted=ok fat_image_bytes=1048576 fat_blank_digest=0x00000000cafe0001 ext2_image=ext2_rev1_1k_fixture ext2_mounted=ok ext2_image_bytes=1048576 ext2_blank_digest=0x00000000cafe0002 ops_fat=48 ops_ext2=48 files_compared=6 bytes_compared=4096 content_digest_fat=0x00000000feedbeef content_digest_ext2=0x00000000feedbeef content_parity=byte_for_byte dirs_compared=3 dirs_equal=3 stat_fields_compared=18 stat_fields_equal=18 error_cases=5 error_matches=5 divergences=0 divergence_kinds=none negative_control_digest=0x00000000deadbeef negative_control=detected negative_control_restored=ok result=pass\n";
+    const MLFIT_PROOF_LOG: &str = "[MLFIT] proof version=1 subsystem=stratum window=256 embed_dim=8 kappa=1.500 steps_per_case=128 bytes_per_stream=4096 long_stream_steps=4096 long_stream_points=256 bounded=ok case=underfit truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=wellfit truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=overfit truth=overfit got=overfit loop=0.2000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=collapsing truth=collapsing got=collapsing loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=negctl truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_line truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_exp truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 monotone_loop_zero=ok negctl_flagged=no naive_gap_baseline_flagged=yes incremental_batch_agree=ok correct=7/7 result=pass\n";
+    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_belady=9000 gap_closed_bp=600 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
+    const GPU_BENCH_PROOF_LOG: &str = "[GPU-BENCH] proof version=1 arch=gfx900 backend=cpu_fallback gpu_present=0 hw_attempted=0 hw_reason=no_amd_gpu cycles=123456 kernels_real=1/3 spectral_step_bytes=256 blob_fnv1a=0x00000000cafef00d encoder_fnv1a=0x00000000cafef00d blob_matches_encoder=1 golden_words=64/64 decoded_insts=32/32 roundtrip_words=64/64 mnemonics_match=1 rsrc1=0x000c0081 rsrc2=0x00000090 ref_dim=512 ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact=512/512 cpu_ref_max_ulp=0 backend_exact=512/512 backend_max_ulp=0 result=pass\n";
+    const KASLR_PROOF_LOG: &str = "[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base=0x1000000 image_size=0x400000 kernel_alias_base=0xffffffff81400000 kernel_alias_slide=0x1400000 kernel_alias_slots=512 kernel_alias_bits=9 heap_window_base=0xffff900040000000 heap_window_slide=0x40000000 heap_window_slots=4194304 heap_window_bits=22 total_bits=31 granule=0x200000 aligned=1 in_range=1 entropy=rdseed boot_nonce=0xa1b2c3d4e5f60718 resample_nonce=0x0718f6e5d4c3b2a1 resample_differs=1 cross_boot=external-diff active=1 result=pass\n";
+    const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=0 wx_violations=12 wx_pages_scanned=1024 wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
+    const UNSAFE_AUDIT_LOG: &str = "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version=1 blocks=4 justified=1 unjustified=3 files=2 undocumented_permille=750 rule=safety-comment-above-block result=pass\n";
+    const UNSAFE_AUDIT_FIXTURE: &str = "# header\nversion 1\ntotal 4\njustified 1\nunjustified 3\nfiles 2\nfile lib.rs 3 1\nfile drivers/pci.rs 1 0\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
@@ -4826,7 +5767,7 @@ fn panic(info: &PanicInfo) -> ! {
     }
 
     #[test]
-    fn installer_proof_requires_real_safe_vfs_writes_not_simulation() {
+    fn installer_proof_requires_real_raw_block_writes_not_simulation() {
         assert!(check_installer_proof_text(INSTALLER_PROOF_LOG).is_ok());
 
         let no_boot = INSTALLER_PROOF_LOG.replace("boot_marker=1", "boot_marker=0");
@@ -4835,11 +5776,694 @@ fn panic(info: &PanicInfo) -> ! {
         let no_auth = INSTALLER_PROOF_LOG.replace("auth_topo5000=1", "auth_topo5000=0");
         assert!(check_installer_proof_text(&no_auth).is_err());
 
-        let claims_raw = INSTALLER_PROOF_LOG.replace("raw_gpt=0", "raw_gpt=1");
-        assert!(check_installer_proof_text(&claims_raw).is_err());
+        let old_version = INSTALLER_PROOF_LOG.replace("version=2", "version=1");
+        assert!(check_installer_proof_text(&old_version).is_err());
+
+        let safe_mode = INSTALLER_PROOF_LOG.replace("mode=raw_block", "mode=safe_vfs");
+        assert!(check_installer_proof_text(&safe_mode).is_err());
+
+        let no_raw_gpt = INSTALLER_PROOF_LOG.replace("raw_gpt=1", "raw_gpt=0");
+        assert!(check_installer_proof_text(&no_raw_gpt).is_err());
+
+        let no_raw_format = INSTALLER_PROOF_LOG.replace("raw_format=1", "raw_format=0");
+        assert!(check_installer_proof_text(&no_raw_format).is_err());
+
+        for field in [
+            "gpt_header_crc_ok=1",
+            "gpt_entries_crc_ok=1",
+            "gpt_backup_header_crc_ok=1",
+            "gpt_backup_agree=1",
+            "gpt_alt_lba_ok=1",
+            "gpt_pmbr=1",
+            "ext2_mount=1",
+            "ext2_dot=1",
+            "ext2_dotdot=1",
+            "guard_unarmed_refused=1",
+            "guard_boot_dev_refused=1",
+            "guard_other_dev_refused=1",
+        ] {
+            let broken = INSTALLER_PROOF_LOG.replace(field, &field.replace("=1", "=0"));
+            assert!(
+                check_installer_proof_text(&broken).is_err(),
+                "installer gate accepted {field} cleared"
+            );
+        }
+
+        let bad_magic = INSTALLER_PROOF_LOG.replace("ext2_magic=ef53", "ext2_magic=0000");
+        assert!(check_installer_proof_text(&bad_magic).is_err());
+
+        // The header CRC is `{:08x}` with no `0x` prefix.
+        let prefixed = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=0x1a2b3c4d");
+        assert!(check_installer_proof_text(&prefixed).is_err());
+        let short_crc = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1a2b");
+        assert!(check_installer_proof_text(&short_crc).is_err());
+        let upper_crc = INSTALLER_PROOF_LOG.replace("gpt_header_crc=1a2b3c4d", "gpt_header_crc=1A2B3C4D");
+        assert!(check_installer_proof_text(&upper_crc).is_err());
+
+        let one_partition = INSTALLER_PROOF_LOG.replace("gpt_partitions=2", "gpt_partitions=1");
+        assert!(check_installer_proof_text(&one_partition).is_err());
+
+        let empty_root = INSTALLER_PROOF_LOG.replace("ext2_root_entries=2", "ext2_root_entries=1");
+        assert!(check_installer_proof_text(&empty_root).is_err());
+
+        for field in ["ext2_blocks=8192", "ext2_inodes=512", "ext2_free_blocks=7000"] {
+            let key = field.split('=').next().unwrap();
+            let zeroed = INSTALLER_PROOF_LOG.replace(field, &format!("{key}=0"));
+            assert!(
+                check_installer_proof_text(&zeroed).is_err(),
+                "installer gate accepted {key}=0"
+            );
+        }
+
+        let inverted = INSTALLER_PROOF_LOG.replace("gpt_last_usable=65502", "gpt_last_usable=34");
+        assert!(check_installer_proof_text(&inverted).is_err());
+
+        let part_below_usable =
+            INSTALLER_PROOF_LOG.replace("gpt_first_part_lba=2048", "gpt_first_part_lba=2");
+        assert!(check_installer_proof_text(&part_below_usable).is_err());
 
         let simulation_log = format!("{INSTALLER_PROOF_LOG}[INSTALLER] Would format ESP\n");
         assert!(check_installer_proof_text(&simulation_log).is_err());
+    }
+
+    #[test]
+    fn tls_proof_requires_real_x509_chain_and_hardware_ecdhe() {
+        assert!(check_tls_proof_text(TLS_PROOF_LOG).is_ok());
+
+        for field in [
+            "version=1",
+            "x509=1",
+            "chain_verify=1",
+            "ecdhe=1",
+            "expiry_check=1",
+        ] {
+            let broken = TLS_PROOF_LOG.replace(field, &field.replace("=1", "=0"));
+            assert!(
+                check_tls_proof_text(&broken).is_err(),
+                "TLS gate accepted {field} cleared"
+            );
+        }
+
+        let psk = TLS_PROOF_LOG.replace("psk_only=0", "psk_only=1");
+        assert!(check_tls_proof_text(&psk).is_err());
+
+        let curve = TLS_PROOF_LOG.replace("curve=x25519", "curve=none");
+        assert!(check_tls_proof_text(&curve).is_err());
+
+        let parse = TLS_PROOF_LOG.replace("cert_parse=ok", "cert_parse=fail");
+        assert!(check_tls_proof_text(&parse).is_err());
+
+        let no_entropy = TLS_PROOF_LOG.replace("entropy=hw", "entropy=none");
+        assert!(check_tls_proof_text(&no_entropy).is_err());
+
+        let failed = TLS_PROOF_LOG.replace("result=pass", "result=fail");
+        assert!(check_tls_proof_text(&failed).is_err());
+
+        assert!(check_tls_proof_text("").is_err());
+    }
+
+    #[test]
+    fn atlas_proof_requires_linked_chart_and_refused_negative_controls() {
+        assert!(check_atlas_proof_text(ATLAS_PROOF_LOG).is_ok());
+
+        for field in [
+            "format=elf64_rel",
+            "machine=x86_64",
+            "signature=ed25519_fixture",
+            "wx=text_rx_data_rw_nx",
+            "truncated_object=ok",
+            "unresolved_germ=ok",
+            "bad_signature=ok",
+            "refcount_hold_guard=refused_busy",
+            "refcount_dependency_guard=refused_busy",
+            "nerve_cycle=refused",
+            "result=pass",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = ATLAS_PROOF_LOG.replace(field, &format!("{key}=fail"));
+            assert!(
+                check_atlas_proof_text(&broken).is_err(),
+                "Atlas gate accepted {key}=fail"
+            );
+        }
+
+        let wrong_init = ATLAS_PROOF_LOG.replace("init_code=0x5ea10042", "init_code=0x0");
+        assert!(check_atlas_proof_text(&wrong_init).is_err());
+
+        let wrong_exit = ATLAS_PROOF_LOG.replace("exit_code=0x0", "exit_code=0x1");
+        assert!(check_atlas_proof_text(&wrong_exit).is_err());
+
+        let bad_sum = ATLAS_PROOF_LOG.replace("r64=1", "r64=2");
+        assert!(check_atlas_proof_text(&bad_sum).is_err());
+
+        let no_relocs = ATLAS_PROOF_LOG
+            .replace("relocations_applied=6", "relocations_applied=0")
+            .replace("r64=1 rpc32=3 rplt32=1 r32s=1", "r64=0 rpc32=0 rplt32=0 r32s=0");
+        assert!(check_atlas_proof_text(&no_relocs).is_err());
+
+        let leaked = ATLAS_PROOF_LOG.replace("charts_after=0", "charts_after=1");
+        assert!(check_atlas_proof_text(&leaked).is_err());
+
+        let never_held = ATLAS_PROOF_LOG.replace("charts_peak=3", "charts_peak=0");
+        assert!(check_atlas_proof_text(&never_held).is_err());
+    }
+
+    #[test]
+    fn bundle_proof_requires_verified_index_and_refused_bad_sections() {
+        assert!(check_bundle_proof_text(BUNDLE_PROOF_LOG).is_ok());
+
+        for field in [
+            "store=/bundle",
+            "index_verify=ok",
+            "index_tampered=refused",
+            "simulation=absent",
+            "cache_hit=same_alloc",
+            "result=pass",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = BUNDLE_PROOF_LOG.replace(field, &format!("{key}=fail"));
+            assert!(
+                check_bundle_proof_text(&broken).is_err(),
+                "Bundle gate accepted {key}=fail"
+            );
+        }
+
+        let absent_accepted = BUNDLE_PROOF_LOG.replace(
+            "absent_section=test-absent-fixture.section:not_provisioned",
+            "absent_section=test-absent-fixture.section:accepted",
+        );
+        assert!(check_bundle_proof_text(&absent_accepted).is_err());
+
+        let corrupt_accepted = BUNDLE_PROOF_LOG.replace(
+            "corrupt_section=test-corrupt-fixture.section:digest_mismatch",
+            "corrupt_section=test-corrupt-fixture.section:accepted",
+        );
+        assert!(check_bundle_proof_text(&corrupt_accepted).is_err());
+
+        let never_dropped = BUNDLE_PROOF_LOG.replace("refcount_after_drop=1", "refcount_after_drop=2");
+        assert!(check_bundle_proof_text(&never_dropped).is_err());
+
+        let not_released = BUNDLE_PROOF_LOG.replace("released=1", "released=0");
+        assert!(check_bundle_proof_text(&not_released).is_err());
+
+        let still_cached =
+            BUNDLE_PROOF_LOG.replace("cached_after_release=0", "cached_after_release=1");
+        assert!(check_bundle_proof_text(&still_cached).is_err());
+
+        let no_refusal = BUNDLE_PROOF_LOG.replace("digest_refused=1", "digest_refused=0");
+        assert!(check_bundle_proof_text(&no_refusal).is_err());
+
+        let empty_index = BUNDLE_PROOF_LOG.replace("index_entries=4", "index_entries=0");
+        assert!(check_bundle_proof_text(&empty_index).is_err());
+    }
+
+    #[test]
+    fn fs_parity_requires_matching_digests_and_a_live_negative_control() {
+        assert!(check_fs_parity_text(FS_PARITY_LOG).is_ok());
+
+        for field in [
+            "fat_mounted=ok",
+            "ext2_mounted=ok",
+            "content_parity=byte_for_byte",
+            "negative_control=detected",
+            "negative_control_restored=ok",
+            "result=pass",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = FS_PARITY_LOG.replace(field, &format!("{key}=fail"));
+            assert!(
+                check_fs_parity_text(&broken).is_err(),
+                "FS parity gate accepted {key}=fail"
+            );
+        }
+
+        let digest_drift = FS_PARITY_LOG.replace(
+            "content_digest_ext2=0x00000000feedbeef",
+            "content_digest_ext2=0x0000000000000001",
+        );
+        assert!(check_fs_parity_text(&digest_drift).is_err());
+
+        // A control whose digest equals the content digest proves nothing.
+        let blind_control = FS_PARITY_LOG.replace(
+            "negative_control_digest=0x00000000deadbeef",
+            "negative_control_digest=0x00000000feedbeef",
+        );
+        assert!(check_fs_parity_text(&blind_control).is_err());
+
+        for (measured, mutated) in [
+            ("dirs_equal=3", "dirs_equal=2"),
+            ("stat_fields_equal=18", "stat_fields_equal=17"),
+            ("error_matches=5", "error_matches=4"),
+            ("ops_ext2=48", "ops_ext2=47"),
+            ("files_compared=6", "files_compared=0"),
+            ("bytes_compared=4096", "bytes_compared=0"),
+        ] {
+            let broken = FS_PARITY_LOG.replace(measured, mutated);
+            assert!(
+                check_fs_parity_text(&broken).is_err(),
+                "FS parity gate accepted {mutated}"
+            );
+        }
+    }
+
+    #[test]
+    fn mlfit_proof_requires_every_case_classified_and_a_misfiring_baseline() {
+        assert!(check_mlfit_proof_text(MLFIT_PROOF_LOG).is_ok());
+
+        for field in [
+            "subsystem=stratum",
+            "bounded=ok",
+            "monotone_loop_zero=ok",
+            "incremental_batch_agree=ok",
+            "result=pass",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = MLFIT_PROOF_LOG.replace(field, &format!("{key}=fail"));
+            assert!(
+                check_mlfit_proof_text(&broken).is_err(),
+                "MLFIT gate accepted {key}=fail"
+            );
+        }
+
+        let negctl_flagged = MLFIT_PROOF_LOG.replace("negctl_flagged=no", "negctl_flagged=yes");
+        assert!(check_mlfit_proof_text(&negctl_flagged).is_err());
+
+        // Without a misfiring naive baseline the negative control is not a control.
+        let baseline_clean = MLFIT_PROOF_LOG.replace(
+            "naive_gap_baseline_flagged=yes",
+            "naive_gap_baseline_flagged=no",
+        );
+        assert!(check_mlfit_proof_text(&baseline_clean).is_err());
+
+        let partial = MLFIT_PROOF_LOG.replace("correct=7/7", "correct=6/7");
+        assert!(check_mlfit_proof_text(&partial).is_err());
+
+        let too_few = MLFIT_PROOF_LOG.replace("correct=7/7", "correct=3/3");
+        assert!(check_mlfit_proof_text(&too_few).is_err());
+
+        // A single mislabelled case must fail even though `correct=` still claims 7/7.
+        let lying = MLFIT_PROOF_LOG.replace(
+            "case=collapsing truth=collapsing got=collapsing",
+            "case=collapsing truth=collapsing got=wellfit",
+        );
+        assert!(check_mlfit_proof_text(&lying).is_err());
+
+        // Dropping cases to hide a miss must fail too.
+        let truncated = MLFIT_PROOF_LOG.replace(
+            "case=monotone_exp truth=wellfit got=wellfit ",
+            "",
+        );
+        assert!(check_mlfit_proof_text(&truncated).is_err());
+    }
+
+    #[test]
+    fn kv_policy_requires_no_leaks_and_no_impossible_hit_rate() {
+        assert!(check_kv_policy_text(KV_POLICY_LOG).is_ok());
+
+        for field in [
+            "subsystem=foliation",
+            "result=pass",
+            "refused_budget=1",
+            "refused_exhaustion=1",
+            "refused_referenced_free=1",
+            "probe_frames_identical=1",
+            "probe_refcount_after_partial_free=1",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = KV_POLICY_LOG.replace(field, &format!("{key}=0"));
+            assert!(
+                check_kv_policy_text(&broken).is_err(),
+                "KV policy gate accepted {key}=0"
+            );
+        }
+
+        let evicted_referenced =
+            KV_POLICY_LOG.replace("referenced_evictions=0", "referenced_evictions=1");
+        assert!(check_kv_policy_text(&evicted_referenced).is_err());
+
+        let collapsed = KV_POLICY_LOG.replace("collapse_violations=0", "collapse_violations=1");
+        assert!(check_kv_policy_text(&collapsed).is_err());
+
+        let leak = KV_POLICY_LOG.replace("frames_freed=96", "frames_freed=95");
+        assert!(check_kv_policy_text(&leak).is_err());
+
+        let failed_backing = KV_POLICY_LOG.replace("frames_failed=0", "frames_failed=1");
+        assert!(check_kv_policy_text(&failed_backing).is_err());
+
+        let no_sharing = KV_POLICY_LOG.replace("shared_descents=32", "shared_descents=0");
+        assert!(check_kv_policy_text(&no_sharing).is_err());
+
+        // Beating the offline optimum means the benchmark, not the policy, is wrong.
+        let beats_belady = KV_POLICY_LOG.replace("hit_bp_belady=9000", "hit_bp_belady=8000");
+        assert!(check_kv_policy_text(&beats_belady).is_err());
+
+        // Losing to LRU is recorded, never gated.
+        let loses_to_lru = KV_POLICY_LOG.replace("hit_bp_foliation=8200", "hit_bp_foliation=7000");
+        assert!(check_kv_policy_text(&loses_to_lru).is_ok());
+    }
+
+    #[test]
+    fn gpu_bench_requires_a_real_blob_and_no_silent_hardware_skip() {
+        assert!(check_gpu_bench_text(GPU_BENCH_PROOF_LOG).is_ok());
+
+        let arch = GPU_BENCH_PROOF_LOG.replace("arch=gfx900", "arch=unknown");
+        assert!(check_gpu_bench_text(&arch).is_err());
+
+        let mismatch = GPU_BENCH_PROOF_LOG.replace("blob_matches_encoder=1", "blob_matches_encoder=0");
+        assert!(check_gpu_bench_text(&mismatch).is_err());
+
+        let hash_drift = GPU_BENCH_PROOF_LOG.replace(
+            "encoder_fnv1a=0x00000000cafef00d",
+            "encoder_fnv1a=0x0000000000000001",
+        );
+        assert!(check_gpu_bench_text(&hash_drift).is_err());
+
+        let mnemonics = GPU_BENCH_PROOF_LOG.replace("mnemonics_match=1", "mnemonics_match=0");
+        assert!(check_gpu_bench_text(&mnemonics).is_err());
+
+        // The blob used to ship as zero bytes; that is the regression this catches.
+        let empty_blob =
+            GPU_BENCH_PROOF_LOG.replace("spectral_step_bytes=256", "spectral_step_bytes=0");
+        assert!(check_gpu_bench_text(&empty_blob).is_err());
+
+        for field in [
+            "golden_words=64/64",
+            "decoded_insts=32/32",
+            "roundtrip_words=64/64",
+            "cpu_ref_exact=512/512",
+            "backend_exact=512/512",
+        ] {
+            let (key, value) = field.split_once('=').unwrap();
+            let total = value.split('/').nth(1).unwrap();
+            let broken = GPU_BENCH_PROOF_LOG.replace(field, &format!("{key}=0/{total}"));
+            assert!(
+                check_gpu_bench_text(&broken).is_err(),
+                "GPU bench gate accepted {key}=0/{total}"
+            );
+        }
+
+        for field in ["cpu_ref_max_ulp=0", "backend_max_ulp=0"] {
+            let key = field.split('=').next().unwrap();
+            let broken = GPU_BENCH_PROOF_LOG.replace(field, &format!("{key}=1"));
+            assert!(
+                check_gpu_bench_text(&broken).is_err(),
+                "GPU bench gate accepted {key}=1"
+            );
+        }
+
+        let no_real_kernels = GPU_BENCH_PROOF_LOG.replace("kernels_real=1/3", "kernels_real=0/3");
+        assert!(check_gpu_bench_text(&no_real_kernels).is_err());
+
+        // Hardware present must be hardware used.
+        let hw = GPU_BENCH_PROOF_LOG
+            .replace("backend=cpu_fallback", "backend=pm4_hw")
+            .replace("gpu_present=0", "gpu_present=1")
+            .replace("hw_attempted=0", "hw_attempted=1");
+        assert!(check_gpu_bench_text(&hw).is_ok());
+
+        let skipped = GPU_BENCH_PROOF_LOG
+            .replace("gpu_present=0", "gpu_present=1")
+            .replace("hw_attempted=0", "hw_attempted=1");
+        assert!(check_gpu_bench_text(&skipped).is_err());
+
+        let never_attempted = GPU_BENCH_PROOF_LOG
+            .replace("backend=cpu_fallback", "backend=pm4_hw")
+            .replace("gpu_present=0", "gpu_present=1");
+        assert!(check_gpu_bench_text(&never_attempted).is_err());
+
+        let bogus_backend = GPU_BENCH_PROOF_LOG.replace("backend=cpu_fallback", "backend=magic");
+        assert!(check_gpu_bench_text(&bogus_backend).is_err());
+    }
+
+    #[test]
+    fn kaslr_proof_requires_live_hardware_entropy_and_aligned_in_range_slides() {
+        assert!(check_kaslr_text(KASLR_PROOF_LOG).is_ok());
+
+        let no_entropy = KASLR_PROOF_LOG.replace("entropy=rdseed", "entropy=none");
+        assert!(check_kaslr_text(&no_entropy).is_err());
+
+        let uninit = KASLR_PROOF_LOG.replace("entropy=rdseed", "entropy=uninit");
+        assert!(check_kaslr_text(&uninit).is_err());
+
+        let rdrand = KASLR_PROOF_LOG.replace("entropy=rdseed", "entropy=rdrand");
+        assert!(check_kaslr_text(&rdrand).is_ok());
+
+        let stuck = KASLR_PROOF_LOG.replace("resample_differs=1", "resample_differs=0");
+        assert!(check_kaslr_text(&stuck).is_err());
+
+        let inactive = KASLR_PROOF_LOG.replace("active=1", "active=0");
+        assert!(check_kaslr_text(&inactive).is_err());
+
+        let unaligned = KASLR_PROOF_LOG.replace(
+            "heap_window_base=0xffff900040000000",
+            "heap_window_base=0xffff900040001000",
+        );
+        assert!(check_kaslr_text(&unaligned).is_err());
+
+        let out_of_range = KASLR_PROOF_LOG.replace(
+            "heap_window_base=0xffff900040000000",
+            "heap_window_base=0xffff800040000000",
+        );
+        assert!(check_kaslr_text(&out_of_range).is_err());
+
+        let alias_out_of_range = KASLR_PROOF_LOG.replace(
+            "kernel_alias_base=0xffffffff81400000",
+            "kernel_alias_base=0xffffffffc1400000",
+        );
+        assert!(check_kaslr_text(&alias_out_of_range).is_err());
+
+        let claims_image_randomised =
+            KASLR_PROOF_LOG.replace("image_base_randomised=0", "image_base_randomised=1");
+        assert!(check_kaslr_text(&claims_image_randomised).is_err());
+
+        let wrong_granule = KASLR_PROOF_LOG.replace("granule=0x200000", "granule=0x1000");
+        assert!(check_kaslr_text(&wrong_granule).is_err());
+
+        let shrunk_heap =
+            KASLR_PROOF_LOG.replace("heap_window_slots=4194304", "heap_window_slots=2");
+        assert!(check_kaslr_text(&shrunk_heap).is_err());
+
+        let bits_dont_add = KASLR_PROOF_LOG.replace("total_bits=31", "total_bits=40");
+        assert!(check_kaslr_text(&bits_dont_add).is_err());
+
+        let thin_alias = KASLR_PROOF_LOG.replace("kernel_alias_bits=9", "kernel_alias_bits=4");
+        assert!(check_kaslr_text(&thin_alias).is_err());
+
+        let zero_nonce = KASLR_PROOF_LOG.replace("boot_nonce=0xa1b2c3d4e5f60718", "boot_nonce=0x0");
+        assert!(check_kaslr_text(&zero_nonce).is_err());
+
+        let same_nonce = KASLR_PROOF_LOG.replace(
+            "resample_nonce=0x0718f6e5d4c3b2a1",
+            "resample_nonce=0xa1b2c3d4e5f60718",
+        );
+        assert!(check_kaslr_text(&same_nonce).is_err());
+
+        let no_image = KASLR_PROOF_LOG.replace("firmware_image_base=0x1000000", "firmware_image_base=0x0");
+        assert!(check_kaslr_text(&no_image).is_err());
+
+        let no_size = KASLR_PROOF_LOG.replace("image_size=0x400000", "image_size=0x0");
+        assert!(check_kaslr_text(&no_size).is_err());
+    }
+
+    #[test]
+    fn security_features_cross_checks_decoded_bits_against_raw_registers() {
+        assert!(check_security_features_text(SECURITY_FEATURES_LOG).is_ok());
+
+        for field in [
+            "kpti=1",
+            "kaslr=1",
+            "wp=1",
+            "retpoline=1",
+            "stackguard=1",
+            "audit=1",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = SECURITY_FEATURES_LOG.replace(field, &format!("{key}=0"));
+            assert!(
+                check_security_features_text(&broken).is_err(),
+                "security features gate accepted {key}=0"
+            );
+        }
+
+        let dirty_guard =
+            SECURITY_FEATURES_LOG.replace("stackguard_dirty=0", "stackguard_dirty=1");
+        assert!(check_security_features_text(&dirty_guard).is_err());
+
+        // A probe that degrades into a constant is the failure this catches.
+        for probe in [
+            "kpti_probe=runtime-cr3",
+            "smep_probe=cpuid+cr4",
+            "nx_probe=cpuid+efer",
+            "wp_probe=cr0",
+            "kaslr_probe=runtime-entropy",
+            "retpoline_probe=runtime-thunk-bytes",
+            "stackguard_probe=runtime-guardband",
+            "audit_probe=runtime-vfs",
+            "wx_probe=runtime-pagewalk",
+            "wx_scope=kernel-alias",
+        ] {
+            let key = probe.split('=').next().unwrap();
+            let broken = SECURITY_FEATURES_LOG.replace(probe, &format!("{key}=constant"));
+            assert!(
+                check_security_features_text(&broken).is_err(),
+                "security features gate accepted {key}=constant"
+            );
+        }
+
+        let thin_kaslr = SECURITY_FEATURES_LOG.replace("kaslr_bits=31", "kaslr_bits=8");
+        assert!(check_security_features_text(&thin_kaslr).is_err());
+
+        // Supported-but-inactive, and decoded bits that contradict the registers.
+        let smep_off = SECURITY_FEATURES_LOG.replace("smep_supported=1 smep=1", "smep_supported=1 smep=0");
+        assert!(check_security_features_text(&smep_off).is_err());
+
+        let cr4_lies = SECURITY_FEATURES_LOG.replace("cr4=0x3506f0", "cr4=0x2506f0");
+        assert!(check_security_features_text(&cr4_lies).is_err());
+
+        let cr0_lies = SECURITY_FEATURES_LOG.replace("cr0=0x80050033", "cr0=0x80040033");
+        assert!(check_security_features_text(&cr0_lies).is_err());
+
+        let efer_lies = SECURITY_FEATURES_LOG.replace("efer=0xd01", "efer=0x501");
+        assert!(check_security_features_text(&efer_lies).is_err());
+
+        // W^X is measured, not gated: the kernel alias really is W+X today.
+        let wx_claimed = SECURITY_FEATURES_LOG.replace("wx=0", "wx=1");
+        assert!(check_security_features_text(&wx_claimed).is_ok());
+
+        let enforced = SECURITY_FEATURES_LOG.replace("wx_enforced=0", "wx_enforced=1");
+        assert!(check_security_features_text(&enforced).is_err());
+
+        let unscanned =
+            SECURITY_FEATURES_LOG.replace("wx_pages_scanned=1024", "wx_pages_scanned=0");
+        assert!(check_security_features_text(&unscanned).is_err());
+    }
+
+    #[test]
+    fn unsafe_audit_scan_matches_the_kernel_side_rule() {
+        let token = concat!("unsa", "fe {");
+        let justified = format!(
+            "fn a() {{\n    // SAFETY: the pointer outlives the block.\n    {token} *p = 1; }}\n}}\n"
+        );
+        assert_eq!(scan_unsafe_source(&justified), (1, 1));
+
+        let unjustified = format!("fn a() {{\n    // Bump it.\n    {token} *p = 1; }}\n}}\n");
+        assert_eq!(scan_unsafe_source(&unjustified), (1, 0));
+
+        // A SAFETY: comment separated by a non-comment line does not carry over.
+        let detached = format!("// SAFETY: unrelated\nfn a() {{\n    {token} *p = 1; }}\n}}\n");
+        assert_eq!(scan_unsafe_source(&detached), (1, 0));
+
+        // Declarations are not blocks.
+        assert_eq!(scan_unsafe_source("pub unsafe fn f() {\n}\n"), (0, 0));
+        assert_eq!(scan_unsafe_source("unsafe impl Send for T {}\n"), (0, 0));
+        assert_eq!(scan_unsafe_source("unsafe trait T {}\n"), (0, 0));
+        assert_eq!(scan_unsafe_source("unsafe extern \"C\" {\n}\n"), (0, 0));
+
+        // Two sites on one line both count, and both inherit the justification.
+        let doubled = format!("// SAFETY: both.\n{token} }} {token} }}\n");
+        assert_eq!(scan_unsafe_source(&doubled), (2, 2));
+    }
+
+    #[test]
+    fn unsafe_audit_gate_ratchets_and_rejects_drift() {
+        let scanned = BTreeMap::from([
+            (String::from("lib.rs"), (3u64, 1u64)),
+            (String::from("drivers/pci.rs"), (1, 0)),
+        ]);
+        assert!(
+            check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &scanned).is_ok()
+        );
+
+        for field in [
+            "version=1",
+            "fixture_version=1",
+            "fixture=tests/unsafe-audit.fixture",
+            "rule=safety-comment-above-block",
+            "result=pass",
+        ] {
+            let key = field.split('=').next().unwrap();
+            let broken = UNSAFE_AUDIT_LOG.replace(field, &format!("{key}=wrong"));
+            assert!(
+                check_unsafe_audit_text(&broken, UNSAFE_AUDIT_FIXTURE, &scanned).is_err(),
+                "unsafe audit gate accepted {key}=wrong"
+            );
+        }
+
+        // The logged census must be the checked-in one.
+        let lying_log = UNSAFE_AUDIT_LOG.replace("unjustified=3", "unjustified=2");
+        assert!(
+            check_unsafe_audit_text(&lying_log, UNSAFE_AUDIT_FIXTURE, &scanned).is_err()
+        );
+
+        // A new unsafe block that the fixture does not record is drift.
+        let grown = BTreeMap::from([
+            (String::from("lib.rs"), (4u64, 1u64)),
+            (String::from("drivers/pci.rs"), (1, 0)),
+        ]);
+        let err = check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &grown)
+            .expect_err("drift must fail");
+        assert!(err.contains("lib.rs"), "error must name the file: {err}");
+        assert!(err.contains("+1"), "error must carry the delta: {err}");
+
+        // A vanished block is drift in the other direction.
+        let shrunk = BTreeMap::from([(String::from("lib.rs"), (3u64, 1u64))]);
+        let err = check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &shrunk)
+            .expect_err("drift must fail");
+        assert!(err.contains("drivers/pci.rs"), "error must name the file: {err}");
+
+        // Same total, one justification removed: the ratchet only turns down.
+        let regressed = BTreeMap::from([
+            (String::from("lib.rs"), (3u64, 0u64)),
+            (String::from("drivers/pci.rs"), (1, 0)),
+        ]);
+        let err = check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &regressed)
+            .expect_err("ratchet must fail");
+        assert!(err.contains("lib.rs"), "error must name the file: {err}");
+
+        // Adding a justification is allowed.
+        let improved = BTreeMap::from([
+            (String::from("lib.rs"), (3u64, 2u64)),
+            (String::from("drivers/pci.rs"), (1, 0)),
+        ]);
+        assert!(
+            check_unsafe_audit_text(UNSAFE_AUDIT_LOG, UNSAFE_AUDIT_FIXTURE, &improved).is_ok()
+        );
+
+        // A fixture whose parts do not add up is rejected outright.
+        let broken_fixture = UNSAFE_AUDIT_FIXTURE.replace("justified 1", "justified 2");
+        assert!(check_unsafe_audit_text(UNSAFE_AUDIT_LOG, &broken_fixture, &scanned).is_err());
+    }
+
+    /// The re-scan must agree with a plain textual count of the block token
+    /// over the live tree — the fixture-vs-tree comparison itself is the
+    /// `--check-unsafe-audit` gate's job, not a unit test's.
+    #[test]
+    fn unsafe_tree_scan_agrees_with_a_plain_token_count() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root")
+            .join("kernel")
+            .join("seal-os")
+            .join("src");
+        if !src.is_dir() {
+            return;
+        }
+        let scanned = scan_unsafe_tree(&src).expect("scan seal-os src");
+        let scanned_total: u64 = scanned.values().map(|&(sites, _)| sites).sum();
+
+        let mut files = Vec::new();
+        collect_files_recursive_skip_target(&src, &mut files).expect("walk seal-os src");
+        let mut token_total = 0u64;
+        for path in files {
+            if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("read source");
+            token_total += text.matches(UNSAFE_BLOCK_TOKEN).count() as u64;
+        }
+        assert_eq!(scanned_total, token_total);
+        assert!(scanned_total > 0, "no unsafe blocks found under {}", src.display());
     }
 
     #[test]
@@ -5016,14 +6640,28 @@ fn apply_safe_install(&self) -> bool {
     write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", b"boot");
     crate::security::passwd::add_user("seal2", "pw", 1001, 1001);
     crate::security::shadow::auth_shadow_proof();
-    serial_println!("[INSTALLER] proof version=1 mode=safe_vfs raw_gpt=0 raw_format=0 result=pass");
     true
 }
+pub fn run_raw_install(dev_num: u32, part_dev_num: u32) -> RawInstallReport {
+    write_gpt(dev_num);
+    format_ext2(part_dev_num)
+}
+format!("[INSTALLER] proof version=2 mode=raw_block selected_disk={} raw_gpt={} raw_format={} result={}");
 "#;
         assert!(check_installer_source_contract_text(installer).is_ok());
 
         let theater = format!("{installer}\nserial_println!(\"[INSTALLER] Would format ESP\");\n");
         assert!(check_installer_source_contract_text(&theater).is_err());
+
+        // The raw path is the claim: dropping it must fail the contract.
+        let vfs_only = installer.replace("pub fn run_raw_install", "fn unused_raw_install");
+        assert!(check_installer_source_contract_text(&vfs_only).is_err());
+
+        let old_proof = installer.replace(
+            "[INSTALLER] proof version=2 mode=raw_block",
+            "[INSTALLER] proof version=1 mode=safe_vfs",
+        );
+        assert!(check_installer_source_contract_text(&old_proof).is_err());
     }
 
     #[test]
@@ -6493,8 +8131,9 @@ fn check_installer_source_contract_text(installer: &str) -> Result<(), String> {
         "write_file_verified(\"/boot/EFI/BOOT/BOOTX64.EFI\"",
         "crate::security::passwd::add_user",
         "crate::security::shadow::auth_shadow_proof",
-        "[INSTALLER] proof version=1 mode=safe_vfs",
-        "raw_gpt=0 raw_format=0",
+        "pub fn run_raw_install",
+        "[INSTALLER] proof version=2 mode=raw_block",
+        "raw_gpt={} raw_format={}",
     ] {
         if !installer.contains(needle) {
             findings.push(format!("installer missing `{needle}`"));
