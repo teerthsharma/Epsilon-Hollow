@@ -103,6 +103,20 @@ pub const SYS_BT_PAIR: u64 = 109;
 pub const SYS_SETTING_GET: u64 = 110;
 pub const SYS_SETTING_SET: u64 = 111;
 
+// stratum — topological fit control (see ml_engine::stratum).
+/// Register the calling task as a training workload. Returns the handle.
+pub const SYS_FIT_REGISTER: u64 = 112;
+/// Push one step: arg0 = handle, arg1 = train loss bits, arg2 = val loss bits
+/// (both `f64::to_bits`). Returns the last computed regime code.
+pub const SYS_FIT_OBSERVE: u64 = 113;
+/// Recompute and return the regime. arg0 = handle. `code` is the regime, `data`
+/// carries the measured signals and the planned actuator settings.
+pub const SYS_FIT_REGIME: u64 = 114;
+/// Set one calibration field: arg0 = handle, arg1 = field id, arg2 = f64 bits.
+pub const SYS_FIT_CALIBRATE: u64 = 115;
+/// Drop the workload's fit state. arg0 = handle.
+pub const SYS_FIT_UNREGISTER: u64 = 116;
+
 #[derive(Debug)]
 pub struct SyscallResult {
     pub code: i64,
@@ -1065,6 +1079,48 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 SyscallResult::ok(0)
             } else {
                 SyscallResult::err(22) // EINVAL
+            }
+        }
+
+        SYS_FIT_REGISTER => {
+            let handle = crate::process::scheduler::current_task_id();
+            SyscallResult::ok(crate::ml_engine::stratum::register(handle) as i64)
+        }
+
+        SYS_FIT_OBSERVE => {
+            let train = f64::from_bits(arg1);
+            let val = f64::from_bits(arg2);
+            match crate::ml_engine::stratum::observe(arg0, train, val) {
+                Some(regime) => SyscallResult::ok(regime.code()),
+                None => SyscallResult::err(2), // ENOENT: not registered
+            }
+        }
+
+        SYS_FIT_REGIME => match crate::ml_engine::stratum::regime_of(arg0) {
+            Some((regime, _signals, action)) => {
+                // Actuate the real knobs in the caller's own context, then
+                // return the full state (advisory knobs included) as data.
+                crate::ml_engine::stratum::apply_action(&action);
+                let data = crate::ml_engine::stratum::report(arg0).unwrap_or_default();
+                SyscallResult::with_data(regime.code(), data)
+            }
+            None => SyscallResult::err(2), // ENOENT
+        },
+
+        SYS_FIT_CALIBRATE => {
+            let value = f64::from_bits(arg2);
+            if crate::ml_engine::stratum::calibrate(arg0, arg1 as u32, value) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(22) // EINVAL
+            }
+        }
+
+        SYS_FIT_UNREGISTER => {
+            if crate::ml_engine::stratum::unregister(arg0) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(2) // ENOENT
             }
         }
 

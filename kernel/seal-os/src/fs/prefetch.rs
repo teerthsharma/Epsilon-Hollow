@@ -38,14 +38,21 @@ impl PrefetchEngine {
         Self::with_params(0.65, 0.05, [0.03, 0.08, 0.15], -0.02, PrefetchPreset::Hft)
     }
 
+    /// Model-training preset. Honours the `stratum` fit controller's live
+    /// prefetch threshold when a registered training workload has produced one:
+    /// this is the real (non-advisory) I/O knob the controller actuates.
     pub fn new_model_training() -> Self {
-        Self::with_params(
+        let mut engine = Self::with_params(
             0.30,
             0.15,
             [0.20, 0.30, 0.40],
             0.10,
             PrefetchPreset::ModelTraining,
-        )
+        );
+        if let Some(eps) = crate::ml_engine::stratum::training_prefetch_epsilon() {
+            engine.epsilon = eps.clamp(0.1, 0.9);
+        }
+        engine
     }
 
     fn with_params(

@@ -21,6 +21,7 @@ pub fn test_main() -> ! {
     crate::drivers::apic::tests::register_all();
     crate::cpu::tests::register_all();
     crate::sync::tests::register_all();
+    crate::ml_engine::stratum::tests::register_all();
 
     run_all_tests_and_exit()
 }
