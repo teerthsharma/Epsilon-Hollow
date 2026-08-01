@@ -1383,6 +1383,93 @@ fn check_manifoldpkg_proof_text(text: &str) -> Result<(), String> {
             "ManifoldPkg proof package count must return to baseline after remove",
         ));
     }
+
+    check_manifoldpkg_channel_fields(line)
+}
+
+/// Remote release channel fields on the `[ManifoldPkg] proof` line.
+///
+/// The channel install path is driven over a checked-in fixture transport, so
+/// the transport is deliberately pinned to `fixture_loopback` — a log claiming
+/// a live transport in CI would mean something answered on that hostname, and
+/// trusting it is exactly the failure this gate exists to prevent.
+fn check_manifoldpkg_channel_fields(line: &str) -> Result<(), String> {
+    require_field_eq(
+        line,
+        "channel_endpoint=",
+        "https://releases.seal-os.local/channel/stable/",
+        "ManifoldPkg proof",
+    )?;
+    require_field_eq(
+        line,
+        "channel_transport=",
+        "fixture_loopback",
+        "ManifoldPkg proof",
+    )?;
+    require_field_eq(
+        line,
+        "channel_index_signature=",
+        "ed25519_fixture",
+        "ManifoldPkg proof",
+    )?;
+    // The five negative controls. Each is an attack the channel must refuse.
+    require_field_eq(line, "channel_rollback_refused=", "1", "ManifoldPkg proof")?;
+    require_field_eq(line, "channel_tamper_refused=", "1", "ManifoldPkg proof")?;
+    require_field_eq(
+        line,
+        "channel_digest_mismatch_refused=",
+        "1",
+        "ManifoldPkg proof",
+    )?;
+    require_field_eq(
+        line,
+        "channel_package_signature_enforced=",
+        "1",
+        "ManifoldPkg proof",
+    )?;
+    require_field_eq(line, "channel_fail_closed=", "1", "ManifoldPkg proof")?;
+    require_field_eq(
+        line,
+        "channel_unverified_fallback=",
+        "0",
+        "ManifoldPkg proof",
+    )?;
+
+    let index_version = parse_metric(line, "channel_index_version=")?;
+    if index_version == 0 {
+        return Err(String::from(
+            "ManifoldPkg proof channel_index_version=0 means no index was ever accepted",
+        ));
+    }
+    let fetched = parse_metric(line, "channel_packages_fetched=")?;
+    if fetched == 0 {
+        return Err(String::from(
+            "ManifoldPkg proof must fetch at least one package over the channel",
+        ));
+    }
+    let digest_ok = parse_metric(line, "channel_digest_ok=")?;
+    if digest_ok != fetched {
+        return Err(format!(
+            "ManifoldPkg proof channel_digest_ok={digest_ok} must equal \
+             channel_packages_fetched={fetched}: an unverified package was installed"
+        ));
+    }
+
+    // A reachable live probe in CI means an unexpected host answered.
+    let probe = parse_field(line, "channel_live_probe=")?;
+    const REFUSALS: [&str; 5] = [
+        "no_network",
+        "dns_failed",
+        "transport_failed",
+        "http_status",
+        "insecure_scheme",
+    ];
+    if !REFUSALS.contains(&probe) {
+        return Err(format!(
+            "ManifoldPkg proof channel_live_probe={probe} is not a typed refusal; \
+             expected one of {REFUSALS:?}"
+        ));
+    }
     Ok(())
 }
 
@@ -4250,7 +4337,7 @@ mod tests {
     const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=0 wx_violations=12 wx_pages_scanned=1024 wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
     const UNSAFE_AUDIT_LOG: &str = "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version=1 blocks=4 justified=1 unjustified=3 files=2 undocumented_permille=750 rule=safety-comment-above-block result=pass\n";
     const UNSAFE_AUDIT_FIXTURE: &str = "# header\nversion 1\ntotal 4\njustified 1\nunjustified 3\nfiles 2\nfile lib.rs 3 1\nfile drivers/pci.rs 1 0\n";
-    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture result=pass\n";
+    const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture channel_endpoint=https://releases.seal-os.local/channel/stable/ channel_transport=fixture_loopback channel_index_signature=ed25519_fixture channel_index_version=3 channel_packages_fetched=1 channel_digest_ok=1 channel_rollback_refused=1 channel_tamper_refused=1 channel_digest_mismatch_refused=1 channel_package_signature_enforced=1 channel_live_probe=no_network channel_fail_closed=1 channel_unverified_fallback=0 result=pass\n";
     const UBUNTU_ALLOC_LOG: &str = "[UBUNTU-BENCH] alloc-frame os=ubuntu version_id=26.04 kernel=6.14.0-native iterations=64 ok=64 bytes=4096 backend=rust-std-box-page-touch-drop clock=rdtsc p50_cycles=200 p95_cycles=300 max_cycles=400\n";
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -6493,6 +6580,62 @@ fn panic(info: &PanicInfo) -> ! {
         let unsigned_index =
             MANIFOLDPKG_PROOF_LOG.replace("registry_index=ed25519_fixture", "registry_index=none");
         assert!(check_manifoldpkg_proof_text(&unsigned_index).is_err());
+    }
+
+    #[test]
+    fn manifoldpkg_proof_requires_remote_channel_negative_controls() {
+        // Each of the five refusals is an attack the channel must reject. If any
+        // one silently flips to 0 the gate has to notice, or the control is decor.
+        for field in [
+            "channel_rollback_refused=1",
+            "channel_tamper_refused=1",
+            "channel_digest_mismatch_refused=1",
+            "channel_package_signature_enforced=1",
+            "channel_fail_closed=1",
+        ] {
+            let relaxed = MANIFOLDPKG_PROOF_LOG.replace(field, &field.replace("=1", "=0"));
+            assert!(
+                check_manifoldpkg_proof_text(&relaxed).is_err(),
+                "{field} must be gated"
+            );
+        }
+
+        // An unverified-install fallback appearing at all is a failure.
+        let fallback = MANIFOLDPKG_PROOF_LOG.replace(
+            "channel_unverified_fallback=0",
+            "channel_unverified_fallback=1",
+        );
+        assert!(check_manifoldpkg_proof_text(&fallback).is_err());
+
+        // A package fetched but not digest-checked must not pass.
+        let unchecked = MANIFOLDPKG_PROOF_LOG.replace("channel_digest_ok=1", "channel_digest_ok=0");
+        assert!(check_manifoldpkg_proof_text(&unchecked).is_err());
+
+        // No index ever accepted.
+        let no_index =
+            MANIFOLDPKG_PROOF_LOG.replace("channel_index_version=3", "channel_index_version=0");
+        assert!(check_manifoldpkg_proof_text(&no_index).is_err());
+
+        // In CI nothing should answer on the channel host. A reachable probe means
+        // an unexpected server responded, which is precisely what not to trust.
+        let reachable =
+            MANIFOLDPKG_PROOF_LOG.replace("channel_live_probe=no_network", "channel_live_probe=reachable");
+        assert!(check_manifoldpkg_proof_text(&reachable).is_err());
+
+        // A live transport claim in CI is likewise not credible.
+        let live_transport = MANIFOLDPKG_PROOF_LOG
+            .replace("channel_transport=fixture_loopback", "channel_transport=https");
+        assert!(check_manifoldpkg_proof_text(&live_transport).is_err());
+
+        // The other typed refusals are all acceptable probe outcomes.
+        for probe in ["dns_failed", "transport_failed", "http_status", "insecure_scheme"] {
+            let variant = MANIFOLDPKG_PROOF_LOG
+                .replace("channel_live_probe=no_network", &format!("channel_live_probe={probe}"));
+            assert!(
+                check_manifoldpkg_proof_text(&variant).is_ok(),
+                "{probe} is a typed refusal and must pass"
+            );
+        }
     }
 
     #[test]
