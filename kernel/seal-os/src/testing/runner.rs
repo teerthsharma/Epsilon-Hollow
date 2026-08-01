@@ -22,6 +22,7 @@ pub fn test_main() -> ! {
     crate::syscall::table::tests::register_all();
     crate::atlas::tests::register_all();
     crate::bundle::tests::register_all();
+    crate::pkg::channel::tests::register_all();
     crate::drivers::apic::tests::register_all();
     crate::drivers::gpu::gpu_bench::tests::register_all();
     crate::cpu::tests::register_all();
