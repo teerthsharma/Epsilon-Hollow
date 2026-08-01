@@ -103,6 +103,16 @@ pub const SYS_BT_PAIR: u64 = 109;
 pub const SYS_SETTING_GET: u64 = 110;
 pub const SYS_SETTING_SET: u64 = 111;
 
+// Foliated KV cache — kernel-managed paged attention for inference processes.
+// Prefix sharing is implicit: appending identical tokens descends to the same
+// foliation leaf, so two sequences with the same prompt share plaques without
+// any explicit share call.
+pub const SYS_KV_SEQ_CREATE: u64 = 112;
+pub const SYS_KV_SEQ_APPEND: u64 = 113;
+pub const SYS_KV_SEQ_RELEASE: u64 = 114;
+pub const SYS_KV_SEQ_STATS: u64 = 115;
+pub const SYS_KV_POLICY_STATS: u64 = 116;
+
 #[derive(Debug)]
 pub struct SyscallResult {
     pub code: i64,
@@ -773,6 +783,40 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let mut settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
             settings.set(&key, &val);
             SyscallResult::ok(0)
+        }
+
+        // arg0 = block budget. Returns the sequence id.
+        SYS_KV_SEQ_CREATE => {
+            let budget = arg0.min(u64::from(u16::MAX)) as u16;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_create(budget)) {
+                Ok(id) => SyscallResult::ok(id as i64),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id, arg1 = token. Returns blocks sealed so far.
+        SYS_KV_SEQ_APPEND => {
+            let id = arg0 as usize;
+            let token = arg1 as u32;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, token)) {
+                Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id. Returns blocks released; shared blocks survive.
+        SYS_KV_SEQ_RELEASE => {
+            let id = arg0 as usize;
+            match crate::ml_engine::foliation::with_global(|f| f.seq_release(id)) {
+                Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
+                Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
+            }
+        }
+        // arg0 = sequence id. Reports how much of it was shared on entry.
+        SYS_KV_SEQ_STATS => match crate::ml_engine::foliation::seq_stats_line(arg0 as usize) {
+            Some(line) => SyscallResult::with_data(0, line),
+            None => SyscallResult::err(2), // ENOENT
+        },
+        SYS_KV_POLICY_STATS => {
+            SyscallResult::with_data(0, crate::ml_engine::foliation::global_stats_line())
         }
 
         SYS_SETUID => {
