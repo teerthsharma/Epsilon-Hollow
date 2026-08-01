@@ -1,0 +1,119 @@
+# seal-os unsafe-code audit fixture - version 1
+#
+# Scan algorithm (the host checker and the kernel-side parser must agree
+# exactly, or the gate is measuring two different things):
+#   1. Walk kernel/seal-os/src recursively; take every file ending in ".rs".
+#      Paths are relative to kernel/seal-os/src, "/" separated, sorted
+#      lexicographically by directory then filename.
+#   2. Split each file on '\n'. For each line, count occurrences of the exact
+#      substring "unsafe {". That count is the line's unsafe-block sites.
+#      `unsafe fn`, `unsafe impl`, `unsafe trait` and `unsafe extern` declare
+#      unsafety rather than perform it and are not counted as blocks.
+#   3. A site is JUSTIFIED when the substring "SAFETY:" appears on that same
+#      line, or anywhere in the contiguous run of comment lines directly above
+#      it - walk upward while the trimmed line starts with "//" and stop at the
+#      first line that does not. Otherwise the site is UNJUSTIFIED.
+#   4. Only files with at least one site are listed below.
+#
+# Gate contract:
+#   total        must equal the re-scanned total exactly - no silent drift.
+#   unjustified  must be <= the value below. It may only ratchet down.
+#   Per file the recorded justified count is a floor and the implied
+#   unjustified count is a ceiling: a listed file that gains an unjustified
+#   block fails, and an unlisted file that gains any unjustified block fails.
+#
+# Finding. Before this audit existed the tree held 573 unsafe blocks, of which
+# 5 carried a SAFETY justification and 568 did not - 99.1% undocumented. The
+# audit code itself contributed 4 further blocks, all justified, so the totals
+# below read 577 / 9 / 568. The unjustified count is the real number and
+# it is not rounded: 98.4% of the unsafe blocks in this kernel have no written
+# justification. The gate freezes that count so it can only fall.
+#
+# Regenerate: re-run the algorithm above over kernel/seal-os/src. Any change to
+# the numbers is a deliberate edit to this file and shows up in review.
+#
+# Format: "file <relpath> <sites> <justified>"
+version 1
+total 577
+justified 9
+unjustified 568
+files 79
+file lib.rs 23 0
+file apps/gpu_benchmark.rs 13 0
+file boot/uefi_entry.rs 3 0
+file cpu/mod.rs 5 0
+file cpu/smp.rs 9 0
+file drivers/apic.rs 2 0
+file drivers/entropy.rs 2 0
+file drivers/interrupts.rs 13 0
+file drivers/nvme.rs 14 0
+file drivers/pci.rs 2 0
+file drivers/rtc.rs 11 0
+file drivers/serial.rs 4 0
+file drivers/watchdog.rs 1 0
+file drivers/acpi/fadt.rs 2 0
+file drivers/acpi/madt.rs 12 0
+file drivers/acpi/mod.rs 1 0
+file drivers/acpi/rsdp.rs 21 0
+file drivers/acpi/topological_power.rs 3 0
+file drivers/audio/hda.rs 7 0
+file drivers/block/ahci.rs 5 0
+file drivers/block/virtio_blk.rs 17 0
+file drivers/cpu/amd.rs 5 0
+file drivers/cpu/intel.rs 2 0
+file drivers/disk/ahci.rs 1 0
+file drivers/gpu/amd.rs 1 0
+file drivers/gpu/compute_queue.rs 3 0
+file drivers/gpu/firmware_scanner.rs 8 0
+file drivers/gpu/gpu_mem.rs 2 0
+file drivers/gpu/intel.rs 1 0
+file drivers/gpu/mod.rs 2 0
+file drivers/gpu/nvidia.rs 2 0
+file drivers/gpu/topology_accel.rs 30 0
+file drivers/gpu/virtio_gpu.rs 18 0
+file drivers/net/e1000.rs 4 0
+file drivers/net/mod.rs 1 0
+file drivers/net/tcp.rs 6 0
+file drivers/net/virtio_net.rs 13 0
+file drivers/usb/mass_storage.rs 3 0
+file drivers/usb/xhci.rs 40 0
+file fs/block_store.rs 2 2
+file fs/ext2.rs 23 0
+file fs/fat.rs 6 0
+file fs/journal.rs 4 0
+file graphics/console.rs 2 0
+file graphics/framebuffer.rs 9 0
+file lang/mod.rs 32 2
+file memory/gdt.rs 1 0
+file memory/mmap.rs 1 0
+file memory/pgtable_asm.rs 5 0
+file memory/swap.rs 1 0
+file memory/topo_ram.rs 2 0
+file memory/virt.rs 22 0
+file ml_engine/topo_asm.rs 2 0
+file net/arp.rs 3 0
+file net/icmp.rs 2 0
+file net/ipv4.rs 4 0
+file net/ipv6.rs 6 0
+file net/tcp.rs 3 1
+file net/udp.rs 5 0
+file process/context_switch.rs 1 0
+file process/elf.rs 10 0
+file process/hollow_asm.rs 4 0
+file process/scheduler.rs 44 0
+file process/signal.rs 21 0
+file process/userspace.rs 3 0
+file security/aslr.rs 1 0
+file security/features.rs 4 4
+file security/kpti.rs 6 0
+file security/mod.rs 1 0
+file security/retpoline.rs 1 0
+file security/smap_smep.rs 3 0
+file sync/tests.rs 1 0
+file sync/ticket_lock.rs 1 0
+file sync/tlb.rs 2 0
+file syscall/pipe.rs 1 0
+file syscall/table.rs 21 0
+file syscall/time.rs 2 0
+file testing/harness.rs 1 0
+file wm/desktop.rs 2 0
