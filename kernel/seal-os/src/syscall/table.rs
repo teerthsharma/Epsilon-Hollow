@@ -111,27 +111,27 @@ pub const SYS_CHART_LIST: u64 = 114;
 
 // stratum — topological fit control (see ml_engine::stratum).
 /// Register the calling task as a training workload. Returns the handle.
-pub const SYS_FIT_REGISTER: u64 = 112;
+pub const SYS_FIT_REGISTER: u64 = 120;
 /// Push one step: arg0 = handle, arg1 = train loss bits, arg2 = val loss bits
 /// (both `f64::to_bits`). Returns the last computed regime code.
-pub const SYS_FIT_OBSERVE: u64 = 113;
+pub const SYS_FIT_OBSERVE: u64 = 121;
 /// Recompute and return the regime. arg0 = handle. `code` is the regime, `data`
 /// carries the measured signals and the planned actuator settings.
-pub const SYS_FIT_REGIME: u64 = 114;
+pub const SYS_FIT_REGIME: u64 = 122;
 /// Set one calibration field: arg0 = handle, arg1 = field id, arg2 = f64 bits.
-pub const SYS_FIT_CALIBRATE: u64 = 115;
+pub const SYS_FIT_CALIBRATE: u64 = 123;
 /// Drop the workload's fit state. arg0 = handle.
-pub const SYS_FIT_UNREGISTER: u64 = 116;
+pub const SYS_FIT_UNREGISTER: u64 = 124;
 
 // Foliated KV cache — kernel-managed paged attention for inference processes.
 // Prefix sharing is implicit: appending identical tokens descends to the same
 // foliation leaf, so two sequences with the same prompt share plaques without
 // any explicit share call.
-pub const SYS_KV_SEQ_CREATE: u64 = 112;
-pub const SYS_KV_SEQ_APPEND: u64 = 113;
-pub const SYS_KV_SEQ_RELEASE: u64 = 114;
-pub const SYS_KV_SEQ_STATS: u64 = 115;
-pub const SYS_KV_POLICY_STATS: u64 = 116;
+pub const SYS_KV_SEQ_CREATE: u64 = 130;
+pub const SYS_KV_SEQ_APPEND: u64 = 131;
+pub const SYS_KV_SEQ_RELEASE: u64 = 132;
+pub const SYS_KV_SEQ_STATS: u64 = 133;
+pub const SYS_KV_POLICY_STATS: u64 = 134;
 
 #[derive(Debug)]
 pub struct SyscallResult {
