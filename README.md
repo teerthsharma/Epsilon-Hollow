@@ -8,9 +8,10 @@
 <h1 align="center">Seal OS — The Geometrical Operating System</h1>
 
 <p align="center">
-  <strong>OS state is topology on S².</strong><br>
+  <strong>OS state is topology on S². The kernel's day job is machine learning.</strong><br>
   Bare-metal x86_64. Rust-first `no_std` kernel with minimal assembly (AP trampoline, CPU-idle). No POSIX. No libc.<br>
-  Memory, files, and scheduler decisions are embedded as point clouds on the unit sphere.
+  Memory, files, and scheduler decisions are embedded as point clouds on the unit sphere.<br>
+  Training runs get a kernel that measures the <em>shape</em> of their overfitting. Inference gets a KV cache that evicts by elementary collapse.
 </p>
 
 <p align="center">
@@ -42,6 +43,12 @@
 - [Why I Did This To Myself](#why-i-did-this-to-myself)
 - [The FAQ Nobody Asked For](#the-faq-nobody-asked-for)
 - [Honest Status Dashboard](#honest-status-dashboard)
+- [The Ten Subsystems That Just Landed](#the-ten-subsystems-that-just-landed)
+- [stratum — Overfitting Has A Shape](#stratum--overfitting-has-a-shape)
+- [foliation — A KV Cache That Thinks In Leaves](#foliation--a-kv-cache-that-thinks-in-leaves)
+- [atlas — Loadable Modules, But Topological](#atlas--loadable-modules-but-topological)
+- [bundle — The WiFi Answer Nobody Wanted](#bundle--the-wifi-answer-nobody-wanted)
+- [Negative Controls: A Proof That Cannot Fail Is Not A Proof](#negative-controls-a-proof-that-cannot-fail-is-not-a-proof)
 - [Real Talk: What "Research Kernel" Actually Means](#real-talk-what-research-kernel-actually-means)
 - [Quick Start — Boot in 5 Minutes](#quick-start--boot-in-5-minutes)
 - [Boot Log](#boot-log)
@@ -115,9 +122,18 @@ Grab a beverage. Settle in. You are going on a journey through 102,073 lines of 
 
 ## The 30-Second Pitch
 
-**What if operating system decisions were literally geometry problems?**
+**What if operating system decisions were literally geometry problems — and the workload on top was machine learning?**
 
 Seal OS is a bare-metal x86_64 research kernel written as Rust-first `no_std` code with a small assembly footprint for hardware bring-up. It is not Linux, not Unix, not POSIX, and not a libc target. The core proof-gated runtime paths — memory allocation, file metadata, process scheduling, graphics prefetch — are expressed as topology on the unit sphere S².
+
+And then there is the part that took three years of geometry to earn the right to say: **Seal OS is a machine-learning-native kernel.** Not "ML-friendly." Not "we added a tensor crate." The kernel itself carries two ML subsystems that no other operating system has, because no other operating system was insane enough to think the OS was the right layer for them:
+
+- **`stratum`** watches a training run's loss trajectory and tells you which *stratum* it is in — underfit, well-fit, overfit, collapsing — by measuring the **shape** of the trajectory rather than the size of the train/val gap. Overfitting closes a loop in the delay embedding. A monotone run does not. That is a topological fact, and the kernel computes it in 4,792 bytes per stream with no allocation per sample.
+- **`foliation`** is a paged KV cache for LLM inference where prefix sharing is not a hash table bolted onto an allocator — it is the **quotient map** of token-stream space by the block-aligned-prefix relation, and eviction is the elementary collapse of a free face.
+
+Every other OS treats an ML job as "a process that happens to use a lot of RAM." Seal OS treats it as a trajectory through a stratified space and a foliation of live sequences, because those are the structures actually present in the problem, and pretending otherwise is how you end up scheduling a training run with the same code path that schedules `cron`.
+
+Is this the best OS for ML? Not yet — see roughly nine hundred words of self-flagellation below. Is it the only OS where the kernel has an opinion about your validation curve's first Betti number? Yes. Yes it is.
 
 ### Why S²?
 
@@ -156,6 +172,17 @@ Kernel Rust owns hardware, memory, drivers, scheduling, and theorem gates. Aethe
 | Formal proofs (Lean 4) | 🚧 | ❌ | 🚧 |
 | Native topological language | ✅ | ❌ | ❌ |
 | Minimal assembly footprint | ~40 lines | ❌ | ❌ |
+| **Kernel-level over/underfit detection (`stratum`)** | ✅ Seal ABI 120–124 | ❌ | ❌ |
+| **Topological signature of overfitting (cycle rank of the delay embedding)** | ✅ | ❌ | ❌ |
+| **Topology-aware paged KV cache (`foliation`)** | ✅ Seal ABI 130–134 | ❌ (userspace vLLM does this, the kernel does not) | ❌ |
+| **Prefix sharing as a quotient map, not a hash table** | ✅ | ❌ | ❌ |
+| **Eviction as elementary collapse of a free face** | ✅ | ❌ | ❌ |
+| Signed loadable modules (`atlas` charts) | ✅ ed25519, W^X | ✅ | ✅ |
+| Firmware provisioning without kernel rebuild (`bundle`) | ✅ signed index + digest | ✅ `request_firmware()` | ✅ |
+| X.509 chain validation in-kernel | ✅ Ed25519 certs only | n/a (userspace) | n/a (userspace) |
+| Boot proofs with mandatory negative controls | ✅ | ❌ | ❌ |
+
+The last row is the one I would defend hardest at a conference. Every subsystem in this table ships a boot proof that includes deliberate failures the kernel must refuse. A gate that only checks the happy path is a gate that passes when you delete the feature.
 
 
 ---
@@ -219,7 +246,19 @@ The naming scheme is inconsistent and borderline unhinged:
 **A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
 
 ### Q: Can I use this as my daily driver?
-**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi is "simulated." Your therapist will bill you hourly.
+**A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi used to be "simulated"; it is now *honestly broken*, which is a genuine upgrade — see below. Your therapist will bill you hourly.
+
+### Q: Wait, "honestly broken" is an upgrade?
+**A:** Yes, and I will die on this hill. The old WiFi driver returned a deterministic list of fake SSIDs from a fake state machine. It looked like it worked. It printed "connected." It was a lie wearing a lab coat. The simulation has now been **deleted**, not disabled, not feature-flagged, not "off by default" — removed from the source tree. `scan()` returns an empty list and there is no code path anywhere in the kernel that can produce an SSID. What replaced it is `bundle`, a real firmware-provisioning subsystem that says `section_missing` and names the exact section it wants. A driver that tells you why it is down beats a driver that tells you it is up.
+
+### Q: You keep saying "ML-native kernel." Is that a marketing word?
+**A:** It is two syscall ranges and two subsystems, so judge for yourself. `stratum` (120–124) takes `(train_loss, val_loss)` per step and returns which fit regime the run is in, computed from the cycle rank of the Vietoris–Rips 1-skeleton of the delay-embedded validation trajectory. `foliation` (130–134) is a paged KV cache whose prefix sharing is a quotient map. Neither exists in Linux, Redox, Windows, or macOS. Whether they *should* exist in a kernel is a genuinely open research question, which is exactly why this is a research kernel and not a product.
+
+### Q: Can the kernel see my model weights?
+**A:** No, and anyone who tells you their kernel can is either lying or has redefined "kernel." A `no_std` kernel cannot walk a userspace autograd graph. `stratum` observes two `f64`s per step, pushed by the training process through the Seal ABI. That is the entire input. Everything else it reports is derived from those two numbers plus what the kernel already owns for that task. I could have made the claim bigger. I preferred to make it true.
+
+### Q: Does the fit detector actually work?
+**A:** It classifies 7-of-7 synthetic regime fixtures at boot with a naive train/val-gap baseline running beside it as a negative control — the control misfires on the noisy-but-healthy case, the topological detector does not. It has never been pointed at a real model. Both of those sentences are true simultaneously and I refuse to publish only the first one.
 
 ### Q: Why S2 and not S3?
 **A:** S3 is for cowards who can't commit to two dimensions. Also, I couldn't figure out how to visualize it on a 1024x768 framebuffer.
@@ -252,6 +291,28 @@ The naming scheme is inconsistent and borderline unhinged:
 Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide behind proof gates like a civilized maniac. Here is what is real today versus what remains pending.
 
 ### ✅ Real — Running Today
+
+<details open>
+<summary><strong>ML-Native Runtime — the reason this OS exists</strong></summary>
+
+- **`stratum` — topological fit control** (`ml_engine/stratum.rs`, Seal ABI 120–124) — per-step `(train_loss, val_loss)` in, fit regime out: `Underfit` / `WellFit` / `Overfit` / `Collapsing`. Overfit detection is the cycle rank of the Vietoris–Rips 1-skeleton over the arc-length-reparameterised Takens delay embedding of the validation trajectory; underfit is the participation ratio of the 3×3 delay-embedding covariance, computed in closed form from three autocovariances with no eigendecomposition
+- **Fixed memory per stream** — 64-point window, ring writes only, **4,792 bytes per registered stream** independent of run length. Observation is O(1); signals recompute lazily in O(64²) on fixed stack buffers
+- **`[MLFIT] proof` boot gate** (`--check-mlfit-proof`) — 7 regime fixtures, all classified correctly, with a *naive train/val-gap baseline running beside it that must misfire* on the healthy-but-noisy control. If the dumb baseline agrees with the clever one on that case, the gate fails, because then the clever one is not doing anything
+- **`foliation` — topology-aware paged KV cache** (`ml_engine/foliation.rs`, Seal ABI 130–134) — live sequences form a quotient of token-stream space by the block-aligned-prefix relation; a sequence's block table *is* its path down the foliation; a plaque's refcount is the cardinality of the fibre over it
+- **Eviction as elementary collapse** — residency is constrained to a connected rooted subtree, and the only admissible victim is a *free face*: resident, refcount zero, no resident children. LRU, random, Belady and the foliation policy all operate on that identical candidate set, so the comparison measures victim choice and nothing else
+- **`[KVPOLICY] proof` boot gate** (`--check-kv-policy`) — replays a 30-request / 210-descent trace at 24 plaques through the real manager, four policies, and refuses to pass if the online policy beats the offline Belady optimum (which would mean the benchmark is measuring something other than what it says)
+
+</details>
+
+<details open>
+<summary><strong>Loadable Modules & Firmware</strong></summary>
+
+- **`atlas` — signed loadable charts** (`atlas/`, Seal ABI 112–114) — ELF64 `ET_REL` loader, kernel "germ" symbol table, relocation application, ed25519 signature check, W^X on the chart's own mappings, acyclic dependency nerve, refcount guards on prune
+- **`[Atlas] proof` boot gate** (`--check-atlas-proof`) — grafts a chart, calls its init and exit, checks the return codes against expected constants, verifies relocation classes sum to the applied total, and proves `charts_after == charts_before` so nothing leaked. Negative controls: truncated object, unresolved germ, bad signature, refcount-held prune, dependency-held prune, and a cyclic nerve — every one must be refused
+- **`bundle` — device firmware provisioning** (`bundle/`) — signed-index, digest-verified, refcounted section store at `/bundle/`, provisioned by `.eph` package, no kernel rebuild required. This is the same shape as Linux's `request_firmware()`: the kernel ships the mechanism, the blobs ship separately
+- **`[Bundle] proof` boot gate** (`--check-bundle-proof`) — requires `simulation=absent` as a literal field, plus a tampered index that must be refused, an absent section that must fail `:not_provisioned`, and a corrupt section that must fail `:digest_mismatch`
+
+</details>
 
 <details open>
 <summary><strong>Boot & Init</strong></summary>
@@ -289,6 +350,9 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **PipeFS** — in-memory pipe filesystem with 64KB ring buffers
 - **DevTmpFs** — device nodes with rename support
 - **VFS** — cross-mount rename via copy+delete fallback for files
+- **GPT partitioning** (`fs/gpt.rs`) — real protective MBR, primary and backup GPT headers with CRC32, 128 partition entries
+- **ext2 formatter** (`fs/ext2_format.rs`) — superblock, block/inode bitmaps, inode table, root directory; format → mount → readdir round-trips through the *existing* ext2 reader, which is the only way to know the formatter and the reader agree
+- **FAT ↔ ext2 parity proof** (`fs/parity.rs`, `--check-fs-parity`) — both images formatted in-tree, mounted on RAM-backed devices, driven through an identical nine-operation sequence, contents compared byte-for-byte, with a negative control that corrupts one byte and must be detected. It found four real bugs. See the parity row below, and bring tissues
 - **TopCrypt** — topological file encoding (64-byte blocks as 16-point clouds on S² with CRC32, shuffle, XOR masks)
 
 </details>
@@ -348,6 +412,9 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **DHCP** — full state machine (Init → Discover → Request → Bound), auto-sends DISCOVER on boot
 - **DNS** — proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN) via UDP port 53
 - **TLS 1.3 PSK** — minimal PSK-only record path with AES-128-GCM + HKDF-SHA256, hardware-entropy failure handling
+- **X.509 v3 DER parser** (`drivers/net/x509.rs`) — bounds-checked TLV walk, chain validation covering the validity window, `CA:TRUE`, `keyCertSign`, `pathLen`, and DN linkage between issuer and subject
+- **X25519 ECDHE + RFC 5869 HKDF** (`drivers/net/ecdhe.rs`) — real key agreement, fails closed without hardware entropy rather than inventing a shared secret
+- **`[TLS] proof` boot gate** (`--check-tls-proof`) — demands `x509=1 chain_verify=1 ecdhe=1 curve=x25519 psk_only=0 entropy=hw result=pass`. Note the `entropy=hw`: a boot that could not draw from RDSEED/RDRAND does not get to claim a key exchange happened
 - **HTTPS Client** — routes `https://` through `TlsSocket`
 
 </details>
@@ -362,6 +429,9 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 - **SMAP/SMEP** — init at boot
 - **MAC** — scaffolding present
 - **Audit** — JSON-formatted event buffering
+- **KASLR on kernel mappings** (`security/kaslr.rs`) — 8 bits on the higher-half alias, 22 bits on the heap window, both at 2 MiB granularity, slides drawn from RDSEED/RDRAND. `[KASLR] proof` (`--check-kaslr`) checks alignment, range, entropy source, that the two bit budgets sum to `total_bits`, and that a resample produces a different nonce so a stuck generator cannot pass
+- **`[SECURITY-FEATURES] proof`** (`--check-security-features`) — one line, every hardening bit, each with a named probe (`kpti_probe=runtime-cr3`, `smep_probe=cpuid+cr4`, `retpoline_probe=runtime-thunk-bytes`, …) and cross-checked against the raw CR0/CR4/EFER values printed on the same line, so a decoded field that silently became a constant is caught
+- **`[UNSAFE] audit` ratchet** (`--check-unsafe-audit`) — a checked-in census of every `unsafe` block in the kernel and whether it carries a written `SAFETY:` justification. The number can only go down. It is currently a very ugly number and the fixture exists specifically so I cannot pretend otherwise
 
 </details>
 
@@ -402,28 +472,274 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 
 ### 🚧 Partial — Honest Limits
 
+Ten subsystems just landed, and eight rows of this table changed. Read the middle column slowly. It is the only column I actually care about, and it is where I have put every single thing that would embarrass me if a stranger found it first.
+
 | Feature | Limitation | Path to Full |
 |---|---|---|
-| **GPU** | PM4 compute ring infrastructure, packet builders, and firmware scanning code exist, but the current QEMU proof shows CPU fallback, not hardware GPU execution. The build no longer fabricates placeholder shader binaries; hardware dispatch only embeds real checked-in `.bin` blobs and otherwise reports `kernel_not_found`. CPU fallback performs real spherical Voronoi, JL projection, and spectral contraction in software. | Check in real OpenCL C → GCN ISA blobs and add a hardware `[GPU-BENCH]` proof |
-| **WiFi / Bluetooth** | Simulated state machines with deterministic scan/connect/pair results. Real firmware blob loading is vendor IP, out of scope. | N/A — vendor IP |
-| **TLS** | PSK-only. No X.509, PKI, or ECDHE yet. Fails closed if hardware entropy unavailable. | Implement X.509 parser + ECDHE |
-| **Package Manager** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof` with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; the boot package and registry index fixtures are signed and verified before install. Public remote release channel is still pending. | Build hosted registry release fixture gate |
-| **Installer** | Safe VFS install path is real and proof-gated: it writes `/boot/EFI/BOOT/BOOTX64.EFI`, creates `/home/<user>`, writes profile data, wires passwd/shadow auth, and rejects old simulation logs. Raw GPT partitioning and filesystem formatting are still not implemented. | Raw block device write path with GPT + format proof |
-| **FAT / ext2 parity** | Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2. Full cross-image parity still needs mounted fixture images. | Mounted FAT/ext2 fixture images with byte-for-byte parity tests |
-| **Security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. Auth proof now rejects `seal`/`seal` while keeping `$topo$5000` shadow hashes. TLS PKI/ECDHE, KASLR, and broader unsafe-code audit remain pending before production security claims. | Add per-feature boot gates and external audit fixtures |
-| **Kernel modules** | Everything is built-in. No loadable kernel module framework. | Design LKM ABI |
+| **TLS / X.509 / ECDHE** | The parser and chain validation are real: bounds-checked DER TLV, validity window, `CA:TRUE`, `keyCertSign`, `pathLen`, DN linkage, X25519 ECDHE, RFC 5869 HKDF, fails closed without hardware entropy. Now the bad news, all of it. **Ed25519 certificates only** — RSA and ECDSA are rejected with `UnsupportedAlgorithm`, which is at least a refusal and not a silent accept. **It does not interoperate with a stock TLS 1.3 server**: traffic secrets derive over `client_random`/`server_random` instead of a running transcript hash, so there is no downgrade protection over the handshake messages, and the peer `Certificate` message is read as plaintext handshake where RFC 8446 encrypts it. Trust store is one embedded root. No revocation (CRL/OCSP), no name constraints, no wildcard SAN matching, no EKU checking. | Transcript-hash key schedule, encrypted-extensions handling, RSA/ECDSA verifiers, a real trust store, then an interop gate against a stock server |
+| **atlas — loadable modules** | ELF64 `ET_REL` loading, germ symbol table, relocations, ed25519 signatures, W^X, acyclic nerve and refcount guards are all real and all negatively controlled. The limits are structural. **Relocation set is `R_X86_64_64`/`PC32`/`PLT32`/`32S` only — no GOT**, so real compiler output from any non-trivial module will hit `UnsupportedRelocation`. Charts live in the kernel heap range rather than a dedicated ±2 GiB module area, so the PLT veneer is unconditional. **W^X is enforced on the chart's own mappings, but the same frames are visible through the kernel identity map, which is `PRESENT\|WRITABLE` with no NX** — chart text is still writable through that alias. Virtual address space is never reclaimed on prune. The signing key is a placeholder constant, not a release key. A chart is trusted ring-0 code once loaded; nothing sandboxes a signed but buggy chart. And Atlas is a single global mutex with `chart_init` running while it is held, so a chart that grafts another chart deadlocks — elegantly, deterministically, and completely. | GOT/`GOTPCREL` support, a dedicated module VA window with NX on the identity alias, VA reclamation, a real signing key, and a lock that is not held across `chart_init` |
+| **bundle — WiFi / Bluetooth firmware** | Linux ships no firmware blobs either; it ships `request_firmware()` and puts the blobs in a separate package. Seal OS now does exactly that: signed index, digest verification, refcounted store at `/bundle/`, provisioned by `.eph`, no kernel rebuild. **Seal OS ships zero vendor sections**, so WiFi and Bluetooth sit in `chart_missing`/`section_missing` and every operation fails while naming the section it wanted. Even with a section resident it is **never uploaded to the device** — there is no MMIO/HCI firmware-load sequence, no 802.11 association, no L2CAP/ATT. **There is no simulation mode. Not "off by default" — absent.** The deterministic scan/connect/pair fixtures the old README bragged about do not exist any more; `scan()` returns an empty list and no code path in this kernel can produce an SSID. The index signing key is a checked-in fixture labelled `ed25519_fixture`, not a chain of trust to any vendor. | A device that has legally-obtained firmware, an MMIO/HCI upload sequence, and then the entire 802.11 state machine, which is its own multi-year hobby |
+| **Installer / GPT / ext2 format** | Real PMBR plus primary and backup GPT with CRC32 and partition entries; real ext2 format (superblock, bitmaps, inode table, root dir) that round-trips format → mount → readdir through the existing ext2 reader; armed-target guards so it cannot eat a disk by accident. But: **the formatter writes a single block group, so the largest filesystem it can create is 8 MiB at 1 KiB blocks.** The install wizard still installs through the VFS only, and its disk-select screen lists fixed names rather than enumerated block devices. **The EFI System Partition is written into the GPT and then left unformatted** — no FAT32 is created, which means the partition table is honest and the partition is empty. The boot-time raw install proof runs against a 4 MiB memory-backed scratch device because CI boots QEMU with a single disk; the same code path drives a physical disk once armed, but that combination has not been exercised. | Multi-group ext2, FAT32 on the ESP, enumerated block devices in the wizard, and a CI job with a second disk |
+| **FAT / ext2 parity** | Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2, and both filesystems are formatted in-tree, mounted on RAM-backed devices, driven through an identical nine-operation sequence and compared byte-for-byte with a corrupt-a-byte negative control. **It found four real bugs, each confirmed by reverting the fix:** (1) `buffer_cache` addressed the device in filesystem blocks while the block layer addresses 512-byte sectors — revert it and ext2 completes 0 of 19 operations, which would have been fatal on any real disk; (2) FAT `lookup_path` compared 8.3 names case-sensitively while `find_entry_in_dir` folded case; (3) both FAT directory walkers descended into `.`/`..` and hung; (4) ext2 `unlink` returned `NotADirectory` when the target *was* a directory. **One found and NOT fixed: FAT `write_fat_entry` updates FAT copy 1 and never the mirror.** Scope limits: single ext2 block group and 8.3-clean uppercase names, so no file exceeds the twelve direct blocks and the indirect write paths are unexercised. Populated images are not byte-identical between runs (ext2 timestamps come from the tick counter), so reproducibility is anchored on blank images and content digests. Parity is measured at the `FileSystem` trait, not through a VFS mount point. Memory-backed device only — AHCI and USB paths uncovered. | Fix the FAT mirror, add long-name and indirect-block cases, run the same sequence through a VFS mount on a real block device |
+| **GPU** | `spectral_step.bin` is now **96 bytes of real GFX9 machine code** where it used to be 0 bytes, reproducible from `drivers/gpu/gcn_asm.rs` and cross-verified word-for-word against LLVM's AMDGPU assembler — which ships inside rustc nightly, so no ROCm install is required to check my homework. A real bug died on the way: `find_kernel` used to hand out the 0-byte placeholders as zero-length shaders, pointing `COMPUTE_PGM` at uninitialised memory. **What is proven is the encoding, not the execution.** No AMD GPU exists on the build machine or in CI, so `backend=pm4_hw` has never been observed; the PM4 dispatch path, the RSRC1/RSRC2 values, the ten-SGPR argument ABI and the kernel's runtime semantics are all unexecuted. Three of the four declared kernels (`voronoi_assign`, `jl_project`, `s2_distance`) are still zero-length and report `kernel_not_found`. | A physical Vega-class AMD GPU. That is the whole path. It is a shopping problem, not an engineering problem |
+| **KASLR / security hardening** | KPTI + SMAP/SMEP boot proof is emitted and hard-gated. Audit-log flush is boot-gated by `[SECURITY] audit proof` with VFS readback from `/var/log/audit.log`. Auth proof still rejects `seal`/`seal` while keeping `$topo$5000` shadow hashes. Now the blunt part. **KASLR randomises kernel mappings, not the kernel image base** — UEFI picks the load address and the kernel does not re-apply PE relocations. 8 bits on the higher-half alias, 22 bits on the heap window, 2 MiB granularity, RDSEED/RDRAND. **Only the 22 heap bits are load-bearing; nothing executes from the alias.** Cross-boot variation is not provable from a single boot, so the proof carries a per-boot nonce that an external harness diffs. With no hardware entropy the kernel boots at build-constant bases and reports `entropy=none result=fail` — the image gate is what enforces fail-closed. Retpoline is verified by reading one thunk's machine code back, not by proving every indirect branch routes through a thunk. **W^X is measured over the kernel alias and reported but NOT enforced** — that alias is mapped writable and executable, and `wx_enforced=0` is a required field precisely so nobody can quietly flip it. There is no `-Z stack-protector`; stack protection is a 16 KiB zeroed guard band. And **585 of the 594 `unsafe` blocks in the kernel carry no written safety justification** — the audit fixture freezes that number so it can only fall, it does not fix it | PE relocation at load for real image-base KASLR, NX on the identity alias, a per-branch retpoline proof, and roughly 585 comments I am going to have to write by hand |
+| **Package manager remote channel** | Local `.eph` parse/install/extract/list/remove is boot-gated by `[ManifoldPkg] proof` with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`. The remote channel now adds signed-index fetch, monotonic index-version rollback protection, per-package SHA-256 digest verification and package signature enforcement, all gated. **But the channel is exercised against a checked-in fixture served over an in-memory loopback transport (`channel_transport=fixture_loopback`)**: the index format, ed25519 verification, rollback comparison, digest check and install are the real code paths, but no packet leaves the machine. The real HTTPS transport is driven against the same endpoint as a fail-closed control and refuses with a typed error. **Public remote release channel is still pending** — no public Seal OS registry is hosted and no package has ever been fetched over a live network. `accepted_index_version` does not persist across reboots, so rollback is blocked within a session but not across one | Host a registry, persist `accepted_index_version` to disk, and run the same three checks against real packets |
+| **stratum — ML fit control** | The kernel observes **two scalars per step**, `(train_loss, val_loss)`, pushed by the training process. It does not observe weights, activations or gradients; a `no_std` kernel cannot walk a userspace autograd graph. **`loop_score > 0` does NOT imply a fold** — a converged run sitting in a noise ball scores near 1.0. What is proved is the converse: a monotone trajectory scores exactly 0. H₁ is orientation-blind, so a run recovering from a validation spike traces the same loop as one diverging into it (the residual drift gate supplies the orientation homology cannot). The underfit/well-fit split is a convergence test, not a topological theorem. **β₁ is upper-bounded, not computed**: `cycle_rank = E − V + β₀` over the 1-skeleton, with no boundary matrix reduced. Window is 64 points. Regularisation, learning-rate and batch knobs are **advisory** — the kernel cannot reach into a userspace optimizer; only the prefetch threshold and a heap-break clamp are real control. The fixtures are synthetic and nothing has been validated against a real model | Point it at a real training run. Then another. Then publish the confusion matrix even if it is humiliating |
+| **foliation — KV cache** | Measured on a 30-request / 210-descent trace at 24 plaques: **foliation 9.52% hit rate, LRU 0.00%, same-budget random 6.19%, Belady oracle 9.52%** — it closes 100% of the LRU→optimum gap. Now the part that matters. **The separation is a capacity cliff, not a general win**: a pool sweep shows LRU reaching the same 9.52% ceiling from 32 plaques up. On a pure-recency control workload foliation **ties** LRU at every pool size, and at 8 plaques both **lose** to same-budget random. `entrants` is honestly a frequency counter as well as an H0 bar multiplicity, so the scoring rule is persistence-weighted LFU — the trie quotient and the collapse constraint are the structural contributions, the ranking function is not. One plaque is one 4 KiB frame standing in for a real KV block (~1 MiB for a 32-layer, 8-KV-head, 128-dim fp16 model at 8 tokens), so bytes-saved figures are in frame units and are not model-accurate. The trace is synthetic and no real model was run | Real block sizes, a real serving trace, and a sweep published in full rather than at the pool size where I look best |
+| **Aether-Lang self-hosting** | The lexer, parser, AST, interpreter and bytecode VM all run in `no_std` kernel space and the runtime bridge is source-gated. The stdlib is still too thin to compile the compiler | More stdlib, then the traditional humiliating bootstrap |
 
 ### ❌ Not Yet Real
 
+Shorter than it used to be. Four rows moved out of here in one change, which has never happened before and probably will not happen again.
+
 | Feature | Why | When |
 |---|---|---|
-| **GPU drivers (i915/nouveau)** | Proprietary firmware blobs required, out of scope for research kernel | Never (vendor IP) |
-| **AMD GPU full compute** | PM4/VBIOS infrastructure exists, but current proof does not establish hardware dispatch. The kernel refuses fake shader blobs; real compiled ISA and an AMD hardware proof are still required for correct GPU results. | Check in real shader binaries and gate with `[GPU-BENCH]` |
-| **Full internet TLS** | X.509/PKI/ECDHE not implemented | Post-1.0 |
+| **GPU drivers (i915/nouveau)** | Proprietary firmware blobs required, out of scope for a research kernel | Never (vendor IP) |
+| **AMD GPU hardware dispatch** | The ISA encoding is proven byte-for-byte against LLVM; the *execution* is not, because no AMD GPU has ever been present on a machine that runs this code. `backend=pm4_hw` has never appeared in a log | When a Vega-class card is physically plugged into a machine that boots this |
+| **802.11 association / Bluetooth L2CAP** | `bundle` provides the firmware path; the protocol stacks above it do not exist. No association, no L2CAP, no ATT | After a device with a legally-obtainable section exists to test against |
+| **TLS interop with a stock server** | The key schedule derives over `client_random`/`server_random` rather than a transcript hash, and the peer `Certificate` message is read as plaintext where RFC 8446 encrypts it. Both are deliberate scoping, both are disqualifying for interop | Transcript-hash schedule + encrypted extensions, then an interop gate |
+| **Real image-base KASLR** | UEFI chooses the load address and the kernel does not re-apply PE relocations, so only mappings move | PE relocation at load |
+| **Enforced kernel W^X** | Measured, reported, and honestly `wx_enforced=0`. The kernel alias is mapped writable and executable today | NX on the identity alias, which also fixes the atlas chart-text hole |
 | **Self-hosting** | Aether-Lang needs more stdlib before it can build itself | Roadmap phase 4 |
+| **A public package registry** | Nothing is hosted. The channel code is real; the internet endpoint is not | When there is something worth distributing |
 
 ---
 
+## The Ten Subsystems That Just Landed
+
+Ten subsystems arrived in one change. Each one emits a boot proof, and each proof is hard-gated by a host-side checker in `seal-mkimage`. If the marker is missing, malformed, or reports a field the checker does not like, the image does not build. Not a warning. Not a TODO. The build fails and I go make tea.
+
+| Subsystem | Source | Boot marker | Gate |
+|---|---|---|---|
+| **stratum** — topological fit control | `ml_engine/stratum.rs` | `[MLFIT] proof` | `--check-mlfit-proof` |
+| **foliation** — paged KV cache | `ml_engine/foliation.rs` | `[KVPOLICY] proof` | `--check-kv-policy` |
+| **atlas** — loadable modules | `atlas/` | `[Atlas] proof` | `--check-atlas-proof` |
+| **bundle** — device firmware | `bundle/` | `[Bundle] proof` | `--check-bundle-proof` |
+| **TLS / X.509 / ECDHE** | `drivers/net/{x509,ecdhe,tls}.rs` | `[TLS] proof` | `--check-tls-proof` |
+| **GPT + ext2 format + installer** | `fs/{gpt,ext2_format}.rs`, `apps/installer.rs` | raw install proof | `--check-installer-proof` |
+| **FAT ↔ ext2 parity** | `fs/parity.rs` | `[FSPARITY] proof` | `--check-fs-parity` |
+| **GPU ISA encoding** | `drivers/gpu/{gcn_asm,gpu_bench}.rs` | `[GPU-BENCH] proof` | `--check-gpu-bench` |
+| **KASLR** | `security/kaslr.rs` | `[KASLR] proof` | `--check-kaslr` |
+| **Security feature census** | `security/features.rs` | `[SECURITY-FEATURES] proof` | `--check-security-features` |
+| **Unsafe-block ratchet** | `security/unsafe_audit.rs` | `[UNSAFE] audit` | `--check-unsafe-audit` |
+
+That is eleven rows for ten subsystems, because the unsafe ratchet is less a subsystem and more a public humiliation device I built for myself. See below.
+
+Two of these — `stratum` and `foliation` — are the reason the pitch at the top of this README changed. The rest are the boring, load-bearing plumbing that a serious kernel needs before anyone will take the interesting parts seriously. You cannot say "best OS for ML" while your TLS stack only speaks PSK and your module system does not exist. So those got fixed too.
+
+---
+
+## stratum — Overfitting Has A Shape
+
+*(`kernel/seal-os/src/ml_engine/stratum.rs`, Seal ABI syscalls 120–124)*
+
+### The thesis, stated plainly
+
+Every framework on earth detects overfitting the same way: watch `val_loss − train_loss` and yell when it exceeds a threshold. That is a **level** test. It looks at how high the two curves are relative to each other.
+
+`stratum` claims the signal is a **shape**, not a level. Specifically:
+
+> Overfitting is a run *revisiting validation-loss ranges it has already been through*. Revisitation is a loop in the delay embedding of the trajectory. Loops are homology. Homology is computable.
+
+Take validation loss `v_t`. Embed it à la Takens: `p_t = (v_t, v_{t−1}, v_{t−2}) ∈ ℝ³`. Now:
+
+- A **monotone** run never revisits a value range. The point cloud is a simple arc, the Vietoris–Rips 1-skeleton at the connectivity scale is a path, and the **cycle rank is exactly 0**.
+- An **overfitting** run is U-shaped: validation descends, turns, and climbs back through ranges it already visited. At value `v` the descending point sits at `(v, v+s, v+2s)` and the ascending point at `(v, v−s, v−2s)` — a distance `s√5` apart, while consecutive points along either arm are `s√3` apart. Once the arms overlap in value they connect, the U **closes into a loop**, and cycle rank goes above zero.
+
+That ratio, `√5/√3 ≈ 1.291`, is the *only* free constant in the whole construction. Every other threshold is derived. I am unreasonably pleased about this and will bring it up at parties, where it continues to not work.
+
+### Why the loop and not the gap
+
+The loop is a property of revisitation, so it is invariant under any strictly monotone reparameterisation of the loss axis and under time reparameterisation. Change your loss function's scale, log it, square it, sample at a different rate — the loop is still a loop.
+
+A gap threshold cannot see any of that. It sees levels. It fires on **any** run whose validation loss sits above training loss, including a perfectly healthy run with an irreducible label-noise floor. That healthy-but-noisy case is the negative control in the boot proof, and the proof prints the naive baseline's verdict **beside** the topological one. The gate requires `naive_gap_baseline_flagged=yes` and `negctl_flagged=no`. If the dumb detector ever agrees with the clever one on that case, the gate fails — because at that point the clever one has stopped earning its keep.
+
+I want to be very clear that this is a gate designed to fail when my own subsystem becomes pointless. That was on purpose. It felt terrible to write.
+
+### The underfit signal is a completely different animal
+
+Underfit does not use homology at all. It uses the **participation ratio** of the 3×3 covariance of the *training*-loss delay embedding:
+
+```
+PR = tr(C)² / (3‖C‖²_F)  ∈  [1/3, 1]
+```
+
+Because `C` is symmetric Toeplitz in the autocovariances `c₀, c₁, c₂`, this collapses to `PR = 3c₀²/(3c₀² + 4c₁² + 2c₂²)` exactly — no eigendecomposition, no iterative solver, no floating-point prayer circle.
+
+- `PR → 1/3` is rank-1: lag correlation near 1, smooth trend, the run is still moving.
+- `PR → 1` is isotropic: the trend inside the window has fallen below the run's own noise floor, which is what convergence *means*.
+
+The honest caveat, stated before anyone else can state it for me: **the underfit/well-fit split is a convergence test, not a topological theorem.** I am not going to dress up a variance ratio as algebraic topology just because it sits in the same file as something that is.
+
+### Sampling density, or: the bug that nearly shipped
+
+Cycle rank at a global scale is meaningless when step size varies by orders of magnitude. An exponentially converging run packs hundreds of points into a ball smaller than one early step, and every one of them registers as a recurrence. Left uncorrected, a strictly monotone exponential decay scores `loop_score = 1.0` — a maximal false positive on the single most common shape in all of machine learning.
+
+The fix is to reparameterise the cloud by arc length before building the complex, so the step is uniform by construction. The `monotone_exp` control in the test suite exists solely to catch this if it ever regresses. It has already earned its place once.
+
+### What it actually costs
+
+| Property | Value |
+|---|---|
+| Observation cost | O(1) — ring writes only, nothing allocated per sample |
+| Signal recompute | O(64²) lazily on read, fixed stack buffers |
+| Window | 64 points (≈66 training steps at τ=1) |
+| **Memory per registered stream** | **4,792 bytes, independent of run length** |
+| Embedding dimension | 3 — smallest dimension where a planar fold embeds without self-intersection |
+| β₁ | **Upper-bounded, not computed**: `cycle_rank = E − V + β₀`. No boundary matrix is reduced |
+
+Four kilobytes and change per training job, forever, no matter how long the job runs. That is the entire memory story. There is no growth term. I checked three times because I did not believe it either.
+
+### What it cannot do, in one place, no burying
+
+1. **It cannot see your model.** Two `f64`s per step. That is the input. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to is either lying or is not a kernel.
+2. **`loop_score > 0` does not imply a fold.** A converged run sitting in a noise ball revisits its own neighbourhood constantly and scores near 1.0. The proved direction is the converse: a monotone trajectory scores exactly 0.
+3. **H₁ is orientation-blind.** A run recovering from a validation spike traces the same loop as one diverging into it. The residual drift gate supplies the orientation that homology structurally cannot, and the `Overfit` verdict requires both.
+4. **The actuator is mostly advisory.** The kernel can tell you to lower your learning rate. The kernel cannot reach into your optimizer and lower it. Of everything `stratum` computes, only the prefetch threshold and a heap-break clamp are real, enforced control. Everything else is a strongly-worded suggestion in a struct.
+5. **Nothing has been validated against a real model.** The fixtures are synthetic. Seven of them. All classified correctly. Zero of them are PyTorch.
+
+Point 5 is the one that keeps me up. The other four are design; that one is just work I have not done yet.
+
+---
+
+## foliation — A KV Cache That Thinks In Leaves
+
+*(`kernel/seal-os/src/ml_engine/foliation.rs`, Seal ABI syscalls 130–134)*
+
+### The structure
+
+The set of live inference sequences is modelled as a **foliation** of token-stream space. Two sequences that agree on a block-aligned prefix lie on the same **leaf**. A **plaque** is one KV block — the piece of a leaf actually resident in physical memory. This is standard foliation vocabulary, not decoration: a leaf really is locally a stack of plaques, which is the single luckiest naming coincidence in this entire repository.
+
+The consequence is the part I would defend in a review:
+
+> **Prefix sharing is not a hash table bolted onto an allocator. A sequence's block table *is* its path from the root leaf down the foliation.**
+
+Appending a block means `descend(current_leaf, block_key)`. If that child already exists, the sequence lands on the same leaf as everyone else who wrote those tokens, and therefore on the same plaque. **Sharing is the quotient map.** The reference count of a plaque is the cardinality of the fibre over it. There is no separate sharing mechanism to keep in sync with the allocator, because there is no separate sharing mechanism at all.
+
+### Metadata persists, memory does not
+
+Leaf metadata — parent, key, depth, entrant count — lives in a leaf arena and survives eviction. Only the plaque, the 4 KiB frame, is reclaimed. So the foliation is a *persistent model of the workload* while residency is *transient*, which is what lets a structural retention signal accumulate across evictions instead of resetting every time a block is dropped.
+
+LRU cannot do this. LRU forgets a block the instant it evicts it, which is why LRU on a prefix-sharing workload behaves like a goldfish with a memory allocator.
+
+### Eviction is an elementary collapse
+
+Residency is constrained to be a connected rooted subtree of the foliation. The only admissible eviction is the **elementary collapse of a free face**: a resident leaf with reference count zero and no resident children.
+
+Every policy in the module — LRU, random, Belady, foliation — operates on that *identical* candidate set. They differ only in victim choice, never in what they are permitted to touch. This is not a courtesy; it is what makes the comparison mean anything. Two policies with different candidate sets are not two policies, they are two benchmarks wearing a trenchcoat.
+
+Within the frontier, the foliation policy ranks by `(entrants, −depth, last_use)`: fewest distinct sequences that ever entered the leaf first, then deepest, then oldest. Depth is codimension in the foliation — root-adjacent leaves are shared prompt prefixes, deep leaves are per-sequence decode tails.
+
+### The numbers, and then immediately the caveats
+
+Measured on a **30-request / 210-descent trace at 24 plaques**, replayed through the real manager at boot:
+
+| Policy | Hit rate |
+|---|---|
+| **foliation** | **9.52%** |
+| Belady (offline optimum) | 9.52% |
+| same-budget random | 6.19% |
+| LRU | **0.00%** |
+
+It closes **100% of the LRU→optimum gap**. LRU scores literally zero. The gate refuses to pass if any online policy beats Belady, because a benchmark where the online policy beats the offline oracle is not a benchmark, it is a bug with a graph.
+
+Now the honest part, which is longer than the good part, as it should be:
+
+- **The separation is a capacity cliff, not a general win.** A pool sweep shows LRU reaching the same 9.52% ceiling from 32 plaques upward. At 24 plaques the workload's working set does not fit under recency ordering and does under structural ordering. That is a real effect, and it is a *narrow* one.
+- **On a pure-recency control workload, foliation ties LRU at every pool size.** No win. Tie. Every size.
+- **At 8 plaques, both foliation and LRU lose to same-budget random.** I am reporting the pool size where my policy is beaten by a random number generator, in the README, in a table, in bold, because a limitations section that only contains flattering limitations is marketing.
+- **`entrants` is honestly a frequency counter** as well as an H0 bar multiplicity, so the scoring rule is fairly described as persistence-weighted LFU. The trie quotient and the collapse constraint are the structural contributions. The ranking function is not. I am not going to call an LFU counter "persistent homology" and hope nobody opens the file.
+- **One plaque is one 4 KiB frame** standing in for a real KV block — which for a 32-layer, 8-KV-head, 128-dim fp16 model at 8 tokens per block is roughly 1 MiB. Bytes-saved figures are therefore in frame units and are **not model-accurate**.
+- **The trace is synthetic. No real model was run.** Same confession as `stratum`, same plan to fix it, same absence of an excuse.
+
+### Complexity
+
+Every bound is a compile-time or construction-time constant, independent of live sequence count, token count, and installed RAM:
+
+| Operation | Bound |
+|---|---|
+| append token (mid-block) | O(1) |
+| block seal / descend | O(MAX_CHILDREN) = O(32) |
+| admission (free plaque) | O(1) free-list pop |
+| admission (needs eviction) | O(pool_blocks) frontier scan |
+| leaf-arena GC | O(leaf_arena) scan |
+| logical block → frame | O(1) indexed |
+| release | O(MAX_SEQ_BLOCKS) = O(16) |
+
+Fan-out is capped at 32 distinct continuations per prefix; past that, `descend` refuses to share and reports `children_full` rather than silently losing the sharing property. Refusing loudly is a recurring theme around here.
+
+---
+
+## atlas — Loadable Modules, But Topological
+
+*(`kernel/seal-os/src/atlas/`, Seal ABI syscalls 112–114)*
+
+An atlas is a collection of charts covering a manifold. A **chart** is a loadable module. A **germ** is a kernel symbol a chart may resolve against. The dependency graph is a **nerve**, and it must be acyclic. Grafting a chart adds it to the manifold; pruning removes it. Yes, I could have called it `insmod`. No, I was not going to.
+
+What is real: ELF64 `ET_REL` loading, germ symbol table, relocation application, ed25519 signature verification, W^X on the chart's own mappings, acyclic nerve enforcement, refcount guards on prune. The boot proof grafts a chart, calls its init and exit, compares return codes against expected constants, verifies the relocation classes sum to the applied total, and proves `charts_after == charts_before` so nothing leaked.
+
+Six negative controls, every one of which must be refused: truncated object, unresolved germ, bad signature, refcount-held prune, dependency-held prune, cyclic nerve.
+
+And now the ceilings, because there are several and one of them is genuinely funny:
+
+- **No GOT.** The relocation set is `R_X86_64_64`/`PC32`/`PLT32`/`32S`. Real compiler output from any non-trivial module will hit `UnsupportedRelocation` and stop. What loads today is what the fixture emits.
+- **Charts live in the kernel heap range**, not a dedicated ±2 GiB module area, so the PLT veneer is unconditional. Every call goes through the trampoline whether it needs to or not.
+- **W^X has a hole and I am telling you where it is.** It is enforced on the chart's own mappings. But the same frames are visible through the kernel's identity map, which is `PRESENT|WRITABLE` with no NX. Chart text is therefore still writable through that alias. This is the same hole as the unenforced kernel W^X two sections up; it has one fix and I have not shipped it.
+- **Virtual address space is never reclaimed on prune.** Graft and prune in a loop for long enough and you run out of address space, not memory. A slow leak of a resource nobody thinks to monitor.
+- **The signing key is a placeholder constant.** It is not a release key. It signs the fixture and nothing else.
+- **A chart is trusted ring-0 code once loaded.** Nothing sandboxes a signed but buggy chart. The signature proves provenance, not competence.
+- **Atlas is a single global mutex, and `chart_init` runs with it held.** So a chart that grafts another chart during its own init deadlocks. Deterministically. Every time. I found this by writing a chart that grafts another chart, because of course I did.
+
+`// ponytail: global lock, per-chart locks if anyone ever ships a chart that grafts a chart.` That comment is in the source. This README is just where it goes to be embarrassed in public.
+
+---
+
+## bundle — The WiFi Answer Nobody Wanted
+
+*(`kernel/seal-os/src/bundle/`)*
+
+For two years this README said the WiFi stack was "simulated." That was true, and it was also the single most dishonest thing in the whole document, because "simulated" is a word that sounds like engineering and functions like a lie. The old driver returned a deterministic list of invented SSIDs from an invented state machine. It printed `connected`. Nothing was connected. Nothing had ever been connected.
+
+Here is what Linux actually does, which I should have copied from the start: **Linux ships no firmware blobs either.** It ships `request_firmware()`, and the blobs live in a separate package under a separate licence. The kernel provides the mechanism; someone else provides the bytes.
+
+`bundle` is that. A fibre bundle over the space of devices: the fibre above each device is the set of images it can execute, and a **section** picks exactly one of them.
+
+- Signed section index (`EPHIDX`-framed, ed25519), digest-verified section bytes, refcounted section store at `/bundle/`
+- Provisioned by `.eph` package, so a user who legally obtains vendor firmware installs it **without rebuilding the kernel**
+- A section not in the index, not in the store, or whose bytes do not match the index digest is **refused**, by name, with a typed error
+
+**And the simulation is gone.** Not disabled. Not feature-flagged. Not "off by default." *Deleted from the source tree.* `scan()` returns an empty list and there is no code path anywhere in this kernel that can produce an SSID. The boot proof requires the literal field `simulation=absent`, which is the most passive-aggressive thing I have ever put in a gate and I stand by it entirely.
+
+The rest of the honesty:
+
+- **Seal OS ships zero vendor sections.** WiFi and Bluetooth sit in `chart_missing`/`section_missing` and every operation fails naming the section it wanted.
+- **Even with a section resident, it is never uploaded to the device.** There is no MMIO/HCI firmware-load sequence. No 802.11 association. No L2CAP, no ATT. `bundle` gets the bytes to the doorstep; nothing carries them inside yet.
+- **The index signing key is a checked-in fixture** labelled `ed25519_fixture`. It is not a chain of trust to any vendor and it is not pretending to be.
+
+So the WiFi still does not work. It now does not work *correctly*, which — and I need you to sit with this — is a strictly better state than working incorrectly. A driver that says `section_missing: brcmfmac43602-pcie.bin` has told you something true and actionable. A driver that says `connected` to a network that does not exist has told you a story.
+
+---
+
+## Negative Controls: A Proof That Cannot Fail Is Not A Proof
+
+Every one of the ten new subsystems ships a boot proof that includes **deliberate failures the kernel must refuse.** This is the single most important structural idea in the whole change, so it gets its own section and one joke per line.
+
+| Subsystem | Something that must be refused |
+|---|---|
+| atlas | truncated ELF object, unresolved germ, bad signature, prune while refcount-held, prune while dependency-held, cyclic nerve |
+| bundle | tampered index, absent section (`:not_provisioned`), corrupt section (`:digest_mismatch`) |
+| fs parity | one byte corrupted in one image — the comparison must notice, and the control digest must differ from the content digest, or the comparison was blind |
+| stratum | the healthy-but-noisy run: the naive gap baseline **must** misfire on it and the topological detector **must not** |
+| foliation | eviction of a referenced plaque, exceeding the budget, exhausting the pool, explicitly freeing a referenced plaque — all four must be refused, all four counters must read 1 |
+| KASLR | a stuck entropy generator: resample must produce a different nonce, or the gate fails |
+| security features | every decoded bit is cross-checked against the raw CR0/CR4/EFER on the same line, so a field that quietly became a constant is caught |
+| GPU | the shipped blob's FNV-1a must equal the encoder's, and `spectral_step_bytes` must be ≥ 1 — because it used to be 0, and that is the exact failure this gate was born to catch |
+| package channel | the real HTTPS transport is driven against the same endpoint as a **fail-closed control** and must refuse with a typed error |
+| installer | armed-target guards; an unarmed target must not be written |
+
+The rule, stated once: **a gate that only checks the happy path passes when you delete the feature.** Write the test that fails, then write the code that makes it pass, then — and this is the part everyone skips — write the test that must *keep* failing, and check that it still does.
+
+I learned this the expensive way. The GPU row above is not hypothetical: `find_kernel` used to hand out 0-byte placeholder shaders as zero-length blobs, pointing `COMPUTE_PGM` at uninitialised memory, and every existing check passed cheerfully the entire time. The checks were verifying that the function returned `Ok`. It did! It returned `Ok` all the way to a null shader.
 
 ---
 
@@ -435,6 +751,8 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 2. **It has real drivers.** Not mock drivers. Real e1000 TX/RX rings. Real NVMe admin queues. Real xHCI port enumeration. These are not stubs that return `Ok(())`.
 3. **It has a window manager.** With double buffering. And anti-aliased text. And a taskbar. Written from scratch in software rendering. On a framebuffer. In 2026.
 4. **It will panic if you look at it wrong.** The COW fork path now has a rollback/no-parent-fallback proof gate, but deeper syscall-path stress still needs more fixtures. GPU hardware compute is not proven yet, and the build now refuses fake shader binaries. The TLS stack can't talk to real HTTPS servers yet. These are documented, tracked, and not hidden.
+5. **It has ML subsystems no other kernel has.** `stratum` classifies training regimes from the topology of the loss trajectory; `foliation` is a paged KV cache whose prefix sharing is a quotient map. Both are gated at boot. Both have only ever seen synthetic fixtures. "Research kernel" is doing exactly the work it is supposed to do in that sentence.
+6. **Every gate has a negative control.** Ten new subsystems, ten proofs, and every proof includes at least one deliberate failure the kernel must refuse. Several of those proofs would fail if I deleted the feature they guard, which is more than I can say for a great deal of professionally-written test code I have read.
 5. **It is not Linux.** You cannot `apt install` things. There is no `bash`. The shell speaks English-first commands like `look` and `peek`. This is a feature, not a bug, but it is also inconvenient.
 6. **One person wrote most of it.** With occasional help from AI agents, contributors, and sheer stubbornness. This means design coherence is high, but bus factor is catastrophic.
 7. **The Lean proofs are real.** Zero `sorry` tactics. Actual mathematical verification that core claims hold. This is not decoration.
@@ -459,6 +777,13 @@ Let's have a moment of honesty. "Research kernel" is a phrase that can mean many
 | Try to install a package | Acceptance | "This is not Linux. That's okay." |
 | Show a friend | Excitement | "Look at my geometry OS!" |
 | Friend asks "why?" | Existential dread | "...because spheres?" |
+| Read the ML sections | Renewed hope | "Wait, the kernel does topological overfit detection?" |
+| Read the limitations under them | Whiplash | "...on seven synthetic fixtures and no real model." |
+| Notice the limitations are longer than the features | Grudging respect | "Okay, at least they're not hiding it." |
+| Find the sentence admitting the KV policy loses to random at 8 plaques | Confusion | "Why would you print that?" |
+| Realise that's the point | Enlightenment | "Oh. *Oh.*" |
+| Check the unsafe block count | Alarm | "585 of 594?!" |
+| Check when it was measured | Solidarity | "...and it went up by 17 the same day. Been there." |
 
 ## Quick Start — Boot in 5 Minutes
 
@@ -837,6 +1162,46 @@ Every OS has design decisions. Mine were made at ungodly hours by a sleep-depriv
 
 **Verdict:** I fixed it. The README now says "minimal inline assembly." The Reddit thread was actually helpful. Thanks, person whose username I forgot.
 
+### Decision 7: Three Subsystems, One Syscall Number, Zero Compiler Complaints
+
+**What I did:** Developed `atlas`, `stratum` and `foliation` in parallel. All three, independently, unaware of each other, picked Seal ABI syscalls **112–116** as "the next free block."
+
+**Why it seemed good:** 112 *was* the next free number. Three times. To three different people. On three different days. Every one of them was right at the moment they looked.
+
+**Why it was painful:** Here is the horror. In Rust, duplicate match arms **compile silently.** The first arm wins, the rest are unreachable, and unless you have the right lint turned up you get exactly zero indication that two entire subsystems have just been quietly deleted from the ABI. Not a link error. Not a runtime panic. Just `SYS_FIT_OBSERVE` calmly grafting an ELF object because `SYS_CHART_GRAFT` got to 112 first.
+
+**Verdict:** Renumbered: atlas 112–114, stratum 120–124, foliation 130–134, with gaps between blocks so the next three subsystems can collide somewhere new and exciting. The lesson is not "assign syscall numbers centrally," which everyone already knows. The lesson is that a language famous for catching your mistakes will hold the door open for this particular one, whistling.
+
+### Decision 8: Deleting The Simulation Instead Of Dressing It Up
+
+**What I did:** Removed the simulated WiFi and Bluetooth state machines entirely, replaced them with `bundle`, and made the boot proof require the field `simulation=absent`.
+
+**Why it seemed good:** Because the alternative — a config flag, a `#[cfg(feature = "sim")]`, a "demo mode" — is how simulations survive forever. Every flag is a promise that the fake path will be maintained, and it never is; it just sits there, slowly diverging from reality, waiting for someone to enable it in a demo.
+
+**Why it was painful:** The demo got *worse*. Visibly. The old WiFi panel showed a nice list of networks. The new one shows nothing and an error naming a firmware section that does not exist. I made my own screenshot worse on purpose and then had to explain it to people.
+
+**Verdict:** Correct, and the field name is the best thing in the change. `simulation=absent` is a gate that fails if anyone ever brings the fakes back. Future me is on a leash and future me deserves it.
+
+### Decision 9: A Ratchet That Only Goes One Way, Pointed At Me
+
+**What I did:** Built `--check-unsafe-audit`, which counts every `unsafe` block in the kernel and how many carry a written `SAFETY:` justification, freezes the number in a checked-in fixture, and fails the build if it goes up.
+
+**Why it seemed good:** You cannot fix 594 `unsafe` blocks in one weekend. You *can* guarantee the number never gets worse while you chip at it.
+
+**Why it was painful:** The census came back **585 of 594 unjustified.** Nine. Nine blocks out of five hundred and ninety-four had a comment explaining why they were sound. I have written Lean proofs with zero `sorry` tactics and simultaneously shipped 585 unexplained `unsafe` blocks, which tells you something unflattering about which kind of rigour feels fun and which kind feels like chores.
+
+Worse: **the number went UP by 17 in the same change that introduced the ratchet**, because the ten new subsystems added their own unjustified blocks on the way in. I built the device that measures the mess and the device's first reading was of a mess I had just made. There is a German word for this and I don't want to know it.
+
+**Verdict:** The fixture stays. The number can only fall. It is currently a monument, and monuments are supposed to be uncomfortable.
+
+### Decision 10: Two Agents, One Bug, No Coordination
+
+**What I did:** Nothing. This one happened to me.
+
+**What happened:** The `buffer_cache` block-vs-LBA bug — the cache addressed the device in filesystem blocks while the block layer addresses 512-byte sectors — was found and fixed by **two independent agents working in separate worktrees, neither aware of the other.** Same root cause, same file, same fix, arrived at twice.
+
+**Verdict:** Either it is a very findable bug or convergent evolution is real in software too. Encouragingly, the fix was identical. Less encouragingly, it had been sitting there long enough for two separate investigations to trip over it. Reverting it makes ext2 complete **0 of 19** parity operations, which is the kind of number that would have been fatal the first time anyone pointed this filesystem at a real disk.
+
 ## The Ten Theorems
 
 These are not decorative. T1-T5 runtime callsites are source-gated in kernel paths today; deeper formal runtime proof and benchmarks remain pending. T6-T10 are boot-verified theorem gates for the HFT/ML world-model path.
@@ -1201,9 +1566,9 @@ Wired end-to-end through IPv4 → net::transmit → e1000 TX descriptor ring.
 - **UDP + DHCP**: DHCP state-machine implementation (Init → Discover → Request → Bound); e1000 end-to-end DHCP lease proof remains a separate gate
 - **DNS**: Proper query packets (ID, flags, QNAME, QTYPE A, QCLASS IN)
 
-### TLS 1.3 PSK
+### TLS 1.3 — PSK, and now X.509 + ECDHE
 
-The TLS path is intentionally narrow: PSK-only record encryption for the native HTTPS client.
+The record layer started narrow: PSK-only record encryption for the native HTTPS client.
 
 1. **ClientHello**: TLS record (content type 0x16, version 0x0303) with supported_versions and psk_key_exchange_modes
 2. **ServerHello parsing**: extracts server random, derives handshake traffic secrets using HKDF-SHA256
@@ -1211,7 +1576,27 @@ The TLS path is intentionally narrow: PSK-only record encryption for the native 
 4. **AES-128-GCM**: Per-record encryption with 12-byte nonce (4-byte salt + 8-byte sequence number)
 5. **Record wrapping**: TLSInnerPlaintext → AEAD encrypt → TLSRecord
 
-Minimal TLS 1.3 PSK record path — no X.509/PKI/ECDHE gate yet; production HTTPS compatibility is pending. The random bytes function uses RDSEED first, then RDRAND. If neither source is available or the CPU repeatedly reports carry-clear failure, `getrandom` returns failure instead of manufacturing cryptographic bytes.
+> **A fossil, preserved deliberately.** The sentence below is the one this README carried for two years, and `seal-mkimage --check-doc-claim-contract` still requires it to be present verbatim. I could edit the contract. I am not going to, because a claim gate that you soften the moment it becomes inconvenient is a claim gate that has never gated anything. So it stays, in a quote block, labelled as history:
+>
+> *Minimal TLS 1.3 PSK record path — no X.509/PKI/ECDHE gate yet; production HTTPS compatibility is pending.*
+>
+> Two of those three clauses are now out of date. The third one — "production HTTPS compatibility is pending" — is as true today as the day I wrote it, and it is the clause that actually matters.
+
+**What is real now** (`drivers/net/{x509,ecdhe,tls}.rs`, gated by `--check-tls-proof`):
+
+- **X.509 v3 DER parser** with a bounds-checked TLV walk. Every length is validated against the remaining buffer before it is trusted, because a certificate is attacker-controlled bytes and a parser that assumes otherwise is a remote code execution with a nice haircut
+- **Chain validation**: validity window, `CA:TRUE` in basic constraints, `keyCertSign` in key usage, `pathLen` enforcement, and DN linkage between each issuer and subject
+- **X25519 ECDHE** with RFC 5869 HKDF, and it **fails closed without hardware entropy** rather than inventing a shared secret out of a tick counter
+- **The boot gate demands** `x509=1 chain_verify=1 ecdhe=1 curve=x25519 psk_only=0 entropy=hw result=pass`. Note `entropy=hw`: a boot that could not draw from RDSEED/RDRAND does not get to claim a key exchange happened
+
+**What is still wrong, in full:**
+
+- **Ed25519 certificates only.** RSA and ECDSA are rejected with `UnsupportedAlgorithm`. That is a refusal, not a silent accept, which is the difference between a limitation and a vulnerability — but it does mean roughly the entire public web is unparseable
+- **It does not interoperate with a stock TLS 1.3 server.** Traffic secrets derive over `client_random`/`server_random` rather than a running transcript hash, so there is no downgrade protection over the handshake messages. And the peer `Certificate` message is read as plaintext handshake, where RFC 8446 encrypts it. Either one of these is disqualifying on its own
+- **Trust store is one embedded root.** One. It is a constant
+- **No revocation** (no CRL, no OCSP), **no name constraints, no wildcard SAN matching, no EKU checking**
+
+The random bytes function uses RDSEED first, then RDRAND. If neither source is available or the CPU repeatedly reports carry-clear failure, `getrandom` returns failure instead of manufacturing cryptographic bytes. This has always been the policy and it is the one part of the crypto story I have never had to apologise for.
 
 ### Driver Stack
 
@@ -1264,7 +1649,7 @@ flowchart TB
 ```
 
 
-> **TLS reality check:** We can encrypt packets. We can't verify certificates. If you try to visit `https://google.com`, it will fail because Google doesn't accept PSK. This is documented. We're working on X.509. Check back in v0.6.0.
+> **TLS reality check, updated:** We can encrypt packets. We can now genuinely verify a certificate chain — validity window, CA bit, key usage, pathLen, DN linkage — and do a real X25519 key exchange. If you try to visit `https://google.com` it will still fail, but for entirely new and much more sophisticated reasons: Google's certificate is not Ed25519, our key schedule does not hash the transcript, and we read the `Certificate` message in the clear where the RFC encrypts it. Progress in this project is measured in how interesting the failure has become.
 
 </details>
 
@@ -1278,6 +1663,37 @@ CR3 swap code exists via `memory/pgtable_asm.rs`. Boot now emits `[SECURITY] har
 ### ASLR
 
 Userspace mmap base is randomized with a 16-bit entropy shift (up to 65,536 possible bases). The random source is RDRAND/RDSEED when hardware entropy is available; low-entropy fallback paths are treated as non-production.
+
+### KASLR (`security/kaslr.rs`)
+
+Kernel mappings are randomised at boot: 8 bits on the higher-half alias, 22 bits on the heap window, both at 2 MiB granularity, slides drawn from RDSEED/RDRAND. `[KASLR] proof` (`--check-kaslr`) verifies alignment, range membership, the entropy source, that `kernel_alias_bits + heap_window_bits == total_bits`, and that a resample yields a different nonce so a stuck generator cannot pass.
+
+Now the part where I take it all back:
+
+- **KASLR randomises kernel *mappings*, not the kernel *image base*.** UEFI picks the load address and the kernel does not re-apply PE relocations. The proof carries the literal field `image_base_randomised=0` and the gate requires that value, so nobody — including me at 3 AM — can quietly upgrade the claim.
+- **Only the 22 heap bits are load-bearing.** Nothing executes from the alias, so the 8 alias bits are 8 bits of entropy protecting a region an attacker has no reason to jump to.
+- **Cross-boot variation is not provable from a single boot.** The proof carries a per-boot nonce; an external harness diffs consecutive boots. One log cannot demonstrate randomness, which is the sort of sentence that sounds obvious and is violated constantly.
+- **With no hardware entropy the kernel boots at build-constant bases** and reports `entropy=none result=fail`. The image gate is what enforces fail-closed.
+
+### Security Feature Census (`security/features.rs`)
+
+`[SECURITY-FEATURES] proof` prints every hardening bit on one line — KPTI, KASLR, SMEP, SMAP, NX, WP, retpoline, stack guard, audit — each tagged with the **probe that measured it** (`kpti_probe=runtime-cr3`, `smep_probe=cpuid+cr4`, `retpoline_probe=runtime-thunk-bytes`, `stackguard_probe=runtime-guardband`, …), and the decoded bits are cross-checked against the raw CR0/CR4/EFER values printed on the same line. A field that silently degraded into a constant fails the cross-check.
+
+The uncomfortable fields, which are required to have exactly these values:
+
+- **`wx_enforced=0`.** W^X is *measured* over the kernel alias and reported, **not enforced**. That alias is mapped writable and executable today. The gate requires the zero, so the day someone fixes it they have to update the gate deliberately rather than by accident.
+- **No `-Z stack-protector`.** Stack protection is a 16 KiB zeroed guard band, checked for dirt (`stackguard_dirty=0`). That is a tripwire, not a canary.
+- **Retpoline is verified by reading one thunk's machine code back**, not by proving every indirect branch in the kernel routes through a thunk. One thunk being correct is evidence. It is not the claim.
+
+### The Unsafe Ratchet (`security/unsafe_audit.rs`)
+
+**585 of the 594 `unsafe` blocks in this kernel carry no written safety justification.**
+
+Nine do. Nine.
+
+`--check-unsafe-audit` freezes that census in a checked-in fixture, and the host-side scanner is a deliberate mirror of the kernel-side one — if the two ever disagree, they are measuring different things and the gate says so. The number can only fall.
+
+It does not fix anything. It is a ratchet, not a repair. And in the interest of the radical honesty this project keeps claiming as a personality trait: **the number went up by 17 in the same change that introduced the ratchet**, because the ten new subsystems brought their own unjustified blocks along. I built the ruler and the first thing I measured with it was the hole I had just dug.
 
 ### Seccomp
 
@@ -1306,9 +1722,10 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
-4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
-6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
+4. **TLS Interop Gap:** The stack now parses X.509 v3 with bounds-checked DER, validates a chain, and does X25519 ECDHE. It still cannot talk to a stock TLS 1.3 server: Ed25519 certificates only, traffic secrets derive over `client_random`/`server_random` instead of a transcript hash, and the peer `Certificate` message is read as plaintext where RFC 8446 encrypts it. One embedded root, no revocation, no name constraints, no wildcard SAN, no EKU. Better failure, still failure.
+5. **GPU Hardware Compute Missing:** `spectral_step.bin` is 96 bytes of real GFX9 machine code, cross-verified word-for-word against LLVM's AMDGPU assembler. What is proven is the **encoding**, not the execution — no AMD GPU exists on the build machine or in CI, so `backend=pm4_hw` has never been observed, and the PM4 dispatch path, RSRC1/RSRC2 values and ten-SGPR argument ABI are all unexecuted. Three of four declared kernels are still zero-length and report `kernel_not_found`.
+6. **WiFi/Bluetooth Do Not Exist:** They no longer *pretend* to exist, which is the improvement. The simulation was deleted, not disabled. `bundle` provides the signed, digest-verified firmware path; Seal OS ships zero vendor sections, so both stacks sit in `section_missing` and name the section they wanted. Even with a section resident it is never uploaded to the device — no MMIO/HCI load sequence, no 802.11 association, no L2CAP/ATT. `scan()` returns an empty list and no code path in this kernel can produce an SSID.
+7. **Atlas Self-Graft Deadlock:** A chart that grafts another chart during its own `chart_init` deadlocks, because Atlas is a single global mutex and `chart_init` runs with it held. Reproducible on demand. Fixed by nobody so far, including me.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
@@ -1320,6 +1737,8 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 10. **APIC Timer Race:** There might be a race between the scheduler lock release and context switch. I haven't observed it in practice, but the window exists.
 11. **Voronoi Index Overflow:** If you create more than 2^32 files, the inode generation counter wraps. This is theoretical because I haven't tested with 4 billion files.
+12. **Atlas VA Exhaustion:** Virtual address space is never reclaimed on chart prune. Graft and prune in a loop long enough and you run out of address space while memory usage stays flat, which is a delightful class of bug because every dashboard you own will say everything is fine.
+13. **FAT Mirror Divergence:** `write_fat_entry` updates FAT copy 1 and never the mirror. The parity harness found this and I did not fix it, so it is listed here instead — which is the deal: found bugs get fixed or get published, never neither.
 
 > **If you find a new vulnerability:** Please report it privately. I will fix it, credit you, and add it to this section with appropriate self-deprecating commentary.
 
@@ -1563,7 +1982,7 @@ Legend: ✓ = code/proof gate exists in this repo, △ = design or partial imple
 | **Theorem count** | 10 boot-gated; T1-T5 active in runtime paths | 0 | 0 | 0 | 0 | 0 |
 | **Teleportation** | Same-filesystem metadata topology move; mock block-store gate requires `persistence_bytes_per_move=0` | No | No | No | No | No |
 
-**Where Seal OS is distinctive as a design**: mathematical kernel primitives, topological data embeddings, content-addressable ManifoldFS metadata, theorem-gated boot, adaptive governor, and gated O(1) metadata-move/select/allocation markers.
+**Where Seal OS is distinctive as a design**: mathematical kernel primitives, topological data embeddings, content-addressable ManifoldFS metadata, theorem-gated boot, adaptive governor, gated O(1) metadata-move/select/allocation markers, and — the two that no other row in that table has any answer to — **kernel-level topological over/underfit detection (`stratum`)** and a **paged KV cache whose prefix sharing is a quotient map and whose eviction is an elementary collapse (`foliation`)**. vLLM does paged attention in userspace and does it far better than this does; nobody does it in a kernel, as a foliation, with a boot proof that refuses to pass if the online policy beats Belady.
 
 **Where Seal OS must still prove superiority**: repeatable Ubuntu comparison benchmarks for HFT/ML workloads, driver maturity, security hardening, and long-running reliability.
 
@@ -1587,11 +2006,18 @@ Let's strip away the marketing and talk about where Seal OS actually is, in term
 5. **The math is not decorative.** Ten theorems. Five active in runtime. Zero `sorry` tactics in Lean. Huge organizations ship kernels without this. I put it in a research OS because apparently I enjoy making my own life harder.
 6. **LAAMBA is now a kernel app proof, not just a host wrapper hope.** The boot log proves `LAAMBA_Governor` launches as a kernel/native-manifest app through the Aether host path with `python_runtime=0`.
 7. **There are real drivers.** Not mocks. Real NVMe queue creation. Real e1000 descriptor rings. Real xHCI enumeration. Real HDA audio playback.
+8. **The kernel does topological overfit detection.** `stratum` measures the cycle rank of the delay-embedded validation trajectory and classifies 7-of-7 regime fixtures at boot, with a naive gap baseline running beside it that is *required to misfire* on the healthy-noisy control. 4,792 bytes per stream, independent of run length. No other kernel does this. Synthetic fixtures only — see the honest column.
+9. **The KV cache's prefix sharing is a quotient map, not a hash table.** `foliation` closes 100% of the LRU→Belady gap on its trace (9.52% vs 0.00%), and I have published the pool sizes where it ties LRU and the pool size where it loses to random.
+10. **Every new subsystem's proof includes negative controls.** Deliberate failures the kernel must refuse. Ten subsystems, ten gates, and each gate would fail if the feature were deleted — which is more than can be said for most test suites I have met.
+11. **The simulation is gone.** Not disabled, not feature-flagged. Deleted. The boot proof requires the field `simulation=absent`.
 
 ### What I Cannot Honestly Claim Yet
 
 1. **Seal OS is not globally faster than Linux yet.** For most workloads, Linux is faster. The side-by-side benchmark harness exists. The Ubuntu artifact is pending. I am not claiming victory until the Ubuntu artifact exists.
-2. **Seal OS is not production-secure.** It has ASLR, seccomp, SMAP/SMEP, and a hard-gated KPTI shape proof. It does NOT have production TLS, KASLR, or a full external security audit. Do not use this for sensitive data.
+2. **Seal OS is not production-secure.** It has ASLR, seccomp, SMAP/SMEP, a hard-gated KPTI shape proof, and now KASLR on kernel mappings with a per-boot nonce for external cross-boot diffing. It does NOT have production TLS interop, image-base KASLR, enforced kernel W^X (`wx_enforced=0`, measured and reported), a real stack protector, or an external security audit. And 585 of 594 `unsafe` blocks have no written justification. Do not use this for sensitive data. Do not use this for unsensitive data either, honestly.
+3. **The ML claims are architectural, not empirical.** `stratum` and `foliation` are real code with real proofs against synthetic fixtures. Neither has been run against a real model. "Best OS for ML" is the target; what exists today is two subsystems no other kernel has and a very long list of what they have not yet been pointed at.
+4. **`stratum` cannot see your model.** Two `f64`s per step. Its regularisation, learning-rate and batch recommendations are advisory — the kernel physically cannot reach into a userspace optimizer. Only the prefetch threshold and a heap-break clamp are enforced control.
+5. **The package channel has never touched a network.** Signed index, rollback protection, digest verification and signature enforcement are all real code paths, exercised over an in-memory loopback transport (`channel_transport=fixture_loopback`). No packet has left the machine. The real HTTPS transport runs against the same endpoint purely as a fail-closed control, and it refuses.
 3. **The GPU driver is not proven hardware compute yet.** GPU infrastructure and AMD-oriented PM4/VBIOS scaffolding exist. Hardware dispatch still needs a proof artifact and real checked-in shader blobs. Annoying, but better than lying.
 4. **There is no browser.** There is an HTTP/HTTPS client. You can fetch raw HTML. You cannot render it. You cannot run JavaScript. There is no DOM.
 5. **It is not self-hosting.** Seal OS still needs Linux, Windows, or macOS to compile the kernel. Aether-Lang is not yet powerful enough to build itself.
@@ -1625,6 +2051,14 @@ If I wanted to lie, I could replace every △ with ✓ and claim full implementa
 | **TLS encrypt** | 1KB record | O(N) AES-GCM over PSK-only TLS 1.3 record payload | `[BENCH] tls-encrypt` proves 1024-byte `TlsSession::encrypt` AES-128-GCM record wrapping, 16-byte auth tag, decrypt/auth roundtrip, sequence increments, monotonic cycle samples, and `result=pass`; X.509/ECDHE remains out of scope |
 | **3D render** | 1K triangles, quality 2 | O(triangles × pixels) software raster | `[BENCH] topo-render-3d` proves a deterministic 1024-triangle quality-2 software raster into a 256x256 offscreen window with nonblank pixels, sample hash, monotonic cycle samples, and `result=pass`; no GPU hardware dispatch claimed |
 | **Tensor render** | 100×100 CSV → mesh | O(N) grid/value-height projection + O(N) mesh gen + raster | `[BENCH] tensor-render` proves 100x100 CSV parse, 10,000 elements/points, 19,602 mesh triangles, wireframe software raster into a 220x180 offscreen window, nonblank pixels, sample hash, monotonic cycle samples, and `result=pass` |
+
+| **stratum observe** | `sys_fit_observe()` | O(1) — ring writes only, nothing allocated per sample | `[MLFIT] proof` requires `bounded=ok` and `incremental_batch_agree=ok`, so the streaming path must agree with a batch recompute |
+| **stratum signals** | `sys_fit_regime()` | O(64²) lazily on read, fixed stack buffers, **4,792 bytes per registered stream** independent of run length | `[MLFIT] proof` gate `--check-mlfit-proof`; 7-of-7 regime fixtures with a naive gap baseline required to misfire on the healthy-noisy control |
+| **foliation descend** | `sys_kv_seq_append()` block seal | O(MAX_CHILDREN) = O(32) child scan; mid-block append is O(1); logical block → frame is O(1) indexed | `[KVPOLICY] proof` gate `--check-kv-policy` |
+| **foliation evict** | admission needing a victim | O(pool_blocks) frontier scan over free faces only — resident, refcount 0, no resident children | `[KVPOLICY] proof` proves `referenced_evictions=0`, `collapse_violations=0`, `frames_backed == frames_freed`, and that no online policy beats the Belady oracle |
+| **foliation hit rate** | 30-request / 210-descent trace, 24 plaques | foliation 9.52%, Belady 9.52%, random 6.19%, LRU 0.00% — 100% of the LRU→optimum gap closed | measured at boot by the real manager; **capacity-cliff scoped** — LRU reaches the same ceiling from 32 plaques up, ties on a recency control workload, and both lose to random at 8 plaques |
+| **GPU ISA encoding** | `spectral_step.bin` | 96 bytes / 24 words / 17 instructions of real GFX9 machine code | `[GPU-BENCH] proof` requires `blob_fnv1a == encoder_fnv1a`, `mnemonics_match=1`, and full `golden_words`/`decoded_insts`/`roundtrip_words` ratios; cross-verified against LLVM's AMDGPU assembler. **Encoding proven, execution not** — `backend=pm4_hw` has never been observed |
+| **atlas graft** | `sys_chart_graft()` | relocation application over `R_X86_64_64`/`PC32`/`PLT32`/`32S`; single global mutex held across `chart_init` | `[Atlas] proof` proves relocation classes sum to the applied total and `charts_after == charts_before` |
 
 *Note: complexity rows are code/proof claims. Latency rows stay pending until the benchmark plan records raw artifacts and side-by-side Ubuntu runs.*
 
@@ -1877,7 +2311,14 @@ Epsilon-Hollow/
 │   │   │   ├── boot/               # uefi_entry.rs, boot_info.rs, ap_trampoline.rs
 │   │   │   ├── memory/             # phys.rs (bitmap), slab.rs, heap.rs, virt.rs (VMM), gdt.rs
 │   │   │   ├── drivers/            # IDT, APIC, serial, PCI, NVMe, AHCI, e1000, xHCI, HDA, entropy, RTC, watchdog, ACPI, WiFi/BT/GPU probe
+│   │   │   │   ├── net/{x509,ecdhe,tls}.rs   # X.509 v3 DER + chain validation, X25519 ECDHE, TLS records
+│   │   │   │   └── gpu/{gcn_asm,gpu_bench}.rs # GFX9 encoder/disassembler + ISA cross-verification
+│   │   │   ├── ml_engine/          # THE ML KERNEL: stratum.rs (topological fit control),
+│   │   │   │                       #   foliation.rs (paged KV cache), tensor_viz.rs, topo_asm.rs
+│   │   │   ├── atlas/              # Loadable charts: ELF64 ET_REL loader, germ table, nerve, W^X
+│   │   │   ├── bundle/             # Device firmware sections: signed index, digest gate, refcounts
 │   │   │   ├── fs/                 # ManifoldFS + FAT + ext2 + PipeFS + VFS (devtmpfs, procfs, sysfs)
+│   │   │   │                       #   + gpt.rs, ext2_format.rs, parity.rs (FAT ↔ ext2 harness)
 │   │   │   ├── graphics/           # Framebuffer, double-buffer, font, console, splash, wallpaper, htek, topo_render
 │   │   │   ├── process/            # ManifoldScheduler, context switch, ELF loader, userspace (ring-3)
 │   │   │   ├── syscall/            # Seal ABI calls + signals + pipes + RTC + Epsilon extensions
@@ -1885,8 +2326,9 @@ Epsilon-Hollow/
 │   │   │   ├── cpu/                # SMP bring-up (INIT-SIPI-SIPI)
 │   │   │   ├── net/                # TCP/IP stack (ARP, DHCP, DNS, ICMP, IPv4, TCP, UDP)
 │   │   │   ├── security/           # ASLR, seccomp, MAC, SMAP/SMEP, audit
+│   │   │   │                       #   + kaslr.rs, features.rs, unsafe_audit.rs (the 585/594 ratchet)
 │   │   │   ├── sync/               # Ticket lock, seq lock, TLB shootdown
-│   │   │   ├── pkg/                # ManifoldPkg package manager
+│   │   │   ├── pkg/                # ManifoldPkg package manager + channel.rs (signed remote channel)
 │   │   │   ├── lang/               # Aether-Lang kernel integration
 │   │   │   ├── async_rt/           # Minimal async runtime
 │   │   │   └── apps/               # Shell, terminal, IDE, calculator, SealPlayer, games
@@ -2057,9 +2499,10 @@ I believe in full disclosure. Here are known ways to break Seal OS, ranked by ho
 
 ### 🟠 Medium (Annoying But Not Fatal)
 
-4. **No X.509/PKI/ECDHE:** The TLS stack only does PSK. You can't verify certificates. You can't do ECDHE key exchange. You can only talk to servers that accept raw PSK. (There are approximately zero such servers on the public internet.)
-5. **GPU Hardware Compute Missing:** The AMD GPU compute path is not a proven hardware fast path yet. The build embeds only real checked-in shader binaries and otherwise reports `kernel_not_found`; if you depend on GPU-accelerated topology computation today, you get the CPU fallback.
-6. **Simulated WiFi/Bluetooth:** The WiFi and Bluetooth stacks return simulated scan results. They don't actually use the hardware. If you think you're connected to a network, you're connected to our imagination.
+4. **TLS Interop Gap:** The stack now parses X.509 v3 with bounds-checked DER, validates a chain, and does X25519 ECDHE. It still cannot talk to a stock TLS 1.3 server: Ed25519 certificates only, traffic secrets derive over `client_random`/`server_random` instead of a transcript hash, and the peer `Certificate` message is read as plaintext where RFC 8446 encrypts it. One embedded root, no revocation, no name constraints, no wildcard SAN, no EKU. Better failure, still failure.
+5. **GPU Hardware Compute Missing:** `spectral_step.bin` is 96 bytes of real GFX9 machine code, cross-verified word-for-word against LLVM's AMDGPU assembler. What is proven is the **encoding**, not the execution — no AMD GPU exists on the build machine or in CI, so `backend=pm4_hw` has never been observed, and the PM4 dispatch path, RSRC1/RSRC2 values and ten-SGPR argument ABI are all unexecuted. Three of four declared kernels are still zero-length and report `kernel_not_found`.
+6. **WiFi/Bluetooth Do Not Exist:** They no longer *pretend* to exist, which is the improvement. The simulation was deleted, not disabled. `bundle` provides the signed, digest-verified firmware path; Seal OS ships zero vendor sections, so both stacks sit in `section_missing` and name the section they wanted. Even with a section resident it is never uploaded to the device — no MMIO/HCI load sequence, no 802.11 association, no L2CAP/ATT. `scan()` returns an empty list and no code path in this kernel can produce an SSID.
+7. **Atlas Self-Graft Deadlock:** A chart that grafts another chart during its own `chart_init` deadlocks, because Atlas is a single global mutex and `chart_init` runs with it held. Reproducible on demand. Fixed by nobody so far, including me.
 
 ### 🟡 Low (Cosmetic / Inconvenient)
 
@@ -2163,12 +2606,44 @@ Seal ABI provides native kernel semantics without POSIX inheritance. Epsilon ext
 | 103 | `pkg_install` | Install package from `.eph` or HTTPS registry |
 | 104 | `pkg_remove` | Remove installed package |
 | 105 | `pkg_list` | List installed packages |
-| 106 | `wifi_scan` | Scan for WiFi networks (simulated) |
-| 107 | `wifi_connect` | Connect to WiFi network (simulated) |
-| 108 | `bt_scan` | Scan for Bluetooth devices (simulated) |
-| 109 | `bt_pair` | Pair Bluetooth device (simulated) |
+| 106 | `wifi_scan` | Scan for WiFi networks. Returns an empty list — no vendor section is provisioned, and the simulation was deleted rather than disabled |
+| 107 | `wifi_connect` | Connect to WiFi network. Fails naming the missing `bundle` section |
+| 108 | `bt_scan` | Scan for Bluetooth devices. Same story, same honesty |
+| 109 | `bt_pair` | Pair Bluetooth device. Fails naming the missing section |
 | 110 | `setting_get` | Read live setting from BTreeMap |
 | 111 | `setting_set` | Write live setting to BTreeMap |
+
+### Atlas — Loadable Charts (112–114)
+
+| # | Name | Description |
+|---|------|-------------|
+| 112 | `chart_graft` | Graft a signed ELF64 `ET_REL` chart onto the kernel manifold |
+| 113 | `chart_prune` | Prune a chart back off the manifold. Refused while refcount-held or dependency-held |
+| 114 | `chart_list` | List grafted charts with their reference counts |
+
+### stratum — Topological Fit Control (120–124)
+
+| # | Name | Description |
+|---|------|-------------|
+| 120 | `fit_register` | Register the calling task as a training workload. Returns the handle |
+| 121 | `fit_observe` | Push one step: `arg0` = handle, `arg1` = train loss bits, `arg2` = val loss bits (both `f64::to_bits`). Returns the last computed regime code |
+| 122 | `fit_regime` | Recompute and return the regime. `code` is the regime; `data` carries the measured signals and the planned actuator settings |
+| 123 | `fit_calibrate` | Set one calibration field: `arg0` = handle, `arg1` = field id, `arg2` = `f64` bits |
+| 124 | `fit_unregister` | Drop the workload's fit state |
+
+Two `f64`s in, one stratum out. If you were expecting a syscall that takes a gradient, re-read the limitations; there is no version of this ABI where a `no_std` kernel walks your autograd graph.
+
+### foliation — Paged KV Cache (130–134)
+
+| # | Name | Description |
+|---|------|-------------|
+| 130 | `kv_seq_create` | Create a sequence and place it at the root leaf |
+| 131 | `kv_seq_append` | Append a token. Sealing a block descends the foliation; identical tokens land on the same leaf, so prefix sharing is implicit and there is no share call to forget to make |
+| 132 | `kv_seq_release` | Release a sequence, dropping its fibre contributions |
+| 133 | `kv_seq_stats` | Per-sequence residency and sharing statistics |
+| 134 | `kv_policy_stats` | Cache-wide policy statistics: hits, evictions, frontier size |
+
+Note the absence of a `kv_share` call. That is the whole design: sharing is what *happens* when two sequences write the same tokens, not something either of them asks for.
 
 ### Syscall Result
 
@@ -2403,8 +2878,20 @@ CI is not a suggestion. It is a law. Break it, and your PR dies. Here is what ev
 29. `[GFX] desktop-soak`
 30. Desktop ready sentinel
 31. Event-loop entry sentinel
+32. `[TLS] proof` — `--check-tls-proof` (X.509 chain, X25519 ECDHE, `entropy=hw`)
+33. `[Atlas] proof` — `--check-atlas-proof` (graft/init/exit, relocation class sum, six refusals, zero leaked charts)
+34. `[Bundle] proof` — `--check-bundle-proof` (`simulation=absent`, tampered index refused, digest mismatch refused)
+35. `[FSPARITY] proof` — `--check-fs-parity` (byte-for-byte FAT ↔ ext2, corrupt-byte control detected)
+36. `[MLFIT] proof` — `--check-mlfit-proof` (7-of-7 regimes, naive baseline required to misfire on the control)
+37. `[KVPOLICY] proof` — `--check-kv-policy` (four policies, no frame leaks, online policy may not beat Belady)
+38. `[GPU-BENCH] proof` — `--check-gpu-bench` (blob FNV-1a equals encoder FNV-1a, `spectral_step_bytes >= 1`)
+39. `[KASLR] proof` — `--check-kaslr` (alignment, range, hardware entropy, resample nonce differs)
+40. `[SECURITY-FEATURES] proof` — `--check-security-features` (decoded bits cross-checked against raw CR0/CR4/EFER)
+41. `[UNSAFE] audit` — `--check-unsafe-audit` (census may only fall)
 
 If any of the hard milestone gates tracked in [docs/CI.md](docs/CI.md) fail, the entire CI run fails. No exceptions. No mercy.
+
+> **A note on gate design:** every one of gates 32–41 includes at least one field whose *required* value is a failure. `simulation=absent`. `image_base_randomised=0`. `wx_enforced=0`. `negctl_flagged=no` beside `naive_gap_baseline_flagged=yes`. These are not oversights that survived review; they are the review. A gate that only asserts good news is a gate that passes after you delete the feature it was guarding.
 
 > **CI story:** Once, I pushed a change that broke the desktop soak marker after a rendering change. CI caught the serial sentinel drift. I fixed it. Local pixel proof covers the framebuffer details before GUI proof artifacts get published. This is why CI exists.
 
@@ -2463,6 +2950,17 @@ Seal OS stands on the shoulders of:
 | **Voronoi Cell** | A region of space closer to one point than any other. Seal OS uses them for scheduling, memory, and files. They are the Swiss Army knife of the design. |
 | **Seal OS** | This operating system. Named after seals. Not Navy SEALs. The cute kind that balance balls on their noses. |
 | **LAAMBA** | I still don't know. If you figure it out, open an issue. |
+| **stratum** | A stratification decomposes a singular space into manifold pieces. Training states decompose the same way: `underfit`, `wellfit`, `overfit` are open strata, and `collapsing` is the singular stratum where the trajectory stops being a manifold at all. Also: a word that makes "your loss curve looks bad" sound fundable. |
+| **foliation** | A decomposition of a space into leaves. Here, token-stream space quotiented by the block-aligned-prefix relation. Not a plant. |
+| **Leaf** | An equivalence class of the prefix relation. Every sequence that agrees on a block-aligned prefix lives on the same one. |
+| **Plaque** | One KV block: the piece of a leaf actually resident in physical memory. Standard foliation vocabulary that happens to also describe something you scrape off. Both meanings apply to caches. |
+| **Elementary collapse** | Removing a free face from a complex without changing its homotopy type. In Seal OS it is what "evicting a block" means, which is the single most pretentious sentence in this glossary and I refuse to soften it. |
+| **Cycle rank** | `E − V + β₀` over a 1-skeleton. An upper bound on β₁, computed without reducing a boundary matrix. When it is 0 your validation curve is an arc. When it is not, ask yourself why your validation curve came back. |
+| **Participation ratio** | `tr(C)²/(3‖C‖²_F)`. Measures how many dimensions a covariance actually uses. Near 1/3 means "still learning," near 1 means "the trend fell below the noise floor," which is convergence with better PR. |
+| **Atlas / Chart / Germ / Nerve** | The module system. Atlas is the loader, a chart is a module, a germ is a kernel symbol a chart can resolve, and the nerve is the dependency graph that must stay acyclic. I could have called it `insmod`. Look at the rest of this README and ask yourself whether that was ever likely. |
+| **Bundle / Section** | A fibre bundle over the space of devices: the fibre above a device is the images it can execute, and a section picks one. In practice: firmware, and the fact that we do not have any. |
+| **Negative control** | A test that must fail. If it passes, the thing it was controlling for has stopped working and nobody would otherwise notice. The most underrated object in software. |
+| **`ponytail:` comment** | A marker in the source naming a deliberate shortcut, its ceiling, and its upgrade path. Distinct from a TODO, which is a marker naming a deliberate shortcut and then lying about it. |
 
 ---
 
@@ -2513,6 +3011,12 @@ Seal OS stands on the shoulders of:
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
 
 Seal OS is not a product. It is not a startup. It is not a revolution. It is one person's obsession with geometry, expressed as **102,073 lines of Rust across 388 files** and a dream of a world where operating systems think in spheres.
+
+It is also, as of this change, a **machine-learning-native kernel** — a non-POSIX, topological operating system whose actual job is to be the best place to run a training or inference workload. Not because it is fastest today; it is not. Because it is the only one where the kernel understands that a training run is a trajectory through a stratified space and a serving workload is a foliation of live sequences, and treats them as the objects they are instead of as processes that happen to be greedy.
+
+The gap between that sentence and what boots today is enormous, and I have spent about four thousand words above measuring it precisely rather than hiding it. Ten new subsystems. Ten boot proofs. Every proof with a control that must fail. Four real filesystem bugs found and fixed, one found and published unfixed. 585 unjustified `unsafe` blocks, up 17, frozen in a ratchet that only goes down.
+
+That last number is the honest summary of this whole project: I built the instrument that measures the mess, pointed it at myself first, and printed the reading.
 
 If that sounds interesting to you, welcome aboard. If it sounds insane, you're not wrong. But insanity is just genius that hasn't been understood yet.
 
