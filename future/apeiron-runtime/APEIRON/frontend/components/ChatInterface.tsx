@@ -1,18 +1,27 @@
 // Epsilon-Hollow - Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: Epsilon-Hollow
 
-import React, { useState, useRef, useEffect, memo } from 'react';
+import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { useApeiron, Message } from '../hooks/useApeiron';
-import { Send, Zap, Cpu } from 'lucide-react';
+import { Send, Zap, Cpu, Copy, Check } from 'lucide-react';
 
 // ⚡ Bolt: Performance optimization
 // Wrapped MessageItem in React.memo to prevent O(N^2) render performance issues
 // during text streaming. As chunks stream in, the state array updates which causes
 // the full list to re-render. React.memo ensures we only re-render the message
 // that actually changed (the one currently being streamed).
-const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) { return (
-    <div className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-        <div className={`max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
+const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = () => {
+        navigator.clipboard.writeText(msg.text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    return (
+    <div className={`flex group ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+        <div className={`relative max-w-2xl p-4 rounded-lg border ${msg.isPlasticityEvent
             ? 'border-green-500/50 bg-green-900/20 text-green-100 shadow-[0_0_15px_rgba(34,197,94,0.2)]'
             : msg.sender === 'user'
                 ? 'border-gray-700 bg-gray-800'
@@ -24,7 +33,16 @@ const MessageItem = memo(function MessageItem({ msg }: { msg: Message }) { retur
                     <span>Weights Updated</span>
                 </div>
             )}
-            <p className="whitespace-pre-wrap">{msg.text}</p>
+            <span className="sr-only">{msg.sender === 'user' ? 'User:' : 'System:'}</span>
+            <p className="whitespace-pre-wrap pr-8">{msg.text}</p>
+            <button
+                onClick={handleCopy}
+                aria-label="Copy message to clipboard"
+                title="Copy message to clipboard"
+                className={`absolute top-2 right-2 p-1.5 rounded-md bg-gray-900/80 text-gray-400 hover:text-white border border-gray-700 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500`}
+            >
+                {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+            </button>
         </div>
     </div>
 )}, (prevProps, nextProps) => {
@@ -71,11 +89,26 @@ const ChatInput = memo(function ChatInput({ sendMessage, tunnelStatus }: { sendM
 
 export default function ChatInterface() {
     const { messages, sendMessage, isLearning, pulseType, thoughts, tunnelStatus } = useApeiron();
-    const scrollRef = useRef<HTMLDivElement>(null);
+    const chatScrollRef = useRef<HTMLDivElement>(null);
+    const thoughtScrollRef = useRef<HTMLDivElement>(null);
+
+    // ⚡ Bolt: Performance optimization
+    // Extract array mapping out of the main render loop into useMemo.
+    // The parent ChatInterface re-renders frequently when telemetry state (like pulseType or thoughts) updates.
+    // Doing the O(N) mapping directly in the JSX meant we executed mapping on every re-render.
+    // By wrapping it in useMemo, we only map when the dependencies (messages/thoughts) actually change.
+    const renderedMessages = useMemo(() => messages.map((msg) => (
+        <MessageItem key={msg.id} msg={msg} />
+    )), [messages]);
+
+    const renderedThoughts = useMemo(() => thoughts.map((t, i) => (
+        <ThoughtItem key={i} thought={t} />
+    )), [thoughts]);
 
     // Auto-scroll to bottom
     useEffect(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+        chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+        thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, thoughts]);
 
     const getPulseColor = () => {
@@ -110,11 +143,14 @@ export default function ChatInterface() {
 
                     <div className="p-4 rounded border border-gray-800 bg-gray-900/50 h-64 overflow-hidden flex flex-col">
                         <div className="text-xs text-gray-500 mb-2 border-b border-gray-800 pb-1">THOUGHT STREAM</div>
-                        <div className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide">
-                            {thoughts.map((t, i) => (
-                                <ThoughtItem key={i} thought={t} />
-                            ))}
-                            <div ref={scrollRef} />
+                        <div
+                            className="flex-1 overflow-y-auto font-mono text-xs space-y-2 text-gray-400 scrollbar-hide"
+                            role="log"
+                            aria-live="polite"
+                            aria-label="Thought stream"
+                        >
+                            {renderedThoughts}
+                            <div ref={thoughtScrollRef} />
                         </div>
                     </div>
 
@@ -141,10 +177,38 @@ export default function ChatInterface() {
                     aria-live="polite"
                     aria-label="Chat history"
                 >
-                    {messages.map((msg) => (
-                        <MessageItem key={msg.id} msg={msg} />
-                    ))}
-                    <div ref={scrollRef} />
+                    {messages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center opacity-70">
+                            <div className="mb-4">
+                                <Cpu size={48} className={`mx-auto mb-4 ${tunnelStatus !== 'LOCKED' ? 'text-gray-600 animate-pulse' : 'text-green-500'}`} />
+                            </div>
+                            <h3 className={`text-lg font-bold mb-2 ${tunnelStatus !== 'LOCKED' ? 'text-gray-500' : 'text-green-400'}`}>
+                                {tunnelStatus !== 'LOCKED' ? 'Establishing Neural Link...' : 'System Ready'}
+                            </h3>
+                            <p className="text-sm text-gray-500 max-w-md">
+                                {tunnelStatus !== 'LOCKED'
+                                    ? 'Connecting to the Apeiron kernel. Please wait for the uplink to stabilize.'
+                                    : 'The runtime is active. Inject knowledge or query the manifold.'}
+                            </p>
+                            <div className="mt-8 flex flex-wrap justify-center gap-3">
+                                {['Run system diagnostic', 'Query manifold clusters', 'Initialize neuroplasticity'].map((suggestion) => (
+                                    <button
+                                        key={suggestion}
+                                        onClick={() => sendMessage(suggestion)}
+                                        disabled={tunnelStatus !== 'LOCKED'}
+                                        aria-label={tunnelStatus !== 'LOCKED' ? "System offline" : `Send suggestion: ${suggestion}`}
+                                        title={tunnelStatus !== 'LOCKED' ? "Cannot send message while offline" : suggestion}
+                                        className="px-4 py-2 text-sm bg-gray-900 border border-gray-700 rounded-full text-gray-300 hover:bg-gray-800 hover:text-green-400 disabled:opacity-50 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+                                    >
+                                        {suggestion}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        renderedMessages
+                    )}
+                    <div ref={chatScrollRef} />
                 </div>
 
                 {/* Input Zone */}
