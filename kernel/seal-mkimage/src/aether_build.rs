@@ -116,7 +116,11 @@ pub fn bootstrap_check(project_root: &Path, source: &Path) -> Result<(), String>
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("aether check failed for {}: {}", source.display(), stderr));
+        return Err(format!(
+            "aether check failed for {}: {}",
+            source.display(),
+            stderr
+        ));
     }
     Ok(())
 }
@@ -128,10 +132,7 @@ pub fn bootstrap_check(project_root: &Path, source: &Path) -> Result<(), String>
 /// 2. Compute source hash for incremental-build tracking.
 /// 3. Write a placeholder `.aeo` payload (full bytecode serialization in Phase 1).
 #[allow(dead_code)]
-pub fn compile_source(
-    config: &AetherBuildConfig,
-    source: &Path,
-) -> Result<AetherObject, String> {
+pub fn compile_source(config: &AetherBuildConfig, source: &Path) -> Result<AetherObject, String> {
     if config.verify_syntax {
         bootstrap_check(&config.project_root, source)?;
     }
@@ -159,12 +160,14 @@ pub fn compile_source(
 /// Compile all discovered sources and write object images to the output dir.
 #[allow(dead_code)]
 pub fn build_all(config: &AetherBuildConfig) -> Result<HashMap<PathBuf, AetherObject>, String> {
-    fs::create_dir_all(&config.output_dir)
-        .map_err(|e| format!("cannot create output dir: {e}"))?;
+    fs::create_dir_all(&config.output_dir).map_err(|e| format!("cannot create output dir: {e}"))?;
 
     let sources = discover_sources(config);
     if sources.is_empty() {
-        eprintln!("[aether-build] warning: no Aether sources found in {:?}", config.source_dirs);
+        eprintln!(
+            "[aether-build] warning: no Aether sources found in {:?}",
+            config.source_dirs
+        );
     }
 
     let mut artifacts = HashMap::new();
