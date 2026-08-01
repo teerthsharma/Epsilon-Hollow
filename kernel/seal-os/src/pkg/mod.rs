@@ -4,6 +4,7 @@
 //! ManifoldPkg — native package manager.
 
 pub mod carrier;
+pub mod channel;
 pub mod format;
 pub mod manifest;
 pub mod registry;
@@ -71,6 +72,9 @@ pub fn emit_boot_proof() {
     let remove_ok = pkg.remove(PROOF_PKG_NAME).is_ok();
     let after_remove = pkg.package_count();
     let counts_ok = after_install == before + 1 && after_remove == before;
+    // Remote release channel: measured after the local counts are captured, so
+    // the channel's own install/remove cycle cannot perturb them.
+    let ch = self::channel::measure(&mut pkg, &eph);
     let result = if parse_ok
         && registry_index_ok
         && signature_ok
@@ -79,13 +83,14 @@ pub fn emit_boot_proof() {
         && extract_ok
         && remove_ok
         && counts_ok
+        && ch.ok()
     {
         "pass"
     } else {
         "fail"
     };
     crate::serial_println!(
-        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} registry_index={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature={} result={}",
+        "[ManifoldPkg] proof version=1 source=embedded_eph parse={} registry_index={} install={} extract={} list={} remove={} files=1 bytes={} package_count_before={} package_count_after_install={} package_count_after_remove={} metadata_only=0 signature={} channel_endpoint={} channel_transport={} channel_index_signature={} channel_index_version={} channel_packages_fetched={} channel_digest_ok={} channel_rollback_refused={} channel_tamper_refused={} channel_digest_mismatch_refused={} channel_package_signature_enforced={} channel_live_probe={} channel_fail_closed={} channel_unverified_fallback=0 result={}",
         if parse_ok { "ok" } else { "fail" },
         if registry_index_ok { "ed25519_fixture" } else { "fail" },
         if install_ok { "ok" } else { "fail" },
@@ -97,6 +102,18 @@ pub fn emit_boot_proof() {
         after_install,
         after_remove,
         if signature_ok { "ed25519_fixture" } else { "fail" },
+        self::channel::CHANNEL_ENDPOINT,
+        ch.transport,
+        if ch.index_signature_ok { "ed25519_fixture" } else { "fail" },
+        ch.index_version,
+        ch.packages_fetched,
+        ch.digest_ok,
+        u8::from(ch.rollback_refused),
+        u8::from(ch.tamper_refused),
+        u8::from(ch.digest_mismatch_refused),
+        u8::from(ch.package_signature_enforced),
+        ch.live_probe,
+        u8::from(ch.fail_closed),
         result
     );
 }

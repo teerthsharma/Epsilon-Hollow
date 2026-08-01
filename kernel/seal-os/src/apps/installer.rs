@@ -3,10 +3,29 @@
 
 //! Full-screen disk installer for Seal OS.
 //!
-//! Disk partitioning and formatting require raw block device write access.
-//! Full implementation in v0.5.0.
+//! Two install paths live here:
+//!
+//! * the safe VFS path, which lays the boot marker, home directory and account
+//!   down through the VFS and is what the interactive wizard runs;
+//! * the raw block path ([`raw_install_proof_line`]), which writes a real GPT
+//!   and a real ext2 filesystem to the armed install target and then mounts the
+//!   result back through [`crate::fs::ext2::Ext2Fs`].
+//!
+//! Raw writes are funnelled through `drivers::block::write_install_block`, so a
+//! device that is not the armed install target — the boot disk above all — is
+//! refused before any I/O reaches it.
 
+use crate::drivers::block::partition::{attach, SCRATCH_ROOT_DEV_NUM};
+use crate::drivers::block::ramdisk::{ensure_scratch, SCRATCH_DEV_NUM};
+use crate::drivers::block::{
+    arm_install_target, disarm_install_target, read_block, write_install_block, BlockError,
+    BOOT_DEV_NUM,
+};
 use crate::drivers::interrupts;
+use crate::fs::ext2::{Ext2Fs, EXT2_MAGIC};
+use crate::fs::ext2_format::{format_ext2, FormatReport};
+use crate::fs::gpt::{self, GptVerify, PartSpec};
+use crate::fs::vfs::FileSystem;
 use crate::graphics::font::{self, CHAR_HEIGHT, CHAR_WIDTH};
 use crate::graphics::framebuffer::Framebuffer;
 use crate::serial_println;
@@ -187,13 +206,14 @@ impl Installer {
         self.draw_title(fb, "Partition Scheme");
 
         let lines: &[&str] = &[
-            "Seal OS will create the following partitions:",
+            "Seal OS lays down the following partitions:",
             "",
-            "  EFI System Partition  — 512 MB, FAT32",
-            "  Root Partition        — remainder, ManifoldFS",
+            "  EFI System Partition  — GPT type C12A7328, unformatted",
+            "  Seal Root Partition   — remainder, ext2",
             "",
-            "Disk partitioning and formatting require raw block",
-            "device write access. Full implementation in v0.5.0.",
+            "Raw GPT and ext2 writes only reach the armed install",
+            "target. This wizard installs through the VFS; the raw",
+            "path runs against the install scratch device.",
         ];
 
         let start_y = fb.height / 3;
@@ -595,42 +615,69 @@ impl Installer {
             .get(self.selected_disk as usize)
             .copied()
             .unwrap_or("unknown");
-        let boot_marker = format!(
-            "Seal OS {} safe-install\nselected_disk={}\nuser={}\n",
-            crate::VERSION,
-            disk,
-            username
-        );
-        let profile = format!(
-            "user={}\nshell=/bin/shell\nhome=/home/{}\n",
-            username,
-            username
-        );
-        let boot_ok = write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", boot_marker.as_bytes());
-        let profile_path = format!("/home/{}/.seal-profile", username);
-        let home_ok = create_dir_path(&format!("/home/{}", username));
-        let profile_ok = home_ok && write_file_verified(&profile_path, profile.as_bytes());
-        let user_ok = if username == "seal" {
-            crate::security::shadow::set_password(username, password)
-        } else {
-            if crate::security::passwd::get_user(username).is_none() {
-                crate::security::passwd::add_user(username, password, 1001, 1001);
-            }
-            crate::security::passwd::get_user(username).is_some()
-        };
-        let auth = crate::security::shadow::auth_shadow_proof();
-        let result = boot_ok && profile_ok && user_ok && auth.passes();
+        let safe = safe_install(username, password, disk);
+        // Deliberately not the `[INSTALLER] proof` marker: the boot proof owns
+        // that line and the host checker requires it to appear exactly once.
         serial_println!(
-            "[INSTALLER] proof version=1 mode=safe_vfs selected_disk={} boot_marker={} home={} profile={} user={} auth_topo5000={} raw_gpt=0 raw_format=0 result={}",
+            "[INSTALLER] install version=2 mode=safe_vfs selected_disk={} boot_marker={} home={} profile={} user={} auth_topo5000={} result={}",
             disk,
-            if boot_ok { 1 } else { 0 },
-            if home_ok { 1 } else { 0 },
-            if profile_ok { 1 } else { 0 },
-            if user_ok { 1 } else { 0 },
-            if auth.passes() { 1 } else { 0 },
-            if result { "pass" } else { "fail" }
+            if safe.boot_marker { 1 } else { 0 },
+            if safe.home { 1 } else { 0 },
+            if safe.profile { 1 } else { 0 },
+            if safe.user { 1 } else { 0 },
+            if safe.auth { 1 } else { 0 },
+            if safe.passes() { "pass" } else { "fail" }
         );
-        result
+        safe.passes()
+    }
+}
+
+/// Outcome of the VFS-side install steps.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SafeInstallReport {
+    pub boot_marker: bool,
+    pub home: bool,
+    pub profile: bool,
+    pub user: bool,
+    pub auth: bool,
+}
+
+impl SafeInstallReport {
+    pub fn passes(&self) -> bool {
+        self.boot_marker && self.home && self.profile && self.user && self.auth
+    }
+}
+
+/// Write the boot marker, home directory, profile and account through the VFS.
+fn safe_install(username: &str, password: &str, disk: &str) -> SafeInstallReport {
+    let boot_marker_text = format!(
+        "Seal OS {} install\nselected_disk={}\nuser={}\n",
+        crate::VERSION,
+        disk,
+        username
+    );
+    let profile = format!(
+        "user={}\nshell=/bin/shell\nhome=/home/{}\n",
+        username, username
+    );
+    let boot_marker = write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", boot_marker_text.as_bytes());
+    let home = create_dir_path(&format!("/home/{}", username));
+    let profile_path = format!("/home/{}/.seal-profile", username);
+    let profile_ok = home && write_file_verified(&profile_path, profile.as_bytes());
+    let user = if username == "seal" {
+        crate::security::shadow::set_password(username, password)
+    } else {
+        if crate::security::passwd::get_user(username).is_none() {
+            crate::security::passwd::add_user(username, password, 1001, 1001);
+        }
+        crate::security::passwd::get_user(username).is_some()
+    };
+    SafeInstallReport {
+        boot_marker,
+        home,
+        profile: profile_ok,
+        user,
+        auth: crate::security::shadow::auth_shadow_proof().passes(),
     }
 }
 
@@ -672,4 +719,402 @@ fn write_file_verified(path: &str, data: &[u8]) -> bool {
         Some(read == data.len() && buf == data)
     })
     .unwrap_or(false)
+}
+
+// ─── Raw block install path ──────────────────────────────────────────────────
+
+/// Install scratch disk: 4 MiB, enough for a GPT plus a small ext2 root.
+pub const SCRATCH_SECTORS: u64 = 8192;
+/// 1 MiB alignment for the first partition, as UEFI installers use.
+const ESP_FIRST_LBA: u64 = 2048;
+const ESP_LAST_LBA: u64 = 3071;
+const ROOT_FIRST_LBA: u64 = 3072;
+/// Account created by the boot-time proof. Never the default `seal` account.
+const PROOF_USER: &str = "sealinstall";
+const SCRATCH_LABEL: &str = "scratch0";
+
+/// Everything the raw path measured on the way through.
+#[derive(Debug, Clone, Copy)]
+pub struct RawInstallReport {
+    pub target_dev: u32,
+    pub part_dev: u32,
+    pub gpt_written: bool,
+    pub gpt: GptVerify,
+    pub format_written: bool,
+    pub format: FormatReport,
+    pub superblock_magic: u16,
+    pub mounted: bool,
+    pub root_entries: usize,
+    pub dot: bool,
+    pub dotdot: bool,
+    pub guard_unarmed_refused: bool,
+    pub guard_boot_dev_refused: bool,
+    pub guard_other_dev_refused: bool,
+}
+
+impl RawInstallReport {
+    fn new(target_dev: u32, part_dev: u32) -> Self {
+        Self {
+            target_dev,
+            part_dev,
+            gpt_written: false,
+            gpt: GptVerify::default(),
+            format_written: false,
+            format: FormatReport::default(),
+            superblock_magic: 0,
+            mounted: false,
+            root_entries: 0,
+            dot: false,
+            dotdot: false,
+            guard_unarmed_refused: false,
+            guard_boot_dev_refused: false,
+            guard_other_dev_refused: false,
+        }
+    }
+
+    /// The GPT is real, the filesystem is real, the reader mounted it back, and
+    /// all three refusal controls fired.
+    pub fn passes(&self) -> bool {
+        self.gpt_written
+            && self.gpt.passes()
+            && self.gpt.partitions == 2
+            && self.format_written
+            && self.superblock_magic == EXT2_MAGIC
+            && self.mounted
+            && self.root_entries >= 2
+            && self.dot
+            && self.dotdot
+            && self.guard_unarmed_refused
+            && self.guard_boot_dev_refused
+            && self.guard_other_dev_refused
+    }
+}
+
+fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut out = [0u8; N];
+    if !crate::drivers::entropy::getrandom(&mut out) {
+        // Entropy source unavailable: fall back to the tick counter so the
+        // values still differ between boots.
+        let seed = interrupts::ticks().wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = (seed >> ((i % 8) * 8)) as u8 ^ (i as u8);
+        }
+    }
+    out
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+/// Partition `dev_num`, format its root partition as ext2, and mount the result
+/// back through the existing ext2 reader.
+pub fn run_raw_install(dev_num: u32, part_dev_num: u32) -> RawInstallReport {
+    let mut report = RawInstallReport::new(dev_num, part_dev_num);
+    let probe = [0u8; 512];
+
+    // Negative control: nothing is armed, so even the intended target is refused.
+    disarm_install_target();
+    report.guard_unarmed_refused =
+        write_install_block(dev_num, 0, &probe) == Err(BlockError::Refused);
+    // Negative control: the boot device can never become the install target.
+    report.guard_boot_dev_refused = arm_install_target(BOOT_DEV_NUM) == Err(BlockError::Refused);
+
+    if arm_install_target(dev_num).is_err() {
+        return report;
+    }
+    // Negative control: with the scratch disk armed, the boot disk stays refused.
+    report.guard_other_dev_refused =
+        write_install_block(BOOT_DEV_NUM, 0, &probe) == Err(BlockError::Refused);
+
+    let layout = match gpt::GptLayout::for_disk(SCRATCH_SECTORS) {
+        Ok(layout) => layout,
+        Err(_) => {
+            disarm_install_target();
+            return report;
+        }
+    };
+    let parts = [
+        PartSpec {
+            type_guid: gpt::TYPE_ESP,
+            first_lba: ESP_FIRST_LBA,
+            last_lba: ESP_LAST_LBA,
+            name: "SEAL_ESP",
+        },
+        PartSpec {
+            type_guid: gpt::TYPE_DATA,
+            first_lba: ROOT_FIRST_LBA,
+            last_lba: layout.last_usable_lba,
+            name: "SEAL_ROOT",
+        },
+    ];
+    let unique_guids = [random_bytes::<16>(), random_bytes::<16>()];
+    report.gpt_written = gpt::write_gpt(
+        dev_num,
+        SCRATCH_SECTORS,
+        &parts,
+        &random_bytes::<16>(),
+        &unique_guids,
+    )
+    .is_ok();
+    disarm_install_target();
+
+    if let Ok(verify) = gpt::verify_gpt(dev_num) {
+        report.gpt = verify;
+    }
+    if !report.gpt_written {
+        return report;
+    }
+
+    let root_sectors = layout.last_usable_lba - ROOT_FIRST_LBA + 1;
+    if attach(part_dev_num, dev_num, ROOT_FIRST_LBA, root_sectors).is_err() {
+        return report;
+    }
+    if arm_install_target(part_dev_num).is_err() {
+        return report;
+    }
+    let uuid = random_bytes::<16>();
+    match format_ext2(part_dev_num, root_sectors, "SEAL_ROOT", &uuid) {
+        Ok(format) => {
+            report.format_written = true;
+            report.format = format;
+        }
+        Err(_) => {
+            disarm_install_target();
+            return report;
+        }
+    }
+    disarm_install_target();
+
+    // Read the superblock straight off the partition: byte offset 1024.
+    let mut sb = [0u8; 1024];
+    if read_block(part_dev_num, 2, &mut sb).is_ok() {
+        report.superblock_magic = u16::from_le_bytes([sb[56], sb[57]]);
+    }
+
+    // Mount and walk the freshly written filesystem with the existing reader.
+    let mut fs = Ext2Fs::new(part_dev_num);
+    if fs.mount().is_ok() {
+        report.mounted = true;
+        if let Ok(handle) = fs.lookup("/") {
+            if let Ok(entries) = fs.readdir(handle) {
+                report.root_entries = entries.len();
+                report.dot = entries.iter().any(|entry| entry.name == ".");
+                report.dotdot = entries.iter().any(|entry| entry.name == "..");
+            }
+        }
+    }
+    report
+}
+
+/// Run the full install proof — VFS install plus raw GPT and ext2 on the
+/// install scratch device — and return the single serial proof line.
+///
+/// The caller prints it; the host checker requires the `[INSTALLER] proof`
+/// marker to appear exactly once per boot.
+pub fn raw_install_proof_line() -> String {
+    let password = hex_string(&random_bytes::<16>());
+    let safe = safe_install(PROOF_USER, &password, SCRATCH_LABEL);
+
+    let raw = match ensure_scratch(SCRATCH_SECTORS) {
+        Ok(dev_num) => run_raw_install(dev_num, SCRATCH_ROOT_DEV_NUM),
+        Err(_) => RawInstallReport::new(SCRATCH_DEV_NUM, SCRATCH_ROOT_DEV_NUM),
+    };
+    let result = safe.passes() && raw.passes();
+
+    format!(
+        "[INSTALLER] proof version=2 mode=raw_block selected_disk={} target_dev=0x{:x} part_dev=0x{:x} \
+boot_marker={} home={} profile={} user={} auth_topo5000={} raw_gpt={} raw_format={} \
+gpt_partitions={} gpt_header_crc={:08x} gpt_header_crc_ok={} gpt_entries_crc_ok={} \
+gpt_backup_header_crc_ok={} gpt_backup_agree={} gpt_alt_lba_ok={} gpt_pmbr={} \
+gpt_first_usable={} gpt_last_usable={} gpt_first_part_lba={} \
+ext2_magic={:04x} ext2_block_size={} ext2_blocks={} ext2_inodes={} ext2_free_blocks={} \
+ext2_mount={} ext2_root_entries={} ext2_dot={} ext2_dotdot={} \
+guard_unarmed_refused={} guard_boot_dev_refused={} guard_other_dev_refused={} result={}",
+        SCRATCH_LABEL,
+        raw.target_dev,
+        raw.part_dev,
+        u8::from(safe.boot_marker),
+        u8::from(safe.home),
+        u8::from(safe.profile),
+        u8::from(safe.user),
+        u8::from(safe.auth),
+        u8::from(raw.gpt_written && raw.gpt.passes()),
+        u8::from(raw.format_written && raw.superblock_magic == EXT2_MAGIC),
+        raw.gpt.partitions,
+        raw.gpt.header_crc,
+        u8::from(raw.gpt.header_crc_ok),
+        u8::from(raw.gpt.entries_crc_ok),
+        u8::from(raw.gpt.backup_header_crc_ok),
+        u8::from(raw.gpt.backup_agrees),
+        u8::from(raw.gpt.alt_lba_ok),
+        u8::from(raw.gpt.protective_mbr_ok),
+        raw.gpt.first_usable_lba,
+        raw.gpt.last_usable_lba,
+        raw.gpt.first_part_first_lba,
+        raw.superblock_magic,
+        raw.format.block_size,
+        raw.format.blocks_count,
+        raw.format.inodes_count,
+        raw.format.free_blocks,
+        u8::from(raw.mounted),
+        raw.root_entries,
+        u8::from(raw.dot),
+        u8::from(raw.dotdot),
+        u8::from(raw.guard_unarmed_refused),
+        u8::from(raw.guard_boot_dev_refused),
+        u8::from(raw.guard_other_dev_refused),
+        if result { "pass" } else { "fail" }
+    )
+}
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::test_assert;
+
+    /// Partition the scratch disk once and hand every test the same report.
+    fn scratch_report() -> Option<RawInstallReport> {
+        let dev_num = ensure_scratch(SCRATCH_SECTORS).ok()?;
+        Some(run_raw_install(dev_num, SCRATCH_ROOT_DEV_NUM))
+    }
+
+    /// The stored header CRC must equal a CRC computed independently of the
+    /// writer: read the header back, zero the CRC field, hash the first 92 bytes.
+    fn test_gpt_header_crc_matches_independent() -> TestResult {
+        let report = match scratch_report() {
+            Some(report) => report,
+            None => return TestResult::Fail("scratch device unavailable"),
+        };
+        test_assert!(report.gpt_written, "GPT write failed");
+
+        let mut hdr = [0u8; 512];
+        test_assert!(
+            read_block(report.target_dev, 1, &mut hdr).is_ok(),
+            "primary header read failed"
+        );
+        test_assert!(&hdr[0..8] == &gpt::SIGNATURE[..], "GPT signature mismatch");
+
+        let stored = u32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
+        let mut scratch = alloc::vec::Vec::from(&hdr[..92]);
+        scratch[16..20].copy_from_slice(&0u32.to_le_bytes());
+        test_assert!(
+            gpt::crc32(&scratch) == stored,
+            "header CRC does not match an independent computation"
+        );
+        // A CRC that is insensitive to the payload would prove nothing.
+        scratch[24] ^= 0xFF;
+        test_assert!(
+            gpt::crc32(&scratch) != stored,
+            "CRC did not change when the header changed"
+        );
+        TestResult::Pass
+    }
+
+    /// The backup header must cross-link to the primary and repeat its fields.
+    fn test_gpt_backup_mirrors_primary() -> TestResult {
+        let report = match scratch_report() {
+            Some(report) => report,
+            None => return TestResult::Fail("scratch device unavailable"),
+        };
+        test_assert!(report.gpt.backup_header_crc_ok, "backup header CRC invalid");
+        test_assert!(report.gpt.backup_agrees, "backup header disagrees");
+        test_assert!(report.gpt.alt_lba_ok, "alternate LBA cross-link wrong");
+        test_assert!(report.gpt.protective_mbr_ok, "protective MBR missing");
+        test_assert!(report.gpt.partitions == 2, "expected two partition entries");
+        test_assert!(
+            report.gpt.first_part_first_lba == ESP_FIRST_LBA,
+            "first partition does not start where it was written"
+        );
+        TestResult::Pass
+    }
+
+    /// The formatted superblock must round-trip through the ext2 reader's mount.
+    fn test_ext2_superblock_roundtrips() -> TestResult {
+        let report = match scratch_report() {
+            Some(report) => report,
+            None => return TestResult::Fail("scratch device unavailable"),
+        };
+        test_assert!(report.format_written, "format failed");
+        test_assert!(report.superblock_magic == EXT2_MAGIC, "bad superblock magic");
+        test_assert!(report.format.block_size == 1024, "unexpected block size");
+        test_assert!(report.format.blocks_count > 0, "no blocks");
+        test_assert!(report.format.inodes_count > 0, "no inodes");
+        test_assert!(report.mounted, "ext2 reader could not mount the format");
+        TestResult::Pass
+    }
+
+    /// Format, mount, and list the root directory through the ext2 reader.
+    fn test_format_mount_readdir_finds_dot_entries() -> TestResult {
+        let report = match scratch_report() {
+            Some(report) => report,
+            None => return TestResult::Fail("scratch device unavailable"),
+        };
+        test_assert!(report.mounted, "mount failed");
+        test_assert!(report.dot, "root directory is missing `.`");
+        test_assert!(report.dotdot, "root directory is missing `..`");
+        test_assert!(report.root_entries >= 2, "root directory is short entries");
+        TestResult::Pass
+    }
+
+    /// A raw write aimed anywhere but the armed target must be refused.
+    fn test_write_to_unselected_device_is_refused() -> TestResult {
+        let dev_num = match ensure_scratch(SCRATCH_SECTORS) {
+            Ok(dev_num) => dev_num,
+            Err(_) => return TestResult::Fail("scratch device unavailable"),
+        };
+        let probe = [0u8; 512];
+
+        disarm_install_target();
+        test_assert!(
+            write_install_block(dev_num, 0, &probe) == Err(BlockError::Refused),
+            "write allowed with no target armed"
+        );
+        test_assert!(
+            arm_install_target(BOOT_DEV_NUM) == Err(BlockError::Refused),
+            "boot device was accepted as an install target"
+        );
+        test_assert!(arm_install_target(dev_num).is_ok(), "arming scratch failed");
+        test_assert!(
+            write_install_block(BOOT_DEV_NUM, 0, &probe) == Err(BlockError::Refused),
+            "boot device write allowed while scratch was armed"
+        );
+        // Positive control: the armed target itself is writable.
+        test_assert!(
+            write_install_block(dev_num, 0, &probe).is_ok(),
+            "armed target refused its own write"
+        );
+        disarm_install_target();
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "installer::gpt_header_crc_matches_independent",
+            test_gpt_header_crc_matches_independent,
+        );
+        crate::testing::register_test(
+            "installer::gpt_backup_mirrors_primary",
+            test_gpt_backup_mirrors_primary,
+        );
+        crate::testing::register_test(
+            "installer::ext2_superblock_roundtrips",
+            test_ext2_superblock_roundtrips,
+        );
+        crate::testing::register_test(
+            "installer::format_mount_readdir_finds_dot_entries",
+            test_format_mount_readdir_finds_dot_entries,
+        );
+        crate::testing::register_test(
+            "installer::write_to_unselected_device_is_refused",
+            test_write_to_unselected_device_is_refused,
+        );
+    }
 }

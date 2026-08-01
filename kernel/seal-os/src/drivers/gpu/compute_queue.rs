@@ -91,6 +91,9 @@ const SH_REG_COMPUTE_PGM_LO: u32 = 0x0E40;
 /// COMPUTE_PGM_HI — shader address bits 47:32.
 const SH_REG_COMPUTE_PGM_HI: u32 = 0x0E41;
 
+/// COMPUTE_PGM_RSRC1 — VGPR/SGPR counts, float mode, IEEE mode.
+const SH_REG_COMPUTE_PGM_RSRC1: u32 = 0x0E48;
+
 /// COMPUTE_TMPRING_SIZE — scratch memory size.
 const SH_REG_COMPUTE_TMPRING_SIZE: u32 = 0x0E44;
 
@@ -340,6 +343,18 @@ impl ComputeRing {
         let lo = ((shader_phys >> 8) & 0xFFFFFFFF) as u32;
         let hi = ((shader_phys >> 40) & 0xFFFF) as u32;
         self.set_sh_regs(SH_REG_COMPUTE_PGM_LO, &[lo, hi]);
+    }
+
+    /// Set `COMPUTE_PGM_RSRC1`/`RSRC2` — register counts, float mode, and how
+    /// many user SGPRs the shader expects.  Dispatching without these leaves
+    /// the wave with whatever the previous kernel programmed.
+    ///
+    /// # Safety
+    /// The values must describe the shader currently set by `set_compute_pgm`.
+    /// Understating the VGPR/SGPR count corrupts neighbouring waves; a wrong
+    /// `USER_SGPR` count silently shifts every kernel argument.
+    pub unsafe fn set_compute_pgm_rsrc(&mut self, rsrc1: u32, rsrc2: u32) {
+        self.set_sh_regs(SH_REG_COMPUTE_PGM_RSRC1, &[rsrc1, rsrc2]);
     }
 
     /// Submit all queued packets to the GPU and return a fence.

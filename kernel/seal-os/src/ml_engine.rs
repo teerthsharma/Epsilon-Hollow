@@ -10,6 +10,8 @@ use alloc::vec::Vec;
 use aether_core::ml::linalg::LossConfig;
 use aether_core::ml::{Activation, DenseLayer, OptimizerConfig, Tensor, MLP};
 
+pub mod foliation;
+pub mod stratum;
 pub mod tensor_viz;
 pub mod topo_asm;
 

@@ -5,9 +5,11 @@
 
 use spin::Mutex;
 
+pub mod certs;
 pub mod dhcp;
 pub mod dns;
 pub mod e1000;
+pub mod ecdhe;
 pub mod http;
 pub mod icmp;
 pub mod tcp;
@@ -15,6 +17,7 @@ pub mod tls;
 pub mod tls_socket;
 pub mod udp;
 pub mod virtio_net;
+pub mod x509;
 
 static NET_DEVICE: Mutex<Option<e1000::E1000>> = Mutex::new(None);
 

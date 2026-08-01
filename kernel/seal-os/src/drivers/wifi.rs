@@ -1,13 +1,22 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! WiFi driver — PCI probe and honest status reporting.
-//! Real firmware upload and 802.11 frame processing are not yet implemented;
-//! the driver detects hardware but returns empty scans until firmware support
-//! is added.
+//! WiFi driver — PCI probe, bundle section request, honest status reporting.
+//!
+//! The driver detects hardware and then asks the bundle for the vendor section
+//! (firmware) matching the PCI IDs. No section, no radio: the driver reports
+//! `section_missing` and every operation fails with the section name. Seal OS ships
+//! no vendor sections, so on an unprovisioned system this is the normal outcome.
+//!
+//! Even with a section resident, 802.11 association is not implemented — the
+//! section is fetched and verified, not yet uploaded to the device. `scan()`
+//! returns nothing in either case, and nothing in this file generates network
+//! entries.
 
 use alloc::string::String;
 use alloc::vec::Vec;
+
+use crate::bundle::{self, SectionError, SectionRef};
 
 const WIFI_CHIPSETS: &[(u16, u16, &str)] = &[
     (0x8086, 0x2723, "Intel Wi-Fi 6 AX200"),
@@ -56,6 +65,8 @@ impl WifiSecurity {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WifiState {
     Disabled,
+    /// Hardware present, vendor section refused or absent. The radio stays down.
+    SectionMissing,
     Disconnected,
     Scanning,
     Connecting,
@@ -71,6 +82,14 @@ pub struct WifiDriver {
     chipset_name: Option<&'static str>,
     vendor_id: u16,
     device_id: u16,
+    section_name: Option<String>,
+    section: Option<SectionRef>,
+    section_error: Option<SectionError>,
+}
+
+/// Bundle section name for a wireless controller, derived from its PCI IDs.
+pub fn section_name_for(vendor_id: u16, device_id: u16) -> String {
+    alloc::format!("wifi-{:04x}-{:04x}.section", vendor_id, device_id)
 }
 
 impl WifiDriver {
@@ -83,6 +102,9 @@ impl WifiDriver {
             chipset_name: None,
             vendor_id: 0,
             device_id: 0,
+            section_name: None,
+            section: None,
+            section_error: None,
         }
     }
 
@@ -97,22 +119,89 @@ impl WifiDriver {
                     .iter()
                     .find(|(v, d, _)| *v == dev.vendor_id && *d == dev.device_id)
                     .map(|(_, _, name)| *name);
-                self.state = WifiState::Disconnected;
+                self.request_section();
                 return;
             }
         }
         self.state = WifiState::NoHardware;
     }
 
+    /// Ask the bundle for this controller's section. Fail-closed: on any error the
+    /// radio stays down and the error is kept for reporting.
+    fn request_section(&mut self) {
+        let name = section_name_for(self.vendor_id, self.device_id);
+        match bundle::request_section(&name) {
+            Ok(section) => {
+                self.section = Some(section);
+                self.section_error = None;
+                self.state = WifiState::Disconnected;
+            }
+            Err(e) => {
+                self.section = None;
+                self.section_error = Some(e);
+                self.state = WifiState::SectionMissing;
+            }
+        }
+        self.section_name = Some(name);
+    }
+
     pub fn init_from_pci(&mut self, bar0: u32) {
         self.pci_bar = bar0 as u64;
-        self.state = WifiState::Disconnected;
+        self.request_section();
+    }
+
+    /// Section name this controller needs, once probed.
+    pub fn section_name(&self) -> Option<&str> {
+        self.section_name.as_deref()
+    }
+
+    pub fn section_error(&self) -> Option<SectionError> {
+        self.section_error
+    }
+
+    /// Size of the resident section, or 0 when none is provisioned.
+    pub fn section_bytes(&self) -> usize {
+        self.section.as_ref().map(|c| c.bytes.len()).unwrap_or(0)
+    }
+
+    /// True only when the radio has a verified section resident.
+    pub fn is_up(&self) -> bool {
+        self.section.is_some()
+            && matches!(
+                self.state,
+                WifiState::Disconnected
+                    | WifiState::Scanning
+                    | WifiState::Connecting
+                    | WifiState::Connected
+            )
+    }
+
+    pub fn state_tag(&self) -> &'static str {
+        match self.state {
+            WifiState::NoHardware => "no_hardware",
+            WifiState::Disabled => "disabled",
+            WifiState::SectionMissing => "section_missing",
+            WifiState::Disconnected => "disconnected",
+            WifiState::Scanning => "scanning",
+            WifiState::Connecting => "connecting",
+            WifiState::Connected => "connected",
+        }
     }
 
     pub fn status_string(&self) -> String {
         match self.state {
             WifiState::NoHardware => String::from("WiFi: no wireless hardware detected"),
             WifiState::Disabled => String::from("WiFi: disabled"),
+            WifiState::SectionMissing => alloc::format!(
+                "WiFi: {} ({:04X}:{:04X}) down — bundle section '{}' {}",
+                self.chipset_name.unwrap_or("unknown wireless controller"),
+                self.vendor_id,
+                self.device_id,
+                self.section_name.as_deref().unwrap_or("?"),
+                self.section_error
+                    .map(|e| e.tag())
+                    .unwrap_or("not_provisioned")
+            ),
             WifiState::Disconnected => match self.chipset_name {
                 Some(name) => alloc::format!(
                     "WiFi: {} ({:04X}:{:04X}) disconnected",
@@ -143,16 +232,17 @@ impl WifiDriver {
     }
 
     /// Scan for available networks.
-    /// Currently returns empty because firmware upload and 802.11 frame
-    /// processing are not yet implemented. Hardware detection works.
+    ///
+    /// Always empty. Without a section the radio is down; with a section the
+    /// upload and 802.11 frame path are still unimplemented. This function
+    /// never fabricates entries — an empty result means no scan happened.
     pub fn scan(&mut self) -> Vec<WifiNetwork> {
-        if self.state == WifiState::NoHardware {
+        if !self.is_up() {
             return Vec::new();
         }
         let prev = self.state;
         self.state = WifiState::Scanning;
-        // TODO: implement real 802.11 active/passive scan once firmware
-        // upload and frame construction are available.
+        // TODO: section upload to device SRAM, then 802.11 active/passive scan.
         self.state = prev;
         Vec::new()
     }
@@ -161,14 +251,25 @@ impl WifiDriver {
         if self.state == WifiState::NoHardware {
             return Err(String::from("WiFi: no wireless hardware detected"));
         }
+        if !self.is_up() {
+            return Err(alloc::format!(
+                "WiFi: bundle section '{}' {} — install the vendor section package to bring the radio up",
+                self.section_name.as_deref().unwrap_or("?"),
+                self.section_error
+                    .map(|e| e.tag())
+                    .unwrap_or("not_provisioned")
+            ));
+        }
         Err(String::from(
-            "WiFi: connection not implemented — firmware upload and 802.11 association are pending",
+            "WiFi: section resident but 802.11 association is not implemented",
         ))
     }
 
     pub fn disconnect(&mut self) {
-        self.state = if self.chipset_name.is_some() {
+        self.state = if self.section.is_some() {
             WifiState::Disconnected
+        } else if self.chipset_name.is_some() {
+            WifiState::SectionMissing
         } else {
             WifiState::NoHardware
         };

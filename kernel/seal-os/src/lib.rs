@@ -12,7 +12,9 @@ extern crate alloc;
 pub mod apps;
 #[cfg(not(test))]
 pub mod async_rt;
+pub mod atlas;
 pub mod boot;
+pub mod bundle;
 pub mod cpu;
 pub mod drivers;
 pub mod fs;
@@ -382,6 +384,8 @@ fn boot_graphical(fb: &'static Framebuffer) {
     memory::swap::init();
     memory::virt::emit_cow_proof();
     security::audit::emit_flush_proof();
+    // Must follow the audit flush: the audit field reads the flushed log size.
+    security::emit_per_feature_proofs();
     security::passwd::init_passwd();
     security::shadow::shadow_init();
     security::shadow::emit_auth_shadow_proof();
@@ -511,6 +515,7 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     init_manifold_pkg();
     pkg::emit_boot_proof();
+    emit_subsystem_proofs();
     graphics::splash::draw_progress_bar(fb, 50, "Network stack");
 
     init_aether_lang();
@@ -2188,6 +2193,28 @@ let result = aether_boot_probe~
         ),
         Err(e) => serial_println!("[Aether-Lang] runtime proof failed: {}", e),
     }
+}
+
+/// Emit every subsystem boot proof that the host-side image checker gates on.
+///
+/// Each marker must appear exactly once in the serial log — `find_marker_line`
+/// in `seal-mkimage` rejects duplicates — so this runs from the graphical boot
+/// path only, which is the path CI exercises. Ordering matters: every emitter
+/// here reads state that earlier boot stages establish, so this must stay after
+/// driver init, VFS mount, and the security init block.
+#[cfg(not(test))]
+// Reached only from `boot_graphical`, which `test-mode` replaces with the test
+// runner — same reason the sibling boot-path helpers carry no callers there.
+#[allow(dead_code)]
+fn emit_subsystem_proofs() {
+    serial_println!("{}", drivers::net::tls::tls_proof_line());
+    atlas::emit_boot_proof();
+    bundle::emit_boot_proof();
+    serial_println!("{}", apps::installer::raw_install_proof_line());
+    fs::parity::emit_boot_proof();
+    ml_engine::stratum::emit_boot_proof();
+    ml_engine::foliation::emit_boot_proof();
+    drivers::gpu::gpu_bench::run_gpu_bench_proof();
 }
 
 const TSS_BOOT_CELL_COUNT: usize = 8;
