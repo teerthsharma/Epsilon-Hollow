@@ -1,0 +1,21 @@
+<<<<<<< SEARCH
+    let kernel_lines = text
+        .lines()
+        .filter(|line| line.starts_with("[GPU-BENCH] kernel="))
+        .count();
+    if kernel_lines != 3 {
+        return Err(format!(
+            "GPU topology benchmark must emit exactly 3 kernel markers, got {kernel_lines}"
+        ));
+    }
+=======
+    let kernel_lines = text
+        .lines()
+        .filter(|line| line.contains("[GPU-BENCH] kernel=") && line.contains("mode=cpu_fallback"))
+        .count();
+    if kernel_lines != 3 {
+        return Err(format!(
+            "GPU topology benchmark must emit exactly 3 kernel markers, got {kernel_lines}"
+        ));
+    }
+>>>>>>> REPLACE

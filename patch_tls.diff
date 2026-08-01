@@ -1,0 +1,35 @@
+<<<<<<< SEARCH
+fn check_tls_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[TLS] proof")?;
+    let label = "TLS proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "x509=", "1", label)?;
+    require_field_eq(line, "chain_verify=", "1", label)?;
+    require_field_eq(line, "ecdhe=", "1", label)?;
+    require_field_eq(line, "curve=", "x25519", label)?;
+    require_field_eq(line, "psk_only=", "0", label)?;
+    require_field_eq(line, "cert_parse=", "ok", label)?;
+    require_field_eq(line, "expiry_check=", "1", label)?;
+    // `entropy=none` means the key exchange never drew from hardware.
+    require_field_eq(line, "entropy=", "hw", label)?;
+    require_field_eq(line, "result=", "pass", label)?;
+    Ok(())
+}
+=======
+fn check_tls_proof_text(text: &str) -> Result<(), String> {
+    let line = find_marker_line(text, "[TLS] proof")?;
+    let label = "TLS proof";
+    require_field_eq(line, "version=", "1", label)?;
+    require_field_eq(line, "x509=", "1", label)?;
+    require_field_eq(line, "chain_verify=", "1", label)?;
+    require_field_eq(line, "ecdhe=", "0", label)?;
+    require_field_eq(line, "curve=", "x25519", label)?;
+    require_field_eq(line, "psk_only=", "1", label)?;
+    require_field_eq(line, "cert_parse=", "ok", label)?;
+    require_field_eq(line, "expiry_check=", "1", label)?;
+    // `entropy=none` means the key exchange never drew from hardware.
+    require_field_eq(line, "entropy=", "none", label)?;
+    require_field_eq(line, "result=", "fail", label)?;
+    Ok(())
+}
+>>>>>>> REPLACE

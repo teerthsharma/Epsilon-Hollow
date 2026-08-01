@@ -105,20 +105,11 @@ export default function ChatInterface() {
         <ThoughtItem key={i} thought={t} />
     )), [thoughts]);
 
-    // ⚡ Bolt: Performance optimization
-    // Separated scroll-into-view effects.
-    // Previously, `messages` and `thoughts` were bundled into a single useEffect.
-    // Since `thoughts` streams rapidly, it forced `chatScrollRef` (the large message list)
-    // to unnecessarily trigger `scrollIntoView` and layout recalculations on every telemetry tick,
-    // causing severe layout thrashing. By separating them, each scroll container
-    // only recalculates layout when its specific content actually changes.
+    // Auto-scroll to bottom
     useEffect(() => {
         chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
-
-    useEffect(() => {
         thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [thoughts]);
+    }, [messages, thoughts]);
 
     const getPulseColor = () => {
         switch (pulseType) {
