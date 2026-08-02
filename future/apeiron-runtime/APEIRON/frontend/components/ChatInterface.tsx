@@ -106,10 +106,18 @@ export default function ChatInterface() {
     )), [thoughts]);
 
     // Auto-scroll to bottom
+    // ⚡ Bolt: Performance optimization
+    // Separated the auto-scrolling effects. Combining unrelated state updates
+    // (a low-frequency chat `messages` list and a high-frequency `thoughts` telemetry stream)
+    // into a single useEffect caused unnecessary layout thrashing. Now, each effect
+    // is tightly scoped to its specific state dependency.
     useEffect(() => {
         chatScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
+
+    useEffect(() => {
         thoughtScrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, thoughts]);
+    }, [thoughts]);
 
     const getPulseColor = () => {
         switch (pulseType) {
