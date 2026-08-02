@@ -3212,7 +3212,9 @@ fn parse_gpu_topology_benchmark(text: &str) -> Result<(), String> {
 
     let kernel_lines = text
         .lines()
-        .filter(|line| line.starts_with("[GPU-BENCH] kernel="))
+        .filter(|line| {
+            line.starts_with("[GPU-BENCH] kernel=") && !line.contains("isa=absent")
+        })
         .count();
     if kernel_lines != 3 {
         return Err(format!(
