@@ -266,7 +266,7 @@ pub unsafe fn run_pm4_spectral_step(
             (alpha_bits >> 32) as u32,
         ],
     );
-    ring.dispatch_direct(((out.len() + 63) / 64) as u32, 1, 1);
+    ring.dispatch_direct(out.len().div_ceil(64) as u32, 1, 1);
 
     let t0 = core::arch::x86_64::_rdtsc();
     let fence = ring.submit(fence_buf.phys);
@@ -306,7 +306,7 @@ fn compare(out: &[f64], want: &[f64]) -> (usize, u64) {
         if a == b {
             exact += 1;
         } else {
-            let d = if a > b { a - b } else { b - a };
+            let d = a.abs_diff(b);
             if d > max_ulp {
                 max_ulp = d;
             }
@@ -426,8 +426,8 @@ pub fn run_gpu_bench_proof() -> bool {
 #[cfg(feature = "test-mode")]
 pub mod tests {
     use super::*;
-    use crate::testing::TestResult;
     use crate::test_assert;
+    use crate::testing::TestResult;
 
     /// Each encoded word must equal the value LLVM's AMDGPU assembler produced
     /// for the same mnemonic at `-C target-cpu=gfx900`.

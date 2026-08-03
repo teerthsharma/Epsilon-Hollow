@@ -26,6 +26,14 @@ pub struct IntelGpu {
 impl IntelGpu {
     /// Probe PCI device.  Maps BAR0, reads a few MMIO registers to confirm
     /// the GPU is alive.  Returns `None` if device is not Intel graphics.
+    ///
+    /// # Safety
+    /// `dev` must come from a completed PCI enumeration with firmware-assigned
+    /// BARs and memory decoding enabled. BAR0 is dereferenced directly as a
+    /// physical address, so it must lie within the identity map and be mapped
+    /// uncacheable, and the aperture must be at least `RENDER_RING_BASE` + 4
+    /// bytes (0x2004) long. Only a read is performed, but reading an MMIO
+    /// window that firmware has not decoded can abort on the bus.
     pub unsafe fn probe(dev: &PciDevice) -> Option<Self> {
         if dev.vendor_id != 0x8086 || dev.class != 0x03 {
             return None;

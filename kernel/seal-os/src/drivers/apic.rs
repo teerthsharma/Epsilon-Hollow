@@ -49,6 +49,14 @@ impl LocalApic {
     }
 
     /// Read a 32-bit Local APIC register.
+    ///
+    /// # Safety
+    /// `self.base + offset` must fall inside the 4 KiB Local APIC MMIO page,
+    /// which must already be mapped as uncacheable in the active page table.
+    /// `offset` must be one of the 16-byte-aligned register offsets defined
+    /// above; the CPU must be in xAPIC mode (MMIO access faults in x2APIC
+    /// mode), and the read is served by the Local APIC of the CPU executing
+    /// it, so the result describes that CPU only.
     pub unsafe fn read_reg(&self, offset: u32) -> u32 {
         read_volatile((self.base + offset as usize) as *const u32)
     }
@@ -65,6 +73,14 @@ impl LocalApic {
     }
 
     /// Enable the Local APIC and set task priority to accept all interrupts.
+    ///
+    /// # Safety
+    /// The APIC MMIO page must be mapped (see `read_reg`) and the CPU must be
+    /// in xAPIC mode. This software-enables the APIC with spurious vector 0xFF
+    /// and drops TPR to 0, so an IDT with a handler for vector 0xFF — and for
+    /// every vector that may then be delivered — must already be loaded on
+    /// this CPU. It configures the Local APIC of the calling CPU only, so it
+    /// must be run once on each CPU that will take interrupts.
     pub unsafe fn init(&self) {
         // Software enable APIC (bit 8), vector 0xFF for spurious
         self.write_reg(SIV, self.read_reg(SIV) | 0x1FF);
@@ -73,6 +89,14 @@ impl LocalApic {
     }
 
     /// Send End-Of-Interrupt.
+    ///
+    /// # Safety
+    /// Must be called at most once per interrupt, from the handler of the
+    /// interrupt currently in service, on the same CPU that took it and before
+    /// that handler returns. Writing EOI outside an active interrupt, or twice
+    /// for one interrupt, retires the wrong in-service bit and either loses a
+    /// pending interrupt or lets a level-triggered line re-fire forever. The
+    /// APIC MMIO page must be mapped and the CPU must be in xAPIC mode.
     pub unsafe fn eoi(&self) {
         self.write_reg(EOI, 0);
     }
@@ -92,6 +116,16 @@ impl LocalApic {
     }
 
     /// Initialise the Local APIC timer in periodic mode.
+    ///
+    /// # Safety
+    /// `divide` must be a valid `TIMER_DIV` encoding (0-3 or 8-0xB); other
+    /// values program an undefined divisor. `vector` must be >= 32 and already
+    /// have a handler installed in the IDT loaded on this CPU, because the LVT
+    /// is written unmasked and the timer starts firing as soon as
+    /// `initial_count` is stored. `initial_count` must be non-zero, otherwise
+    /// the timer never starts. Programs the calling CPU's Local APIC only, and
+    /// requires the APIC MMIO page to be mapped with the APIC software-enabled
+    /// by `init`.
     pub unsafe fn init_timer(&self, divide: u32, initial_count: u32, vector: u8) {
         self.write_reg(TIMER_DIV, divide);
         // Periodic mode (bit 17), unmasked, vector
@@ -100,6 +134,13 @@ impl LocalApic {
     }
 
     /// Return the Local APIC ID (bits 24-31 of the ID register).
+    ///
+    /// # Safety
+    /// The APIC MMIO page must be mapped and the CPU must be in xAPIC mode
+    /// (see `read_reg`). The register is per-CPU, so the value identifies the
+    /// CPU executing this call and is only meaningful if the caller is pinned
+    /// to that CPU — with preemption or migration enabled the returned ID may
+    /// already be stale when it is used.
     pub unsafe fn id(&self) -> u32 {
         self.read_reg(APIC_ID) >> 24
     }
@@ -110,8 +151,21 @@ impl LocalApic {
     /// Returns the `initial_count` value to program for a ~1000 Hz tick rate.
     ///
     /// # Note
-    /// The caller must program `TIMER_DIV` to the same divider before calling
-    /// this function so that the calibration reflects the real decrement rate.
+    /// This function programs `TIMER_DIV` to 3 (divide-by-16) for the duration
+    /// of the measurement and restores the previous value afterwards, so the
+    /// returned count is only correct if the timer is subsequently started
+    /// with that same divider.
+    ///
+    /// # Safety
+    /// The APIC MMIO page must be mapped and the CPU in xAPIC mode. This takes
+    /// exclusive control of PIT channel 0 (ports 0x40/0x43) and of this CPU's
+    /// APIC timer LVT, divider and initial count for the duration of the call,
+    /// so nothing else — including an interrupt handler that may run on this
+    /// CPU — may touch the PIT or the APIC timer meanwhile. The LVT is
+    /// temporarily set to an unmasked vector 0xFE, so vector 0xFE must have a
+    /// handler in the IDT if interrupts are enabled. `pit_ticks` must fit in
+    /// 16 bits; larger values silently truncate and calibrate against the
+    /// wrong interval.
     pub unsafe fn calibrate_timer(&self, pit_ticks: u32) -> u32 {
         use x86_64::instructions::port::Port;
 
@@ -198,6 +252,14 @@ impl IoApic {
     }
 
     /// Read ID and version registers.
+    ///
+    /// # Safety
+    /// `self.base` must point to a mapped, uncacheable I/O APIC MMIO page.
+    /// Every access goes through the shared IOREGSEL/IOWIN window, which is a
+    /// two-step select-then-access sequence with no locking here, so the
+    /// caller must guarantee that no other CPU or interrupt handler touches
+    /// this I/O APIC concurrently — an interleaved select corrupts whichever
+    /// register the other party ends up reading or writing.
     pub unsafe fn init(&self) {
         let id = self.read_reg(0x00);
         let ver = self.read_reg(0x01);
@@ -224,6 +286,16 @@ impl IoApic {
     }
 
     /// Mask or unmask an IRQ line.
+    ///
+    /// # Safety
+    /// `self.base` must point to a mapped I/O APIC MMIO page and the caller
+    /// must serialise against every other user of the IOREGSEL/IOWIN window
+    /// (see `init`) — this is a read-modify-write of the redirection entry.
+    /// `irq` must be within the redirection table (bounded by the max-redir
+    /// field of the version register, typically 23) and must be below 0x78,
+    /// since `0x10 + irq * 2` is computed in `u8` and overflows above that.
+    /// Unmasking a line whose vector has no IDT handler installed lets the
+    /// device raise an unhandled interrupt.
     pub unsafe fn set_mask(&self, irq: u8, masked: bool) {
         let reg_low = 0x10 + irq * 2;
         let mut low = self.read_reg(reg_low);
@@ -302,6 +374,14 @@ pub unsafe fn init() {
 }
 
 /// Calibrate and start the Local APIC timer on the BSP.
+///
+/// # Safety
+/// Must run on the BSP, after `init()` has software-enabled that CPU's Local
+/// APIC, and after an IDT containing a handler for vector 48 has been loaded —
+/// the timer is started unmasked at roughly 1 kHz and begins firing on return.
+/// Calibration seizes PIT channel 0 and this CPU's APIC timer registers for
+/// the duration of the call, so no other code may drive either meanwhile (see
+/// `LocalApic::calibrate_timer`).
 pub unsafe fn init_local_apic_timer_for_bsp() {
     let initial_count = LOCAL_APIC.calibrate_timer(PIT_50MS_TICKS);
     LOCAL_APIC.init_timer(3, initial_count, 48);
@@ -312,6 +392,14 @@ pub unsafe fn init_local_apic_timer_for_bsp() {
 }
 
 /// Calibrate and start the Local APIC timer on an AP.
+///
+/// # Safety
+/// Must run on the AP being calibrated, after that CPU has loaded an IDT with
+/// a handler for vector 48 and after its Local APIC has been software-enabled;
+/// the timer is started unmasked and fires on return. Because calibration
+/// takes over the single system-wide PIT channel 0 as well as this CPU's APIC
+/// timer registers, only one CPU may execute this at a time and nothing else
+/// may drive the PIT during the call.
 pub unsafe fn init_local_apic_timer_for_ap() {
     let initial_count = LOCAL_APIC.calibrate_timer(PIT_50MS_TICKS);
     LOCAL_APIC.init_timer(3, initial_count, 48);

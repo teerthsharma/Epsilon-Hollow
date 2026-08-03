@@ -16,14 +16,13 @@ struct ParsedUrl {
 }
 
 fn parse_url(url: &str) -> Result<ParsedUrl, String> {
-    let rest = if url.starts_with("https://") {
-        &url[8..]
-    } else if url.starts_with("http://") {
-        &url[7..]
+    let (rest, secure) = if let Some(rest) = url.strip_prefix("https://") {
+        (rest, true)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (rest, false)
     } else {
         return Err(String::from("URL must start with http:// or https://"));
     };
-    let secure = url.starts_with("https://");
 
     let (host_port, path) = match rest.find('/') {
         Some(idx) => (&rest[..idx], &rest[idx..]),
@@ -101,7 +100,9 @@ impl HttpClient {
 
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/{}\r\n\r\n",
-            parsed.path, parsed.host, crate::VERSION
+            parsed.path,
+            parsed.host,
+            crate::VERSION
         );
         tcp.send(req.as_bytes());
 
@@ -200,7 +201,9 @@ impl HttpClient {
 
         let req = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nUser-Agent: SealOS/{}\r\n\r\n",
-            parsed.path, parsed.host, crate::VERSION
+            parsed.path,
+            parsed.host,
+            crate::VERSION
         );
         if let Err(e) = tls.send(req.as_bytes()) {
             return Err(format!("TLS send failed: {}", e));
@@ -353,6 +356,12 @@ impl HttpClient {
             headers,
             body,
         })
+    }
+}
+
+impl Default for HttpClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

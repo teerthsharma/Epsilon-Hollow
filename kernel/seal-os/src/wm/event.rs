@@ -39,3 +39,9 @@ impl MouseState {
         self.y = self.y.saturating_add(dy).clamp(0, max_y - 1);
     }
 }
+
+impl Default for MouseState {
+    fn default() -> Self {
+        Self::new()
+    }
+}

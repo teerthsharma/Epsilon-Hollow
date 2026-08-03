@@ -23,19 +23,23 @@ impl CarrierType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "aether" => Some(Self::Aether),
-            "rust" => Some(Self::Rust),
-            "c" => Some(Self::C),
-            "js" | "javascript" => Some(Self::Js),
-            _ => None,
-        }
-    }
-
     /// True for carriers that are part of the native Seal package surface.
     pub fn is_available(&self) -> bool {
         matches!(self, Self::Aether | Self::Rust)
+    }
+}
+
+impl core::str::FromStr for CarrierType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "aether" => Ok(Self::Aether),
+            "rust" => Ok(Self::Rust),
+            "c" => Ok(Self::C),
+            "js" | "javascript" => Ok(Self::Js),
+            _ => Err(()),
+        }
     }
 }
 

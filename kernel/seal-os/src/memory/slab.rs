@@ -7,8 +7,8 @@
 //! Objects are carved out of 4 KiB pages allocated from the physical frame
 //! allocator.  Free objects are kept on an intrusive singly-linked list.
 
-use spin::Mutex;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Mutex;
 
 const SLAB_SIZES: &[usize] = &[64, 128, 256, 512, 1024, 2048];
 

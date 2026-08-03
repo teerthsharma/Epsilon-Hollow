@@ -146,7 +146,7 @@ impl LoginScreen {
                     .any(|&(dr, dc)| {
                         let nr = row as i32 + dr;
                         let nc = col as i32 + dc;
-                        if nr < 0 || nr >= 32 || nc < 0 || nc >= 32 {
+                        if !(0..32).contains(&nr) || !(0..32).contains(&nc) {
                             return true;
                         }
                         MASCOT_32X32[(nr * 32 + nc) as usize] == 0
@@ -309,5 +309,11 @@ impl LoginScreen {
 
     pub fn authenticated_user(&self) -> Option<&crate::security::passwd::UserEntry> {
         self.authenticated_user.as_ref()
+    }
+}
+
+impl Default for LoginScreen {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -208,6 +208,12 @@ impl TheoremViewer {
     }
 }
 
+impl Default for TheoremViewer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn render_theorem(
     win: &mut Window,
     x: u32,

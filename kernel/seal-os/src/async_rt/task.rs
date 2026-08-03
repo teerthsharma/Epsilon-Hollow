@@ -51,6 +51,12 @@ impl YieldNow {
     }
 }
 
+impl Default for YieldNow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Future for YieldNow {
     type Output = ();
 

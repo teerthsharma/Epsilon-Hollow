@@ -120,6 +120,12 @@ impl TensorViewer {
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }
 
+impl Default for TensorViewer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Set CSV data to be loaded by the viewer on its next tick.
 pub fn set_pending_csv(data: &str) {
     *PENDING_CSV.lock() = Some(String::from(data));

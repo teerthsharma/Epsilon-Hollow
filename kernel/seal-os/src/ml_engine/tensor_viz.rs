@@ -109,7 +109,7 @@ pub fn tensor_to_point_cloud(tensor: &Tensor) -> Vec<[f32; 3]> {
         }
     } else {
         // Higher-D: first three dimension indices become X, Y, Z.
-        let d0 = tensor.shape.get(0).copied().unwrap_or(1);
+        let d0 = tensor.shape.first().copied().unwrap_or(1);
         let d1 = tensor.shape.get(1).copied().unwrap_or(1);
         let d2 = tensor.shape.get(2).copied().unwrap_or(1);
         let stride0 = tensor.shape[1..].iter().product::<usize>().max(1);

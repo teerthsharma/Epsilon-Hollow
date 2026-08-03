@@ -108,10 +108,8 @@ pub fn init(rsdp: u64) {
         let fadt = fadt_phys as *const Fadt;
         let revision = core::ptr::addr_of!((*fadt).header.revision).read_unaligned();
 
-        let read_x_gas = |gas: &GenericAddress| -> u64 {
-            let addr = core::ptr::addr_of!(gas.address).read_unaligned();
-            addr
-        };
+        let read_x_gas =
+            |gas: &GenericAddress| -> u64 { core::ptr::addr_of!(gas.address).read_unaligned() };
 
         // Prefer 64-bit X_* fields when ACPI 2.0+ and address is non-zero.
         macro_rules! parse_block {

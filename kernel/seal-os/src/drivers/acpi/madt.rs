@@ -155,10 +155,8 @@ pub unsafe fn parse_madt(madt_phys: u64) {
     }
     // Commit discovered IDs to the global arrays.
     unsafe {
-        let ptr = APIC_IDS.0.get();
-        for i in 0..count {
-            (*ptr)[i] = ids[i];
-        }
+        let slots = &mut *APIC_IDS.0.get();
+        slots[..count].copy_from_slice(&ids[..count]);
     }
     APIC_COUNT.store(count, Ordering::SeqCst);
 

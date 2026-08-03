@@ -26,8 +26,9 @@ struct AlignedXsaveArea([u8; XSAVE_MAX_SIZE + 64]);
 struct SyncUnsafeCell<T>(core::cell::UnsafeCell<T>);
 unsafe impl<T> Sync for SyncUnsafeCell<T> {}
 
-static EMERGENCY_XSAVE_AREAS: SyncUnsafeCell<[AlignedXsaveArea; 2]> =
-    SyncUnsafeCell(core::cell::UnsafeCell::new([AlignedXsaveArea([0; XSAVE_MAX_SIZE + 64]); 2]));
+static EMERGENCY_XSAVE_AREAS: SyncUnsafeCell<[AlignedXsaveArea; 2]> = SyncUnsafeCell(
+    core::cell::UnsafeCell::new([AlignedXsaveArea([0; XSAVE_MAX_SIZE + 64]); 2]),
+);
 
 static XSAVE_SUPPORTED: AtomicBool = AtomicBool::new(false);
 static XSAVE_AREA_SIZE: AtomicUsize = AtomicUsize::new(FXSAVE_SIZE);
@@ -64,7 +65,7 @@ pub unsafe fn detect_xsave() {
     // Query max XSAVE area size for all valid XCR0 bits (leaf 0x0D sub-leaf 0, ECX)
     let leaf_d = core::arch::x86_64::__cpuid_count(0x0D, 0);
     let size = leaf_d.ecx as usize;
-    let size = size.max(FXSAVE_SIZE).min(XSAVE_MAX_SIZE);
+    let size = size.clamp(FXSAVE_SIZE, XSAVE_MAX_SIZE);
 
     XSAVE_SUPPORTED.store(true, Ordering::Relaxed);
     XSAVE_AREA_SIZE.store(size, Ordering::Relaxed);
@@ -371,7 +372,7 @@ pub fn init_task_context(stack: &mut [u8], entry: fn(), xsave_ptr: *mut u8) -> T
 
     let mut ctx = TaskContext::zero();
     ctx.rip = kernel_task_wrapper as *const () as u64;
-    ctx.rdi = entry as u64;
+    ctx.rdi = entry as *const () as u64;
     ctx.rsp = stack_top;
     ctx.rflags = 0x202; // Interrupt enable (IF) bit set
     ctx.xsave_ptr = xsave_ptr;

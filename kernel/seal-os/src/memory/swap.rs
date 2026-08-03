@@ -236,6 +236,17 @@ pub fn init() {
 }
 
 /// Swap out a single page.  Returns `true` on success.
+///
+/// # Safety
+/// On success the page is unmapped and its frame is returned to the physical
+/// allocator, so no reference, raw pointer or in-flight DMA may still target
+/// `virt` or its backing frame; the mapping is only restored by
+/// `swap_in_page`, normally from the page-fault handler. `virt` must belong to
+/// an `mmap` region whose `page_table` field is a live PML4 physical address
+/// inside the identity map, since the page tables are walked through raw
+/// pointers. The caller must hold none of `SWAP_STATE`, `mmap::REGIONS` or the
+/// VFS lock — all three are taken here and none is reentrant — and must not
+/// call this from an interrupt handler, since it performs blocking VFS I/O.
 pub unsafe fn swap_out_page(virt: VirtAddr) -> bool {
     let mut guard = SWAP_STATE.lock();
     let state = match guard.as_mut() {
@@ -302,6 +313,16 @@ pub unsafe fn swap_out_page(virt: VirtAddr) -> bool {
 }
 
 /// Swap in a single page.  Returns `true` on success.
+///
+/// # Safety
+/// `virt` must belong to an `mmap` region whose `page_table` field is a live
+/// PML4 physical address inside the identity map: it is dereferenced as a raw
+/// `PageTable` and a fresh frame is mapped into it, so nothing else may be
+/// mutating that page table concurrently. If `virt` is currently mapped in
+/// that address space the previous translation is overwritten and its frame
+/// leaks. As with `swap_out_page`, the caller must hold neither `SWAP_STATE`,
+/// `mmap::REGIONS` nor the VFS lock, and must be in a context where blocking
+/// VFS reads and heap allocation are permitted.
 pub unsafe fn swap_in_page(virt: VirtAddr) -> bool {
     let mut guard = SWAP_STATE.lock();
     let state = match guard.as_mut() {
@@ -315,8 +336,7 @@ pub unsafe fn swap_in_page(virt: VirtAddr) -> bool {
     };
 
     let offset = slot_idx as u64 * SWAP_ENTRY_SIZE as u64;
-    let mut buf = Vec::with_capacity(SWAP_ENTRY_SIZE);
-    buf.resize(SWAP_ENTRY_SIZE, 0);
+    let mut buf = vec![0; SWAP_ENTRY_SIZE];
     let read = with_vfs(|vfs| vfs.read(state.handle, &mut buf, offset)).unwrap_or(0);
     if read != SWAP_ENTRY_SIZE {
         return false;
@@ -456,8 +476,7 @@ pub fn compact() {
             if new_idx != old_idx {
                 let old_offset = old_idx as u64 * SWAP_ENTRY_SIZE as u64;
                 let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
-                let mut buf = Vec::with_capacity(SWAP_ENTRY_SIZE);
-                buf.resize(SWAP_ENTRY_SIZE, 0);
+                let mut buf = vec![0; SWAP_ENTRY_SIZE];
                 let read =
                     with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
                 if read == SWAP_ENTRY_SIZE {
@@ -474,11 +493,9 @@ pub fn compact() {
     for cell in state.cell_index.iter_mut() {
         cell.clear();
     }
-    for slot in state.slots.iter() {
-        if let Some(s) = slot {
-            if (s.cell as usize) < state.cell_index.len() {
-                state.cell_index[s.cell as usize].push(s.virt);
-            }
+    for s in state.slots.iter().flatten() {
+        if (s.cell as usize) < state.cell_index.len() {
+            state.cell_index[s.cell as usize].push(s.virt);
         }
     }
 
@@ -524,7 +541,7 @@ pub fn swap_out_daemon() {
     }
 
     // T5: hyperbolic lifetime — short-lived pages (high bit density) swap first.
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|c| core::cmp::Reverse(c.1));
     for (v, _density) in candidates.iter().take(aggressiveness) {
         unsafe {
             swap_out_page(*v);

@@ -489,13 +489,8 @@ fn update_pressure(topo: &mut TopoRam) {
 
     let alloc_rate = topo.alloc_count as f32 / 1024.0;
     let free_rate = topo.free_count as f32 / 1024.0;
-    let mut p = (alloc_rate - free_rate) / (alloc_rate + free_rate + 1.0);
-    if p < 0.0 {
-        p = 0.0;
-    } else if p > 1.0 {
-        p = 1.0;
-    }
-    topo.pressure = p;
+    let p = (alloc_rate - free_rate) / (alloc_rate + free_rate + 1.0);
+    topo.pressure = p.clamp(0.0, 1.0);
     topo.alloc_count = 0;
     topo.free_count = 0;
 }
@@ -862,7 +857,7 @@ pub fn find_swap_candidates(count: usize) -> Vec<PhysAddr> {
     });
 
     // T5: high density = short-lived = swap first.
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|c| core::cmp::Reverse(c.1));
     candidates.truncate(count);
     candidates.into_iter().map(|(addr, _)| addr).collect()
 }

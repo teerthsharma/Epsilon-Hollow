@@ -87,6 +87,19 @@ pub struct E1000 {
 unsafe impl Send for E1000 {}
 
 impl E1000 {
+    /// Allocate the TX/RX descriptor rings and packet buffers for the NIC
+    /// whose register window starts at `mmio_base`.
+    ///
+    /// # Safety
+    /// `mmio_base` must be the mapped, uncacheable BAR0 of an E1000-class NIC
+    /// and must stay valid for as long as the returned `E1000` lives: it is
+    /// stored verbatim and every later `read_reg`/`write_reg` dereferences it.
+    /// The kernel heap must already be initialised, since the rings and
+    /// buffers come from `alloc_zeroed`, and the heap must live in memory the
+    /// device can DMA to — the descriptors are handed to the NIC as physical
+    /// addresses derived from these allocations. The returned value asserts
+    /// `Send`, so the caller must not share it across CPUs without external
+    /// synchronisation.
     pub unsafe fn new(mmio_base: usize) -> Option<Self> {
         let mut nic = Self {
             mmio_base,

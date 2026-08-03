@@ -39,3 +39,9 @@ impl Clipboard {
         self.entry.is_none()
     }
 }
+
+impl Default for Clipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}

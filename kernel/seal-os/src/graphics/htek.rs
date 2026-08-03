@@ -197,7 +197,7 @@ pub fn stroke_rounded_rect(
                     true
                 };
             if is_border {
-                let alpha = outer.min(255);
+                let alpha = outer;
                 set_pixel_blended(win, px, py, color, alpha);
             }
         }
@@ -225,8 +225,8 @@ fn is_inside_rounded(dx: u32, dy: u32, w: u32, h: u32, r: u32) -> u8 {
         return 255;
     }
 
-    let ddx = if dx > cx { dx - cx } else { cx - dx };
-    let ddy = if dy > cy { dy - cy } else { cy - dy };
+    let ddx = dx.abs_diff(cx);
+    let ddy = dy.abs_diff(cy);
     let dist_sq = ddx * ddx + ddy * ddy;
     let r_sq = r * r;
 
@@ -250,7 +250,7 @@ fn isqrt(n: u32) -> u32 {
         return 0;
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;

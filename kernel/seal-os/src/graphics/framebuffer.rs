@@ -32,6 +32,18 @@ impl Framebuffer {
         }
     }
 
+    /// Wrap a linear framebuffer reported by the firmware.
+    ///
+    /// # Safety
+    /// `addr` must be the base of a linear framebuffer that is mapped writable
+    /// for at least `pitch * height` bytes and stays valid for the lifetime of
+    /// the returned value, which is `Send + Sync` and normally kept in a
+    /// static. `pitch` must be the real scanline stride in bytes (at least
+    /// `width * bpp / 8`) and `bpp` must be 32: `put_pixel` writes a whole
+    /// `u32` at `y * pitch + x * (bpp / 8)`, so any smaller depth writes past
+    /// the pixel it addresses and past the end of the last scanline. Passing
+    /// `addr` 0 yields a framebuffer that reports itself unavailable rather
+    /// than one that faults.
     pub unsafe fn new(addr: u64, width: u32, height: u32, pitch: u32, bpp: u8) -> Self {
         Self {
             buffer: addr as *mut u8,

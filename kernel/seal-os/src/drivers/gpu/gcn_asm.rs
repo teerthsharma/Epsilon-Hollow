@@ -85,8 +85,8 @@ const ENC_SOP1: u32 = 0b1_0111_1101 << 23;
 const ENC_SOPP: u32 = 0b1_0111_1111 << 23;
 const ENC_VOP1: u32 = 0b011_1111 << 25;
 const ENC_VOPC: u32 = 0b011_1110 << 25;
-const ENC_VOP3A: u32 = 0b1101_00 << 26;
-const ENC_FLAT: u32 = 0b1101_11 << 26;
+const ENC_VOP3A: u32 = 0b110100 << 26;
+const ENC_FLAT: u32 = 0b110111 << 26;
 
 /// FLAT `SEG` field: global memory (Vega ISA §12.15). GFX9 only.
 pub const SEG_GLOBAL: u32 = 2;
@@ -310,7 +310,11 @@ pub fn assemble_spectral_step() -> [u32; SPECTRAL_STEP_WORDS] {
     };
 
     // gid = workgroup_id_x * 64 + workitem_id_x
-    push(&mut w, &mut n, sop2(OP_S_LSHL_B32, 11, sgpr(10), inline_int(6)));
+    push(
+        &mut w,
+        &mut n,
+        sop2(OP_S_LSHL_B32, 11, sgpr(10), inline_int(6)),
+    );
     push(&mut w, &mut n, vop2(OP_V_ADD_U32, 0, 0, sgpr(11)));
     // if (gid >= dim) goto end;   ->   exec &= (dim > gid)
     push(&mut w, &mut n, vopc(OP_V_CMP_GT_I32, 0, sgpr(6)));
@@ -419,7 +423,7 @@ pub fn decode(words: &[u32], i: usize) -> Option<Decoded> {
     let w = *words.get(i)?;
 
     // FLAT: [31:26] == 0b110111
-    if w >> 26 == 0b1101_11 {
+    if w >> 26 == 0b110111 {
         let w1 = *words.get(i + 1)?;
         let op = (w >> 18) & 0x7F;
         let seg = (w >> 14) & 0x3;
@@ -431,15 +435,15 @@ pub fn decode(words: &[u32], i: usize) -> Option<Decoded> {
         return Some(Decoded {
             mnemonic,
             op,
-            dst: (w1 >> 24) & 0xFF,          // VDST
+            dst: (w1 >> 24) & 0xFF,                         // VDST
             src: [w1 & 0xFF, (w1 >> 8) & 0xFF, w & 0x1FFF], // ADDR, DATA, OFFSET
-            extra: (w1 >> 16) & 0x7F,        // SADDR
+            extra: (w1 >> 16) & 0x7F,                       // SADDR
             words: 2,
         });
     }
 
     // VOP3A: [31:26] == 0b110100
-    if w >> 26 == 0b1101_00 {
+    if w >> 26 == 0b110100 {
         let w1 = *words.get(i + 1)?;
         let op = (w >> 16) & 0x3FF;
         let mnemonic = match op {
@@ -575,23 +579,12 @@ pub fn reencode(d: &Decoded) -> ([u32; 2], usize) {
         "s_and_saveexec_b64" => ([sop1(d.op, d.dst, d.src[0]), 0], 1),
         "s_endpgm" | "s_cbranch_execz" | "s_waitcnt" => ([sopp(d.op, d.extra as u16), 0], 1),
         "v_mov_b32_e32" => ([vop1(d.op, d.dst, d.src[0]), 0], 1),
-        "v_add_u32_e32" | "v_lshlrev_b32_e32" => {
-            ([vop2(d.op, d.dst, d.src[1], d.src[0]), 0], 1)
-        }
+        "v_add_u32_e32" | "v_lshlrev_b32_e32" => ([vop2(d.op, d.dst, d.src[1], d.src[0]), 0], 1),
         "v_cmp_gt_i32_e32" => ([vopc(d.op, d.src[1], d.src[0]), 0], 1),
-        "v_add_f64" | "v_mul_f64" => (
-            vop3a(d.op, d.dst, d.src[0], d.src[1], d.src[2], d.extra),
-            2,
-        ),
+        "v_add_f64" | "v_mul_f64" => (vop3a(d.op, d.dst, d.src[0], d.src[1], d.src[2], d.extra), 2),
         "global_load_dwordx2" | "global_store_dwordx2" => (
             flat(
-                d.op,
-                SEG_GLOBAL,
-                d.src[2],
-                d.src[0],
-                d.src[1],
-                d.extra,
-                d.dst,
+                d.op, SEG_GLOBAL, d.src[2], d.src[0], d.src[1], d.extra, d.dst,
             ),
             2,
         ),

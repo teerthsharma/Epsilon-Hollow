@@ -240,7 +240,7 @@ impl VoronoiCap {
             // We don't have payload here; use placeholder based on id
             // In real usage, the caller provides payload. For now, simple hash-based split.
             let h = id.wrapping_mul(0x9e3779b97f4a7c15);
-            mean[0] += ((h >> 0) & 0xFF) as f64 / 255.0;
+            mean[0] += (h & 0xFF) as f64 / 255.0;
             mean[1] += ((h >> 8) & 0xFF) as f64 / 255.0;
             mean[2] += ((h >> 16) & 0xFF) as f64 / 255.0;
         }
@@ -252,7 +252,7 @@ impl VoronoiCap {
         let mut var = [0.0f64; 3];
         for &id in &state.files {
             let h = id.wrapping_mul(0x9e3779b97f4a7c15);
-            let x = ((h >> 0) & 0xFF) as f64 / 255.0;
+            let x = (h & 0xFF) as f64 / 255.0;
             let y = ((h >> 8) & 0xFF) as f64 / 255.0;
             let z = ((h >> 16) & 0xFF) as f64 / 255.0;
             var[0] += (x - mean[0]) * (x - mean[0]);
@@ -279,7 +279,7 @@ impl VoronoiCap {
         for &id in &state.files {
             let h = id.wrapping_mul(0x9e3779b97f4a7c15);
             let coord = match axis {
-                SplitAxis::X => ((h >> 0) & 0xFF) as f64 / 255.0,
+                SplitAxis::X => (h & 0xFF) as f64 / 255.0,
                 SplitAxis::Y => ((h >> 8) & 0xFF) as f64 / 255.0,
                 SplitAxis::Z => ((h >> 16) & 0xFF) as f64 / 255.0,
             };
@@ -315,6 +315,12 @@ impl VoronoiCap {
             state.subcells = None;
             self.merges += 1;
         }
+    }
+}
+
+impl Default for VoronoiCap {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

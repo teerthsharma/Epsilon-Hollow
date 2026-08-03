@@ -105,34 +105,34 @@ impl Calculator {
         let expr = expr.replace("ans", &format!("{}", self.last_result));
 
         if let Some(inner) = try_func_call(&expr, "sin") {
-            return self.parse_and_eval(inner).map(|v| libm::sin(v));
+            return self.parse_and_eval(inner).map(libm::sin);
         }
         if let Some(inner) = try_func_call(&expr, "cos") {
-            return self.parse_and_eval(inner).map(|v| libm::cos(v));
+            return self.parse_and_eval(inner).map(libm::cos);
         }
         if let Some(inner) = try_func_call(&expr, "tan") {
-            return self.parse_and_eval(inner).map(|v| libm::tan(v));
+            return self.parse_and_eval(inner).map(libm::tan);
         }
         if let Some(inner) = try_func_call(&expr, "sqrt") {
-            return self.parse_and_eval(inner).map(|v| libm::sqrt(v));
+            return self.parse_and_eval(inner).map(libm::sqrt);
         }
         if let Some(inner) = try_func_call(&expr, "abs") {
-            return self.parse_and_eval(inner).map(|v| libm::fabs(v));
+            return self.parse_and_eval(inner).map(libm::fabs);
         }
         if let Some(inner) = try_func_call(&expr, "ln") {
-            return self.parse_and_eval(inner).map(|v| libm::log(v));
+            return self.parse_and_eval(inner).map(libm::log);
         }
         if let Some(inner) = try_func_call(&expr, "log") {
-            return self.parse_and_eval(inner).map(|v| libm::log10(v));
+            return self.parse_and_eval(inner).map(libm::log10);
         }
         if let Some(inner) = try_func_call(&expr, "exp") {
-            return self.parse_and_eval(inner).map(|v| libm::exp(v));
+            return self.parse_and_eval(inner).map(libm::exp);
         }
         if let Some(inner) = try_func_call(&expr, "ceil") {
-            return self.parse_and_eval(inner).map(|v| libm::ceil(v));
+            return self.parse_and_eval(inner).map(libm::ceil);
         }
         if let Some(inner) = try_func_call(&expr, "floor") {
-            return self.parse_and_eval(inner).map(|v| libm::floor(v));
+            return self.parse_and_eval(inner).map(libm::floor);
         }
 
         if &expr == "pi" {
@@ -163,8 +163,8 @@ impl Calculator {
                     break;
                 }
                 _ => {
-                // Unhandled input; no-op
-            }
+                    // Unhandled input; no-op
+                }
             }
         }
 
@@ -203,8 +203,8 @@ impl Calculator {
                     break;
                 }
                 _ => {
-                // Unhandled input; no-op
-            }
+                    // Unhandled input; no-op
+                }
             }
         }
 
@@ -248,8 +248,8 @@ impl Calculator {
                     return Ok(libm::pow(base, exp));
                 }
                 _ => {
-                // Unhandled input; no-op
-            }
+                    // Unhandled input; no-op
+                }
             }
         }
 
@@ -257,11 +257,11 @@ impl Calculator {
     }
 
     fn eval_unary(&self, expr: &str) -> Result<f64, &'static str> {
-        if expr.starts_with('-') {
-            return self.eval_atom(&expr[1..]).map(|v| -v);
+        if let Some(rest) = expr.strip_prefix('-') {
+            return self.eval_atom(rest).map(|v| -v);
         }
-        if expr.starts_with('+') {
-            return self.eval_atom(&expr[1..]);
+        if let Some(rest) = expr.strip_prefix('+') {
+            return self.eval_atom(rest);
         }
         self.eval_atom(expr)
     }
@@ -287,8 +287,8 @@ impl Calculator {
                         }
                     }
                     _ => {
-                // Unhandled input; no-op
-            }
+                        // Unhandled input; no-op
+                    }
                 }
             }
             if valid && depth == 0 {
@@ -498,6 +498,12 @@ impl Calculator {
 
     pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
+}
+
+impl Default for Calculator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn try_func_call<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
