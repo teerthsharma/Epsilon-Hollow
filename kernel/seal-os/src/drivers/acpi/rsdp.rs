@@ -22,7 +22,7 @@ pub struct Rsdp {
 impl Rsdp {
     /// Validate signature and checksum(s).
     pub fn is_valid(&self) -> bool {
-        let sig = unsafe { core::ptr::addr_of!((*self).signature).read_unaligned() };
+        let sig = unsafe { core::ptr::addr_of!(self.signature).read_unaligned() };
         if &sig != b"RSD PTR " {
             return false;
         }
@@ -33,9 +33,9 @@ impl Rsdp {
             return false;
         }
 
-        let revision = unsafe { core::ptr::addr_of!((*self).revision).read_unaligned() };
+        let revision = unsafe { core::ptr::addr_of!(self.revision).read_unaligned() };
         if revision >= 2 {
-            let len = unsafe { core::ptr::addr_of!((*self).length).read_unaligned() } as usize;
+            let len = unsafe { core::ptr::addr_of!(self.length).read_unaligned() } as usize;
             if len < mem::size_of::<Rsdp>() {
                 return false;
             }
@@ -111,7 +111,7 @@ pub struct SdtHeader {
 impl SdtHeader {
     /// Validate checksum: sum of all bytes in the table must be 0 (mod 256).
     pub fn is_valid(&self) -> bool {
-        let len = unsafe { core::ptr::addr_of!((*self).length).read_unaligned() } as usize;
+        let len = unsafe { core::ptr::addr_of!(self.length).read_unaligned() } as usize;
         let bytes = unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, len) };
         bytes.iter().fold(0u8, |sum, &b| sum.wrapping_add(b)) == 0
     }
@@ -121,9 +121,9 @@ impl SdtHeader {
 /// address of the table matching `signature`.
 pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
     let rsdp = unsafe { &*(rsdp_addr as *const Rsdp) };
-    let rsdp_revision = unsafe { core::ptr::addr_of!((*rsdp).revision).read_unaligned() };
-    let rsdp_xsdt_addr = unsafe { core::ptr::addr_of!((*rsdp).xsdt_addr).read_unaligned() };
-    let rsdp_rsdt_addr = unsafe { core::ptr::addr_of!((*rsdp).rsdt_addr).read_unaligned() };
+    let rsdp_revision = unsafe { core::ptr::addr_of!(rsdp.revision).read_unaligned() };
+    let rsdp_xsdt_addr = unsafe { core::ptr::addr_of!(rsdp.xsdt_addr).read_unaligned() };
+    let rsdp_rsdt_addr = unsafe { core::ptr::addr_of!(rsdp.rsdt_addr).read_unaligned() };
     let use_xsdt = rsdp_revision >= 2 && rsdp_xsdt_addr != 0;
     let root_phys = if use_xsdt {
         rsdp_xsdt_addr
@@ -138,7 +138,7 @@ pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
 
     let entry_size = if use_xsdt { 8usize } else { 4usize };
     let header_size = mem::size_of::<SdtHeader>();
-    let header_len = unsafe { core::ptr::addr_of!((*header).length).read_unaligned() } as usize;
+    let header_len = unsafe { core::ptr::addr_of!(header.length).read_unaligned() } as usize;
     if header_len < header_size {
         crate::serial_println!(
             "[ACPI/RSDP] SDT at {:#X} claims length {} < header size {}",
@@ -172,11 +172,9 @@ pub fn walk_sdt(rsdp_addr: u64, signature: &[u8; 4]) -> Option<u64> {
         }
 
         let tbl_header = unsafe { &*(entry_phys as *const SdtHeader) };
-        let tbl_sig = unsafe { core::ptr::addr_of!((*tbl_header).signature).read_unaligned() };
-        if &tbl_sig == signature {
-            if tbl_header.is_valid() {
-                return Some(entry_phys);
-            }
+        let tbl_sig = unsafe { core::ptr::addr_of!(tbl_header.signature).read_unaligned() };
+        if &tbl_sig == signature && tbl_header.is_valid() {
+            return Some(entry_phys);
         }
     }
 

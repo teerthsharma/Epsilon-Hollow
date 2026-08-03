@@ -191,8 +191,8 @@ impl ManifoldFS {
 
         for inode in inodes {
             let id = match slab.insert_at(inode.id, inode.clone()) {
-                Ok(id) => id,
-                Err(()) => slab.alloc(inode.clone()),
+                Some(id) => id,
+                None => slab.alloc(inode.clone()),
             };
             if inode.name == "/" {
                 root_id = id;
@@ -487,6 +487,12 @@ impl ManifoldFS {
                 .map(|i| i.payload.point_count)
                 .unwrap_or(0),
             governor_epsilon: post_epsilon,
+            // NOTE: a compile-time constant, not a measurement — nothing in
+            // `teleport` counts operations. It surfaces in the gated
+            // `[BENCH] manifold-teleport ... metadata_ops_max=` proof line, next
+            // to `persistence_bytes`, which IS derived from a real
+            // `data_write_ops()` delta. The pairing makes this read as measured;
+            // it is a fixed structural count of the ops the algorithm performs.
             metadata_ops: TELEPORT_METADATA_OPS,
             persistence_bytes,
         })
@@ -1086,6 +1092,12 @@ impl ManifoldFS {
             c.sibling_next = None;
             c.sibling_prev = None;
         }
+    }
+}
+
+impl Default for ManifoldFS {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

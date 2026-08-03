@@ -187,6 +187,12 @@ impl FileManager {
     }
 }
 
+impl Default for FileManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn render_sphere_view(win: &mut Window, cx: u32, cy: u32, r: u32) {
     // Draw stereographic projection of S^2
     let rf = r as f64;

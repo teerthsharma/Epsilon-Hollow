@@ -53,6 +53,12 @@ impl TcpSocket {
     }
 }
 
+impl Default for TcpSocket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Build and transmit a raw TCP segment over IPv4/Ethernet directly.
 /// Used for driver-level TX where the full frame is assembled here.
 pub fn send_tcp_packet(

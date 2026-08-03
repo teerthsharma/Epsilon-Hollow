@@ -53,8 +53,10 @@ impl InodeSlab {
     }
 
     /// Insert an inode at a specific id, preserving generation and index.
-    /// Used during mount to restore persisted inodes.
-    pub fn insert_at(&mut self, id: u64, mut inode: Inode) -> Result<u64, ()> {
+    /// Used during mount to restore persisted inodes. Returns `None` if the
+    /// slot is already occupied; the free list is still extended to cover
+    /// `idx` in that case.
+    pub fn insert_at(&mut self, id: u64, mut inode: Inode) -> Option<u64> {
         let idx = (id & 0xFFFF_FFFF) as usize;
         let gen = (id >> 32) as u32;
 
@@ -71,7 +73,7 @@ impl InodeSlab {
         {
             let slot = &mut self.slots[idx];
             if slot.inode.is_some() {
-                return Err(());
+                return None;
             }
         }
 
@@ -93,7 +95,7 @@ impl InodeSlab {
         inode.id = id;
         slot.inode = Some(inode);
         slot.next_free = None;
-        Ok(id)
+        Some(id)
     }
 
     /// Free a slot by id. Returns the evicted inode if the id was valid.
@@ -145,6 +147,12 @@ impl InodeSlab {
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Inode> {
         self.slots.iter_mut().filter_map(|s| s.inode.as_mut())
+    }
+}
+
+impl Default for InodeSlab {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

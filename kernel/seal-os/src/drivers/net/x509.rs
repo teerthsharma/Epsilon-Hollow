@@ -505,9 +505,7 @@ impl<'a> Certificate<'a> {
 
     /// Exact (non-wildcard) match of `host` against SubjectAltName dNSNames.
     pub fn matches_dns(&self, host: &str) -> bool {
-        self.san_dns
-            .iter()
-            .any(|n| n.eq_ignore_ascii_case(host))
+        self.san_dns.iter().any(|n| n.eq_ignore_ascii_case(host))
     }
 
     /// Check that `self` is allowed to have issued `child`, and that it did.
@@ -846,7 +844,10 @@ pub mod tests {
         );
         crate::testing::register_test("x509::expired_cert_rejects", test_expired_cert_rejects);
         crate::testing::register_test("x509::not_yet_valid_rejects", test_not_yet_valid_rejects);
-        crate::testing::register_test("x509::wrong_signature_rejects", test_wrong_signature_rejects);
+        crate::testing::register_test(
+            "x509::wrong_signature_rejects",
+            test_wrong_signature_rejects,
+        );
         crate::testing::register_test(
             "x509::any_single_bit_flip_rejects",
             test_any_single_bit_flip_rejects,
@@ -864,7 +865,10 @@ pub mod tests {
             "x509::ca_flag_violation_rejects",
             test_ca_flag_violation_rejects,
         );
-        crate::testing::register_test("x509::untrusted_chain_rejects", test_untrusted_chain_rejects);
+        crate::testing::register_test(
+            "x509::untrusted_chain_rejects",
+            test_untrusted_chain_rejects,
+        );
         crate::testing::register_test("x509::empty_chain_rejects", test_empty_chain_rejects);
         crate::testing::register_test("x509::chain_too_long_rejects", test_chain_too_long_rejects);
         crate::testing::register_test(

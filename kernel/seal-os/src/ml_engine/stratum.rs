@@ -1088,8 +1088,12 @@ pub fn stratum_proof_line() -> String {
     let agree = split.regime() == batch_regime
         && libm::fabs(split_sig.loop_score - batch_sig.loop_score) < 1e-12;
 
-    let pass =
-        correct == REGIME_CASES.len() && monotone_ok && negctl_clean && naive_misfires && bounded && agree;
+    let pass = correct == REGIME_CASES.len()
+        && monotone_ok
+        && negctl_clean
+        && naive_misfires
+        && bounded
+        && agree;
 
     format!(
         "[MLFIT] proof version=1 subsystem=stratum window={} embed_dim={} kappa={:.3} \
@@ -1352,7 +1356,10 @@ pub mod tests {
         test_assert_eq!(regime, Regime::Overfit);
         test_assert!(action.reg_scale > 1.0, "overfit must raise regularisation");
         test_assert!(calibrate(handle, 0, 0.5), "calibration must apply");
-        test_assert!(!calibrate(handle, 99, 0.5), "unknown field must be rejected");
+        test_assert!(
+            !calibrate(handle, 99, 0.5),
+            "unknown field must be rejected"
+        );
         test_assert!(!calibrate(handle, 0, f64::NAN), "NaN must be rejected");
         test_assert!(unregister(handle), "unregister must find the stream");
         test_assert!(regime_of(handle).is_none(), "stream must be gone");

@@ -49,7 +49,7 @@ pub unsafe fn init(boot_info: &BootInfo) {
         free_after_phys
     );
 
-    if let Err(_) = virt::init(kernel_start, boot_info.kernel_size) {
+    if virt::init(kernel_start, boot_info.kernel_size).is_err() {
         crate::serial_println!("[BOOT] FATAL: Failed to initialize virtual memory (out of memory)");
         loop {
             x86_64::instructions::hlt();

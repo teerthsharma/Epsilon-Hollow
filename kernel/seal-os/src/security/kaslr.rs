@@ -244,8 +244,7 @@ pub fn kaslr_proof_line() -> alloc::string::String {
     let alias_in_range = alias_base >= KERNEL_ALIAS_BASE
         && alias_base + round_up_granule(IMAGE_SIZE.load(Ordering::SeqCst))
             <= KERNEL_ALIAS_BASE + KERNEL_ALIAS_WINDOW;
-    let heap_in_range =
-        heap_base >= HEAP_WINDOW_BASE && heap_base < HEAP_WINDOW_BASE + HEAP_SLIDE_SPAN;
+    let heap_in_range = (HEAP_WINDOW_BASE..HEAP_WINDOW_BASE + HEAP_SLIDE_SPAN).contains(&heap_base);
     let pass = is_active() && resample_differs && aligned && alias_in_range && heap_in_range;
 
     alloc::format!(
@@ -339,8 +338,14 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test("security::kaslr_fail_closed", test_fail_closed_reports_no_entropy);
-        crate::testing::register_test("security::kaslr_range", test_slides_stay_in_range_and_aligned);
+        crate::testing::register_test(
+            "security::kaslr_fail_closed",
+            test_fail_closed_reports_no_entropy,
+        );
+        crate::testing::register_test(
+            "security::kaslr_range",
+            test_slides_stay_in_range_and_aligned,
+        );
         crate::testing::register_test("security::kaslr_bits", test_entropy_bits_match_slot_counts);
     }
 }

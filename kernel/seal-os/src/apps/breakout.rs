@@ -39,7 +39,7 @@ pub struct BreakoutGame {
 
 impl BreakoutGame {
     pub fn new(client_w: u32, client_h: u32) -> Self {
-        let game = Self {
+        Self {
             width: client_w,
             height: client_h,
             paddle_x: (client_w / 2 - PADDLE_W / 2) as i32,
@@ -53,8 +53,7 @@ impl BreakoutGame {
             game_over: false,
             won: false,
             tick_count: 0,
-        };
-        game
+        }
     }
 
     pub fn key_press(&mut self, key: u8) {
@@ -68,12 +67,10 @@ impl BreakoutGame {
             b'd' | 0x4D => {
                 self.paddle_x = (self.paddle_x + 16).min((self.width - PADDLE_W) as i32);
             }
-            b' ' => {
-                if self.ball_dy == 0 {
-                    self.ball_dy = -2;
-                    if self.ball_dx == 0 {
-                        self.ball_dx = 2;
-                    }
+            b' ' if self.ball_dy == 0 => {
+                self.ball_dy = -2;
+                if self.ball_dx == 0 {
+                    self.ball_dx = 2;
                 }
             }
             _ => {
@@ -148,7 +145,7 @@ impl BreakoutGame {
                 {
                     self.bricks[row][col] = false;
                     self.ball_dy = -self.ball_dy;
-                    self.score += (BRICK_ROWS as u32 - row as u32) * 10;
+                    self.score += (BRICK_ROWS - row as u32) * 10;
                 }
             }
         }

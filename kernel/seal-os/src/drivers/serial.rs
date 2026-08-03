@@ -112,9 +112,7 @@ pub fn init() {
 
 /// Try to read a byte from COM1 without blocking.
 pub fn try_read() -> Option<u8> {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        SERIAL.lock().try_read_byte()
-    })
+    x86_64::instructions::interrupts::without_interrupts(|| SERIAL.lock().try_read_byte())
 }
 
 /// Best-effort emergency write path for panic handling.

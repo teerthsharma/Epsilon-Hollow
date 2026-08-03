@@ -109,6 +109,12 @@ impl UsbSubsystem {
     }
 }
 
+impl Default for UsbSubsystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn init() {
     USB_SUBSYSTEM.lock().init();
 }

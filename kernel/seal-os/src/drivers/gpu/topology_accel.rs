@@ -143,11 +143,14 @@ impl AmdTopologyAccelerator {
     unsafe fn upload_kernel(&mut self, meta: &KernelMeta) -> Result<u64, GpuError> {
         let code_bytes = meta.code_size_bytes;
         let code_buf = GpuBuffer::alloc(code_bytes).ok_or(GpuError::OutOfMemory)?;
-        upload(
-            &code_buf,
-            meta.binary,
-        );
+        upload(&code_buf, meta.binary);
         Ok(code_buf.phys)
+    }
+}
+
+impl Default for AmdTopologyAccelerator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -233,7 +236,7 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
             // Set compute shader address.
             ring.set_compute_pgm(shader_phys);
             // Thread group: 64 threads per wavefront.
-            let grid_x = ((n_points + 63) / 64) as u32;
+            let grid_x = n_points.div_ceil(64) as u32;
             ring.set_num_threads(64, 1, 1);
             // Set user data: argument buffer layout.
             // s4-s5: points, s6-s7: centroids, s8-s9: cell_ids, s10: n_points, s11: n_cells
@@ -272,7 +275,7 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
 
         unsafe {
             ring.set_compute_pgm(shader_phys);
-            let grid_x = ((n_vectors + 63) / 64) as u32;
+            let grid_x = n_vectors.div_ceil(64) as u32;
             ring.set_num_threads(64, 1, 1);
             ring.set_user_data(
                 0,
@@ -334,8 +337,8 @@ impl TopologyAccelerator for AmdTopologyAccelerator {
 
         unsafe {
             ring.set_compute_pgm(shader_phys);
-            let grid_x = ((n_a + 7) / 8) as u32;
-            let grid_y = ((n_b + 7) / 8) as u32;
+            let grid_x = n_a.div_ceil(8) as u32;
+            let grid_y = n_b.div_ceil(8) as u32;
             ring.set_num_threads(8, 8, 1);
             ring.set_user_data(
                 0,
@@ -443,7 +446,7 @@ impl TopologyAccelerator for CpuFallbackAccelerator {
         for p in 0..n_points {
             let p_theta = pts[p * 2];
             let p_phi = pts[p * 2 + 1];
-            let mut best_dist = core::f64::MAX;
+            let mut best_dist = f64::MAX;
             let mut best_cell = 0u32;
             for c in 0..n_cells {
                 let c_theta = ctr[c * 2];

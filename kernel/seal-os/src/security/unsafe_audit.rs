@@ -121,11 +121,7 @@ pub fn totals() -> AuditTotals {
 /// two numbers to notice how bad it is.
 pub fn unsafe_audit_proof_line() -> String {
     let t = totals();
-    let pct = if t.total == 0 {
-        0
-    } else {
-        t.unjustified * 1000 / t.total
-    };
+    let pct = (t.unjustified * 1000).checked_div(t.total).unwrap_or(0);
     alloc::format!(
         "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version={} blocks={} justified={} unjustified={} files={} undocumented_permille={} rule=safety-comment-above-block result={}",
         t.version,
@@ -195,7 +191,10 @@ pub mod tests {
     /// The compiled-in fixture must be parseable and self-consistent.
     fn test_fixture_is_consistent() -> TestResult {
         let t = totals();
-        test_assert!(t.passes(), "compiled-in unsafe-audit fixture is inconsistent");
+        test_assert!(
+            t.passes(),
+            "compiled-in unsafe-audit fixture is inconsistent"
+        );
         test_assert_eq!(t.justified + t.unjustified, t.total);
         test_assert!(t.total >= t.files, "fewer blocks than files with blocks");
         // Negative control: a fixture whose parts do not add up must fail.
@@ -205,8 +204,14 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test("security::unsafe_audit_unjustified", test_detects_unjustified_block);
-        crate::testing::register_test("security::unsafe_audit_justified", test_accepts_justified_block);
+        crate::testing::register_test(
+            "security::unsafe_audit_unjustified",
+            test_detects_unjustified_block,
+        );
+        crate::testing::register_test(
+            "security::unsafe_audit_justified",
+            test_accepts_justified_block,
+        );
         crate::testing::register_test("security::unsafe_audit_fixture", test_fixture_is_consistent);
     }
 }

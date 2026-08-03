@@ -1,0 +1,25 @@
+[package]
+name = "seal-net80211"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "IEEE 802.11 MAC frame codec and WPA2/WPA3 supplicant state machine, no_std"
+
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+no_std = ["alloc"]
+
+[dependencies]
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+pbkdf2 = { workspace = true }
+aes = { workspace = true }
+ccm = { workspace = true }
+
+[lib]
+name = "seal_net80211"
+path = "src/lib.rs"

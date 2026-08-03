@@ -400,6 +400,12 @@ impl ManifoldPkg {
     }
 }
 
+impl Default for ManifoldPkg {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 enum VfsInstallError {
     #[allow(dead_code)] // REASON: VFS error payload preserved for future install error diagnostics

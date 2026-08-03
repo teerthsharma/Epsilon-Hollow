@@ -146,6 +146,12 @@ pub struct MemDisk {
     data: Mutex<Vec<u8>>,
 }
 
+impl Default for MemDisk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemDisk {
     /// Create a device with no image; call [`MemDisk::load`] to populate it.
     pub const fn new() -> Self {
@@ -809,9 +815,7 @@ pub fn measure() -> ParityReport {
     if let Ok(handle) = ext2.lookup(victim) {
         let mut orig = [0u8; 1];
         if ext2.read(handle, &mut orig, victim_offset).is_ok()
-            && ext2
-                .write(handle, &[orig[0] ^ 0xFF], victim_offset)
-                .is_ok()
+            && ext2.write(handle, &[orig[0] ^ 0xFF], victim_offset).is_ok()
         {
             if let Ok((corrupt, _)) = tree_digest(&ext2) {
                 r.negative_control_digest = corrupt;
@@ -927,8 +931,14 @@ pub mod tests {
     fn test_fixture_images_are_deterministic() -> TestResult {
         test_assert_eq!(format_fat16().len(), FAT_IMAGE_BYTES);
         test_assert_eq!(format_ext2().len(), EXT2_IMAGE_BYTES);
-        test_assert_eq!(fnv(FNV_OFFSET, &format_fat16()), fnv(FNV_OFFSET, &format_fat16()));
-        test_assert_eq!(fnv(FNV_OFFSET, &format_ext2()), fnv(FNV_OFFSET, &format_ext2()));
+        test_assert_eq!(
+            fnv(FNV_OFFSET, &format_fat16()),
+            fnv(FNV_OFFSET, &format_fat16())
+        );
+        test_assert_eq!(
+            fnv(FNV_OFFSET, &format_ext2()),
+            fnv(FNV_OFFSET, &format_ext2())
+        );
         TestResult::Pass
     }
 
@@ -997,7 +1007,10 @@ pub mod tests {
         let r = report();
         // Each of these is inherent to the two formats and must be visible.
         test_assert!(r.div_mode > 0, "expected mode divergence was not observed");
-        test_assert!(r.div_mtime > 0, "expected mtime divergence was not observed");
+        test_assert!(
+            r.div_mtime > 0,
+            "expected mtime divergence was not observed"
+        );
         test_assert!(
             r.div_dirsize > 0,
             "expected directory-size divergence was not observed"
@@ -1036,7 +1049,10 @@ pub mod tests {
             "filesystem::parity_fixture_images_deterministic",
             test_fixture_images_are_deterministic,
         );
-        crate::testing::register_test("filesystem::parity_both_images_mount", test_both_images_mount);
+        crate::testing::register_test(
+            "filesystem::parity_both_images_mount",
+            test_both_images_mount,
+        );
         crate::testing::register_test(
             "filesystem::parity_operation_matrix",
             test_operation_matrix_runs_on_both,
@@ -1056,7 +1072,10 @@ pub mod tests {
             "filesystem::parity_divergences_enumerated",
             test_divergences_are_enumerated,
         );
-        crate::testing::register_test("filesystem::parity_proof_pass", test_proof_line_reports_pass);
+        crate::testing::register_test(
+            "filesystem::parity_proof_pass",
+            test_proof_line_reports_pass,
+        );
         crate::testing::register_test(
             "filesystem::parity_fat_unknown_cluster_terminates",
             test_fat_stat_unknown_cluster_terminates,

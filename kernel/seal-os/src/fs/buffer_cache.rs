@@ -20,8 +20,7 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new(dev: u32, block_id: u64, block_size: usize) -> Self {
-        let mut data = Vec::with_capacity(block_size);
-        data.resize(block_size, 0);
+        let data = vec![0; block_size];
         Self {
             dev,
             block_id,

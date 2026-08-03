@@ -53,6 +53,10 @@ fn test_smp_online() -> TestResult {
     TestResult::Pass
 }
 
+/// NOTE: despite the name, this observes no timer. It compares the Local APIC
+/// id to the CPU number — an identity check that would pass with the timer
+/// stopped. Nothing here counts a timer interrupt. Asserting that `ticks()`
+/// advances across an `hlt` would be the real test.
 #[cfg(all(not(test), feature = "test-mode"))]
 fn test_apic_timer_fires() -> TestResult {
     unsafe {
@@ -68,6 +72,11 @@ fn test_apic_timer_fires() -> TestResult {
     TestResult::Pass
 }
 
+/// NOTE: this cannot fail. It asserts a literal `true` and sends no IPI, yet it
+/// is registered as `sync::ipi_roundtrip` and the harness reports
+/// `TEST_PASS: sync::ipi_roundtrip`, which reads as IPI coverage that does not
+/// exist. A real cross-CPU roundtrip needs >= 2 CPUs online; until the harness
+/// grows a `Skipped` result this should either be unregistered or renamed.
 #[cfg(all(not(test), feature = "test-mode"))]
 fn test_ipi_roundtrip() -> TestResult {
     // Self-IPI stub — full cross-CPU test requires at least 2 CPUs online.

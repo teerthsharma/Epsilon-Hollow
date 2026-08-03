@@ -63,10 +63,7 @@ fn is_user_ptr(ptr: *const u8, len: usize) -> bool {
 /// Record a supervisor user-access violation detected by the page-fault path.
 pub fn handle_user_access_fault() {
     let count = USER_ACCESS_FAULTS.fetch_add(1, Ordering::SeqCst) + 1;
-    crate::serial_println!(
-        "[SMAP/SMEP] user-access fault recorded count={}",
-        count
-    );
+    crate::serial_println!("[SMAP/SMEP] user-access fault recorded count={}", count);
 }
 
 /// Return the number of recorded supervisor user-access violations.
@@ -82,6 +79,13 @@ pub fn user_access_faults() -> u64 {
 /// # Safety
 /// Caller must ensure `user_ptr` is valid for read. This function only checks
 /// that the pointer resides in the user address space.
+// REASON(clippy::result_unit_err): the sole failure mode is `is_user_ptr`
+// rejecting the range, and every one of the 16 call sites (syscall/table.rs,
+// syscall/time.rs, syscall/pipe.rs, process/signal.rs) either tests
+// `.is_err()` to pick an errno or forwards with `?` into another
+// `Result<_, ()>`. None reads a payload, so an error enum would only add a
+// variant nobody matches on.
+#[allow(clippy::result_unit_err)]
 pub unsafe fn copy_from_user(kernel_buf: &mut [u8], user_ptr: *const u8) -> Result<(), ()> {
     if !is_user_ptr(user_ptr, kernel_buf.len()) {
         return Err(());
@@ -104,6 +108,9 @@ pub unsafe fn copy_from_user(kernel_buf: &mut [u8], user_ptr: *const u8) -> Resu
 ///
 /// # Safety
 /// Caller must ensure `user_ptr` is valid for write.
+// REASON(clippy::result_unit_err): same as `copy_from_user` — the only failure
+// is the `is_user_ptr` range check and every caller discards the payload.
+#[allow(clippy::result_unit_err)]
 pub unsafe fn copy_to_user(user_ptr: *mut u8, kernel_buf: &[u8]) -> Result<(), ()> {
     if !is_user_ptr(user_ptr, kernel_buf.len()) {
         return Err(());

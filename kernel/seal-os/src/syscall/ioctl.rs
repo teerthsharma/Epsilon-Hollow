@@ -24,7 +24,7 @@ pub fn dispatch_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         VfsNodeType::CharDevice | VfsNodeType::BlockDevice => {
             let result = crate::drivers::ioctl::dispatch(node.major, node.minor, request, arg);
             if result < 0 {
-                SyscallResult::err(-result as i64)
+                SyscallResult::err(-result)
             } else {
                 SyscallResult::ok(result)
             }

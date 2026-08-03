@@ -516,8 +516,7 @@ unsafe fn clone_page_table_cow_with_budget(
                     let new_flags = page_entry.flags();
                     // Deep copy all user-accessible pages to prevent double-free
                     if new_flags.contains(PageTableFlags::USER_ACCESSIBLE) {
-                        let new_frame =
-                            cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
+                        let new_frame = cow_alloc_frame(&mut rollback, allocation_budget.as_mut())?;
                         core::ptr::copy_nonoverlapping(
                             page_entry.addr().as_u64() as *const u8,
                             new_frame.as_u64() as *mut u8,

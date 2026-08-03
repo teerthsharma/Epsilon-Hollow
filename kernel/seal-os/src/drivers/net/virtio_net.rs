@@ -109,6 +109,12 @@ impl SplitVirtqueue {
     }
 }
 
+impl Default for SplitVirtqueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Virtio-net device
 pub struct VirtioNet {
     pub base_addr: u64,

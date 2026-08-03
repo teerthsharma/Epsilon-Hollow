@@ -369,8 +369,8 @@ impl ChartImage {
         if exec_bytes > MAX_IMAGE_BYTES || data_bytes > MAX_IMAGE_BYTES {
             return Err(ObjError::ImageTooLarge);
         }
-        let exec_pages = ((exec_bytes + 4095) / 4096).max(1) as usize;
-        let data_pages = ((data_bytes + 4095) / 4096).max(1) as usize;
+        let exec_pages = exec_bytes.div_ceil(4096).max(1) as usize;
+        let data_pages = data_bytes.div_ceil(4096).max(1) as usize;
         let (exec_base, exec_frames) = map_region(exec_pages, writable_flags())?;
         let (data_base, data_frames) = match map_region(data_pages, writable_flags()) {
             Ok(v) => v,

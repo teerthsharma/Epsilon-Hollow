@@ -262,6 +262,15 @@ pub fn init() {
 
 #[cfg(not(test))]
 /// Reload the IDT (used by APs after they enter long mode).
+///
+/// # Safety
+/// Runs `lidt` on the calling CPU, so that CPU must already be in long mode
+/// with a GDT loaded whose kernel code selector matches the one baked into
+/// these gate descriptors. Because the double-fault gate uses
+/// `DOUBLE_FAULT_IST_INDEX`, the CPU must also have loaded a TSS whose
+/// `interrupt_stack_table[0]` points at a valid stack — otherwise the first
+/// double fault escalates to a triple fault. Interrupts should be disabled
+/// across the switch so no vector is delivered against a half-installed table.
 pub unsafe fn reload_idt() {
     IDT.load();
 }
@@ -498,10 +507,10 @@ extern "x86-interrupt" fn page_fault_handler(
 
     // Attempt swap-in for swapped-out pages.
     let fault_virt = x86_64::VirtAddr::new(addr);
-    if crate::memory::swap::is_swapped(fault_virt) {
-        if unsafe { crate::memory::swap::swap_in_page(fault_virt) } {
-            return;
-        }
+    if crate::memory::swap::is_swapped(fault_virt)
+        && unsafe { crate::memory::swap::swap_in_page(fault_virt) }
+    {
+        return;
     }
 
     // T5: Handle COW page fault on write.
@@ -519,7 +528,7 @@ extern "x86-interrupt" fn page_fault_handler(
     // Try kernel heap growth for faults in the heap region.
     const HEAP_VIRTUAL_BASE: u64 = 0xffff_9000_0000_0000;
     const HEAP_VIRTUAL_LIMIT: u64 = 0xFFFF_A000_0000_0000;
-    if addr >= HEAP_VIRTUAL_BASE && addr < HEAP_VIRTUAL_LIMIT {
+    if (HEAP_VIRTUAL_BASE..HEAP_VIRTUAL_LIMIT).contains(&addr) {
         if let Some(frame) = crate::memory::phys::alloc_frame() {
             let page_start = x86_64::VirtAddr::new(addr & !0xFFF);
             let flags = x86_64::structures::paging::PageTableFlags::PRESENT

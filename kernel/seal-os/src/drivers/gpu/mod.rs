@@ -4,7 +4,13 @@
 #![allow(dead_code)] // REASON: GPU capability fields for future compute budget management
 
 //! GPU driver — PCI vendor detection with framebuffer init.
-//! 2D blit/fill supported on VirtIO-GPU and direct framebuffer access.
+//!
+//! On VirtIO-GPU, `blit` and `fill_rect` only issue a `transfer_to_host_2d` plus
+//! `flush` for the dirty rect of the existing scanout resource: `blit` ignores
+//! its `src`/`dst` arguments and `fill_rect` ignores `fb`/`color`. No source
+//! copy or colour fill is performed — callers write the framebuffer themselves
+//! and these functions just push it to the host.
+//!
 //! 3D/compute dispatch requires vendor-signed firmware (GSP, SMU).
 
 pub mod amd;
@@ -118,6 +124,12 @@ impl GpuDriver {
 
     pub fn is_available(&self) -> bool {
         self.initialized
+    }
+}
+
+impl Default for GpuDriver {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

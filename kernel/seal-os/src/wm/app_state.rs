@@ -197,8 +197,8 @@ impl AppState {
                     SpecialKey::Up => self.terminal.key_press(0x48),
                     SpecialKey::Down => self.terminal.key_press(0x50),
                     _ => {
-                // Unhandled input; no-op
-            }
+                        // Unhandled input; no-op
+                    }
                 }
             } else {
                 let ch = scancode_to_char(scancode);
@@ -492,6 +492,12 @@ impl AppState {
                 }
             }
         }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

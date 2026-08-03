@@ -36,8 +36,8 @@ unsafe impl GlobalAlloc for SealAllocator {
             }
             ptr
         } else {
-            let pages = (req_size + 4095) / 4096;
-            let align_pages = (layout.align() + 4095) / 4096;
+            let pages = req_size.div_ceil(4096);
+            let align_pages = layout.align().div_ceil(4096);
             let total_pages = pages.max(align_pages);
 
             let virt = virt::alloc_virtual_pages(total_pages, align_pages);
@@ -106,8 +106,8 @@ unsafe impl GlobalAlloc for SealAllocator {
             slab::slab_free(ptr, slab_size);
             TOTAL_ALLOCATED.fetch_sub(slab_size, Ordering::Relaxed);
         } else {
-            let pages = (req_size + 4095) / 4096;
-            let align_pages = (layout.align() + 4095) / 4096;
+            let pages = req_size.div_ceil(4096);
+            let align_pages = layout.align().div_ceil(4096);
             let total_pages = pages.max(align_pages);
 
             let base = VirtAddr::new(ptr as u64);

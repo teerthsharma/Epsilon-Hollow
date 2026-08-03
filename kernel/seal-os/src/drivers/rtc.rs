@@ -116,7 +116,7 @@ pub fn read_time() -> RtcTime {
 
     if !hour_24 {
         let pm = hour & 0x80 != 0;
-        hour = hour & 0x7F;
+        hour &= 0x7F;
         if !binary {
             hour = bcd_to_binary(hour);
         }

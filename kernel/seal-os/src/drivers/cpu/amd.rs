@@ -117,8 +117,8 @@ unsafe fn read_msr_safe(addr: u32) -> Option<u64> {
 ///
 /// Frequency = 100 MHz * (CPUfid + 0x10) / (2^CPUdid)
 fn pstate_to_mhz(def: u64) -> u64 {
-    let cpufid = (def & 0xFF) as u64;
-    let cpudid = ((def >> 8) & 0xFF) as u64;
+    let cpufid = def & 0xFF;
+    let cpudid = (def >> 8) & 0xFF;
     // Avoid division by zero on impossible did values; cap at 7 (128x divider)
     let did = cpudid.min(7);
     let divider = 1u64 << did;
@@ -165,6 +165,12 @@ unsafe fn read_aperf_mperf() -> (u64, u64) {
 
 /// AMD CPU power-management driver singleton.
 pub struct AmdCpuDriver;
+
+impl Default for AmdCpuDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AmdCpuDriver {
     /// Create a new driver handle. Does **not** perform hardware init.

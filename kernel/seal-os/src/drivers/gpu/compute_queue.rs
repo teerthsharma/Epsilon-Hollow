@@ -288,6 +288,15 @@ impl ComputeRing {
 
     /// Insert an end-of-pipeline event that writes a fence value to `addr`.
     /// `addr` must be GPU-visible physical address.
+    ///
+    /// # Safety
+    /// `addr` must be a GPU-visible physical address backed by 8 bytes of
+    /// memory that stays allocated until the fence is observed, and that the
+    /// CPU is not concurrently using for anything else — the GPU writes the
+    /// 64-bit `value` there asynchronously, long after this call returns.
+    /// The ring must be the one programmed into the GPU's CP by `new`, and
+    /// this call blocks in `wait_free` until the GPU has consumed enough of
+    /// the ring, so it must not run with the ring's consumer stalled.
     pub unsafe fn event_write_eop(&mut self, addr: u64, value: u64) {
         let need = 6;
         self.wait_free(need);
@@ -322,12 +331,29 @@ impl ComputeRing {
     }
 
     /// Upload shader constants (user data SGPRs).
+    ///
+    /// # Safety
+    /// `start_idx + values.len()` must not exceed the number of user SGPRs the
+    /// hardware exposes (16 on GCN), and must match the `USER_SGPR` count
+    /// programmed through `set_compute_pgm_rsrc`, or the shader reads its
+    /// arguments from the wrong registers. Any address passed through these
+    /// SGPRs must be a GPU-visible physical address that stays mapped until
+    /// the dispatch completes. Inherits the register-offset contract of
+    /// `set_sh_regs`.
     pub unsafe fn set_user_data(&mut self, start_idx: u32, values: &[u32]) {
         let reg = SH_REG_COMPUTE_USER_DATA_0 + start_idx;
         self.set_sh_regs(reg, values);
     }
 
     /// Configure thread group dimensions.
+    ///
+    /// # Safety
+    /// `x`, `y` and `z` must be the work-group dimensions the loaded shader
+    /// was compiled for and must satisfy the hardware limit (`x * y * z` no
+    /// greater than 1024 on GCN); a larger product, or dimensions that
+    /// disagree with the shader, launches waves that index outside the
+    /// buffers bound through `set_user_data`. Inherits the register-offset
+    /// contract of `set_sh_regs`.
     pub unsafe fn set_num_threads(&mut self, x: u32, y: u32, z: u32) {
         self.set_sh_regs(SH_REG_COMPUTE_NUM_THREAD_X, &[x, y, z]);
     }
@@ -427,10 +453,24 @@ impl CommandBuffer {
     }
 
     /// Write all accumulated commands into the ring as a single batch.
+    ///
+    /// # Safety
+    /// The accumulated DWords must form complete, well-formed PM4 packets for
+    /// `ring`'s GPU: they are copied in verbatim with no validation and,
+    /// unlike the packet builders, without any `wait_free` check, so the
+    /// buffer must be no larger than the ring's free space or it silently
+    /// overwrites commands the CP has not yet consumed. `fence_addr` carries
+    /// the contract of `ComputeRing::submit`.
     pub unsafe fn submit_to_ring(&self, ring: &mut ComputeRing, fence_addr: u64) -> GpuFence {
         for &dw in &self.cmds {
             ring.write_dw(dw);
         }
         ring.submit(fence_addr)
+    }
+}
+
+impl Default for CommandBuffer {
+    fn default() -> Self {
+        Self::new()
     }
 }

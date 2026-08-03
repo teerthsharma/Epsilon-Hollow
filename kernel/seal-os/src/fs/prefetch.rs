@@ -1,10 +1,15 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Aether-Link prefetch engine — real adaptive I/O prediction, ~18ns per decision.
+//! Aether-Link prefetch engine — adaptive I/O prediction.
 //!
 //! Ported from `kernel/aether/aether-link/` for no_std. Uses 6D telemetry extraction
-//! and POVM-inspired trigonometric heuristic for prefetch decisions.
+//! and a POVM-inspired trigonometric heuristic for prefetch decisions.
+//!
+//! No per-decision latency is measured in-kernel: this module contains no
+//! `rdtsc` or cycle capture, and the `cycles` field is a decision *counter*
+//! incremented once per call, not a timing. Any ns/decision figure for this code
+//! would have to come from the aether-link host benchmark, not from here.
 
 use core::f32::consts::{FRAC_PI_2, PI};
 

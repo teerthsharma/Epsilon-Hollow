@@ -42,6 +42,12 @@ impl DesktopState {
     }
 }
 
+impl Default for DesktopState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 static DESKTOP_STATE: Mutex<DesktopState> = Mutex::new(DesktopState::new());
 
 static NOTIFICATION: Mutex<Option<(String, u64)>> = Mutex::new(None);
@@ -284,7 +290,7 @@ fn handle_click(
     }
 
     // Start button
-    if mx >= 4 && mx < 76 && my >= taskbar_y + 4 && my < taskbar_y + 24 {
+    if (4..76).contains(&mx) && my >= taskbar_y + 4 && my < taskbar_y + 24 {
         state.start_menu.toggle(taskbar_y);
         state.power_menu.close();
         return true;
@@ -299,20 +305,15 @@ fn handle_click(
     }
 
     // Desktop icons
-    if my < taskbar_y {
-        if compositor.window_at(mx, my).is_none() {
-            for icon in &state.icons {
-                if mx >= icon.x
-                    && mx < icon.x + icon.width
-                    && my >= icon.y
-                    && my < icon.y + icon.height
-                {
-                    let app_id = icon.app_id;
-                    drop(state);
-                    crate::wm::app_launcher::launch_app(app_id);
-                    app_state.focus_app(app_id, compositor);
-                    return true;
-                }
+    if my < taskbar_y && compositor.window_at(mx, my).is_none() {
+        for icon in &state.icons {
+            if mx >= icon.x && mx < icon.x + icon.width && my >= icon.y && my < icon.y + icon.height
+            {
+                let app_id = icon.app_id;
+                drop(state);
+                crate::wm::app_launcher::launch_app(app_id);
+                app_state.focus_app(app_id, compositor);
+                return true;
             }
         }
     }

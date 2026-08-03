@@ -153,6 +153,12 @@ impl DhcpClient {
     }
 }
 
+impl Default for DhcpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Legacy module-level DHCP state machine (preserved for compatibility).
 // ---------------------------------------------------------------------------

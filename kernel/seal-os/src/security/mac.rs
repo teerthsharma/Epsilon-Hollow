@@ -1,9 +1,14 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Mandatory Access Control (MAC) — simple LSM framework.
+//! Path-prefix access policy — advisory, and default-ALLOW.
 //!
-//! A default policy denies `/root` to non-root users and allows `/data` and `/tmp`.
+//! Despite the `mac` module name this is not mandatory access control:
+//! `check_file_permission` returns `true` when no rule matches the path, and
+//! `true` when no policy has been loaded at all. It can only ever subtract
+//! access from paths an explicit rule already covers.
+//!
+//! The default policy denies `/root` to non-root users and allows `/data` and `/tmp`.
 
 use alloc::string::String;
 use alloc::vec;

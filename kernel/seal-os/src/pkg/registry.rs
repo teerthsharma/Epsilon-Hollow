@@ -44,3 +44,9 @@ impl PackageRegistry {
         self.packages.len()
     }
 }
+
+impl Default for PackageRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

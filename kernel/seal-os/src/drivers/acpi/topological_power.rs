@@ -466,7 +466,7 @@ pub fn acpi_enter_sleep(state: u8) {
 
     // Write SLP_TYP + SLP_EN to PM1a_CNT.
     if let Some(pm1a_cnt) = fadt::pm1a_cnt_blk() {
-        let slp_typ = fadt::slp_typ_for_state(state) as u16;
+        let slp_typ = fadt::slp_typ_for_state(state);
         let slp_en: u16 = 1 << 13;
         let val = (slp_typ << 10) | slp_en;
         unsafe {

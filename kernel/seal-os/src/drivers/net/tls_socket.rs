@@ -193,3 +193,9 @@ impl TlsSocket {
         Some(record)
     }
 }
+
+impl Default for TlsSocket {
+    fn default() -> Self {
+        Self::new()
+    }
+}

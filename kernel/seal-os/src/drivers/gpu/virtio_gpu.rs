@@ -162,6 +162,12 @@ impl SplitVirtqueue {
     }
 }
 
+impl Default for SplitVirtqueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct VirtioGpu {
     pub base_addr: u64,
     pub is_mmio: bool,

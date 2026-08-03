@@ -125,6 +125,16 @@ impl NvidiaGpu {
     /// Probe a PCI device.  If it is an NVIDIA GPU, map BAR0 and read
     /// the architecture register.  Returns `None` if the device is not
     /// NVIDIA or if BAR0 is unusable.
+    ///
+    /// # Safety
+    /// `dev` must describe a device found by a completed PCI enumeration, with
+    /// its BARs already assigned by firmware and memory decoding enabled in
+    /// the command register. BAR0 and the expansion ROM BAR are dereferenced
+    /// directly as physical addresses, so both must fall inside the identity
+    /// map (the first 16 GiB) and be mapped uncacheable; a BAR that firmware
+    /// left unassigned or that lies above the identity map reads through a
+    /// stale or absent mapping. Reads at BAR0 + 0x100000 assume the register
+    /// aperture is at least 1 MiB.
     pub unsafe fn probe(dev: &PciDevice) -> Option<Self> {
         if dev.vendor_id != 0x10DE {
             return None;
@@ -198,6 +208,16 @@ impl NvidiaGpu {
     /// - Reset PMC
     /// - Wait for idle
     /// - Log each step
+    ///
+    /// # Safety
+    /// `self` must come from a successful `probe`, `dev` must be that same PCI
+    /// device, and `self.bar0_phys` must still be mapped. This clears
+    /// `NV_PMC_ENABLE` to zero and restores it, which resets every engine on
+    /// the GPU: no other code may be touching the device, and any DMA the GPU
+    /// has in flight must already be quiesced. Enabling bus mastering lets the
+    /// device write to host memory, so it must only be done once the driver is
+    /// ready for that. Reset is not synchronised with the display engine, so
+    /// this must not run against a GPU currently scanning out.
     pub unsafe fn init_sequence(&self, dev: &PciDevice) {
         serial_println!("[NVGPU] Step 1: Enabling PCI bus mastering");
         dev.enable_bus_mastering();

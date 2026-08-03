@@ -80,6 +80,16 @@ pub fn init_gdt() {
 }
 
 /// Set the kernel stack pointer used when entering ring 0 from ring 3.
+///
+/// # Safety
+/// `stack_top` must be the exclusive upper bound of a mapped, 16-byte-aligned
+/// kernel stack that stays valid and unused by anything else until the next
+/// call replaces it — the CPU loads it into RSP on the next ring 3 to ring 0
+/// transition, so a stale or too-small stack corrupts whatever lies below it.
+/// This writes the single global `TSS` through an `UnsafeCell` with no
+/// synchronisation, so it must only be called by the CPU that loaded that TSS,
+/// only from ring 0, and never concurrently from another CPU. It has no effect
+/// on CPUs running a per-CPU TSS installed by `init_tss_for_cpu`.
 pub unsafe fn set_kernel_stack(stack_top: u64) {
     (*TSS.0.get()).privilege_stack_table[0] = VirtAddr::new(stack_top);
 }

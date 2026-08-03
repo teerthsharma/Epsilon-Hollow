@@ -113,7 +113,7 @@ fn hid_keycode_to_char(keycode: u8, shift: bool) -> Option<u8> {
         b'#', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'\n', 0x1B, b'\x08', b'\t', b' ', b'_',
         b'+', b'{', b'}', b'|', b'~', b':', b'"', b'~', b'<', b'>', b'?',
     ];
-    if keycode < 4 || keycode >= 58 {
+    if !(4..58).contains(&keycode) {
         return None;
     }
     let idx = keycode as usize;

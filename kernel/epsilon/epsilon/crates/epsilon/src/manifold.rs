@@ -114,8 +114,12 @@ pub struct SparseGraph<const D: usize> {
     /// Number of points currently inserted into the graph.
     pub point_count: usize,
     epsilon: f64,
-    adjacency: [u64; MAX_POINTS],
 }
+// Adjacency is deliberately not stored; see the identical note in
+// `aether-core`'s `SparseAttentionGraph`. A `[u64; MAX_POINTS]` bitmask cannot
+// represent a graph on `MAX_POINTS` nodes when `MAX_POINTS > 64`, and the
+// failure was silent: every point at index >= 64 was invisible, inflating
+// beta0 by exactly `n - 64`.
 
 impl<const D: usize> SparseGraph<D> {
     /// Construct an empty sparse graph with the given ε neighborhood radius.
@@ -124,75 +128,66 @@ impl<const D: usize> SparseGraph<D> {
             points: [EpsilonPoint::zero(); MAX_POINTS],
             point_count: 0,
             epsilon,
-            adjacency: [0; MAX_POINTS],
         }
     }
 
-    /// Add a point and compute its sparse attention edges.
+    /// Add a point to the cloud. Edges are derived on demand, so insertion is
+    /// O(1) and the graph cannot depend on insertion order.
     pub fn add_point(&mut self, point: EpsilonPoint<D>) -> Option<usize> {
         if self.point_count >= MAX_POINTS {
             return None;
         }
-
         let idx = self.point_count;
         self.points[idx] = point;
-
-        let mut mask = 0u64;
-        for i in 0..idx {
-            if point.is_neighbor(&self.points[i], self.epsilon) && i < 64 {
-                mask |= 1 << i;
-                self.adjacency[i] |= 1 << (idx % 64);
-            }
-        }
-        self.adjacency[idx] = mask;
         self.point_count += 1;
         Some(idx)
     }
 
-    /// Check if two points are connected.
+    /// Whether two points are ε-neighbours: strict `distance < epsilon`,
+    /// symmetric by construction, with no 64-point ceiling. A point is not its
+    /// own neighbour.
     pub fn are_neighbors(&self, i: usize, j: usize) -> bool {
-        if i >= self.point_count || j >= self.point_count || j >= 64 {
+        if i >= self.point_count || j >= self.point_count || i == j {
             return false;
         }
-        (self.adjacency[i] & (1 << j)) != 0
+        self.points[i].is_neighbor(&self.points[j], self.epsilon)
     }
 
     /// Compute Î²â‚€ (connected components) via DFS.
+    /// Exact for every `point_count` up to `MAX_POINTS`. Union-find needs no
+    /// explicit stack, so no depth bound can silently drop a neighbour and
+    /// over-count components.
     pub fn compute_betti_0(&self) -> u32 {
-        if self.point_count == 0 {
+        let n = self.point_count;
+        if n == 0 {
             return 0;
         }
 
-        let mut visited = [false; MAX_POINTS];
-        let mut components = 0u32;
+        let mut parent = [0usize; MAX_POINTS];
+        for (i, p) in parent.iter_mut().enumerate().take(n) {
+            *p = i;
+        }
 
-        for start in 0..self.point_count {
-            if visited[start] {
-                continue;
+        fn find(parent: &mut [usize; MAX_POINTS], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
             }
-            components += 1;
+            x
+        }
 
-            let mut stack = [0usize; 64];
-            let mut top = 1;
-            stack[0] = start;
-
-            while top > 0 {
-                top -= 1;
-                let current = stack[top];
-                if visited[current] {
-                    continue;
-                }
-                visited[current] = true;
-
-                for (n, v) in visited.iter().enumerate().take(64.min(self.point_count)) {
-                    if !*v && self.are_neighbors(current, n) && top < 64 {
-                        stack[top] = n;
-                        top += 1;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if self.are_neighbors(i, j) {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri] = rj;
                     }
                 }
             }
         }
-        components
+
+        (0..n).filter(|&i| find(&mut parent, i) == i).count() as u32
     }
 
     /// Estimate Î²â‚ (cycles) using Euler characteristic approximation.
@@ -202,9 +197,12 @@ impl<const D: usize> SparseGraph<D> {
         let v = self.point_count as i32;
         let mut e = 0i32;
         for i in 0..self.point_count {
-            e += self.adjacency[i].count_ones() as i32;
+            for j in (i + 1)..self.point_count {
+                if self.are_neighbors(i, j) {
+                    e += 1;
+                }
+            }
         }
-        e /= 2;
 
         let b0 = self.compute_betti_0() as i32;
         let b1 = e - v + b0;
@@ -252,7 +250,6 @@ impl<const D: usize> SparseGraph<D> {
     /// Clear the graph.
     pub fn clear(&mut self) {
         self.point_count = 0;
-        self.adjacency = [0; MAX_POINTS];
     }
 }
 

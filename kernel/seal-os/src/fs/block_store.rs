@@ -166,7 +166,7 @@ impl Superblock {
         let inode_table_start = free_bitmap_start + free_bitmap_blocks;
         let max_inodes = total_blocks.saturating_sub(inode_table_start);
         let inode_table_blocks =
-            (max_inodes * INODE_RECORD_SIZE as u64 + block_size as u64 - 1) / block_size as u64;
+            (max_inodes * INODE_RECORD_SIZE as u64).div_ceil(block_size as u64);
         let data_start = inode_table_start + inode_table_blocks;
 
         Self {
@@ -282,7 +282,7 @@ impl JournalEntry {
         sector
     }
 
-    fn to_sector(&self) -> [u8; SECTOR_SIZE] {
+    fn to_sector(self) -> [u8; SECTOR_SIZE] {
         let mut sector = self.encode_sector(0);
         let checksum = Self::checksum_sector(&sector);
         put_u32(&mut sector, JOURNAL_CHECKSUM_OFFSET, checksum);
@@ -383,7 +383,7 @@ impl InodeRecord {
         }
     }
 
-    fn to_inode(&self, payload: ManifoldPayload, data: Vec<u8>) -> Inode {
+    fn to_inode(self, payload: ManifoldPayload, data: Vec<u8>) -> Inode {
         let name_len = self.name_len.min(128) as usize;
         let name = String::from_utf8_lossy(&self.name[..name_len]).into_owned();
         Inode {
@@ -422,7 +422,7 @@ impl InodeRecord {
         }
     }
 
-    fn to_record(&self) -> [u8; INODE_RECORD_SIZE] {
+    fn to_record(self) -> [u8; INODE_RECORD_SIZE] {
         let mut record = [0u8; INODE_RECORD_SIZE];
         put_u64(&mut record, 0, self.id);
         record[8] = self.kind;
@@ -596,11 +596,7 @@ impl BlockStore {
         self.dirty_inodes.clear();
         self.deleted_inodes.clear();
 
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let bitmap_bytes = (sb.free_bitmap_blocks as usize) * SECTOR_SIZE;
         self.bitmap = vec![0u8; bitmap_bytes];
         self.mark_used(0, sb.data_start)?;
@@ -696,11 +692,7 @@ impl BlockStore {
     }
 
     fn read_bitmap(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let mut bitmap = Vec::with_capacity((sb.free_bitmap_blocks as usize) * SECTOR_SIZE);
         for i in 0..sb.free_bitmap_blocks {
@@ -713,11 +705,7 @@ impl BlockStore {
     }
 
     fn write_bitmap(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         for i in 0..sb.free_bitmap_blocks {
             let start = (i as usize) * SECTOR_SIZE;
@@ -731,11 +719,7 @@ impl BlockStore {
     }
 
     fn read_inode_table(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
 
@@ -755,11 +739,7 @@ impl BlockStore {
     }
 
     fn replay_journal(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let mut buf = [0u8; SECTOR_SIZE];
         let mut max_seq = 0u64;
 
@@ -879,11 +859,7 @@ impl BlockStore {
     }
 
     fn write_journal_entry(&mut self, entry: &JournalEntry) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let lba = sb.journal_start + (self.journal_pos % sb.journal_blocks);
         let sector = entry.to_sector();
@@ -893,11 +869,7 @@ impl BlockStore {
     }
 
     fn commit_journal(&mut self) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let mut buf = [0u8; SECTOR_SIZE];
 
@@ -973,7 +945,7 @@ impl BlockStore {
         let payload_buf = payload_to_bytes(payload);
         let original_size = data.len() as u64;
         let total = payload_buf.len() + data.len();
-        let blocks_needed = ((total + SECTOR_SIZE - 1) / SECTOR_SIZE).max(1) as u32;
+        let blocks_needed = total.div_ceil(SECTOR_SIZE).max(1) as u32;
         let blocks = blocks_needed.min(MAX_EXTENT_BLOCKS);
 
         let old_record = self.inode_records.get(&inode.id).copied();
@@ -1197,11 +1169,7 @@ impl BlockStore {
         inode_id: u64,
         record: &[u8; INODE_RECORD_SIZE],
     ) -> Result<(), BlockError> {
-        let sb = self
-            .superblock
-            .as_ref()
-            .ok_or(BlockError::NoDevice)?
-            .clone();
+        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let records_per_sector = SECTOR_SIZE / INODE_RECORD_SIZE;
         let table_idx = inode_id & 0xFFFF_FFFF;
@@ -1299,6 +1267,12 @@ impl BlockStore {
             inodes.push(record.to_inode(payload, data));
         }
         inodes
+    }
+}
+
+impl Default for BlockStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
