@@ -86,6 +86,16 @@ impl AmdGpu {
     /// Probe a PCI device. If it is an AMD GPU, map BARs and read
     /// architecture / framebuffer / BIOS info. Returns `None` if the
     /// device is not AMD or if BAR0 is unusable.
+    ///
+    /// # Safety
+    /// `dev` must describe a device from a completed PCI enumeration whose
+    /// BARs firmware has already assigned; BAR0 and the ROM BAR are
+    /// dereferenced as raw physical addresses and so must lie inside the
+    /// identity map and be mapped uncacheable. This call has side effects on
+    /// the device: it enables bus mastering (allowing the GPU to DMA into host
+    /// memory) and, on Southern Islands, writes `GRBM_SOFT_RESET`, which
+    /// resets the graphics block. Nothing else may be driving the GPU and no
+    /// GPU DMA may be in flight while it runs.
     pub unsafe fn probe(dev: &PciDevice) -> Option<Self> {
         if dev.vendor_id != 0x1002 || dev.class != 0x03 {
             return None;
@@ -328,9 +338,8 @@ impl AmdGpu {
         }
 
         let size_mask = mask & !0x0F; // clear type/prefetch bits
-        let size = (!size_mask).wrapping_add(1) as u64;
 
-        size
+        (!size_mask).wrapping_add(1) as u64
     }
 
     // -----------------------------------------------------------------

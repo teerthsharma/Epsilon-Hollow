@@ -299,7 +299,10 @@ pub fn parse_index(raw: &[u8], index_key: &[u8; 32]) -> Result<ReleaseIndex, Cha
     for line in signed.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("index_version=") {
-            index_version = Some(rest.parse::<u64>().map_err(|_| ChannelError::IndexMalformed)?);
+            index_version = Some(
+                rest.parse::<u64>()
+                    .map_err(|_| ChannelError::IndexMalformed)?,
+            );
         } else if let Some(rest) = line.strip_prefix("entry=") {
             let mut parts = rest.split(',');
             let name = parts.next().ok_or(ChannelError::IndexMalformed)?;
@@ -312,7 +315,9 @@ pub fn parse_index(raw: &[u8], index_key: &[u8; 32]) -> Result<ReleaseIndex, Cha
             entries.push(ReleaseEntry {
                 name: String::from(name),
                 version: String::from(version),
-                bytes: bytes.parse::<usize>().map_err(|_| ChannelError::IndexMalformed)?,
+                bytes: bytes
+                    .parse::<usize>()
+                    .map_err(|_| ChannelError::IndexMalformed)?,
                 sha256: String::from(sha256),
             });
         }
@@ -674,4 +679,3 @@ pub mod tests {
         );
     }
 }
-

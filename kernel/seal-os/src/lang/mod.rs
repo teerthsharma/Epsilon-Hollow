@@ -107,13 +107,12 @@ impl AetherRuntime {
     }
 
     pub fn set_key(&mut self, key: &str) {
+        let bytes = key.as_bytes();
+        let len = bytes.len().min(8);
+        let mut last_key = [0u8; 8];
+        last_key[..len].copy_from_slice(&bytes[..len]);
         unsafe {
-            let bytes = key.as_bytes();
-            let len = bytes.len().min(8);
-            aether_lang::AETHER_INPUT_STATE.last_key = [0; 8];
-            for i in 0..len {
-                aether_lang::AETHER_INPUT_STATE.last_key[i] = bytes[i];
-            }
+            aether_lang::AETHER_INPUT_STATE.last_key = last_key;
         }
     }
 
@@ -123,6 +122,12 @@ impl AetherRuntime {
             .call_function("render")
             .map_err(|e| format!("{:?}", e))?;
         Ok(format!("{:?}", value))
+    }
+}
+
+impl Default for AetherRuntime {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -692,7 +692,7 @@ impl Ext2Fs {
     /// Scan block group descriptor bitmaps for a free block.
     pub fn allocate_block(&mut self) -> Result<u32, VfsError> {
         let sb = self.superblock.ok_or(VfsError::IoError)?;
-        let total_groups = (sb.s_blocks_count + sb.s_blocks_per_group - 1) / sb.s_blocks_per_group;
+        let total_groups = sb.s_blocks_count.div_ceil(sb.s_blocks_per_group);
 
         for group in 0..total_groups {
             let bgd = self.read_bgd(group)?;
@@ -750,7 +750,7 @@ impl Ext2Fs {
     /// Scan inode bitmaps for a free inode.
     pub fn allocate_inode(&mut self) -> Result<u32, VfsError> {
         let sb = self.superblock.ok_or(VfsError::IoError)?;
-        let total_groups = (sb.s_inodes_count + sb.s_inodes_per_group - 1) / sb.s_inodes_per_group;
+        let total_groups = sb.s_inodes_count.div_ceil(sb.s_inodes_per_group);
 
         for group in 0..total_groups {
             let bgd = self.read_bgd(group)?;
@@ -1428,7 +1428,7 @@ impl FileSystem for Ext2Fs {
         let (major, minor) =
             if node_type == VfsNodeType::CharDevice || node_type == VfsNodeType::BlockDevice {
                 let dev = inode.i_block[0];
-                (((dev >> 8) & 0xFF) as u32, (dev & 0xFF) as u32)
+                ((dev >> 8) & 0xFF, dev & 0xFF)
             } else {
                 (0, 0)
             };
@@ -1682,7 +1682,7 @@ impl FileSystem for Ext2Fs {
 
         if node_type == VfsNodeType::CharDevice || node_type == VfsNodeType::BlockDevice {
             let dev = ((major & 0xFF) << 8) | (minor & 0xFF);
-            inode.i_block[0] = dev as u32;
+            inode.i_block[0] = dev;
         }
 
         self.write_inode(ino, &inode)?;

@@ -94,10 +94,18 @@ pub trait FileSystem: Send + Sync {
         minor: u32,
     ) -> Result<VfsHandle, VfsError>;
     /// Synchronize all dirty buffers and metadata to persistent storage.
+    ///
+    /// WARNING: the default implementation writes nothing and reports success.
+    /// `fat.rs`, `procfs.rs`, `sysfs.rs` and `pipe.rs` do not override it, so a
+    /// `sync()` on a mounted FAT volume returns `Ok(())` without flushing.
+    /// Implementors backed by real storage MUST override this.
     fn sync(&mut self) -> Result<(), VfsError> {
         Ok(())
     }
     /// Synchronize a single file's dirty data to persistent storage.
+    ///
+    /// WARNING: same caveat as `sync` — the default is a no-op that reports
+    /// success, and the on-disk filesystems do not override it.
     fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
         Ok(())
     }
@@ -448,6 +456,12 @@ impl Vfs {
             fs_idx: 0,
             inode: handle.inode,
         })
+    }
+}
+
+impl Default for Vfs {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

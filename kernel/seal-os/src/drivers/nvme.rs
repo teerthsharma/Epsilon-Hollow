@@ -74,10 +74,27 @@ pub struct NvmeController {
 }
 
 impl NvmeController {
+    /// Read a 32-bit value from an NVMe controller register.
+    ///
+    /// # Safety
+    /// `self.bar0` must be the identity-mapped, uncacheable BAR0 of a live
+    /// NVMe controller, and `offset` must select a register wholly inside that
+    /// window (`offset + 4` within the BAR) and be 4-byte aligned — the NVMe
+    /// register file only answers naturally aligned accesses, and a misaligned
+    /// or out-of-window read aborts on the bus or returns all ones. Reading
+    /// after the controller has been disabled or reset returns undefined data.
     pub unsafe fn read_reg32(&self, offset: u64) -> u32 {
         read_volatile((self.bar0 + offset) as *const u32)
     }
 
+    /// Read a 64-bit value from an NVMe controller register.
+    ///
+    /// # Safety
+    /// As `read_reg32`, but `offset` must name one of the 64-bit registers
+    /// (CAP, ASQ, ACQ, …), must be 8-byte aligned and must leave 8 bytes
+    /// inside the mapped BAR0 window. Issuing a single 64-bit read against a
+    /// register the controller only decodes in 32-bit halves returns garbage
+    /// in one half.
     pub unsafe fn read_reg64(&self, offset: u64) -> u64 {
         read_volatile((self.bar0 + offset) as *const u64)
     }
@@ -175,8 +192,8 @@ impl NvmeController {
         unsafe {
             let cap = self.read_reg64(REG_CAP);
             let mqes = (cap & 0xFFFF) as u32 + 1;
-            let dstrd = ((cap >> 32) & 0xF) as u64;
-            let mpsmin = ((cap >> 48) & 0xF) as u64;
+            let dstrd = (cap >> 32) & 0xF;
+            let mpsmin = (cap >> 48) & 0xF;
             self.max_q_entries = mqes;
             self.page_size = 1u64 << (12 + mpsmin);
             self.doorbell_stride = dstrd;
@@ -210,7 +227,7 @@ impl NvmeController {
             self.admin_sq = sq_frame.as_u64();
             self.admin_cq = cq_frame.as_u64();
 
-            let aqa = ((mqes.min(64) - 1) << 16) | ((mqes.min(64) - 1) << 0);
+            let aqa = ((mqes.min(64) - 1) << 16) | (mqes.min(64) - 1);
             self.write_reg32(REG_AQA, aqa);
             self.write_reg64(REG_ASQ, self.admin_sq);
             self.write_reg64(REG_ACQ, self.admin_cq);
@@ -339,7 +356,7 @@ impl NvmeController {
         cmd[0] = (OPCODE_IDENTIFY as u64) | (1u64 << 32); // CID = 1
         cmd[1] = nsid as u64;
         cmd[3] = phys; // PRP1
-        cmd[5] = (cns as u64) << 0; // CDW10
+        cmd[5] = cns as u64; // CDW10
         self.submit_admin(&cmd);
         let status = self.wait_completion(1)?;
         if status != 0 {
@@ -387,7 +404,7 @@ impl NvmeController {
         if buf.len() < SECTOR_SIZE {
             return Err("buffer too small for sector");
         }
-        let pages = (buf.len() + 4095) / 4096;
+        let pages = buf.len().div_ceil(4096);
         let phys = if pages == 1 {
             alloc_frame().ok_or("NVMe read alloc failed")?.as_u64()
         } else {
@@ -451,7 +468,7 @@ impl NvmeController {
         if buf.len() < SECTOR_SIZE {
             return Err("buffer too small for sector");
         }
-        let pages = (buf.len() + 4095) / 4096;
+        let pages = buf.len().div_ceil(4096);
         let phys = if pages == 1 {
             alloc_frame().ok_or("NVMe write alloc failed")?.as_u64()
         } else {

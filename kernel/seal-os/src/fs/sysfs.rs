@@ -27,6 +27,12 @@ impl SysFs {
     }
 }
 
+impl Default for SysFs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileSystem for SysFs {
     fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {
         let path = path.trim_start_matches('/').trim_end_matches('/');

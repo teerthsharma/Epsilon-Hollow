@@ -66,42 +66,34 @@ impl TcpHeader {
         // We use addr_of! to avoid creating references to packed struct fields.
         unsafe {
             b[0..2].copy_from_slice(
-                &core::ptr::addr_of!((*self).src_port)
+                &core::ptr::addr_of!(self.src_port)
                     .read_unaligned()
                     .to_be_bytes(),
             );
             b[2..4].copy_from_slice(
-                &core::ptr::addr_of!((*self).dst_port)
+                &core::ptr::addr_of!(self.dst_port)
                     .read_unaligned()
                     .to_be_bytes(),
             );
-            b[4..8].copy_from_slice(
-                &core::ptr::addr_of!((*self).seq)
-                    .read_unaligned()
-                    .to_be_bytes(),
-            );
-            b[8..12].copy_from_slice(
-                &core::ptr::addr_of!((*self).ack)
-                    .read_unaligned()
-                    .to_be_bytes(),
-            );
+            b[4..8].copy_from_slice(&core::ptr::addr_of!(self.seq).read_unaligned().to_be_bytes());
+            b[8..12].copy_from_slice(&core::ptr::addr_of!(self.ack).read_unaligned().to_be_bytes());
             b[12..14].copy_from_slice(
-                &core::ptr::addr_of!((*self).data_offset_flags)
+                &core::ptr::addr_of!(self.data_offset_flags)
                     .read_unaligned()
                     .to_be_bytes(),
             );
             b[14..16].copy_from_slice(
-                &core::ptr::addr_of!((*self).window)
+                &core::ptr::addr_of!(self.window)
                     .read_unaligned()
                     .to_be_bytes(),
             );
             b[16..18].copy_from_slice(
-                &core::ptr::addr_of!((*self).checksum)
+                &core::ptr::addr_of!(self.checksum)
                     .read_unaligned()
                     .to_be_bytes(),
             );
             b[18..20].copy_from_slice(
-                &core::ptr::addr_of!((*self).urgent)
+                &core::ptr::addr_of!(self.urgent)
                     .read_unaligned()
                     .to_be_bytes(),
             );
@@ -1160,9 +1152,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         if listener_proof.hit {
             proof.listener_index_hit += 1;
         }
-        proof.index_lookup_probes_max = proof
-            .index_lookup_probes_max
-            .max(listener_proof.probes);
+        proof.index_lookup_probes_max = proof.index_lookup_probes_max.max(listener_proof.probes);
 
         poll();
         let Some(accepted_idx) = accept(base_len) else {
@@ -1209,9 +1199,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         if server_data_proof.hit {
             proof.exact_flow += 1;
         }
-        proof.index_lookup_probes_max = proof
-            .index_lookup_probes_max
-            .max(server_data_proof.probes);
+        proof.index_lookup_probes_max = proof.index_lookup_probes_max.max(server_data_proof.probes);
         proof.client_tx += payload.len();
 
         let mut server_buf = [0u8; PAYLOAD_BYTES];
@@ -1231,9 +1219,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         if client_echo_proof.hit {
             proof.client_index_hit += 1;
         }
-        proof.index_lookup_probes_max = proof
-            .index_lookup_probes_max
-            .max(client_echo_proof.probes);
+        proof.index_lookup_probes_max = proof.index_lookup_probes_max.max(client_echo_proof.probes);
         proof.server_echo += server_rx;
 
         let mut client_buf = [0u8; PAYLOAD_BYTES];

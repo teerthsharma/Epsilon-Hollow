@@ -138,3 +138,9 @@ impl StartMenu {
         ITEMS.get(idx).map(|item| item.app_id)
     }
 }
+
+impl Default for StartMenu {
+    fn default() -> Self {
+        Self::new()
+    }
+}

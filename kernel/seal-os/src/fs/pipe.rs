@@ -66,6 +66,12 @@ impl Pipe {
     }
 }
 
+impl Default for Pipe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Global registry mapping pipe inode numbers to the shared pipe instance.
 static PIPE_REGISTRY: Mutex<BTreeMap<u64, Arc<Mutex<Pipe>>>> = Mutex::new(BTreeMap::new());
 static NEXT_PIPE_INODE: AtomicU64 = AtomicU64::new(1);
@@ -103,6 +109,12 @@ pub struct PipeFs;
 impl PipeFs {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for PipeFs {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

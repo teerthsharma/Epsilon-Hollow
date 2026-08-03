@@ -13,6 +13,12 @@ pub struct SeqLock {
     sequence: AtomicUsize,
 }
 
+impl Default for SeqLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SeqLock {
     /// Create a new `SeqLock` in unlocked (even) state.
     pub const fn new() -> Self {
@@ -40,14 +46,13 @@ impl SeqLock {
     pub fn write_lock(&self) {
         loop {
             let seq = self.sequence.load(Ordering::SeqCst);
-            if seq & 1 == 0 {
-                if self
+            if seq & 1 == 0
+                && self
                     .sequence
                     .compare_exchange_weak(seq, seq + 1, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
-                {
-                    break;
-                }
+            {
+                break;
             }
             core::hint::spin_loop();
         }

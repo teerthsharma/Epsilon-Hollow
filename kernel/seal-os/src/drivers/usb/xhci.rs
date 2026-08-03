@@ -313,8 +313,8 @@ impl XhciController {
             // ERDP
             write_volatile((intr_base + 0x18) as *mut u64, self.event_ring);
             // IMAN: enable interrupt
-            let iman = read_volatile((intr_base + 0x00) as *const u32);
-            write_volatile((intr_base + 0x00) as *mut u32, iman | (1 << 1) | (1 << 0));
+            let iman = read_volatile(intr_base as *const u32);
+            write_volatile(intr_base as *mut u32, iman | (1 << 1) | (1 << 0));
         }
         Ok(())
     }
@@ -572,8 +572,7 @@ impl XhciController {
 
         let req_type = 0x00;
         let req = REQ_SET_CONFIGURATION;
-        let setup_data =
-            ((config as u64) << 32) | ((req as u64) << 24) | ((req_type as u64) << 16) | 0;
+        let setup_data = ((config as u64) << 32) | ((req as u64) << 24) | ((req_type as u64) << 16);
 
         let mut setup_trb = Trb::zero();
         setup_trb.data[0] = setup_data as u32;
@@ -1074,7 +1073,7 @@ impl XhciController {
         for port in 1..=self.max_ports {
             unsafe {
                 let portsc = self.read_portsc(port);
-                let ccs = (portsc >> 0) & 1;
+                let ccs = portsc & 1;
                 let csc = (portsc >> 17) & 1;
                 let ped = (portsc >> 1) & 1;
                 let pr = (portsc >> 4) & 1;
@@ -1096,11 +1095,9 @@ impl XhciController {
                     }
                 }
 
-                if pr == 0 && ped != 0 && ccs != 0 {
-                    if !devices.iter().any(|d| d.port == port) {
-                        if let Some(dev) = self.enumerate_port(port, hid_devices) {
-                            devices.push(dev);
-                        }
+                if pr == 0 && ped != 0 && ccs != 0 && !devices.iter().any(|d| d.port == port) {
+                    if let Some(dev) = self.enumerate_port(port, hid_devices) {
+                        devices.push(dev);
                     }
                 }
             }

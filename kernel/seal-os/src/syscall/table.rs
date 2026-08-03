@@ -316,7 +316,16 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         crate::security::seccomp::SECCOMP_RET_ERRNO => {
             return SyscallResult::err(1); // EPERM
         }
-        crate::security::seccomp::SECCOMP_RET_ALLOW | _ => {}
+        // SECCOMP_RET_ALLOW, and every other action value, falls through here.
+        //
+        // NOTE: this is fail-open. `seccomp_check` returns the filter's `k`
+        // field verbatim (see security/seccomp.rs:94), so a loaded filter may
+        // return any u32. Linux treats an unrecognised seccomp action as
+        // fail-closed (kill); this kernel permits it. A filter returning
+        // SECCOMP_RET_TRAP, SECCOMP_RET_TRACE or SECCOMP_RET_LOG is therefore
+        // ALLOWED rather than denied. Behaviour is preserved as-is pending a
+        // deliberate decision to switch to fail-closed.
+        _ => {}
     }
 
     let result = match num {
@@ -641,7 +650,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_MMAP => {
             let len = arg1 as usize;
             let prot = arg2;
-            let pages = (len + 4095) / 4096;
+            let pages = len.div_ceil(4096);
 
             let mut flags = x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;

@@ -154,7 +154,7 @@ impl SealIde {
                     self.cursor_col += 4;
                 }
             }
-            ch if ch >= 0x20 && ch < 0x7F => {
+            ch if (0x20..0x7F).contains(&ch) => {
                 if let Some(line) = file.lines.get_mut(self.cursor_line) {
                     if self.cursor_col > line.len() {
                         self.cursor_col = line.len();
@@ -354,11 +354,11 @@ impl SealIde {
         ];
 
         let mut col = 0u32;
-        let mut chars = line.chars().peekable();
+        let chars = line.chars().peekable();
         let mut word = String::new();
         let mut in_string = false;
 
-        while let Some(ch) = chars.next() {
+        for ch in chars {
             let px = x + col * font::CHAR_WIDTH;
             if px >= max_x {
                 break;
@@ -450,6 +450,12 @@ impl SealIde {
 
     pub fn mouse_click(&mut self, _x: u32, _y: u32, _pressed: bool) {}
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
+}
+
+impl Default for SealIde {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 fn completion_suffix_for_line(line: Option<&String>, cursor_col: usize) -> Option<&'static str> {

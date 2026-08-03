@@ -826,11 +826,7 @@ fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> Replay {
     fol.teardown();
     let after = fol.stats();
     Replay {
-        hit_bp: if s.descents == 0 {
-            0
-        } else {
-            s.shared * 10_000 / s.descents
-        },
+        hit_bp: (s.shared * 10_000).checked_div(s.descents).unwrap_or(0),
         evictions: s.evictions,
         descents: s.descents,
         shared: s.shared,

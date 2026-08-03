@@ -160,6 +160,12 @@ impl PathCache {
     }
 }
 
+impl Default for PathCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;

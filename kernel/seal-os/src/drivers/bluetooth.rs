@@ -228,6 +228,12 @@ impl BluetoothDriver {
     }
 }
 
+impl Default for BluetoothDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn init() {
     let mut driver = BluetoothDriver::new();
     driver.probe_pci();

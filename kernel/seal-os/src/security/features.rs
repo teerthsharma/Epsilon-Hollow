@@ -120,12 +120,24 @@ pub fn kaslr() -> FeatureState {
     }
 }
 
-/// Retpoline — Spectre-v2 thunks. There is no control register for "the
-/// compiler emitted thunks", so instead of trusting a `cfg!` this reads the
-/// thunk's own machine code back out of the live image and checks it is still
-/// the retpoline sequence. The CPU's IBRS/IBPB support (CPUID.7:0.EDX[26]) is
-/// reported alongside as `supported`, so the gate can tell a thunked build on a
-/// bare CPU from one on a CPU with microcode mitigations available.
+/// Retpoline — reports only that the hand-written thunk bytes are still present
+/// in the live image. The CPU's IBRS/IBPB support (CPUID.7:0.EDX[26]) is
+/// reported alongside as `supported`.
+///
+/// LIMITS — what `active` here does NOT mean:
+///   - It does not show the compiler emitted retpoline thunks.
+///     `-C target-feature=+retpoline` is currently commented out in
+///     `kernel/seal-os/.cargo/config.toml`.
+///   - It does not show any indirect branch routes through a thunk. The only
+///     reference to `indirect_branch_thunk` in the kernel is this probe itself,
+///     and there are no `cfg(retpoline)` uses in `src/`.
+///   - The thunk is a `#[naked]` `#[no_mangle]` function whose bytes are written
+///     by hand, so it cannot be optimised away and this check is close to a
+///     constant `true`.
+///
+/// The `probe` string stays `runtime-thunk-bytes` because `seal-mkimage`
+/// requires that exact value (`main.rs:2012`); renaming it to something like
+/// `image-bytes-only` requires updating the host checker in the same change.
 pub fn retpoline() -> FeatureState {
     FeatureState {
         supported: cpuid7_edx() & (1 << 26) != 0,
@@ -385,7 +397,10 @@ pub mod tests {
             active: false,
             probe: "cpuid+cr4",
         };
-        test_assert!(absent.ok(), "absent hardware feature must not fail the gate");
+        test_assert!(
+            absent.ok(),
+            "absent hardware feature must not fail the gate"
+        );
         let on = FeatureState {
             supported: true,
             active: true,
@@ -422,7 +437,10 @@ pub mod tests {
         let ro_x = PageTableFlags::PRESENT;
         test_assert!(!is_wx(rw_nx), "writable + NX is not a W^X violation");
         test_assert!(is_wx(rw_x), "writable + executable is a W^X violation");
-        test_assert!(!is_wx(ro_x), "read-only + executable is not a W^X violation");
+        test_assert!(
+            !is_wx(ro_x),
+            "read-only + executable is not a W^X violation"
+        );
         test_assert!(
             !is_wx(PageTableFlags::WRITABLE),
             "non-present mapping is not a W^X violation"
@@ -443,10 +461,22 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test("security::feature_probe_bits", test_probes_read_the_right_bits);
-        crate::testing::register_test("security::feature_supported_off", test_supported_but_off_is_not_ok);
-        crate::testing::register_test("security::feature_retpoline_bytes", test_retpoline_byte_probe);
+        crate::testing::register_test(
+            "security::feature_probe_bits",
+            test_probes_read_the_right_bits,
+        );
+        crate::testing::register_test(
+            "security::feature_supported_off",
+            test_supported_but_off_is_not_ok,
+        );
+        crate::testing::register_test(
+            "security::feature_retpoline_bytes",
+            test_retpoline_byte_probe,
+        );
         crate::testing::register_test("security::feature_wx_classifier", test_wx_classifier);
-        crate::testing::register_test("security::feature_stack_guard", test_guard_band_detects_overflow);
+        crate::testing::register_test(
+            "security::feature_stack_guard",
+            test_guard_band_detects_overflow,
+        );
     }
 }

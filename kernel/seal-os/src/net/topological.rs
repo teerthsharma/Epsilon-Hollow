@@ -163,7 +163,7 @@ pub fn predict_next_hop() -> Option<usize> {
     // Predicted traffic = spectral contraction toward uniform mean.
     let mean = history.iter().copied().sum::<f64>() / VORONOI_K as f64;
     let pred = [mean; VORONOI_K];
-    let predicted = op.apply(&*history, &pred);
+    let predicted = op.apply(&history, &pred);
     // Return cell with highest predicted traffic.
     let mut best = 0usize;
     let mut best_val = predicted[0];

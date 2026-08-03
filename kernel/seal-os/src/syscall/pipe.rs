@@ -95,7 +95,7 @@ pub fn dispatch_brk(arg0: u64) -> SyscallResult {
 
     if new_addr > current_brk {
         let diff = new_addr - current_brk;
-        let pages = ((diff + 4095) / 4096) as usize;
+        let pages = diff.div_ceil(4096) as usize;
         if pages == 0 {
             crate::process::scheduler::set_current_brk_end(new_addr);
             return SyscallResult::ok(new_addr as i64);

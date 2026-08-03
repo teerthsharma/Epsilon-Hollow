@@ -130,6 +130,12 @@ let result = aether_boot_probe~
     }
 }
 
+impl Default for AetherAppHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn main() {
     loop {
         crate::process::scheduler::yield_current();

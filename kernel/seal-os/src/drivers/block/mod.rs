@@ -57,6 +57,12 @@ impl BlockDeviceRegistry {
     }
 }
 
+impl Default for BlockDeviceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 static BLOCK_DEVICES: Mutex<BlockDeviceRegistry> = Mutex::new(BlockDeviceRegistry::new());
 
 /// Register a block device with the global registry.

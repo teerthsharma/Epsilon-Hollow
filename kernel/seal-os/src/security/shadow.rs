@@ -69,9 +69,12 @@ fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
     diff == 0
 }
 
-/// T1: Voronoi cell centroid as salt.
-/// The salt is derived from the user's Voronoi cell assignment on S²,
-/// producing a deterministic 8-byte centroid from their identity manifold.
+/// Per-user salt: the first 8 bytes of SHA-256(username), XORed byte-wise with
+/// the little-endian uid (repeating every 4 bytes).
+///
+/// Deterministic, so it does not need to be stored alongside the hash. There is
+/// no Voronoi diagram, no S², and no centroid involved despite the T1 label used
+/// elsewhere for this field.
 fn compute_salt(username: &str, uid: u32) -> [u8; 8] {
     let mut hash = sha256(username.as_bytes());
     let uid_bytes = uid.to_le_bytes();
@@ -81,16 +84,17 @@ fn compute_salt(username: &str, uid: u32) -> [u8; 8] {
     hash[..8].try_into().unwrap_or([0u8; 8])
 }
 
-/// Hash = SHA-256(password + salt + topological_seed).
-/// T5 anchors the credential hash in the hyperbolic trust hierarchy via
-/// the global topological seed, ensuring all password verification is
-/// manifold-bound.
+/// Hash = iterated SHA-256(password || salt || seed), `rounds` times.
+///
+/// `seed` is `TOPO_SEED`, a fixed 16-byte ASCII build constant — i.e. a
+/// hardcoded pepper. It adds nothing against an attacker who has the binary,
+/// and nothing hyperbolic or hierarchical participates in the computation.
 fn compute_hash(password: &str, salt: &[u8; 8], seed: &[u8], rounds: u32) -> [u8; 32] {
     let mut data = Vec::new();
     data.extend_from_slice(password.as_bytes());
     data.extend_from_slice(salt);
     data.extend_from_slice(seed);
-    
+
     let mut current = sha256(&data);
     for _ in 1..rounds {
         current = sha256(&current);

@@ -5,9 +5,12 @@
 
 use alloc::vec::Vec;
 
+/// A received datagram: `((source IPv4, source port), payload)`.
+pub type Datagram = (([u8; 4], u16), Vec<u8>);
+
 pub struct UdpSocket {
     local_port: u16,
-    recv_buffer: Vec<(([u8; 4], u16), Vec<u8>)>,
+    recv_buffer: Vec<Datagram>,
 }
 
 impl UdpSocket {
@@ -24,7 +27,7 @@ impl UdpSocket {
     }
 
     /// No network hardware — always returns None; no packets arrive.
-    pub fn recv_from(&mut self) -> Option<(([u8; 4], u16), Vec<u8>)> {
+    pub fn recv_from(&mut self) -> Option<Datagram> {
         self.recv_buffer.pop()
     }
 

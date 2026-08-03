@@ -56,13 +56,20 @@ pub fn init() {
         }
     }
 
-    // Fallback: Virtio-Net
+    // Fallback: Virtio-Net.
+    //
+    // NOTE: `_net` is dropped immediately and `NET_DEVICE` is never set, because
+    // that static is typed for E1000 and there is no device trait yet. So this
+    // is a probe only — `poll()`, `transmit()` and `get_mac_address()` remain
+    // no-ops afterwards. The log line says "probed", not "initialized", to match.
     if let Ok(_net) = virtio_net::VirtioNet::discover_and_init() {
-        crate::serial_println!("[virtio-net] Found and initialized NIC");
-        // For now NET_DEVICE expects E1000, we need a trait or a better abstraction.
-        // But we at least probed it.
+        crate::serial_println!(
+            "[virtio-net] Probed NIC (not wired into the stack — TX/RX unavailable)"
+        );
     }
-    crate::serial_println!("[NET] No supported NIC found");
+    // Reached whether or not the virtio probe above succeeded; the stack really
+    // does have no usable NIC at this point in either case.
+    crate::serial_println!("[NET] No usable NIC bound to the stack");
 }
 
 pub fn poll() {

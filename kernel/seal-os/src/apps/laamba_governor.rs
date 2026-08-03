@@ -84,11 +84,12 @@ struct GovernorParams {
 
 impl LaambaGovernor {
     pub fn new() -> Self {
-        let mut console_lines = Vec::new();
-        console_lines.push(String::from("[GOVERNOR] LAAMBA Governor v1.0 initialized"));
-        console_lines.push(String::from("[GOVERNOR] Topology scope ready"));
-        console_lines.push(String::from("[GOVERNOR] Sample bay loaded: 4 datasets"));
-        console_lines.push(String::from("[GOVERNOR] Parameter roll: defaults"));
+        let console_lines = alloc::vec![
+            String::from("[GOVERNOR] LAAMBA Governor v1.0 initialized"),
+            String::from("[GOVERNOR] Topology scope ready"),
+            String::from("[GOVERNOR] Sample bay loaded: 4 datasets"),
+            String::from("[GOVERNOR] Parameter roll: defaults"),
+        ];
 
         Self {
             active_tool: 1,
@@ -136,7 +137,7 @@ impl LaambaGovernor {
         let cw = 900u32;
 
         // Toolbar buttons
-        if y >= TOOLBAR_Y && y < TOOLBAR_Y + TOOLBAR_H {
+        if (TOOLBAR_Y..TOOLBAR_Y + TOOLBAR_H).contains(&y) {
             let gap = 4u32;
             let btn_w = (cw - 8 - gap * (TOOLS.len() as u32 - 1)) / TOOLS.len() as u32;
             for i in 0..TOOLS.len() {
@@ -150,7 +151,7 @@ impl LaambaGovernor {
         }
 
         // Left panel — dataset selection
-        if x >= LEFT_X && x < LEFT_X + LEFT_W && y >= LEFT_Y && y < LEFT_Y + LEFT_H {
+        if (LEFT_X..LEFT_X + LEFT_W).contains(&x) && (LEFT_Y..LEFT_Y + LEFT_H).contains(&y) {
             let list_y = LEFT_Y + 28;
             let item_h = htek::TEXT_CHAR_H + 6;
             for i in 0..DATASETS.len() {
@@ -164,7 +165,9 @@ impl LaambaGovernor {
         }
 
         // Center panel — topology selection via click
-        if x >= CENTER_X && x < CENTER_X + CENTER_W && y >= CENTER_Y && y < CENTER_Y + CENTER_H {
+        if (CENTER_X..CENTER_X + CENTER_W).contains(&x)
+            && (CENTER_Y..CENTER_Y + CENTER_H).contains(&y)
+        {
             // Placeholder: cycle topology on click
             self.selected_topology = (self.selected_topology + 1) % TOPOLOGIES.len();
             self.log(format!(
@@ -365,6 +368,12 @@ impl LaambaGovernor {
         if self.console_lines.len() > 64 {
             self.console_lines.remove(0);
         }
+    }
+}
+
+impl Default for LaambaGovernor {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

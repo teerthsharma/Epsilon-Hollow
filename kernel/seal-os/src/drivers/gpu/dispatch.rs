@@ -18,11 +18,11 @@
 //! BAR0 MMIO registers and assume the caller has already completed PCI
 //! enumeration.  Running this on non-AMD hardware will silently fail or hang.
 
-use crate::serial_println;
 use super::amd::AmdGpu;
 use super::compute_queue::ComputeRing;
 use super::gpu_mem::{download, upload, GpuBuffer};
 use super::shader_binaries::{find_kernel, kernel_as_bytes};
+use crate::serial_println;
 
 const N_POINTS: usize = 64;
 const N_CELLS: usize = 8;
@@ -31,9 +31,23 @@ const N_CELLS: usize = 8;
 ///
 /// Returns `true` if the GPU executed the voronoi kernel and produced valid
 /// cell IDs, `false` otherwise.  The sentinel line is printed in both cases.
+///
+/// # Safety
+/// PCI enumeration, the physical frame allocator and the kernel heap must all
+/// be initialised, and the first AMD display-class device's BAR0 must be
+/// identity-mapped and uncacheable. This takes exclusive ownership of that
+/// GPU for the duration of the call: it enables bus mastering, may soft-reset
+/// the graphics block via `AmdGpu::probe`, and reprograms CP ring 0 from
+/// scratch, so no other driver may be using the device and nothing may be
+/// scanning out from it. Every buffer it hands the GPU is freed before it
+/// returns — including on the fence-timeout path, where the GPU may still
+/// execute the submitted packets afterwards and write into freed frames.
 pub unsafe fn run_amd_hardware_proof() -> bool {
     let devices = crate::drivers::pci::get_devices();
-    let dev = match devices.iter().find(|d| d.class == 0x03 && d.vendor_id == 0x1002) {
+    let dev = match devices
+        .iter()
+        .find(|d| d.class == 0x03 && d.vendor_id == 0x1002)
+    {
         Some(d) => d,
         None => {
             serial_println!("[GPU-BENCH] voronoi result=FAIL reason=no_amd_gpu");
@@ -61,7 +75,12 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
         }
     };
     let ring_size_dw = (ring_pages * 4096 / 4) as u32;
-    let mut ring = match ComputeRing::new(gpu.bar0_phys, ring_phys as *mut u32, ring_size_dw, ring_phys) {
+    let mut ring = match ComputeRing::new(
+        gpu.bar0_phys,
+        ring_phys as *mut u32,
+        ring_size_dw,
+        ring_phys,
+    ) {
         Some(r) => r,
         None => {
             serial_println!("[GPU-BENCH] voronoi result=FAIL reason=ring_init_failed");
@@ -82,7 +101,13 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
         Some(m) => m,
         None => {
             serial_println!("[GPU-BENCH] voronoi result=FAIL reason=kernel_not_found");
-            cleanup(kernel_buf, fence_buf, points_buf, centroids_buf, cell_ids_buf);
+            cleanup(
+                kernel_buf,
+                fence_buf,
+                points_buf,
+                centroids_buf,
+                cell_ids_buf,
+            );
             return false;
         }
     };
@@ -90,7 +115,13 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
     kernel_buf = GpuBuffer::alloc(meta.code_size_bytes);
     if kernel_buf.is_none() {
         serial_println!("[GPU-BENCH] voronoi result=FAIL reason=kernel_alloc_failed");
-        cleanup(kernel_buf, fence_buf, points_buf, centroids_buf, cell_ids_buf);
+        cleanup(
+            kernel_buf,
+            fence_buf,
+            points_buf,
+            centroids_buf,
+            cell_ids_buf,
+        );
         return false;
     }
     upload(kernel_buf.as_ref().unwrap(), kernel_as_bytes(meta.binary));
@@ -100,7 +131,13 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
     cell_ids_buf = GpuBuffer::alloc(N_POINTS * 4);
     if points_buf.is_none() || centroids_buf.is_none() || cell_ids_buf.is_none() {
         serial_println!("[GPU-BENCH] voronoi result=FAIL reason=buffer_alloc_failed");
-        cleanup(kernel_buf, fence_buf, points_buf, centroids_buf, cell_ids_buf);
+        cleanup(
+            kernel_buf,
+            fence_buf,
+            points_buf,
+            centroids_buf,
+            cell_ids_buf,
+        );
         return false;
     }
 
@@ -130,7 +167,7 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
     // -----------------------------------------------------------------
     // 4. Build PM4 packet: set shader, user data, thread count, dispatch.
     // -----------------------------------------------------------------
-    let grid_x = ((N_POINTS + 63) / 64) as u32;
+    let grid_x = N_POINTS.div_ceil(64) as u32;
     let p = points_buf.as_ref().unwrap().phys;
     let c = centroids_buf.as_ref().unwrap().phys;
     let o = cell_ids_buf.as_ref().unwrap().phys;
@@ -162,8 +199,17 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
     let cycles = t1 - t0;
 
     if !waited {
-        serial_println!("[GPU-BENCH] voronoi result=FAIL reason=fence_timeout cycles={}", cycles);
-        cleanup(kernel_buf, fence_buf, points_buf, centroids_buf, cell_ids_buf);
+        serial_println!(
+            "[GPU-BENCH] voronoi result=FAIL reason=fence_timeout cycles={}",
+            cycles
+        );
+        cleanup(
+            kernel_buf,
+            fence_buf,
+            points_buf,
+            centroids_buf,
+            cell_ids_buf,
+        );
         return false;
     }
 
@@ -188,13 +234,22 @@ pub unsafe fn run_amd_hardware_proof() -> bool {
         }
     }
 
-    cleanup(kernel_buf, fence_buf, points_buf, centroids_buf, cell_ids_buf);
+    cleanup(
+        kernel_buf,
+        fence_buf,
+        points_buf,
+        centroids_buf,
+        cell_ids_buf,
+    );
 
     if verify_ok {
         serial_println!("[GPU-BENCH] voronoi result=OK cycles={}", cycles);
         true
     } else {
-        serial_println!("[GPU-BENCH] voronoi result=FAIL reason=verify_error cycles={}", cycles);
+        serial_println!(
+            "[GPU-BENCH] voronoi result=FAIL reason=verify_error cycles={}",
+            cycles
+        );
         false
     }
 }
@@ -207,9 +262,19 @@ fn cleanup(
     centroids_buf: Option<GpuBuffer>,
     cell_ids_buf: Option<GpuBuffer>,
 ) {
-    if let Some(b) = kernel_buf { b.free(); }
-    if let Some(b) = fence_buf { b.free(); }
-    if let Some(b) = points_buf { b.free(); }
-    if let Some(b) = centroids_buf { b.free(); }
-    if let Some(b) = cell_ids_buf { b.free(); }
+    if let Some(b) = kernel_buf {
+        b.free();
+    }
+    if let Some(b) = fence_buf {
+        b.free();
+    }
+    if let Some(b) = points_buf {
+        b.free();
+    }
+    if let Some(b) = centroids_buf {
+        b.free();
+    }
+    if let Some(b) = cell_ids_buf {
+        b.free();
+    }
 }

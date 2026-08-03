@@ -18,6 +18,12 @@ impl ProcFs {
     }
 }
 
+impl Default for ProcFs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn cpu_vendor_string() -> String {
     #[cfg(target_arch = "x86_64")]
     {
@@ -142,7 +148,7 @@ impl FileSystem for ProcFs {
                 major: 0,
                 minor: 0,
             }),
-            2 | 3 | 4 | 5 => Ok(VfsNode {
+            2..=5 => Ok(VfsNode {
                 size: 0,
                 permissions: 0o444,
                 uid: 0,
