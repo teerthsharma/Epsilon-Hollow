@@ -1,0 +1,22 @@
+[package]
+name = "seal-graph"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Seal OS native ML graph: .sealg artifact format, wire codec, and in-kernel executor"
+
+[features]
+default = ["std"]
+std = ["alloc", "aether-core/std"]
+alloc = []
+no_std = ["alloc", "aether-core/no_std"]
+
+[dependencies]
+aether-core = { path = "../epsilon/epsilon/crates/aether-core", default-features = false }
+libm = { workspace = true }
+sha2 = { workspace = true }
+
+[lib]
+name = "seal_graph"
+path = "src/lib.rs"

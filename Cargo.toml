@@ -11,6 +11,9 @@ members = [
     "kernel/aether/Aether-Lang/crates/aegis-core",
     "kernel/aether/Aether-Lang/crates/aegis-cli",
     "kernel/aether/Aether-Lang/crates/repl-core",
+    "kernel/seal-graph",
+    "kernel/seal-jit",
+    "kernel/seal-net80211",
     "tools/ubuntu-alloc-bench",
 ]
 exclude = [
@@ -48,6 +51,13 @@ nalgebra = { version = "0.32", default-features = false, features = ["libm"] }
 heapless = "0.8"
 clap = { version = "4.0", features = ["derive"] }
 rustyline = "14.0"
+# RustCrypto, no_std. Versions chosen to stay off edition2024 so the 1.85 MSRV holds.
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+aes = { version = "0.8", default-features = false }
+ccm = { version = "0.5", default-features = false, features = ["alloc"] }
 
 [profile.dev]
 opt-level = 1
