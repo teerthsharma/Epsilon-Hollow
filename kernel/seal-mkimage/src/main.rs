@@ -3210,10 +3210,7 @@ fn parse_gpu_topology_benchmark(text: &str) -> Result<(), String> {
         "GPU topology benchmark final",
     )?;
 
-    let kernel_lines = text
-        .lines()
-        .filter(|line| line.starts_with("[GPU-BENCH] kernel="))
-        .count();
+    let kernel_lines = text.lines().filter(|line| is_gpu_bench_kernel(line)).count();
     if kernel_lines != 3 {
         return Err(format!(
             "GPU topology benchmark must emit exactly 3 kernel markers, got {kernel_lines}"
@@ -3233,9 +3230,19 @@ struct GpuKernelBenchSpec {
     finite: Option<u64>,
 }
 
+/// `[GPU-BENCH] kernel=` prefixes two unrelated marker families: a benchmark run
+/// and the ISA-coverage report for the same kernel name. Only a benchmark run
+/// dispatches, so `dispatch_path=` is what separates them.
+fn is_gpu_bench_kernel(line: &str) -> bool {
+    line.starts_with("[GPU-BENCH] kernel=") && line.contains("dispatch_path=")
+}
+
 fn parse_gpu_kernel_benchmark(text: &str, spec: GpuKernelBenchSpec) -> Result<(), String> {
     let needle = format!("kernel={}", spec.name);
-    let line = find_line_matching(text, "[GPU-BENCH] kernel=", &needle)?;
+    let line = text
+        .lines()
+        .find(|line| is_gpu_bench_kernel(line) && line.contains(&needle))
+        .ok_or_else(|| format!("missing [GPU-BENCH] benchmark marker containing `{needle}`"))?;
     let label = format!("GPU topology kernel {}", spec.name);
     require_field_eq(line, "mode=", "cpu_fallback", &label)?;
     require_field_eq(line, "backend=", "software", &label)?;
@@ -4315,6 +4322,9 @@ mod tests {
 [GPU-BENCH] kernel=jl_project mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 n_vectors=4 dim_in=128 dim_out=3 seed=0xE95110A7 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=1 download_ok=1 verify=pass reference=cpu_recompute checked=12 mismatches=0 finite=12 checksum=23456 max_abs_diff_scaled=0 avg_cycles=200
 [GPU-BENCH] kernel=spectral_step mode=cpu_fallback backend=software dispatch_path=cpu_sync hardware_dispatch=0 shader_used=0 dim=512 alpha_ppm=300000 warmup=4 iterations=32 dispatch_ok=36 wait_ok=36 upload_ok=1 download_ok=1 verify=pass reference=cpu_recompute checked=512 mismatches=0 finite=512 checksum=34567 max_abs_diff_scaled=0 avg_cycles=300
 [GPU-BENCH] suite version=1 mode=cpu_fallback backend=software hardware_dispatch=0 shader_used=0 kernels=3 passed=3 failed=0 result=pass claim=cpu_fallback_correctness_only
+[GPU-BENCH] kernel=voronoi_assign isa=absent reason=needs sin/cos/acos
+[GPU-BENCH] kernel=jl_project isa=absent reason=divides a double by a constant
+[GPU-BENCH] kernel=s2_distance isa=absent reason=no OpenCL source is checked in for this kernel name
 ";
     const GFX_DESKTOP_PROOF_LOG: &str = "[GFX] desktop-proof version=1 surface=framebuffer width=1024 height=768 bpp=32 pitch=4096 back_buffer=1 window_count=12 focused_window_id=1 scanned_pixels=786432 nonblack_px=300000 visible_icons=10 icon_region_signal=23040 icon_color_buckets=10 control_region_signal=282000 primary_titlebar_signal=15912 start_button_signal=1440 theorem_indicator_signal=1000 minimized_app_lane_signal=1320 power_button_signal=384 sampled_pixels=3072 nonblack_samples=2048 sample_hash=123456789 result=pass\n";
     const GFX_DESKTOP_LIVE_PROOF_LOG: &str = "[GFX] desktop-live-proof version=1 route=desktop_handle_input action=desktop_icon_launch app=Files app_id=3 events=2 handled=1 icon_hit=1 launched_app_id=3 pre_focused=1 post_focused=9 post_window_id=9 window_count=12 pre_hash=111 post_hash=222 changed_samples=96 vram_hash=333 vram_changed_samples=96 vram_matches_backbuffer=96 blit=1 result=pass\n";
