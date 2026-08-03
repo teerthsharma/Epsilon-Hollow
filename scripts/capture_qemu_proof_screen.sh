@@ -44,7 +44,7 @@ cp "$OVMF_VARS_TEMPLATE" "$OVMF_VARS_COPY"
 qemu-system-x86_64 \
   -machine q35 \
   -m 4096 \
-  -cpu qemu64 \
+  -cpu qemu64,+rdrand \
   -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$OVMF_VARS_COPY" \
