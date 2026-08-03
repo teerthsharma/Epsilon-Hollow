@@ -120,20 +120,23 @@ pub fn kaslr() -> FeatureState {
     }
 }
 
-/// Retpoline — reports only that the hand-written thunk bytes are still present
-/// in the live image. The CPU's IBRS/IBPB support (CPUID.7:0.EDX[26]) is
+/// Retpoline — reports that the hand-written thunk in the live image is still
+/// structurally a retpoline: a `call` over a `pause; lfence` capture loop into
+/// the architectural tail. The CPU's IBRS/IBPB support (CPUID.7:0.EDX[26]) is
 /// reported alongside as `supported`.
 ///
 /// LIMITS — what `active` here does NOT mean:
-///   - It does not show the compiler emitted retpoline thunks.
-///     `-C target-feature=+retpoline` is currently commented out in
-///     `kernel/seal-os/.cargo/config.toml`.
+///   - It does not show the compiler emitted retpoline thunks. Kernel-wide
+///     retpoline codegen (`-Zretpoline`) is deliberately off; see the comment
+///     in `kernel/seal-os/.cargo/config.toml` for why.
 ///   - It does not show any indirect branch routes through a thunk. The only
 ///     reference to `indirect_branch_thunk` in the kernel is this probe itself,
-///     and there are no `cfg(retpoline)` uses in `src/`.
+///     so what is measured is that the mitigation is *correctly formed*, not
+///     that it is *on the hot path*.
 ///   - The thunk is a `#[naked]` `#[no_mangle]` function whose bytes are written
-///     by hand, so it cannot be optimised away and this check is close to a
-///     constant `true`.
+///     by hand, so it cannot be optimised away. What this check can still catch
+///     is the thunk being edited into a shape that no longer traps speculation,
+///     which is what it was silently passing on before.
 ///
 /// The `probe` string stays `runtime-thunk-bytes` because `seal-mkimage`
 /// requires that exact value (`main.rs:2012`); renaming it to something like
@@ -146,25 +149,58 @@ pub fn retpoline() -> FeatureState {
     }
 }
 
-/// `mov [rsp], rax` followed by `ret` — the tail of every retpoline thunk. If
-/// the thunk were optimised away or replaced by a plain indirect jump, this
-/// sequence would not be there.
+/// `pause` followed by `lfence` — the head of the speculation-capture loop.
+/// This is the part that makes a retpoline a retpoline: speculative execution
+/// that follows the thunk's opening `call` lands here and spins, instead of
+/// running ahead through an attacker-steered branch target.
+const CAPTURE_LOOP: [u8; 5] = [0xf3, 0x90, 0x0f, 0xae, 0xe8];
+
+/// `mov [rsp], rax` followed by `ret` — the architectural tail of the RAX
+/// thunk, which overwrites the return slot with the real target and returns
+/// into it.
 const THUNK_TAIL: [u8; 5] = [0x48, 0x89, 0x04, 0x24, 0xc3];
 
-/// Read the first bytes of the RAX retpoline thunk out of the live image and
-/// confirm they are still `call .+0` followed by the thunk tail.
+/// Bytes read from the thunk entry. The RAX thunk is 17 bytes as assembled
+/// (`call rel32` 5, `pause` 2, `lfence` 3, `jmp rel8` 2, tail 5), but the
+/// assembler is free to widen the backward jump to `rel32` and to pad before
+/// the tail — LLVM's own `__llvm_retpoline_*` thunks carry a `.p2align 4`
+/// there. 32 bytes covers that without pinning any offset.
+const THUNK_WINDOW: usize = 32;
+
+/// Read the head of the RAX retpoline thunk out of the live image and confirm
+/// it is still structurally a retpoline.
 pub fn thunk_bytes_intact() -> bool {
     let entry = super::retpoline::indirect_branch_thunk as *const () as *const u8;
     // SAFETY: `entry` is the address of a `#[naked]` function in the kernel's
-    // own text, which is mapped readable, and only the first 16 bytes of that
-    // function are read. Nothing is written and no reference outlives the call.
-    let window = unsafe { core::slice::from_raw_parts(entry, 16) };
-    window[0] == 0xe8 && thunk_window_matches(window)
+    // own text, which is mapped readable, and `THUNK_WINDOW` bytes are read
+    // from it. The read runs past the end of the 17-byte thunk into the thunk
+    // that follows, which is still kernel text and still mapped readable.
+    // Nothing is written and no reference outlives the call.
+    let window = unsafe { core::slice::from_raw_parts(entry, THUNK_WINDOW) };
+    thunk_window_matches(window)
 }
 
-/// Does a byte window contain the retpoline thunk tail?
+/// Does a byte window hold a structurally complete retpoline?
+///
+/// Three things must hold, and the third is the one with teeth:
+///   1. the window opens with `call rel32` (`0xe8`),
+///   2. the architectural tail is present,
+///   3. the `pause; lfence` capture loop appears *before* that tail.
+///
+/// Without (3) the thunk reads `call .+0; mov [rsp], rax; ret`: the capture
+/// target is the very next instruction, so no speculation is trapped and the
+/// sequence is architecturally equivalent to a bare indirect call. That shape
+/// satisfies (1) and (2), which is exactly why they are not sufficient alone —
+/// this probe passed on it for as long as the thunks had that shape.
+///
+/// Offsets are deliberately not pinned, so the check survives the assembler
+/// choosing `rel8` or `rel32` for the backward jump, or padding before the tail.
 pub fn thunk_window_matches(window: &[u8]) -> bool {
-    window.windows(THUNK_TAIL.len()).any(|w| w == THUNK_TAIL)
+    let find = |pat: &[u8]| window.windows(pat.len()).position(|w| w == pat);
+    match (window.first(), find(&CAPTURE_LOOP), find(&THUNK_TAIL)) {
+        (Some(&0xe8), Some(capture), Some(tail)) => capture < tail,
+        _ => false,
+    }
 }
 
 /// Kernel stack guard band — 16 KiB of zeroed bytes sitting immediately below
@@ -413,9 +449,31 @@ pub mod tests {
     /// The retpoline byte probe must reject a thunk that no longer ends in
     /// `mov [rsp], rax; ret` — otherwise it would pass on any function.
     fn test_retpoline_byte_probe() -> TestResult {
+        // The shape the thunks actually assemble to.
         test_assert!(
-            thunk_window_matches(&[0xe8, 0, 0, 0, 0, 0x48, 0x89, 0x04, 0x24, 0xc3]),
+            thunk_window_matches(&[
+                0xe8, 0, 0, 0, 0, // call 2f
+                0xf3, 0x90, // pause
+                0x0f, 0xae, 0xe8, // lfence
+                0xeb, 0xf9, // jmp .-7, back to the pause
+                0x48, 0x89, 0x04, 0x24, 0xc3, // mov [rsp], rax; ret
+            ]),
             "real thunk encoding must match"
+        );
+        // The defect this probe exists to catch, and previously passed on: the
+        // capture target is the next instruction, so nothing traps speculation
+        // and the thunk is architecturally a bare indirect call.
+        test_assert!(
+            !thunk_window_matches(&[0xe8, 0, 0, 0, 0, 0x48, 0x89, 0x04, 0x24, 0xc3]),
+            "a thunk with no speculation-capture loop must not pass"
+        );
+        // A capture loop that follows the tail traps nothing — the ret has
+        // already committed by the time control could reach it.
+        test_assert!(
+            !thunk_window_matches(&[
+                0xe8, 0, 0, 0, 0, 0x48, 0x89, 0x04, 0x24, 0xc3, 0xf3, 0x90, 0x0f, 0xae, 0xe8,
+            ]),
+            "capture loop must precede the architectural tail"
         );
         test_assert!(
             !thunk_window_matches(&[0xff, 0xe0, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90]),

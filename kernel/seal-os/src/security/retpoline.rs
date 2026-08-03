@@ -3,16 +3,35 @@
 
 //! Spectre-v2 (Branch Target Injection) retpoline mitigation.
 //!
-//! Provides naked thunk functions for all general-purpose registers.
-//! Compiler flags `-mindirect-branch=thunk` or `-mretpoline` will redirect
-//! indirect branches to these thunks automatically when enabled.
+//! Provides naked thunk functions for all general-purpose registers. Each has
+//! the canonical retpoline shape — a `call` over a `pause; lfence` capture loop
+//! into a tail that overwrites the return slot with the real target:
+//!
+//! ```text
+//!     call 2f
+//! 1:  pause            ; speculation following the call lands here
+//!     lfence           ; ...and is trapped spinning, not running ahead
+//!     jmp 1b
+//! 2:  mov [rsp], rax   ; architectural path: real target into the return slot
+//!     ret
+//! ```
+//!
+//! The capture loop is the mitigation. Without it — `call 2f; 2: mov [rsp],
+//! rax; ret`, which is what these thunks were until the loop was added — the
+//! capture target is the next instruction, nothing is trapped, and the sequence
+//! is architecturally equivalent to a bare indirect call.
+//!
+//! SCOPE: nothing in this kernel currently routes an indirect branch through
+//! these thunks, and kernel-wide `-Zretpoline` codegen is off (see
+//! `.cargo/config.toml`). They are a correct mitigation that is not yet wired,
+//! and `security::features::retpoline()` reports exactly that and no more.
 
 use core::arch::naked_asm;
 
 /// Initialize retpoline reporting.
 pub fn init() {
     crate::serial_println!(
-        "[Retpoline] Spectre-v2 mitigations: active — syscall exit uses lfence + sysretq, thunks for rax-r15 active"
+        "[Retpoline] Spectre-v2: syscall exit uses lfence + sysretq; thunks for rax-r15 present and well-formed, but no indirect branch is routed through them"
     );
 }
 
@@ -35,7 +54,16 @@ pub fn init() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rax", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rax",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RBX.
@@ -50,7 +78,16 @@ pub unsafe extern "C" fn indirect_branch_thunk() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rbx() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rbx", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rbx",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RCX.
@@ -65,7 +102,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rbx() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rcx() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rcx", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rcx",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RDX.
@@ -80,7 +126,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rcx() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rdx() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rdx", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rdx",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RSI.
@@ -95,7 +150,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rdx() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rsi() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rsi", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rsi",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RDI.
@@ -110,7 +174,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rsi() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rdi() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rdi", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rdi",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for RBP.
@@ -125,7 +198,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rdi() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_rbp() {
-    naked_asm!("call 2f", "2:", "mov [rsp], rbp", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], rbp",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R8.
@@ -140,7 +222,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_rbp() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r8() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r8", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r8",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R9.
@@ -155,7 +246,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r8() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r9() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r9", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r9",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R10.
@@ -170,7 +270,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r9() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r10() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r10", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r10",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R11.
@@ -185,7 +294,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r10() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r11() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r11", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r11",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R12.
@@ -200,7 +318,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r11() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r12() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r12", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r12",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R13.
@@ -215,7 +342,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r12() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r13() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r13", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r13",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R14.
@@ -230,7 +366,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r13() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r14() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r14", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r14",
+        "ret",
+    );
 }
 
 /// Retpoline indirect branch thunk for R15.
@@ -245,7 +390,16 @@ pub unsafe extern "C" fn indirect_branch_thunk_r14() {
 #[unsafe(naked)]
 #[no_mangle]
 pub unsafe extern "C" fn indirect_branch_thunk_r15() {
-    naked_asm!("call 2f", "2:", "mov [rsp], r15", "ret",);
+    naked_asm!(
+        "call 2f",
+        "1:",
+        "pause",
+        "lfence",
+        "jmp 1b",
+        "2:",
+        "mov [rsp], r15",
+        "ret",
+    );
 }
 
 /// AMD-style retpoline barrier for indirect branches.
