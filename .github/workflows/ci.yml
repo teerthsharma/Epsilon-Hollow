@@ -331,6 +331,7 @@ jobs:
           set +e
           timeout 240 qemu-system-x86_64 \
             -machine q35 \
+            -cpu qemu64,+rdrand \
             -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -device ahci,id=seal_sata \
             -drive if=none,id=seal_disk,file="$IMG_PATH",format=raw,media=disk \
@@ -556,6 +557,7 @@ jobs:
           set +e
           timeout 240 qemu-system-x86_64 \
             -machine q35 \
+            -cpu qemu64,+rdrand \
             -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
             -device ahci,id=seal_sata \
             -drive if=none,id=seal_disk,file="$IMG_PATH",format=raw,media=disk \
