@@ -1,6 +1,24 @@
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { Terminal, Trash2 } from "lucide-react";
 import { useStore } from "../store";
+
+// ⚡ Bolt: Memoize log items to prevent O(N^2) re-rendering of the entire list
+// when new logs are appended to the frequently updated `logs` array state.
+const LogItem = React.memo(function LogItem({ log }: { log: string }) {
+  return (
+    <div
+      className={
+        log.includes("failed") || log.includes("error")
+          ? "text-gov-error"
+          : log.includes("complete") || log.includes("winner")
+          ? "text-gov-ok"
+          : "text-gov-accent/80"
+      }
+    >
+      {log}
+    </div>
+  );
+});
 
 export default function ConsolePanel() {
   const { logs, clearLogs } = useStore();
@@ -24,18 +42,7 @@ export default function ConsolePanel() {
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
         {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
-          </div>
+          <LogItem key={i} log={log} />
         ))}
       </div>
     </div>
