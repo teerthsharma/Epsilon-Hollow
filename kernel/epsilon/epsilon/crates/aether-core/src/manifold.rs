@@ -158,14 +158,19 @@ pub struct SparseAttentionGraph<const D: usize> {
 
     /// Epsilon neighborhood radius
     epsilon: f64,
-
-    /// Sparse adjacency (bit-packed for memory efficiency).
-    /// adjacency[i] is bitmask of neighbors for point i.
-    ///
-    /// Bitmask adjacency supports up to 64 neighbors per point.
-    /// Points with index >= 64 fall outside the sparse attention window.
-    adjacency: [u64; MAX_POINTS],
 }
+// Adjacency is deliberately not stored.
+//
+// It used to be a `[u64; MAX_POINTS]` bitmask, one `u64` per point. With
+// `MAX_POINTS = 256` that cannot represent a graph on more than 64 nodes, and
+// the consequences were not graceful degradation: every point at index >= 64
+// was invisible to the graph, so β₀ was inflated by exactly `n - 64`. A
+// 100-point circle reported 37 components instead of 1.
+//
+// Deriving adjacency from the points on demand costs one distance evaluation
+// per query and makes the failure mode unrepresentable. The build was already
+// O(n²) — the same work now happens at query time instead of insertion time.
+// See `tests/proptest_manifold_topology.rs`.
 
 impl<const D: usize> SparseAttentionGraph<D> {
     /// Construct an empty graph with the given epsilon-neighborhood radius.
@@ -174,110 +179,102 @@ impl<const D: usize> SparseAttentionGraph<D> {
             points: [ManifoldPoint::zero(); MAX_POINTS],
             point_count: 0,
             epsilon,
-            adjacency: [0; MAX_POINTS],
         }
     }
 
-    /// Add a point and compute its sparse attention edges
+    /// Add a point to the cloud. Edges are derived on demand, so insertion is
+    /// O(1) and the resulting graph cannot depend on insertion order.
     pub fn add_point(&mut self, point: ManifoldPoint<D>) -> Option<usize> {
         if self.point_count >= MAX_POINTS {
             return None;
         }
-
         let idx = self.point_count;
         self.points[idx] = point;
-
-        // Compute sparse edges (only to nearby points)
-        let mut mask = 0u64;
-        for i in 0..idx {
-            if point.is_neighbor(&self.points[i], self.epsilon) {
-                // Set bit for neighbor relationship
-                if i < 64 {
-                    mask |= 1 << i;
-                    // Symmetric: add reverse edge
-                    self.adjacency[i] |= 1 << (idx % 64);
-                }
-            }
-        }
-        self.adjacency[idx] = mask;
-
         self.point_count += 1;
         Some(idx)
     }
 
-    /// Get number of neighbors (degree) for a point
+    /// Number of ε-neighbours of a point, excluding itself.
     pub fn degree(&self, idx: usize) -> u32 {
         if idx >= self.point_count {
             return 0;
         }
-        self.adjacency[idx].count_ones()
+        (0..self.point_count)
+            .filter(|&j| j != idx && self.are_neighbors(idx, j))
+            .count() as u32
     }
 
-    /// Check if two points are connected
+    /// Whether two points are ε-neighbours.
+    ///
+    /// This is exactly `ManifoldPoint::is_neighbor`, i.e. strict
+    /// `distance < epsilon`, evaluated on the stored coordinates. It is
+    /// symmetric by construction and holds for every index below
+    /// `point_count`, with no 64-point ceiling. A point is not its own
+    /// neighbour.
     pub fn are_neighbors(&self, i: usize, j: usize) -> bool {
-        if i >= self.point_count || j >= self.point_count || j >= 64 {
+        if i >= self.point_count || j >= self.point_count || i == j {
             return false;
         }
-        (self.adjacency[i] & (1 << j)) != 0
+        self.points[i].is_neighbor(&self.points[j], self.epsilon)
     }
 
     /// Compute connected components (Î²â‚€) using Union-Find
+    /// Exact for every `point_count` up to `MAX_POINTS`. Union-find is used
+    /// rather than a traversal because it needs no explicit stack, so there is
+    /// no depth bound that could silently drop a neighbour and over-count
+    /// components.
     pub fn compute_betti_0(&self) -> u32 {
-        if self.point_count == 0 {
+        let n = self.point_count;
+        if n == 0 {
             return 0;
         }
 
-        // Simple DFS-based component counting
-        let mut visited = [false; MAX_POINTS];
-        let mut components = 0u32;
+        let mut parent = [0usize; MAX_POINTS];
+        for (i, p) in parent.iter_mut().enumerate().take(n) {
+            *p = i;
+        }
 
-        for start in 0..self.point_count {
-            if visited[start] {
-                continue;
+        // Path-halving find, iterative: no recursion on a no_std kernel path.
+        fn find(parent: &mut [usize; MAX_POINTS], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
             }
+            x
+        }
 
-            // BFS/DFS from this point
-            components += 1;
-            let mut stack = [0usize; 64];
-            let mut stack_top = 1;
-
-            stack[0] = start;
-
-            while stack_top > 0 {
-                stack_top -= 1;
-                let current = stack[stack_top];
-
-                if visited[current] {
-                    continue;
-                }
-                visited[current] = true;
-
-                // Add unvisited neighbors
-                for (neighbor, is_visited) in
-                    visited.iter().enumerate().take(64.min(self.point_count))
-                {
-                    if !*is_visited && self.are_neighbors(current, neighbor) && stack_top < 64 {
-                        stack[stack_top] = neighbor;
-                        stack_top += 1;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if self.are_neighbors(i, j) {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    if ri != rj {
+                        parent[ri] = rj;
                     }
                 }
             }
         }
 
-        components
+        (0..n).filter(|&i| find(&mut parent, i) == i).count() as u32
     }
 
     /// Estimate Î²â‚ (cycles) using Euler characteristic
     /// Ï‡ = V - E + F, for planar: Î²â‚€ - Î²â‚ + Î²â‚‚ = Ï‡
     /// Simplified: Î²â‚ â‰ˆ E - V + Î²â‚€ (ignoring higher homology)
+    /// For a graph this identity is **exact**, not an estimate: the Euler
+    /// characteristic of a 1-complex has no 2-cells to account for. It bounds
+    /// Vietoris-Rips B1 from above only because this structure never fills a
+    /// 2-simplex, and filling one can kill a cycle but never create one.
     pub fn estimate_betti_1(&self) -> u32 {
         let v = self.point_count as i32;
         let mut e = 0i32;
 
         for i in 0..self.point_count {
-            e += self.adjacency[i].count_ones() as i32;
+            for j in (i + 1)..self.point_count {
+                if self.are_neighbors(i, j) {
+                    e += 1;
+                }
+            }
         }
-        e /= 2; // Edges counted twice
 
         let b0 = self.compute_betti_0() as i32;
 
@@ -316,7 +313,7 @@ impl<const D: usize> SparseAttentionGraph<D> {
         // We limit depth to capture "local" structure, not the whole component
         let max_depth = 3;
         let mut visited = [false; MAX_POINTS];
-        let mut queue = [0usize; 64];
+        let mut queue = [0usize; MAX_POINTS];
         let mut queue_start = 0;
         let mut queue_end = 0;
 
@@ -344,21 +341,10 @@ impl<const D: usize> SparseAttentionGraph<D> {
 
             // Expand neighbors if depth limit not reached
             if current_depth < max_depth {
-                // Adjacency bitmask iteration
-                let _adjacency = self.adjacency[u];
-                // Note: Adjacency is symmetric but stored sparsely?
-                // In our `add_point`, we set bits for i < 64.
-                // Let's assume simpler iteration for this limited embedded interaction.
-                // We iterate all points to check `are_neighbors` because internal representation
-                // in original code was slightly simplified (only stored back-edges in `adjacency`?).
-                // Let's rely on `are_neighbors` which is robust in the provided code.
-
-                let limit = self.point_count.min(64);
-                for (v, vis) in visited.iter_mut().enumerate().take(limit) {
-                    // Limit to 64 for speed/bitmask strictness
+                for (v, vis) in visited.iter_mut().enumerate().take(self.point_count) {
                     if !*vis && self.are_neighbors(u, v) {
                         *vis = true;
-                        if queue_end < 64 {
+                        if queue_end < MAX_POINTS {
                             queue[queue_end] = v;
                             queue_end += 1;
                             nodes_at_next_depth += 1;
@@ -390,7 +376,6 @@ impl<const D: usize> SparseAttentionGraph<D> {
     /// Clear the graph
     pub fn clear(&mut self) {
         self.point_count = 0;
-        self.adjacency = [0; MAX_POINTS];
     }
 }
 
