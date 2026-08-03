@@ -19,6 +19,13 @@ use crate::serial_println;
 use super::{register_block_device, BlockDevice, BlockError};
 
 // ── HBA global registers ────────────────────────────────────────────────────
+/// Size of each per-slot DMA bounce buffer, in bytes.
+///
+/// One page. Every transfer path is bounded by this: the non-NCQ paths clamp to
+/// it and the NCQ paths refuse past it. A transfer larger than one page must be
+/// split by the caller — see the `BlockDevice` impl.
+const BOUNCE_BYTES: usize = 4096;
+
 const HBA_CAP: u64 = 0x00;
 const HBA_GHC: u64 = 0x04;
 const HBA_IS: u64 = 0x08;
@@ -93,7 +100,7 @@ pub struct AhciPort {
     cl: *mut CommandList,
     fis: *mut ReceivedFis,
     ct: [*mut CommandTable; 32],
-    buf: [*mut [u8; 4096]; 32],
+    buf: [*mut [u8; BOUNCE_BYTES]; 32],
 
     cl_phys: u64,
     fis_phys: u64,
@@ -356,7 +363,7 @@ impl AhciPort {
             self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, lba, (actual_bytes / 512) as u16);
             self.start_port();
 
-            if let Err(_) = self.send_command(slot) {
+            if self.send_command(slot).is_err() {
                 retries += 1;
                 if retries > 3 {
                     self.free_slot(slot);
@@ -444,7 +451,7 @@ impl AhciPort {
             );
             self.start_port();
 
-            if let Err(_) = self.send_command(slot) {
+            if self.send_command(slot).is_err() {
                 retries += 1;
                 if retries > 3 {
                     self.free_slot(slot);
@@ -474,6 +481,21 @@ impl AhciPort {
         Ok(())
     }
 
+    /// Read `count` sectors starting at `lba` into `buf` using NCQ.
+    ///
+    /// # Safety
+    /// `buf` must be writable for at least `count * 512` bytes and `lba +
+    /// count` must be within the device capacity. The port must have been
+    /// initialised (command list, FIS area and per-slot buffers allocated) and
+    /// the device must support NCQ; the slot is taken from `find_free_slot`, so
+    /// callers must not have commands outstanding on a slot they obtained by
+    /// other means.
+    ///
+    /// Transfers larger than [`BOUNCE_BYTES`] return `InvalidLba` rather than
+    /// overrunning the per-slot buffer. This was previously stated as a caller
+    /// contract (`count` at 8 or below) — but the `BlockDevice` impl derives
+    /// `count` from `buf.len() / 512` and would violate it for any read over
+    /// 4 KiB, so the check belongs here and not in a doc comment.
     pub unsafe fn read_sectors_ncq(
         &self,
         lba: u64,
@@ -482,6 +504,14 @@ impl AhciPort {
     ) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
         if bytes == 0 || buf.len() < bytes {
+            return Err(BlockError::InvalidLba);
+        }
+        // The per-slot bounce buffer is one 4 KiB page. Without this the PRDT is
+        // programmed for `bytes`, the drive DMAs past the end of
+        // `self.buf[slot]`, and the copy-out reads past it too. Reachable from
+        // the `BlockDevice` impl below, which derives `count` from a caller's
+        // buffer length, so this is a refusal rather than a debug assertion.
+        if bytes > BOUNCE_BYTES {
             return Err(BlockError::InvalidLba);
         }
 
@@ -519,6 +549,12 @@ impl AhciPort {
         if bytes == 0 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
         }
+        // See `read_sectors_ncq`. Here the overflow is a `copy_nonoverlapping`
+        // *into* the 4 KiB bounce buffer, so it corrupts kernel memory before
+        // the drive is ever asked to touch it.
+        if bytes > BOUNCE_BYTES {
+            return Err(BlockError::InvalidLba);
+        }
 
         let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
@@ -538,6 +574,16 @@ impl AhciPort {
         Ok(())
     }
 
+    /// Issue ATA IDENTIFY DEVICE and return the raw 256-word response.
+    ///
+    /// # Safety
+    /// The port must be initialised (command list, FIS area and the slot-0
+    /// command table and bounce buffer allocated) and a device must be
+    /// attached. Slot 0 is used unconditionally rather than through
+    /// `find_free_slot`, and the port is stopped and restarted around the
+    /// command, so this must not run while any other command is outstanding on
+    /// this port — concurrent use overwrites slot 0's command table and its
+    /// DMA buffer.
     pub unsafe fn identify_device(&self) -> Result<[u16; 256], BlockError> {
         let slot = 0; // Hardcoded to slot 0 for Phase A
         self.stop_port();
