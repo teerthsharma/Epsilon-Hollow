@@ -18,7 +18,7 @@
 //! Every kernel is a fixed-order scalar loop over `f64`. There is no threading,
 //! no reduction reordering, and no compiler fast-math. The same artifact and
 //! the same inputs therefore produce bit-identical outputs, which
-//! [`tests::run_is_bit_deterministic`] checks by comparing `to_bits`.
+//! the `run_is_bit_deterministic` test checks by comparing `to_bits`.
 //!
 //! # What this executor does not do
 //!
