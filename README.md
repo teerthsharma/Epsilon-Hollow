@@ -436,9 +436,9 @@ Seal OS is a research kernel. I do not hide behind timelines or excuses. I hide 
 <summary><strong>Security</strong></summary>
 
 - **ASLR** — userspace mmap base randomised with 16-bit entropy shift, RDRAND/RDSEED source
-- **Seccomp** — classic BPF evaluator, per-task filter arrays, `BPF_LD_W_ABS`/`BPF_JMP_JEQ`/`BPF_RET`
+- **Seccomp** — classic BPF evaluator, per-task filter arrays, `BPF_LD_W_ABS`/`BPF_JMP_JEQ`/`BPF_RET`, fail-closed on any action the kernel does not implement
 - **KPTI hardening proof** — distinct kernel/user CR3 roots, empty user lower-half PML4, mirrored kernel upper-half, and SMAP/SMEP enablement are emitted at boot and hard-gated by `seal-mkimage`
-- **Retpoline** — compiler flags in `.cargo/config.toml`, all 16 register thunks, trampoline page table
+- **Retpoline** — 15 register thunks (`rax`–`r15`) in the canonical `call` / `pause; lfence` capture loop / `mov [rsp], reg; ret` shape, plus an `lfence; jmp rax` barrier and a trampoline page table. Kernel-wide `-Zretpoline` codegen is deliberately off; see `.cargo/config.toml`
 - **SMAP/SMEP** — init at boot
 - **MAC** — scaffolding present
 - **Audit** — JSON-formatted event buffering
@@ -2128,7 +2128,7 @@ The uncomfortable fields, which are required to have exactly these values:
 
 - **`wx_enforced=0`.** W^X is *measured* over the kernel alias and reported, **not enforced**. That alias is mapped writable and executable today. The gate requires the zero, so the day someone fixes it they have to update the gate deliberately rather than by accident.
 - **No `-Z stack-protector`.** Stack protection is a 16 KiB zeroed guard band, checked for dirt (`stackguard_dirty=0`). That is a tripwire, not a canary.
-- **Retpoline is verified by reading one thunk's machine code back**, not by proving every indirect branch in the kernel routes through a thunk. One thunk being correct is evidence. It is not the claim.
+- **Retpoline is verified by reading one thunk's machine code back**, not by proving every indirect branch in the kernel routes through a thunk. One thunk being correct is evidence. It is not the claim. Two further limits are load-bearing: nothing in the kernel currently routes an indirect branch through a thunk, and the linker garbage-collects the fourteen thunks nothing references — only the `rax` thunk, which the probe itself names, survives into the image. What is measured is that the mitigation is *correctly formed*, not that it is *on the hot path*.
 
 ### The Unsafe Ratchet (`security/unsafe_audit.rs`)
 
@@ -2143,6 +2143,8 @@ It does not fix anything. It is a ratchet, not a repair. And in the interest of 
 ### Seccomp
 
 Classic BPF evaluator (not eBPF). Per-task filter arrays. Instructions: `BPF_LD_W_ABS`, `BPF_JMP_JEQ`, `BPF_RET`. Filters are loaded via `seccomp_load_filter()` and evaluated on every syscall entry before dispatch.
+
+**The evaluator fails closed.** A filter's `BPF_RET` carries an arbitrary `k`, so `seccomp_check()` masks it to the action bits (`0xffff_0000`, as Linux does, so `SECCOMP_RET_ERRNO | errno` still reads as ERRNO) and reduces it to one of three outcomes: ALLOW, ERRNO, or KILL. **Only ALLOW allows.** TRAP, TRACE, USER_NOTIF and KILL_PROCESS have no implementation here and deny rather than fall through; so does any undefined value. LOG is the one deliberate divergence from Linux, which treats it as allow-and-log — there is no seccomp logging path in this kernel, so honouring it would mean allowing a syscall on the strength of a side effect that never happens.
 
 ### Audit
 
@@ -3404,7 +3406,7 @@ MIT License. Copyright (c) 2024 Teerth Sharma. See [LICENSE](LICENSE).
 
 Sixty-nine syscalls. The names are borrowed, not inherited. `fork`, `write`, `mmap`, `sleep` — you have seen these words before, and that is precisely the problem, because you have seen them attached to POSIX semantics and this kernel has never signed that treaty. `sleep` is an ACPI sleep state, not a duration. `waitpid` does not wait. `write` to a real file descriptor does not write the buffer you passed. Read the note column before you assume anything; that column is where the surprises are kept, deliberately, in the open.
 
-Every call routes through one `dispatch(num, arg0, arg1, arg2)` in `kernel/seal-os/src/syscall/table.rs`, and every call passes a seccomp filter check first: `SECCOMP_RET_KILL` marks the calling task dead and returns `-1`, `SECCOMP_RET_ERRNO` returns `-1` without the funeral. Three calls — `open`, `exec`, `setuid` — leave an audit record on the way out. The rest do not, which is a gap rather than a design.
+Every call routes through one `dispatch(num, arg0, arg1, arg2)` in `kernel/seal-os/src/syscall/table.rs`, and every call passes a seccomp filter check first: `SECCOMP_RET_KILL` marks the calling task dead and returns `-1`, `SECCOMP_RET_ERRNO` returns `-1` without the funeral, `SECCOMP_RET_ALLOW` proceeds, and anything else is treated as KILL rather than allowed through. Three calls — `open`, `exec`, `setuid` — leave an audit record on the way out. The rest do not, which is a gap rather than a design.
 
 All syscalls return `SyscallResult { code: i64, data: Option<String> }`. Errors are returned as `-errno` in `code`. Numbers **12 and 13 are unassigned** and fall to the catch-all: `-38`, `ENOSYS`.
 
@@ -3808,7 +3810,7 @@ The distinction this table exists to draw: a mitigation that is *compiled in* an
 | SMAP | `cpuid+cr4` — CPUID.7:0.EBX[20] and CR4[21] | **Hardware-verified.** Same rule |
 | NX | `cpuid+efer` — CPUID.8000_0001:EDX[20] and EFER[11] | **Hardware-verified.** Same rule |
 | CR0.WP | `cr0` — live CR0[16] | **Hardware-verified.** Without it, W^X on kernel pages is unenforceable regardless of how the tables are flagged |
-| Retpoline | `runtime-thunk-bytes` | **Runtime-verified, not a hardware bit.** There is no control register for "the compiler emitted thunks", so the probe reads 16 bytes of the RAX thunk's own machine code back out of the live image and checks it still begins `0xe8` and still contains the tail `48 89 04 24 c3` (`mov [rsp], rax; ret`). IBRS/IBPB support is reported separately as `retpoline_ibpb_supported` |
+| Retpoline | `runtime-thunk-bytes` | **Runtime-verified, not a hardware bit, and scoped to one thunk.** There is no control register for "the compiler emitted thunks", so the probe reads 32 bytes of the RAX thunk's own machine code back out of the live image and requires three things: it begins `0xe8` (`call rel32`), it contains the tail `48 89 04 24 c3` (`mov [rsp], rax; ret`), and the `pause; lfence` capture loop `f3 90 0f ae e8` appears **before** that tail. The ordering requirement is the one with teeth — `call .+0; mov [rsp], rax; ret` satisfies the first two, traps no speculation, and is architecturally a bare indirect call. Offsets are not pinned, so the check survives the assembler choosing `rel8` or `rel32` for the backward jump. What it does **not** show: that any indirect branch routes through a thunk (none does), or that the compiler emitted thunks (`-Zretpoline` is off). IBRS/IBPB support is reported separately as `retpoline_ibpb_supported` |
 | KASLR | `runtime-entropy` | **Active on mappings only.** See below |
 | Stack guard | `runtime-guardband` | **Runtime-measured, and weaker than it sounds.** A 16 KiB zeroed band sits below each per-CPU kernel stack; the probe counts nonzero bytes. Stacks grow down, so a dirty byte is an overflow that already happened. **There is no `-Z stack-protector` in this build** — this band is the only stack protection that exists |
 | W^X | `runtime-pagewalk`, scope `kernel-alias` | **Reported, NOT enforced.** `wx_enforced=0`. The page walk counts live leaf entries that are PRESENT and WRITABLE without NO_EXECUTE, bounded at 65,536 visits. The kernel alias genuinely is mapped writable *and* executable today, and re-flagging an alias nothing executes from would be a fake win, so the number is printed and the gate requires the honest `0` |
