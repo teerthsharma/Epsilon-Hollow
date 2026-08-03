@@ -26,7 +26,7 @@ impl GpuBuffer {
     /// Allocate a GPU-visible buffer of `size` bytes (rounded up to page).
     /// Returns `None` if the physical allocator cannot satisfy the request.
     pub fn alloc(size: usize) -> Option<Self> {
-        let frames = (size + 4095) / 4096;
+        let frames = size.div_ceil(4096);
         let phys = alloc_frames_contiguous(frames)?.as_u64();
         // Zero the memory for determinism.
         unsafe {
@@ -68,12 +68,29 @@ impl GpuBuffer {
     }
 
     /// Cast to a typed mutable slice.
+    ///
+    /// # Safety
+    /// `T` must not be zero-sized (the length computation divides by
+    /// `size_of::<T>()`), and `self.phys` must be aligned to `align_of::<T>()`
+    /// — buffers from `alloc` are page-aligned, but the field is public and
+    /// may hold any value. The first `size / size_of::<T>()` elements must be
+    /// initialised to bit patterns that are valid for `T`; `alloc` only
+    /// guarantees zeroes, so `T` must accept an all-zero representation unless
+    /// the caller has written it. The memory must stay mapped and no other
+    /// reference or in-flight GPU DMA may touch it while the slice is alive.
     pub unsafe fn as_mut_typed<T>(&mut self) -> &mut [T] {
         let count = self.size / core::mem::size_of::<T>();
         core::slice::from_raw_parts_mut(self.phys as *mut T, count)
     }
 
     /// Cast to a typed immutable slice.
+    ///
+    /// # Safety
+    /// Same contract as `as_mut_typed`: `T` must not be zero-sized, `self.phys`
+    /// must be aligned to `align_of::<T>()` and mapped for `self.size` bytes,
+    /// and the first `size / size_of::<T>()` elements must already hold valid
+    /// `T` bit patterns. A GPU dispatch writing into this buffer while the
+    /// slice is alive is a data race even though the slice is shared.
     pub unsafe fn as_typed<T>(&self) -> &[T] {
         let count = self.size / core::mem::size_of::<T>();
         core::slice::from_raw_parts(self.phys as *const T, count)

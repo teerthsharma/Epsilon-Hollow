@@ -27,7 +27,13 @@ fn main() {
             1u32,
             2u32,
         ),
-        ("S2_DISTANCE_GCN", "s2_distance", "s2_distance.bin", 2u32, 8u32),
+        (
+            "S2_DISTANCE_GCN",
+            "s2_distance",
+            "s2_distance.bin",
+            2u32,
+            8u32,
+        ),
     ];
 
     let mut statics = String::new();
@@ -51,7 +57,8 @@ fn main() {
         }
     }
 
-    let generated_source = format!("{statics}\npub const KERNELS: &[KernelMeta] = &[\n{entries}];\n");
+    let generated_source =
+        format!("{statics}\npub const KERNELS: &[KernelMeta] = &[\n{entries}];\n");
     std::fs::write(&generated, generated_source).expect("write generated GPU shader binary table");
 
     // Re-run build.rs if any shader source changes.

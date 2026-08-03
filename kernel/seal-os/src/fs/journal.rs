@@ -3,20 +3,25 @@
 
 //! Topological journal for ext2 metadata transactions and BlockStore atomic updates.
 //!
-//! Every design decision is driven by T1–T5 topology theorems:
+//! Two of the five T1–T5 topology theorems actually drive behaviour here:
 //!
-//! * **T1 (TSS / Spherical Voronoi Index)** — Journal entries are indexed by the Voronoi
-//!   cell of their block number.  This gives O(1) lookup of related changes.
-//! * **T2 (SCM / Spectral Contraction)** — The journal pre-fetches journal space by
-//!   predicting the next block that will be modified, using the spectral contraction
-//!   operator on the current access state.
-//! * **T3 (GMC / Geometric Merge Contraction)** — When the Betti-0 of the journal graph
-//!   (number of disconnected connected-components) exceeds a threshold, a checkpoint is
+//! * **T3 (GMC / Geometric Merge Contraction)** — WIRED. When the Betti-0 of the journal
+//!   graph (number of disconnected components) exceeds a threshold, a checkpoint is
 //!   forced.  This keeps the journal topologically connected.
-//! * **T4 (AGCR / Adaptive Geometric Contraction Rate)** — Governor ε controls commit
-//!   frequency.  High ε ⇒ frequent commits (volatile).  Low ε ⇒ batch commits (stable).
-//! * **T5 (HCS / Hyperbolic Contraction Sequence)** — Transaction nesting depth is
-//!   interpreted as hyperbolic nesting depth.  Deeper nesting ⇒ longer commit horizon.
+//! * **T4 (AGCR / Adaptive Geometric Contraction Rate)** — WIRED. Governor ε controls
+//!   commit frequency.  High ε ⇒ frequent commits (volatile).  Low ε ⇒ batch commits.
+//!
+//! The remaining three are recorded but NOT wired — the state is maintained and then
+//! never consumed, so they do not affect any journal decision:
+//!
+//! * **T1 (TSS / Spherical Voronoi Index)** — the Voronoi cell of the block number is
+//!   computed and immediately discarded (`let _cell = ...`).  Entries live in a flat
+//!   `Vec` and there is no by-cell lookup, so there is no O(1) related-change query.
+//! * **T2 (SCM / Spectral Contraction)** — `access_state` is updated on each append and
+//!   read nowhere in the crate.  No journal space is prefetched.
+//! * **T5 (HCS / Hyperbolic Contraction Sequence)** — `transaction_depth`/`max_depth`
+//!   are tracked, but `should_commit` never reads them, so nesting depth does not
+//!   change the commit horizon.
 
 use aether_core::governor::GeometricGovernor;
 use aether_core::scm::SpectralContractionOperator;
@@ -322,8 +327,8 @@ impl TopologicalJournal {
             lba += 1;
             consumed = consumed.saturating_add(1);
 
-            let before_sectors = ((eh.before_len as usize) + 511) / 512;
-            let after_sectors = ((eh.after_len as usize) + 511) / 512;
+            let before_sectors = (eh.before_len as usize).div_ceil(512);
+            let after_sectors = (eh.after_len as usize).div_ceil(512);
             let image_sectors = (before_sectors as u64).saturating_add(after_sectors as u64);
             if consumed.saturating_add(image_sectors) > journal_blocks {
                 return Err(BlockError::InvalidLba);
@@ -368,6 +373,12 @@ impl TopologicalJournal {
         backend.write_sector(journal_start, committed_header.as_bytes())?;
 
         Ok(())
+    }
+}
+
+impl Default for TopologicalJournal {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

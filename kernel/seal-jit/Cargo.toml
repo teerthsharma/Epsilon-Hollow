@@ -1,0 +1,20 @@
+[package]
+name = "seal-jit"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Seal OS execution-plan booster: persistent autotune memo and specialisation ladder"
+
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+no_std = ["alloc"]
+
+[dependencies]
+libm = { workspace = true }
+
+[lib]
+name = "seal_jit"
+path = "src/lib.rs"

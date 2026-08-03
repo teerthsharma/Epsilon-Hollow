@@ -77,7 +77,7 @@ impl Terminal {
                 // Tab — add spaces
                 self.input_buf.push_str("    ");
             }
-            ch if ch >= 0x20 && ch < 0x7F => {
+            ch if (0x20..0x7F).contains(&ch) => {
                 self.input_buf.push(ch as char);
             }
             _ => {

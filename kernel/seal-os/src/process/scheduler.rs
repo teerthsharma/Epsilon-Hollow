@@ -174,7 +174,13 @@ impl CellQueue {
             b.write(Vec::new());
         }
         Self {
-            buckets: unsafe { core::mem::transmute(buckets) },
+            // Annotated so the compiler size-checks the MaybeUninit array
+            // against the initialised one; every element was written above.
+            buckets: unsafe {
+                core::mem::transmute::<[core::mem::MaybeUninit<Vec<usize>>; 256], [Vec<usize>; 256]>(
+                    buckets,
+                )
+            },
             highest: None,
             ready_count: 0,
         }
@@ -251,15 +257,20 @@ pub struct SchedulerSelectProbe {
 
 impl ManifoldScheduler {
     pub fn new() -> Self {
+        // (theta, phi) centroids on the {0, pi/2, pi} lattice. Spelled with the
+        // exact constants rather than 1.57 / 3.14 so the cell boundaries agree
+        // with the full-precision centroids lib.rs feeds to the TSS separation
+        // proof; the truncated literals were off by ~1.6e-3 rad.
+        use core::f64::consts::{FRAC_PI_2, PI};
         let centroids = [
             (0.0, 0.0),
-            (1.57, 0.0),
-            (3.14, 0.0),
-            (0.0, 1.57),
-            (1.57, 1.57),
-            (3.14, 1.57),
-            (0.0, 3.14),
-            (1.57, 3.14),
+            (FRAC_PI_2, 0.0),
+            (PI, 0.0),
+            (0.0, FRAC_PI_2),
+            (FRAC_PI_2, FRAC_PI_2),
+            (PI, FRAC_PI_2),
+            (0.0, PI),
+            (FRAC_PI_2, PI),
         ];
         Self {
             slab: TaskSlab::new(),
@@ -897,14 +908,12 @@ impl ManifoldScheduler {
                 user_stack: parent.user_stack.clone(),
                 // T5: COW fork — clone page table, mark writable user pages read-only.
                 page_table: if parent.is_userspace && parent.page_table != 0 {
-                    let Some(cloned_page_table) = (unsafe {
+                    (unsafe {
                         crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
                             parent.page_table,
                         ))
-                    }) else {
-                        return None;
-                    };
-                    cloned_page_table.as_u64()
+                    })?
+                    .as_u64()
                 } else {
                     parent.page_table
                 },
@@ -1015,14 +1024,12 @@ impl ManifoldScheduler {
             let page_table = if share_vm {
                 parent.page_table
             } else {
-                let Some(cloned_page_table) = (unsafe {
+                (unsafe {
                     crate::memory::virt::clone_page_table_cow(x86_64::PhysAddr::new(
                         parent.page_table,
                     ))
-                }) else {
-                    return None;
-                };
-                cloned_page_table.as_u64()
+                })?
+                .as_u64()
             };
 
             let tls_base = if parent.is_userspace {
@@ -1262,6 +1269,12 @@ impl ManifoldScheduler {
                 task.cwd = cwd;
             }
         }
+    }
+}
+
+impl Default for ManifoldScheduler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

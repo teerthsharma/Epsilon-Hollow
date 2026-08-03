@@ -242,3 +242,9 @@ impl WelcomeScreen {
         }
     }
 }
+
+impl Default for WelcomeScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -69,12 +69,12 @@ fn panic(info: &PanicInfo) -> ! {
         let msg_len = writer.pos;
 
         let msg_y = py + char_h + 16;
-        for i in 0..msg_len {
+        for (i, &byte) in msg_buf.iter().enumerate().take(msg_len) {
             let col = i as u32 % 60;
             let row = i as u32 / 60;
             let mx = 20 + col * char_w;
             let my = msg_y + row * char_h;
-            seal_os::graphics::font::draw_char(fb, mx, my, msg_buf[i], white);
+            seal_os::graphics::font::draw_char(fb, mx, my, byte, white);
         }
 
         fb.blit();

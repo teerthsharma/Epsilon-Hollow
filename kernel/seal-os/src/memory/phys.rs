@@ -22,9 +22,9 @@ const FRAME_SIZE: u64 = 4096;
 /// Number of topological free-frame cells. Kept power-of-two for cheap mapping.
 pub const PHYS_TOPO_CELLS: usize = 8;
 
-const SUMMARY_L1_U64S: usize = (BITMAP_U64S + 63) / 64;
-const SUMMARY_L2_U64S: usize = (SUMMARY_L1_U64S + 63) / 64;
-const SUMMARY_L3_U64S: usize = (SUMMARY_L2_U64S + 63) / 64;
+const SUMMARY_L1_U64S: usize = BITMAP_U64S.div_ceil(64);
+const SUMMARY_L2_U64S: usize = SUMMARY_L1_U64S.div_ceil(64);
+const SUMMARY_L3_U64S: usize = SUMMARY_L2_U64S.div_ceil(64);
 
 const CELL_BIT_MASKS: [u64; PHYS_TOPO_CELLS] = [
     0x0101_0101_0101_0101,
@@ -677,6 +677,15 @@ pub unsafe fn free_frame(addr: PhysAddr) {
 }
 
 /// Free a high-memory frame (>4 GiB).  Identical to `free_frame` but documents intent.
+///
+/// # Safety
+/// Carries the full contract of `free_frame`, to which it delegates: `addr`
+/// must be 4 KiB aligned, must have come from `alloc_frame_high` (or another
+/// allocator entry point) and must not already be free, and no mapping,
+/// pointer or in-flight DMA may still reference the frame. The caller must
+/// hold none of the allocator's locks (`BITMAP`, `CELL_L1`/`L2`/`L3`,
+/// `FREE_COUNT`), which are taken here and are not reentrant. Addresses beyond
+/// the usable frame count are ignored rather than rejected.
 pub unsafe fn free_frame_high(addr: PhysAddr) {
     free_frame(addr);
 }

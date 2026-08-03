@@ -78,15 +78,20 @@ pub struct Compositor {
 
 impl Compositor {
     pub fn new() -> Self {
+        // (theta, phi) centroids on the {0, pi/2, pi} lattice. Spelled with the
+        // exact constants rather than 1.57 / 3.14 so screen-space cell
+        // boundaries match the scheduler's; the truncated literals were off by
+        // ~1.6e-3 rad.
+        use core::f64::consts::{FRAC_PI_2, PI};
         let centroids = [
             (0.0, 0.0),
-            (1.57, 0.0),
-            (3.14, 0.0),
-            (0.0, 1.57),
-            (1.57, 1.57),
-            (3.14, 1.57),
-            (0.0, 3.14),
-            (1.57, 3.14),
+            (FRAC_PI_2, 0.0),
+            (PI, 0.0),
+            (0.0, FRAC_PI_2),
+            (FRAC_PI_2, FRAC_PI_2),
+            (PI, FRAC_PI_2),
+            (0.0, PI),
+            (FRAC_PI_2, PI),
         ];
         Self {
             windows: Vec::new(),
@@ -738,5 +743,11 @@ impl Compositor {
             }
             x += BTN_W + 4;
         }
+    }
+}
+
+impl Default for Compositor {
+    fn default() -> Self {
+        Self::new()
     }
 }

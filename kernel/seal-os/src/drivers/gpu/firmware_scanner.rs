@@ -117,7 +117,7 @@ pub fn scan_all() -> GpuFirmwareCaps {
 
         // Prefer AMD (open PM4 interface) over others.
         let score = caps_score(&caps);
-        if best.as_ref().map_or(true, |b| score > caps_score(b)) {
+        if best.as_ref().is_none_or(|b| score > caps_score(b)) {
             best = Some(caps);
         }
     }
@@ -289,7 +289,15 @@ fn scan_amd(dev: &PciDevice) -> GpuFirmwareCaps {
         serial_println!("[FWSCAN] AMD PM4 compute path does not require signed firmware");
     }
 
-    // Topology kernels: all implemented for GCN ISA.
+    // NOTE: this advertises all four kernels as available, but only
+    // `shaders/spectral_step.bin` is non-empty on disk — `voronoi_assign.bin`,
+    // `jl_project.bin` and `s2_distance.bin` are 0-byte placeholders, and
+    // `gcn_asm::NOT_IMPLEMENTED` names them as deliberately absent. Every
+    // dispatch except spectral_step returns `KernelNotFound`. This mask is what
+    // makes `is_accelerated()` true and drives the `[FWSCAN] Status:
+    // ACCELERATED` line, so that status currently overstates what can run.
+    // Building the mask from `shader_binaries::find_kernel(..).is_some()` would
+    // make it honest; left as-is because it changes backend selection.
     if caps.has_compute_queue {
         caps.topology_kernels_supported = TopologyKernelMask(
             TopologyKernelMask::VORONOI_ASSIGN
@@ -372,7 +380,7 @@ fn scan_nvidia(dev: &PciDevice) -> GpuFirmwareCaps {
     }
 
     // Read NV_PMC_BOOT_0 for architecture.
-    let boot0 = unsafe { core::ptr::read_volatile((bar0 + 0x000000) as *const u32) };
+    let boot0 = unsafe { core::ptr::read_volatile(bar0 as *const u32) };
     let arch_id = boot0 & 0xFFFF0000;
 
     // GSP required for compute on Turing+ (0x00011000+).

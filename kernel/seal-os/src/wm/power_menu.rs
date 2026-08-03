@@ -114,3 +114,9 @@ impl PowerMenu {
         ITEMS.get(idx).map(|item| item.action)
     }
 }
+
+impl Default for PowerMenu {
+    fn default() -> Self {
+        Self::new()
+    }
+}

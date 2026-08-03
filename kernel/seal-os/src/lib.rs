@@ -4,6 +4,23 @@
 #![cfg_attr(not(test), no_std)]
 #![cfg_attr(not(test), no_main)]
 #![cfg_attr(not(test), feature(abi_x86_interrupt))]
+// REASON: in this kernel the range-loop variable is overwhelmingly a semantic
+// identity rather than a cursor — a CPU number, a Voronoi seed index, an APIC
+// slot, a queue-entry ordinal — and is consumed arithmetically or passed to a
+// lookup, not only used to index. `memory/topo_ram.rs:106` computes
+// `s.wrapping_mul(7919)` from it; `sync/tlb.rs:39` uses it both as an
+// `apic_id_for_cpu` key and to index a fixed-size static whose length exceeds
+// the live `cpu_count`, so an iterator form would need a `.take()` that is
+// easier to get wrong than the index. Rewriting these would be a style-only
+// refactor of working, host-untestable code. Individual loops that really are
+// plain slice walks are still worth converting when touched for other reasons.
+#![allow(clippy::needless_range_loop)]
+// REASON: the offenders are graphics and scheduler entry points whose arguments
+// are irreducible coordinate/geometry tuples — `graphics/htek.rs:121` and
+// `graphics/topo_render.rs:558` take (x, y, w, h, colour, …). Bundling them
+// into a struct would add a type and a construction site per call without
+// removing a single value the callee needs.
+#![allow(clippy::too_many_arguments)]
 
 #[macro_use]
 extern crate alloc;
@@ -400,20 +417,18 @@ fn boot_graphical(fb: &'static Framebuffer) {
     let mut run_installer = false;
     let login_start = drivers::interrupts::ticks();
     loop {
-        if let Some(event) = drivers::interrupts::poll_event() {
-            if let wm::event::InputEvent::KeyPress(scancode) = event {
-                let ch = drivers::interrupts::scancode_to_char(scancode);
-                if ch == b'i' || ch == b'I' {
-                    run_installer = true;
+        if let Some(wm::event::InputEvent::KeyPress(scancode)) = drivers::interrupts::poll_event() {
+            let ch = drivers::interrupts::scancode_to_char(scancode);
+            if ch == b'i' || ch == b'I' {
+                run_installer = true;
+                break;
+            }
+            if ch != 0 {
+                if login.key_press(ch) {
                     break;
                 }
-                if ch != 0 {
-                    if login.key_press(ch) {
-                        break;
-                    }
-                    login.render(fb);
-                    fb.blit();
-                }
+                login.render(fb);
+                fb.blit();
             }
         }
         // Auto-login quickly for CI/headless VM environments.
@@ -432,7 +447,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
             user.uid
         );
     } else {
-        serial_println!("[LOGIN] Authenticated");
+        // Reached when `authenticated_user()` is None — i.e. the auto-login
+        // timeout above fired, or the loop broke without a verified credential.
+        // Nothing was authenticated, so this must not claim otherwise.
+        serial_println!("[LOGIN] No credentials verified — continuing unauthenticated");
     }
 
     serial_println!("[Lypnos Guard] Default password seal/seal is blocked.");
@@ -1282,7 +1300,7 @@ fn run_tensor_render_bench() {
 
     serial_println!(
         "[BENCH] tensor-render api=tensor_viz_pipeline fixture=csv_100x100 quality=0 rows={} cols={} elements={} points={} triangles={} window={}x{} csv_bytes={} nonblack_px={} sample_hash={} p50_cycles={} p95_cycles={} max_cycles={} result={}",
-        tensor.shape.get(0).copied().unwrap_or(0),
+        tensor.shape.first().copied().unwrap_or(0),
         tensor.shape.get(1).copied().unwrap_or(0),
         tensor.data.len(),
         points.len(),
@@ -1322,7 +1340,8 @@ fn build_topo_render_grid_mesh(rows: usize, cols: usize) -> graphics::topo_rende
             } else {
                 0.0
             };
-            let y = 0.25 * libm::sinf(x * core::f32::consts::PI * 2.0)
+            let y = 0.25
+                * libm::sinf(x * core::f32::consts::PI * 2.0)
                 * libm::cosf(z * core::f32::consts::PI * 2.0);
             let vertex = [x, y, z];
             for axis in 0..3 {

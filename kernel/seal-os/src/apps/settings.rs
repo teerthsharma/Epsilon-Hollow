@@ -43,3 +43,9 @@ impl Settings {
         &self.store
     }
 }
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self::new()
+    }
+}

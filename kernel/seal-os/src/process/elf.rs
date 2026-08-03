@@ -327,7 +327,7 @@ fn map_load_segments(
         let seg_start = ph.p_vaddr + base;
         let seg_end = seg_start + ph.p_memsz;
         let first_page = seg_start / 4096;
-        let last_page = (seg_end + 4095) / 4096;
+        let last_page = seg_end.div_ceil(4096);
 
         for page in first_page..last_page {
             let page_virt = VirtAddr::new(page * 4096);

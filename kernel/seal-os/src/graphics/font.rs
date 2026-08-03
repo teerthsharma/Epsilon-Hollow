@@ -26,7 +26,7 @@ pub fn draw_string(fb: &super::framebuffer::Framebuffer, x: u32, y: u32, s: &str
 }
 
 pub fn glyph(ch: u8) -> &'static [u8; 16] {
-    if ch < 32 || ch > 126 {
+    if !(32..=126).contains(&ch) {
         return &FONT_DATA[0]; // space for unprintable
     }
     &FONT_DATA[(ch - 32) as usize]

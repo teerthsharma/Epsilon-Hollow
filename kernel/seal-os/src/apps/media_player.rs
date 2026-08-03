@@ -559,6 +559,12 @@ impl MediaPlayer {
     pub fn mouse_move(&mut self, _x: u32, _y: u32) {}
 }
 
+impl Default for MediaPlayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn probe_wav(filename: &str) -> MediaInfo {
     // Try to read the file from ManifoldFS and parse the WAV header.
     let mut sample_rate = 44100u32;
@@ -583,8 +589,8 @@ fn probe_wav(filename: &str) -> MediaInfo {
             bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
             let data_size = u32::from_le_bytes([data[40], data[41], data[42], data[43]]) as u64;
             let byte_rate = (sample_rate as u64) * (channels as u64) * (bits_per_sample as u64 / 8);
-            if byte_rate > 0 {
-                duration_secs = data_size / byte_rate;
+            if let Some(secs) = data_size.checked_div(byte_rate) {
+                duration_secs = secs;
             }
         }
     }
@@ -597,7 +603,7 @@ fn probe_wav(filename: &str) -> MediaInfo {
         height: 0,
         fps: 0,
         duration_secs,
-        bitrate_kbps: ((sample_rate as u32) * (channels as u32) * (bits_per_sample as u32)) / 1000,
+        bitrate_kbps: (sample_rate * (channels as u32) * (bits_per_sample as u32)) / 1000,
         sample_rate,
         channels,
     }

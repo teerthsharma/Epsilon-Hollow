@@ -290,6 +290,12 @@ impl WifiDriver {
     }
 }
 
+impl Default for WifiDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn init() {
     let mut driver = WifiDriver::new();
     driver.probe_pci();

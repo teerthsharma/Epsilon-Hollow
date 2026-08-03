@@ -11,6 +11,12 @@ pub struct TicketLock {
     now_serving: AtomicUsize,
 }
 
+impl Default for TicketLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TicketLock {
     /// Create a new unlocked `TicketLock`.
     pub const fn new() -> Self {

@@ -545,7 +545,7 @@ fn voronoi_reference_cell(
         points[p_off + 14],
         points[p_off + 15],
     ]);
-    let mut best_dist = core::f64::MAX;
+    let mut best_dist = f64::MAX;
     let mut best_cell = 0u32;
     for c in 0..n_cells {
         let c_off = c * 16;

@@ -60,9 +60,12 @@ fn t1_permission_bits(uid: u32, gid: u32, groups: &[u32], node: &VfsNode) -> u16
     }
 }
 
-/// T2: Spectral anomaly detection.
-/// Returns true when the (path, time_bucket) pair is outside the recent
-/// spectral history, indicating an unusual access pattern.
+/// Novelty check: true when neither this path nor this 1000-tick bucket appears
+/// in the last 16 recorded accesses.
+///
+/// Despite the T2 label this is not spectral — it is a linear scan of a 16-entry
+/// ring buffer comparing an FNV-style path hash and a tick bucket. There is no
+/// Laplacian, eigendecomposition, or contraction operator involved.
 fn t2_detect_anomaly(path: &str, _uid: u32) -> bool {
     let current_tick = crate::drivers::interrupts::ticks();
     let tick_bucket = current_tick / 1000;
@@ -130,10 +133,11 @@ fn t4_epsilon_strictness(uid: u32, node_uid: u32) -> AccessDecision {
     let current_tick = crate::drivers::interrupts::ticks();
     let anomaly_tick = ANOMALY_TICK.load(Ordering::Relaxed);
 
-    if anomaly_tick != 0 && current_tick.saturating_sub(anomaly_tick) < ANOMALY_WINDOW {
-        if uid != node_uid {
-            return AccessDecision::Deny;
-        }
+    if anomaly_tick != 0
+        && current_tick.saturating_sub(anomaly_tick) < ANOMALY_WINDOW
+        && uid != node_uid
+    {
+        return AccessDecision::Deny;
     }
 
     let eps = crate::process::scheduler::governor_epsilon();

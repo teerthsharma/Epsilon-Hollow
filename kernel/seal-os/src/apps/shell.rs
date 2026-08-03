@@ -78,7 +78,7 @@ impl Shell {
             "move" => self.cmd_move(arg1, arg2),
             "search" => {
                 let query = if arg2.is_empty() { arg1 } else {
-                    input.splitn(2, ' ').nth(1).unwrap_or(arg1)
+                    input.split_once(' ').map(|x| x.1).unwrap_or(arg1)
                 };
                 self.cmd_search(query)
             }
@@ -145,7 +145,7 @@ impl Shell {
             // Calculator
             "calc" => {
                 let expr = if arg2.is_empty() { arg1 } else {
-                    input.splitn(2, ' ').nth(1).unwrap_or(arg1)
+                    input.split_once(' ').map(|x| x.1).unwrap_or(arg1)
                 };
                 self.calculator.evaluate(expr)
             }
@@ -668,7 +668,9 @@ impl Shell {
                 "ManifoldPkg: signed registry-index fixture is boot-gated; public refresh needs hosted release channel",
             )
         } else {
-            String::from("ManifoldPkg: no network device; use install <local.eph> for local packages")
+            String::from(
+                "ManifoldPkg: no network device; use install <local.eph> for local packages",
+            )
         }
     }
 
@@ -825,7 +827,7 @@ impl Shell {
 
     fn cmd_topcrypt(&mut self, rest: &str) -> String {
         let parts: Vec<&str> = rest.splitn(3, ' ').collect();
-        let sub = parts.get(0).copied().unwrap_or("");
+        let sub = parts.first().copied().unwrap_or("");
         let arg1 = parts.get(1).copied().unwrap_or("");
         let arg2 = parts.get(2).copied().unwrap_or("");
 
@@ -864,11 +866,7 @@ impl Shell {
                 };
                 let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let decoded = crate::fs::topcrypt::decode_bytes(&topo);
-                let out_name = if arg1.ends_with(".topo") {
-                    &arg1[..arg1.len() - 5]
-                } else {
-                    arg1
-                };
+                let out_name = arg1.strip_suffix(".topo").unwrap_or(arg1);
                 if self.fs.exists(out_name, self.cwd) {
                     let _ = self.fs.delete(out_name, self.cwd);
                 }
@@ -926,7 +924,7 @@ impl Shell {
                     let _ = self.fs.delete(arg1, self.cwd);
                 }
                 match self.fs.store(arg1, &serialized, self.cwd) {
-                    Ok(_) => format!("[Lypnos Guard] File awakened. Welcome back."),
+                    Ok(_) => String::from("[Lypnos Guard] File awakened. Welcome back."),
                     Err(e) => format!("topcrypt unlock: {}", e),
                 }
             }
@@ -1168,5 +1166,11 @@ Seed: {:016x}",
 
     pub fn fs_mut(&mut self) -> &mut ManifoldFS {
         &mut self.fs
+    }
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self::new()
     }
 }

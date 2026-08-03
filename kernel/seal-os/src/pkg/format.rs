@@ -138,14 +138,14 @@ fn parse_manifest(bytes: &[u8]) -> Result<PackageManifest, EphError> {
     let mut deps = Vec::new();
     for line in text.lines() {
         let line = line.trim();
-        if line.starts_with("name=") {
-            name = String::from(line[5..].trim_matches('"'));
-        } else if line.starts_with("version=") {
-            version = String::from(line[8..].trim_matches('"'));
-        } else if line.starts_with("description=") {
-            description = String::from(line[12..].trim_matches('"'));
-        } else if line.starts_with("dep=") {
-            deps.push(String::from(line[4..].trim_matches('"')));
+        if let Some(v) = line.strip_prefix("name=") {
+            name = String::from(v.trim_matches('"'));
+        } else if let Some(v) = line.strip_prefix("version=") {
+            version = String::from(v.trim_matches('"'));
+        } else if let Some(v) = line.strip_prefix("description=") {
+            description = String::from(v.trim_matches('"'));
+        } else if let Some(v) = line.strip_prefix("dep=") {
+            deps.push(String::from(v.trim_matches('"')));
         }
     }
     if name.is_empty() || version.is_empty() {

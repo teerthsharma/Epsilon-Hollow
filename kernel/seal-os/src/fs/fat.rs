@@ -146,8 +146,7 @@ impl FatFs {
             return Err(VfsError::IoError);
         }
 
-        let root_dir_sectors = ((bpb.root_entries as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
-            / bpb.bytes_per_sector as u32;
+        let root_dir_sectors = (bpb.root_entries as u32 * 32).div_ceil(bpb.bytes_per_sector as u32);
         let data_sectors = total_sectors.saturating_sub(
             (bpb.reserved_sectors as u32) + (bpb.num_fats as u32 * fat_size) + root_dir_sectors,
         );
@@ -553,8 +552,7 @@ impl FatFs {
         let mut data = Vec::new();
         if cluster == 0 {
             let size = self.bpb.root_entries as usize * 32;
-            let sectors =
-                (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
+            let sectors = size.div_ceil(self.bytes_per_sector as usize);
             data.resize(size, 0);
             for i in 0..sectors {
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
@@ -586,8 +584,7 @@ impl FatFs {
     fn write_dir_raw(&mut self, cluster: u32, data: &[u8]) -> Result<(), VfsError> {
         if cluster == 0 {
             let size = self.bpb.root_entries as usize * 32;
-            let sectors =
-                (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
+            let sectors = size.div_ceil(self.bytes_per_sector as usize);
             for i in 0..sectors {
                 let start = i * self.bytes_per_sector as usize;
                 let end = core::cmp::min(start + self.bytes_per_sector as usize, size);
@@ -771,7 +768,7 @@ impl FatFs {
 
     fn read_root_dir(&self) -> Result<Vec<FatDirEntry>, VfsError> {
         let size = self.bpb.root_entries as usize * 32;
-        let sectors = (size + self.bytes_per_sector as usize - 1) / self.bytes_per_sector as usize;
+        let sectors = size.div_ceil(self.bytes_per_sector as usize);
         let mut data = alloc::vec![0u8; size];
         for i in 0..sectors {
             let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
@@ -1012,7 +1009,7 @@ impl FileSystem for FatFs {
         self.add_dir_entry(parent_cluster, &name, 0x10, new_c, 0)?;
         // Create . and .. entries in new directory.
         let dot = DirEntry {
-            name: [b'.', b' ', b' ', b' ', b' ', b' ', b' ', b' '],
+            name: *b".       ",
             ext: [b' '; 3],
             attr: 0x10,
             nt_res: 0,
@@ -1027,7 +1024,7 @@ impl FileSystem for FatFs {
             size: 0,
         };
         let dotdot = DirEntry {
-            name: [b'.', b'.', b' ', b' ', b' ', b' ', b' ', b' '],
+            name: *b"..      ",
             ext: [b' '; 3],
             attr: 0x10,
             nt_res: 0,
@@ -1114,9 +1111,11 @@ impl FileSystem for FatFs {
     }
 
     fn readdir(&self, handle: VfsHandle) -> Result<Vec<VfsDirEntry>, VfsError> {
-        let is_dir = if handle.inode == 1 && self.fat_type != FatType::Fat32 {
-            true
-        } else if self.fat_type == FatType::Fat32 && handle.inode == self.root_cluster as u64 {
+        // Either root-directory form counts as a directory: the fixed inode 1
+        // on FAT12/16, or the root cluster on FAT32.
+        let is_dir = if (handle.inode == 1 && self.fat_type != FatType::Fat32)
+            || (self.fat_type == FatType::Fat32 && handle.inode == self.root_cluster as u64)
+        {
             true
         } else {
             match self.find_entry_by_cluster(handle.inode as u32) {

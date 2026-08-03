@@ -1,8 +1,23 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! TopCrypt — topological file encryption engine for Seal OS Lypnos Guard Edition.
-//! Files don't exist as bytes. They exist as geometry on S².
+//! TopCrypt — file obfuscation layer for Seal OS Lypnos Guard Edition.
+//!
+//! NOT cryptography, and not to be relied on for confidentiality. What the code
+//! actually does:
+//!   - `bytes_to_angles` / `angles_to_bytes` reinterpret each 64-byte block as
+//!     32 little-endian `u16` words and back. This is an exact round trip — no
+//!     projection onto S², no normalisation. `encode_bytes`/`decode_bytes` are
+//!     therefore the identity modulo padding. (`fs/encoder.rs` does perform a
+//!     real L2-normalised S² projection; this module does not.)
+//!   - `lock_file` XORs every block with the *same* 64-byte pad produced by
+//!     `derive_mask`'s 64-bit LCG, then applies a Fisher-Yates block
+//!     permutation seeded from that same LCG.
+//!
+//! A repeating keystream plus a transposition is trivially invertible: there is
+//! no AEAD, no KDF, and no per-block nonce. `kernel/seal-mkimage` already gates
+//! the README on this exact point ("TopCrypt is topological encoding/
+//! obfuscation, not cryptographic protection"); this header now agrees with it.
 
 use crate::fs::vfs::with_vfs;
 use alloc::collections::BTreeMap;
@@ -154,7 +169,7 @@ fn shuffle_blocks(blocks: &mut [TopoBlock], seed: u64) {
     let perm = generate_permutation(blocks.len(), seed);
     let mut shuffled = Vec::with_capacity(blocks.len());
     for &i in &perm {
-        shuffled.push(blocks[i].clone());
+        shuffled.push(blocks[i]);
     }
     blocks.copy_from_slice(&shuffled);
 }
@@ -163,7 +178,7 @@ fn unshuffle_blocks(blocks: &mut [TopoBlock], seed: u64) {
     let perm = generate_permutation(blocks.len(), seed);
     let mut unshuffled = blocks.to_vec();
     for (new_pos, &old_pos) in perm.iter().enumerate() {
-        unshuffled[old_pos] = blocks[new_pos].clone();
+        unshuffled[old_pos] = blocks[new_pos];
     }
     blocks.copy_from_slice(&unshuffled);
 }
@@ -173,7 +188,7 @@ fn unshuffle_blocks(blocks: &mut [TopoBlock], seed: u64) {
 /// Encode raw bytes into a topological file.
 pub fn encode_bytes(data: &[u8], seed: u64) -> TopologicalFile {
     let len = data.len();
-    let block_count = (len + 63) / 64;
+    let block_count = len.div_ceil(64);
     let mut blocks = Vec::with_capacity(block_count);
     for i in 0..block_count {
         let start = i * 64;

@@ -57,9 +57,13 @@ pub unsafe fn enter_userspace(context: &mut UserContext) -> ! {
     crate::process::signal::check_and_handle_signals(context);
 
     // Build the interrupt-return stack frame.
-    let user_ss = ((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+    // Parenthesised explicitly: `*` binds tighter than `|`, so the selector
+    // index is scaled to a byte offset first and the RPL bits are OR-ed in
+    // afterwards. Relied on to build ring-3 selectors, so the grouping is
+    // spelled out rather than left to precedence.
+    let user_ss = (((gdt::USER_DATA_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8)
         | (PrivilegeLevel::Ring3 as u16 as u64);
-    let user_cs = ((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8
+    let user_cs = (((gdt::USER_CODE_SELECTOR.load(Ordering::Relaxed) >> 3) as u64) * 8)
         | (PrivilegeLevel::Ring3 as u16 as u64);
 
     asm!(
@@ -170,6 +174,16 @@ extern "C" {
 ///
 /// Reads the syscall number and arguments from the saved frame, dispatches
 /// via the syscall table, and writes the return value back into RAX.
+///
+/// # Safety
+/// Called only from `syscall_entry`, on the kernel stack, with `frame`
+/// pointing at the register block that stub just pushed: it must be a valid,
+/// aligned, uniquely-owned `SyscallFrame` that stays live until this returns,
+/// because the frame is mutated in place and then popped back into the
+/// registers. On entry the CPU must still be on the user page table — this
+/// switches to the kernel page table on entry and back to the user one before
+/// returning, so calling it with the kernel tables already active leaves CR3
+/// pointing at userspace mappings. Not callable from ordinary Rust code.
 #[no_mangle]
 pub unsafe extern "C" fn do_syscall(frame: *mut SyscallFrame) {
     unsafe {

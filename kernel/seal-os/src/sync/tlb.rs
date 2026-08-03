@@ -5,6 +5,10 @@
 //!
 //! Used after a page table entry is cleared so that stale mappings are
 //! invalidated on every core.
+//!
+//! LIMIT: `shootdown` returns `()` and cannot report failure. If a CPU does not
+//! acknowledge within the timeout the wait loop simply breaks, with no log and
+//! no error, so a caller cannot tell that a core may still hold a stale mapping.
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::VirtAddr;
@@ -21,6 +25,11 @@ static SHOOTDOWN_ACK: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }
 ///
 /// 1. Flushes the local TLB immediately.
 /// 2. Sends IPI vector `0xFD` to every other CPU.
+///
+/// NOTE on the wait budget: `start` is captured once *before* the acknowledgement
+/// loop, so the timeout is a single budget shared across all CPUs rather than a
+/// per-CPU one. The threshold is `elapsed >= 2` ticks at the 1000 Hz APIC rate,
+/// i.e. ~2 ms total, not ~1 ms per CPU.
 /// 3. Spins until all CPUs ack (or a ~1 ms timeout expires).
 /// 4. Clears the shared shootdown address.
 pub fn shootdown(virt_addr: VirtAddr) {

@@ -544,10 +544,11 @@ fn apply_adaptive_quality(state: &mut RenderState, frame_ms: u32) {
     let avg = state.frame_time_history.iter().sum::<u32>() / 5;
     if avg > 20 && state.quality_level > 0 {
         state.quality_level -= 1;
-    } else if avg < 12 && state.quality_level < 4 {
-        if state.frame_time_history.iter().all(|&t| t < 12) {
-            state.quality_level += 1;
-        }
+    } else if avg < 12
+        && state.quality_level < 4
+        && state.frame_time_history.iter().all(|&t| t < 12)
+    {
+        state.quality_level += 1;
     }
     state.last_frame_ms = frame_ms;
 }
@@ -582,7 +583,7 @@ fn rasterize_triangle(
     let e0 = vec3_sub(&v1, &v0);
     let e1 = vec3_sub(&v2, &v0);
     let face_normal = vec3_normalize(&vec3_cross(&e0, &e1));
-    let face_brightness = vec3_dot(&face_normal, light).max(0.0).min(1.0);
+    let face_brightness = vec3_dot(&face_normal, light).clamp(0.0, 1.0);
     let flat_gray = (255.0 * face_brightness) as u8;
     let flat_color = ((flat_gray as u32) << 16) | ((flat_gray as u32) << 8) | (flat_gray as u32);
 
@@ -605,7 +606,7 @@ fn rasterize_triangle(
             } else {
                 face_normal
             };
-            let b = vec3_dot(&n, light).max(0.0).min(1.0);
+            let b = vec3_dot(&n, light).clamp(0.0, 1.0);
             let g = (255.0 * b) as u8;
             vert_colors[i] = [g, g, g];
         }
@@ -715,9 +716,7 @@ fn rasterize_triangle(
                             } else {
                                 (0.0, 0.0, 0.0)
                             };
-                            let b = (nx * light[0] + ny * light[1] + nz * light[2])
-                                .max(0.0)
-                                .min(1.0);
+                            let b = (nx * light[0] + ny * light[1] + nz * light[2]).clamp(0.0, 1.0);
                             if use_vertex_colors {
                                 let r = (vert_colors_rgb[0][0] as f32 * b0
                                     + vert_colors_rgb[1][0] as f32 * b1
@@ -731,9 +730,9 @@ fn rasterize_triangle(
                                     + vert_colors_rgb[1][2] as f32 * b1
                                     + vert_colors_rgb[2][2] as f32 * b2)
                                     as u8;
-                                let lit_r = ((r as f32 * b) as u8).min(255);
-                                let lit_g = ((g as f32 * b) as u8).min(255);
-                                let lit_b = ((b_col as f32 * b) as u8).min(255);
+                                let lit_r = (r as f32 * b) as u8;
+                                let lit_g = (g as f32 * b) as u8;
+                                let lit_b = (b_col as f32 * b) as u8;
                                 ((lit_r as u32) << 16) | ((lit_g as u32) << 8) | (lit_b as u32)
                             } else {
                                 let g = (255.0 * b) as u8;
@@ -747,7 +746,7 @@ fn rasterize_triangle(
                         let d1 = w1 / len1;
                         let d2 = w2 / len2;
                         let min_dist = d0.min(d1).min(d2);
-                        let coverage = (min_dist + 0.5).min(1.0).max(0.0);
+                        let coverage = (min_dist + 0.5).clamp(0.0, 1.0);
                         let alpha = (coverage * 255.0) as u8;
                         htek::set_pixel_blended(target, px as u32, py as u32, color, alpha);
                     } else {

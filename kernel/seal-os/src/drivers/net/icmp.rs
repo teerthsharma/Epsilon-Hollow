@@ -15,7 +15,10 @@ pub fn pong() -> bool {
     crate::net::icmp::ECHO_REPLY_RECEIVED.swap(false, Ordering::SeqCst)
 }
 
-/// Returns true if an echo reply was ever received (sticky).
+/// Returns true if an echo reply has arrived and `pong` has not consumed it yet.
+///
+/// NOT sticky: this reads the same flag that `pong` clears with `swap(false)`,
+/// so a single `pong()` call makes this return false from then on.
 pub fn received() -> bool {
     crate::net::icmp::ECHO_REPLY_RECEIVED.load(Ordering::SeqCst)
 }

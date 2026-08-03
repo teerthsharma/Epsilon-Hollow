@@ -374,19 +374,17 @@ impl Installer {
                         self.password_len -= 1;
                     }
                 }
-                2 => {
-                    if self.confirm_len > 0 {
-                        self.confirm_len -= 1;
-                    }
+                2 if self.confirm_len > 0 => {
+                    self.confirm_len -= 1;
                 }
                 _ => {
-                // Unhandled input; no-op
-            }
+                    // Unhandled input; no-op
+                }
             },
             0x09 => {
                 self.active_field = (self.active_field + 1) % 3;
             }
-            ch if ch >= 0x20 && ch < 0x7F => match self.active_field {
+            ch if (0x20..0x7F).contains(&ch) => match self.active_field {
                 0 => {
                     if self.username_len < 32 {
                         self.username[self.username_len] = ch;
@@ -399,15 +397,13 @@ impl Installer {
                         self.password_len += 1;
                     }
                 }
-                2 => {
-                    if self.confirm_len < 32 {
-                        self.confirm_password[self.confirm_len] = ch;
-                        self.confirm_len += 1;
-                    }
+                2 if self.confirm_len < 32 => {
+                    self.confirm_password[self.confirm_len] = ch;
+                    self.confirm_len += 1;
                 }
                 _ => {
-                // Unhandled input; no-op
-            }
+                    // Unhandled input; no-op
+                }
             },
             _ => {
                 // Unhandled input; no-op
@@ -494,10 +490,10 @@ impl Installer {
                     return self.advance_step();
                 }
             }
-            STEP_DONE => {
-                if self.hit_button(mx, my, self.fb_width / 2 - 60, self.fb_height / 2, 120, 36) {
-                    interrupts::reboot();
-                }
+            STEP_DONE
+                if self.hit_button(mx, my, self.fb_width / 2 - 60, self.fb_height / 2, 120, 36) =>
+            {
+                interrupts::reboot();
             }
             _ => {
                 // Unhandled input; no-op
@@ -632,6 +628,12 @@ impl Installer {
     }
 }
 
+impl Default for Installer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Outcome of the VFS-side install steps.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SafeInstallReport {
@@ -660,7 +662,8 @@ fn safe_install(username: &str, password: &str, disk: &str) -> SafeInstallReport
         "user={}\nshell=/bin/shell\nhome=/home/{}\n",
         username, username
     );
-    let boot_marker = write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", boot_marker_text.as_bytes());
+    let boot_marker =
+        write_file_verified("/boot/EFI/BOOT/BOOTX64.EFI", boot_marker_text.as_bytes());
     let home = create_dir_path(&format!("/home/{}", username));
     let profile_path = format!("/home/{}/.seal-profile", username);
     let profile_ok = home && write_file_verified(&profile_path, profile.as_bytes());
@@ -977,8 +980,8 @@ guard_unarmed_refused={} guard_boot_dev_refused={} guard_other_dev_refused={} re
 #[cfg(feature = "test-mode")]
 pub mod tests {
     use super::*;
-    use crate::testing::TestResult;
     use crate::test_assert;
+    use crate::testing::TestResult;
 
     /// Partition the scratch disk once and hand every test the same report.
     fn scratch_report() -> Option<RawInstallReport> {
@@ -1043,7 +1046,10 @@ pub mod tests {
             None => return TestResult::Fail("scratch device unavailable"),
         };
         test_assert!(report.format_written, "format failed");
-        test_assert!(report.superblock_magic == EXT2_MAGIC, "bad superblock magic");
+        test_assert!(
+            report.superblock_magic == EXT2_MAGIC,
+            "bad superblock magic"
+        );
         test_assert!(report.format.block_size == 1024, "unexpected block size");
         test_assert!(report.format.blocks_count > 0, "no blocks");
         test_assert!(report.format.inodes_count > 0, "no inodes");

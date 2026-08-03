@@ -230,7 +230,9 @@ impl TlsSession {
                 [0u8; 32]
             }
             None => {
-                return Err(String::from("server offered no key share and no PSK is set"));
+                return Err(String::from(
+                    "server offered no key share and no PSK is set",
+                ));
             }
         };
         // The ephemeral secret has done its job; drop it so it cannot be
@@ -316,15 +318,13 @@ impl TlsSession {
             Aes128Gcm::new_from_slice(&self.read_key).map_err(|_| String::from("bad key"))?;
         let mut pt = ct.to_vec();
         cipher
-            .decrypt_in_place_detached((&nonce[..]).into(), &[], &mut pt, (&tag[..]).into())
+            .decrypt_in_place_detached((&nonce[..]).into(), &[], &mut pt, tag.into())
             .map_err(|_| String::from("decrypt failed (auth tag mismatch)"))?;
         self.read_seq += 1;
         Ok(pt)
     }
 
-    pub fn benchmark_psk_record_roundtrip(
-        plaintext: &[u8],
-    ) -> Result<TlsRecordBenchProof, String> {
+    pub fn benchmark_psk_record_roundtrip(plaintext: &[u8]) -> Result<TlsRecordBenchProof, String> {
         let mut session = Self::new();
         session.set_psk(&[0xABu8; 32]);
         session.state = TlsState::Established;
@@ -355,6 +355,12 @@ impl TlsSession {
             nonce[11 - i] ^= ((seq >> (8 * i)) & 0xFF) as u8;
         }
         nonce
+    }
+}
+
+impl Default for TlsSession {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -505,8 +511,8 @@ fn certificate_list(body: &[u8]) -> Result<Vec<&[u8]>, String> {
         out.push(&body[off..cert_end]);
         off = cert_end;
         // Per-certificate extensions.
-        let ext_len = be16(body, off).ok_or_else(|| String::from("cert extensions truncated"))?
-            as usize;
+        let ext_len =
+            be16(body, off).ok_or_else(|| String::from("cert extensions truncated"))? as usize;
         off = off
             .checked_add(2 + ext_len)
             .ok_or_else(|| String::from("cert extensions overflow"))?;
@@ -665,8 +671,8 @@ pub fn tls_proof_line() -> String {
 
     // The clock must place the good leaf inside its window and the expired
     // fixture outside it. Both directions, or the check proves nothing.
-    let expiry_check =
-        chain_verify && x509::verify_chain_der(&[expired, inter], now) == Err(x509::X509Error::Expired);
+    let expiry_check = chain_verify
+        && x509::verify_chain_der(&[expired, inter], now) == Err(x509::X509Error::Expired);
 
     let (ecdhe_ok, entropy) = match (
         ecdhe::EphemeralKey::generate(),
@@ -781,10 +787,7 @@ pub mod tests {
         }
         test_assert_eq!(client.key_exchange(), KeyExchange::Ecdhe);
         test_assert_eq!(client.state(), TlsState::Established);
-        test_assert!(
-            client.write_key != [0u8; 16],
-            "traffic key was not derived"
-        );
+        test_assert!(client.write_key != [0u8; 16], "traffic key was not derived");
         test_assert!(
             client.write_key != client.read_key,
             "client and server keys are identical"
@@ -875,7 +878,10 @@ pub mod tests {
             session.handle_certificate(&msg).is_err(),
             "a chain through a non-CA leaf was accepted"
         );
-        test_assert!(!session.peer_verified(), "peer marked verified after reject");
+        test_assert!(
+            !session.peer_verified(),
+            "peer marked verified after reject"
+        );
         TestResult::Pass
     }
 
@@ -893,7 +899,10 @@ pub mod tests {
 
     fn test_proof_line_shape() -> TestResult {
         let line = tls_proof_line();
-        test_assert!(line.starts_with("[TLS] proof version=1 "), "bad proof prefix");
+        test_assert!(
+            line.starts_with("[TLS] proof version=1 "),
+            "bad proof prefix"
+        );
         for field in [
             "x509=",
             "chain_verify=",

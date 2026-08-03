@@ -56,6 +56,12 @@ impl DevTmpFs {
     }
 }
 
+impl Default for DevTmpFs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileSystem for DevTmpFs {
     fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {
         let id = self.resolve(path).ok_or(VfsError::NotFound)?;
@@ -109,7 +115,7 @@ impl FileSystem for DevTmpFs {
                 Ok(buf.len())
             }
             _ => {
-                let content = self.content.entry(handle.inode).or_insert_with(Vec::new);
+                let content = self.content.entry(handle.inode).or_default();
                 content.clear();
                 content.extend_from_slice(buf);
                 Ok(buf.len())
