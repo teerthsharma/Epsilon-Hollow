@@ -2,7 +2,12 @@ import { useStore } from "../store";
 import { Cpu, TrendingUp, Hash, Gauge, BarChart3, Tag } from "lucide-react";
 
 export default function ParameterRoll() {
-  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore();
+  const vitalsResult = useStore((s) => s.vitalsResult);
+  const analysisResult = useStore((s) => s.analysisResult);
+  const battleResult = useStore((s) => s.battleResult);
+  const regressResult = useStore((s) => s.regressResult);
+  const classifyResult = useStore((s) => s.classifyResult);
+  const selectedDataset = useStore((s) => s.selectedDataset);
 
   const vitals = vitalsResult?.vitals || analysisResult?.vitals;
   const analysis = analysisResult;
