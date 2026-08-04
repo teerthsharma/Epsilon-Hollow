@@ -80,7 +80,8 @@ export default function Toolbar() {
       <button
         onClick={handlePlay}
         disabled={isRunning}
-        className="flex items-center gap-1 bg-gov-accent text-black px-3 py-1 rounded text-xs font-bold hover:brightness-110 disabled:opacity-50"
+        title={isRunning ? "Engine is currently running" : "Run Pipeline"}
+        className="flex items-center gap-1 bg-gov-accent text-black px-3 py-1 rounded text-xs font-bold hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         {isRunning ? (
           <><Loader2 size={12} className="animate-spin" /> RUNNING</>
@@ -91,34 +92,39 @@ export default function Toolbar() {
       <button
         onClick={handleAnalyze}
         disabled={isRunning || !selectedDataset}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40"
+        title={isRunning ? "Engine is currently running" : !selectedDataset ? "Select a dataset in Sample Bay first" : "Analyze Dataset"}
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <Search size={12} /> ANALYZE
       </button>
       <button
         onClick={handleRegress}
         disabled={isRunning || !selectedDataset}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40"
+        title={isRunning ? "Engine is currently running" : !selectedDataset ? "Select a dataset in Sample Bay first" : "Run Regression"}
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <TrendingUp size={12} /> REGRESS
       </button>
       <button
         onClick={handleClassify}
         disabled={isRunning || !selectedDataset}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40"
+        title={isRunning ? "Engine is currently running" : !selectedDataset ? "Select a dataset in Sample Bay first" : "Run Classification"}
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <Tag size={12} /> CLASSIFY
       </button>
       <button
         onClick={handleStop}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent"
+        title="Stop current execution"
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <Square size={12} /> STOP
       </button>
       <button
         onClick={handleRank}
         disabled={isRunning || !selectedDataset}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40"
+        title={isRunning ? "Engine is currently running" : !selectedDataset ? "Select a dataset in Sample Bay first" : "Rank Features"}
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent disabled:opacity-40 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <BarChart3 size={12} /> RANK
       </button>
@@ -127,13 +133,15 @@ export default function Toolbar() {
 
       <button
         onClick={() => setShowFormula(true)}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent text-gov-accent"
+        title="View Mathematical Formulas"
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent text-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <Code size={12} /> FORMULA
       </button>
       <button
         onClick={() => setShowFormula(true)}
-        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent"
+        title="Build Custom Engine"
+        className="flex items-center gap-1 bg-gov-panel border border-gov-border px-3 py-1 rounded text-xs hover:border-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
       >
         <Wrench size={12} /> BUILD ENGINE
       </button>
