@@ -318,11 +318,17 @@ impl Atlas {
             }
         }
 
-        let (image, report) =
+        let (mut image, report) =
             relobj::load(object, &|sym: &str| germ(sym)).map_err(AtlasError::Object)?;
 
         // Contract: `chart_init` returns a negative value to decline the graft;
         // any non-negative value is accepted and reported verbatim.
+
+        if !image.seal() {
+            drop(image);
+            return Err(AtlasError::Object(ObjError::Truncated));
+        }
+
         let init_code = call_entry(report.init_addr);
         if init_code < 0 {
             drop(image); // unmap without ever calling exit

@@ -12,8 +12,7 @@ import ConsolePanel from "./panels/ConsolePanel";
 import Toolbar from "./components/Toolbar";
 
 export default function App() {
-  const setDatasets = useStore((s) => s.setDatasets);
-  const addLog = useStore((s) => s.addLog);
+  const { setDatasets, addLog } = useStore();
 
   useEffect(() => {
     (async () => {
