@@ -57,8 +57,7 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const selectedDataset = useStore((s) => s.selectedDataset);
-  const addLog = useStore((s) => s.addLog);
+  const { selectedDataset, addLog } = useStore();
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);

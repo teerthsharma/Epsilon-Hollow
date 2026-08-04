@@ -24,6 +24,7 @@
 **Learning:** `useMemo` should not be used for expensive, one-time initialization if the logic contains impure functions (like `Math.random()`), as React can throw away memoized values or linting rules (like `react-hooks/purity`) will flag the impure function. The computation will rerun unexpectedly on re-renders, causing performance drops or UI flashes (e.g. regenerating 3D coordinates).
 **Action:** Use a lazy `useState` initializer (`useState(() => expensiveInitialization())`) for data that must be calculated once and kept stable across all re-renders.
 
-## 2026-08-04 - Prevented Global Re-renders via Zustand Selectors
-**Learning:** In Zustand applications, destructuring multiple state variables from the full store (e.g., `const { a, b } = useStore()`) implicitly subscribes the component to the entire store. If *any* unrelated state changes (like appending to a log array), every component that destructured `useStore` will unnecessarily re-render, creating a severe performance bottleneck.
-**Action:** Always use individual selectors (e.g., `const a = useStore(s => s.a)`) or the `useShallow` hook to ensure components only re-render when their explicitly required state properties change.
+## 2026-08-04 - Fixed Atlas Proof Validation
+
+**Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
+**Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
