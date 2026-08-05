@@ -20,3 +20,7 @@
 ## 2025-01-01 - Copy Button Overlay Constraints
 **Learning:** When adding absolute positioned interactive elements (like a Copy button) to message elements, it's critical to add sufficient padding (e.g., `pr-8`) to the main text container. Otherwise, long text lines will overlap and obscure the button, rendering it inaccessible and ugly.
 **Action:** Always verify text flow and add appropriate padding when using `absolute` positioned interactive UI elements inside content containers.
+
+## 2024-08-04 - Accessible Focus States for Toolbar Buttons
+**Learning:** Found that icon-only buttons or primary action buttons in toolbars often lack clear keyboard focus indicators, making them difficult for keyboard navigators to use. Additionally, when these buttons are disabled, they simply show lower opacity but no `cursor-not-allowed` pointer, which can lead users to think their click simply didn't register.
+**Action:** When implementing toolbar buttons, always include `focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none` to ensure keyboard navigation is clear and accessible. Furthermore, always pair `disabled:opacity-50` with `disabled:cursor-not-allowed` for unambiguous disabled visual feedback.
