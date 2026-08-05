@@ -390,7 +390,7 @@ impl ChartImage {
 
     /// Flip the executable half from `RW+NX` to `RX`. Returns false if the
     /// remap failed, in which case the image must be discarded.
-    fn seal(&mut self) -> bool {
+    pub fn seal(&mut self) -> bool {
         if self.sealed {
             return true;
         }
