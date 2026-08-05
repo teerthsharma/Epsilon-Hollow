@@ -13,6 +13,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { Swords, Loader2, FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 
 const ORIGINAL_STYLES: Record<string, any> = {
@@ -63,7 +64,7 @@ const TOPO_MAP: Record<string, string> = {
 };
 
 export default function PipelineMixer() {
-  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore();
+  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore(useShallow((s) => ({ selectedDataset: s.selectedDataset, setBattleResult: s.setBattleResult, addLog: s.addLog, addExperiment: s.addExperiment, updateExperiment: s.updateExperiment, isRunning: s.isRunning, setRunning: s.setRunning })));
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [templates, setTemplates] = useState<{ name: string; content: any }[]>([]);

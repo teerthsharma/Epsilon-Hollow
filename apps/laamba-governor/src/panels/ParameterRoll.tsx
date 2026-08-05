@@ -1,8 +1,9 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 import { Cpu, TrendingUp, Hash, Gauge, BarChart3, Tag } from "lucide-react";
 
 export default function ParameterRoll() {
-  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore();
+  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore(useShallow((s) => ({ vitalsResult: s.vitalsResult, analysisResult: s.analysisResult, battleResult: s.battleResult, regressResult: s.regressResult, classifyResult: s.classifyResult, selectedDataset: s.selectedDataset })));
 
   const vitals = vitalsResult?.vitals || analysisResult?.vitals;
   const analysis = analysisResult;
