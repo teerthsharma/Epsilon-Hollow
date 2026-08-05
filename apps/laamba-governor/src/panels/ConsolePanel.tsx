@@ -1,15 +1,33 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { Terminal, Trash2 } from "lucide-react";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 
 export default function ConsolePanel() {
-  const { logs, clearLogs } = useStore();
+  const { logs, clearLogs } = useStore(useShallow((s) => ({ logs: s.logs, clearLogs: s.clearLogs })));
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
+  }, [logs]);
+
+  const renderedLogs = useMemo(() => {
+    return logs.map((log, i) => (
+      <div
+        key={i}
+        className={
+          log.includes("failed") || log.includes("error")
+            ? "text-gov-error"
+            : log.includes("complete") || log.includes("winner")
+            ? "text-gov-ok"
+            : "text-gov-accent/80"
+        }
+      >
+        {log}
+      </div>
+    ));
   }, [logs]);
 
   return (
@@ -23,20 +41,7 @@ export default function ConsolePanel() {
         </button>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
-        {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
-          </div>
-        ))}
+        {renderedLogs}
       </div>
     </div>
   );

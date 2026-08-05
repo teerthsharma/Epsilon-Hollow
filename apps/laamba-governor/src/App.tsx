@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { invoke } from "@tauri-apps/api/core";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "./store";
 import SampleBay from "./panels/SampleBay";
 import EngineRack from "./panels/EngineRack";
@@ -12,7 +13,7 @@ import ConsolePanel from "./panels/ConsolePanel";
 import Toolbar from "./components/Toolbar";
 
 export default function App() {
-  const { setDatasets, addLog } = useStore();
+  const { setDatasets, addLog } = useStore(useShallow((s) => ({ setDatasets: s.setDatasets, addLog: s.addLog })));
 
   useEffect(() => {
     (async () => {

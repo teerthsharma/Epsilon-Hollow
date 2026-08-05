@@ -1,8 +1,9 @@
 import { GitCommit, Trash2, BarChart3 } from "lucide-react";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore(useShallow((s) => ({ experiments: s.experiments, analysisResult: s.analysisResult, battleResult: s.battleResult, regressResult: s.regressResult, classifyResult: s.classifyResult, setAnalysisResult: s.setAnalysisResult, setBattleResult: s.setBattleResult, setRegressResult: s.setRegressResult, setClassifyResult: s.setClassifyResult })));
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;

@@ -2,10 +2,11 @@ import { useState, useCallback } from "react";
 import { Database, Eye, Loader2, Plus, Upload } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore, type Dataset } from "../store";
 
 export default function SampleBay() {
-  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore();
+  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore(useShallow((s) => ({ datasets: s.datasets, selectedDataset: s.selectedDataset, selectDataset: s.selectDataset, setVitalsResult: s.setVitalsResult, addLog: s.addLog, setDatasets: s.setDatasets })));
   const [loading, setLoading] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
