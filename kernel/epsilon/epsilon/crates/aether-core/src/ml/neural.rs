@@ -13,10 +13,10 @@
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-#[cfg(feature = "std")]
 
 
-use super::linalg::LossConfig;
+
+use crate::ml::linalg::LossConfig;
 use super::tensor::Tensor;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -476,6 +476,7 @@ impl Default for TrainingResult {
 pub use OptimizerConfig::*;
 
 fn pow(base: f64, exp: f64) -> f64 {
+
     #[cfg(feature = "std")]
     return base.powf(exp);
     #[cfg(not(feature = "std"))]
@@ -483,6 +484,7 @@ fn pow(base: f64, exp: f64) -> f64 {
 }
 
 fn sqrt(x: f64) -> f64 {
+
     #[cfg(feature = "std")]
     return x.sqrt();
     #[cfg(not(feature = "std"))]
@@ -490,6 +492,7 @@ fn sqrt(x: f64) -> f64 {
 }
 
 fn exp(x: f64) -> f64 {
+
     #[cfg(feature = "std")]
     return x.exp();
     #[cfg(not(feature = "std"))]
