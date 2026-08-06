@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 import { Code, Play, Save, Wrench, BookOpen, X, Loader2, ChevronRight } from "lucide-react";
 
@@ -57,7 +58,9 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const { selectedDataset, addLog } = useStore();
+  // Performance optimization: Using useShallow prevents unnecessary component re-renders
+  // by only subscribing to the specific store properties destructured below.
+  const { selectedDataset, addLog } = useStore(useShallow((s) => ({ selectedDataset: s.selectedDataset, addLog: s.addLog })));
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);
