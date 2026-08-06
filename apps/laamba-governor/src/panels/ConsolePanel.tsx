@@ -18,25 +18,41 @@ export default function ConsolePanel() {
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
+        <button
+          onClick={clearLogs}
+          className="hover:text-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none rounded"
+          aria-label="Clear logs"
+          title="Clear logs"
+        >
           <Trash2 size={10} />
         </button>
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
-        {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
+      <div
+        ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed"
+      >
+        {logs.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-gov-dim/50 italic">
+            Waiting for telemetry...
           </div>
-        ))}
+        ) : (
+          logs.map((log, i) => (
+            <div
+              key={i}
+              className={
+                log.includes("failed") || log.includes("error")
+                  ? "text-gov-error"
+                  : log.includes("complete") || log.includes("winner")
+                  ? "text-gov-ok"
+                  : "text-gov-accent/80"
+              }
+            >
+              {log}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
