@@ -14,7 +14,7 @@
 use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
-use std::f64;
+
 
 use super::linalg::LossConfig;
 use super::tensor::Tensor;
