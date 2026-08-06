@@ -1,9 +1,12 @@
 import { useEffect, useRef } from "react";
 import { Terminal, Trash2 } from "lucide-react";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 
 export default function ConsolePanel() {
-  const { logs, clearLogs } = useStore();
+  // Performance optimization: Using useShallow prevents unnecessary component re-renders
+  // by only subscribing to the specific store properties destructured below.
+  const { logs, clearLogs } = useStore(useShallow((s) => ({ logs: s.logs, clearLogs: s.clearLogs })));
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

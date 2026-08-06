@@ -1,10 +1,13 @@
 import { Play, Square, BarChart3, Loader2, Search, TrendingUp, Tag, Wrench, Code } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from "../store";
 import { useState } from "react";
 import FormulaEditor from "../panels/FormulaEditor";
 
 export default function Toolbar() {
+  // Performance optimization: Using useShallow prevents unnecessary component re-renders
+  // by only subscribing to the specific store properties destructured below.
   const {
     selectedDataset,
     isRunning,
@@ -17,7 +20,19 @@ export default function Toolbar() {
     setClassifyResult,
     addExperiment,
     updateExperiment,
-  } = useStore();
+  } = useStore(useShallow((s) => ({
+    selectedDataset: s.selectedDataset,
+    isRunning: s.isRunning,
+    setRunning: s.setRunning,
+    addLog: s.addLog,
+    setBattleResult: s.setBattleResult,
+    setAnalysisResult: s.setAnalysisResult,
+    setRankResult: s.setRankResult,
+    setRegressResult: s.setRegressResult,
+    setClassifyResult: s.setClassifyResult,
+    addExperiment: s.addExperiment,
+    updateExperiment: s.updateExperiment
+  })));
 
   const [showFormula, setShowFormula] = useState(false);
 
