@@ -1,11 +1,47 @@
-import { useState, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { Database, Eye, Loader2, Plus, Upload } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, type Dataset } from "../store";
+import { useShallow } from "zustand/react/shallow";
+
+const DatasetItem = React.memo(({ ds, isSelected, isLoading, onSelect }: any) => {
+  return (
+    <div
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/laamba-dataset", JSON.stringify(ds));
+        e.dataTransfer.effectAllowed = "copy";
+      }}
+      onClick={() => onSelect(ds)}
+      className={`flex items-center gap-2 p-2 rounded text-xs cursor-pointer border transition-all ${
+        isSelected
+          ? "border-gov-accent bg-gov-accent/10"
+          : "border-transparent hover:bg-white/5"
+      }`}
+    >
+      <Database size={14} className="text-gov-data shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="truncate font-medium">{ds.name}</div>
+        <div className="text-gov-dim text-[10px]">
+          {ds.rows || ds.shape?.[0] || "?"}x{ds.cols || ds.shape?.[1] || "?"} · {ds.format}
+        </div>
+        {ds.expected_topology && (
+          <div className="text-[9px] text-gov-accent/60">{ds.expected_topology}</div>
+        )}
+      </div>
+      {isLoading ? (
+        <Loader2 size={12} className="animate-spin text-gov-accent shrink-0" />
+      ) : (
+        <Eye size={12} className="text-gov-dim hover:text-gov-accent shrink-0" />
+      )}
+    </div>
+  );
+});
+DatasetItem.displayName = "DatasetItem";
 
 export default function SampleBay() {
-  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore();
+  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore(useShallow((s) => ({ datasets: s.datasets, selectedDataset: s.selectedDataset, selectDataset: s.selectDataset, setVitalsResult: s.setVitalsResult, addLog: s.addLog, setDatasets: s.setDatasets })));
   const [loading, setLoading] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -136,36 +172,13 @@ export default function SampleBay() {
           </div>
         )}
         {datasets.map((ds) => (
-          <div
+          <DatasetItem
             key={ds.name}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData("application/laamba-dataset", JSON.stringify(ds));
-              e.dataTransfer.effectAllowed = "copy";
-            }}
-            onClick={() => handleSelect(ds)}
-            className={`flex items-center gap-2 p-2 rounded text-xs cursor-pointer border transition-all ${
-              selectedDataset?.name === ds.name
-                ? "border-gov-accent bg-gov-accent/10"
-                : "border-transparent hover:bg-white/5"
-            }`}
-          >
-            <Database size={14} className="text-gov-data shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="truncate font-medium">{ds.name}</div>
-              <div className="text-gov-dim text-[10px]">
-                {ds.rows || ds.shape?.[0] || "?"}x{ds.cols || ds.shape?.[1] || "?"} · {ds.format}
-              </div>
-              {ds.expected_topology && (
-                <div className="text-[9px] text-gov-accent/60">{ds.expected_topology}</div>
-              )}
-            </div>
-            {loading === ds.name ? (
-              <Loader2 size={12} className="animate-spin text-gov-accent shrink-0" />
-            ) : (
-              <Eye size={12} className="text-gov-dim hover:text-gov-accent shrink-0" />
-            )}
-          </div>
+            ds={ds}
+            isSelected={selectedDataset?.name === ds.name}
+            isLoading={loading === ds.name}
+            onSelect={handleSelect}
+          />
         ))}
       </div>
 

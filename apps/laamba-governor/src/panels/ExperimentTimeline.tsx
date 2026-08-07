@@ -1,8 +1,63 @@
 import { GitCommit, Trash2, BarChart3 } from "lucide-react";
 import { useStore } from "../store";
+import { useShallow } from "zustand/react/shallow";
+
+import React from "react";
+
+const ExperimentItem = React.memo(({ exp, onSelect, statusColor }: any) => {
+  return (
+    <div
+      onClick={() => onSelect(exp)}
+      className={`flex items-center gap-2 p-2 rounded text-xs cursor-pointer border border-transparent hover:bg-white/5 transition-all ${
+        exp.result ? "hover:border-gov-accent/30" : ""
+      }`}
+    >
+      <GitCommit
+        size={12}
+        className={
+          exp.status === "running"
+            ? "text-gov-accent animate-pulse shrink-0"
+            : exp.status === "completed"
+            ? "text-gov-ok shrink-0"
+            : "text-gov-error shrink-0"
+        }
+      />
+      <div className="flex-1 min-w-0">
+        <div className="truncate font-medium">{exp.name}</div>
+        <div className="text-gov-dim text-[10px]">
+          {exp.dataset} · {exp.elapsed_ms ? `${exp.elapsed_ms}ms` : "..."}
+        </div>
+        {exp.result && "chosen_manifold" in exp.result && (
+          <div className="text-[9px] text-gov-accent">
+            {(exp.result as any).chosen_manifold}
+          </div>
+        )}
+        {exp.result && "final_winner" in exp.result && (
+          <div className="text-[9px] text-gov-accent">
+            winner: {(exp.result as any).final_winner}
+          </div>
+        )}
+        {exp.result && "best_model" in exp.result && (
+          <div className="text-[9px] text-gov-accent">
+            {(exp.result as any).best_model} · R²={(exp.result as any).best_r2?.toFixed(3) ?? "?"}
+          </div>
+        )}
+        {exp.result && "best_accuracy" in exp.result && (
+          <div className="text-[9px] text-gov-accent">
+            {(exp.result as any).best_model} · Acc={(exp.result as any).best_accuracy?.toFixed(3) ?? "?"}
+          </div>
+        )}
+      </div>
+      <div className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold shrink-0 ${statusColor(exp.status)}`}>
+        {exp.status}
+      </div>
+    </div>
+  );
+});
+ExperimentItem.displayName = "ExperimentItem";
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore(useShallow((s) => ({ experiments: s.experiments, analysisResult: s.analysisResult, battleResult: s.battleResult, regressResult: s.regressResult, classifyResult: s.classifyResult, setAnalysisResult: s.setAnalysisResult, setBattleResult: s.setBattleResult, setRegressResult: s.setRegressResult, setClassifyResult: s.setClassifyResult })));
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;
@@ -36,53 +91,7 @@ export default function ExperimentTimeline() {
           </div>
         )}
         {experiments.map((exp) => (
-          <div
-            key={exp.id}
-            onClick={() => handleSelect(exp)}
-            className={`flex items-center gap-2 p-2 rounded text-xs cursor-pointer border border-transparent hover:bg-white/5 transition-all ${
-              exp.result ? "hover:border-gov-accent/30" : ""
-            }`}
-          >
-            <GitCommit
-              size={12}
-              className={
-                exp.status === "running"
-                  ? "text-gov-accent animate-pulse shrink-0"
-                  : exp.status === "completed"
-                  ? "text-gov-ok shrink-0"
-                  : "text-gov-error shrink-0"
-              }
-            />
-            <div className="flex-1 min-w-0">
-              <div className="truncate font-medium">{exp.name}</div>
-              <div className="text-gov-dim text-[10px]">
-                {exp.dataset} · {exp.elapsed_ms ? `${exp.elapsed_ms}ms` : "..."}
-              </div>
-              {exp.result && "chosen_manifold" in exp.result && (
-                <div className="text-[9px] text-gov-accent">
-                  {(exp.result as any).chosen_manifold}
-                </div>
-              )}
-              {exp.result && "final_winner" in exp.result && (
-                <div className="text-[9px] text-gov-accent">
-                  winner: {(exp.result as any).final_winner}
-                </div>
-              )}
-              {exp.result && "best_model" in exp.result && (
-                <div className="text-[9px] text-gov-accent">
-                  {(exp.result as any).best_model} · R²={(exp.result as any).best_r2?.toFixed(3) ?? "?"}
-                </div>
-              )}
-              {exp.result && "best_accuracy" in exp.result && (
-                <div className="text-[9px] text-gov-accent">
-                  {(exp.result as any).best_model} · Acc={(exp.result as any).best_accuracy?.toFixed(3) ?? "?"}
-                </div>
-              )}
-            </div>
-            <div className={`text-[10px] px-1.5 py-0.5 rounded uppercase font-bold shrink-0 ${statusColor(exp.status)}`}>
-              {exp.status}
-            </div>
-          </div>
+          <ExperimentItem key={exp.id} exp={exp} onSelect={handleSelect} statusColor={statusColor} />
         ))}
       </div>
     </div>
