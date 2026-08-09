@@ -12,31 +12,47 @@ export default function ConsolePanel() {
     }
   }, [logs]);
 
+  // Handle the store's fake clear which is ["> Console cleared"]
+  // Or real empty.
+  const isEmpty = logs.length === 0 || (logs.length === 1 && logs[0] === "> Console cleared");
+
   return (
     <div className="h-32 bg-gov-panel border-t border-gov-border flex flex-col shrink-0">
       <div className="h-6 flex items-center px-3 gap-2 text-[10px] uppercase tracking-wider text-gov-dim border-b border-gov-border">
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
+        <button
+          onClick={clearLogs}
+          disabled={isEmpty}
+          aria-label="Clear console logs"
+          title="Clear console logs"
+          className="hover:text-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+        >
           <Trash2 size={10} />
         </button>
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
-        {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
+      <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed relative">
+        {isEmpty ? (
+          <div className="absolute inset-0 text-gov-dim text-[10px] italic flex items-center justify-center pointer-events-none">
+            System ready. Waiting for telemetry...
           </div>
-        ))}
+        ) : (
+          logs.map((log, i) => (
+            <div
+              key={i}
+              className={
+                log.includes("failed") || log.includes("error")
+                  ? "text-gov-error"
+                  : log.includes("complete") || log.includes("winner")
+                  ? "text-gov-ok"
+                  : "text-gov-accent/80"
+              }
+            >
+              {log}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
