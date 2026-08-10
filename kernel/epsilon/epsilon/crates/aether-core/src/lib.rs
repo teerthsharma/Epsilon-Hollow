@@ -29,7 +29,13 @@ extern crate alloc;
 
 pub mod aether;
 pub mod angular_sparse_attention;
+/// Topology-derived sparse attention selectors and their dense reference path.
+#[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
+pub mod attention;
 pub mod cross_manifold_alignment;
+/// Persistence-diagram distances and vectorizations (bottleneck, Wasserstein, landscapes, images).
+#[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
+pub mod diagram;
 pub mod geodesic_consolidation;
 pub mod governor;
 pub mod hyperbolic_capacity;
@@ -48,8 +54,14 @@ pub mod ml;
 #[allow(missing_docs)] // Internal OS scaffolding; not part of stable public API surface.
 pub mod os;
 pub mod parallel_riemannian;
+/// Persistent homology: filtration construction, boundary reduction, persistence pairs.
+#[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
+pub mod persistence;
 pub mod persistent_kv_partition;
 pub mod riemannian_optimizer;
+/// Scheduled (budget-bounded) topological attention selection.
+#[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
+pub mod scheduled;
 /// Spectral Contraction Mapping (SCM) runnable operator and latent predictor (Theorem 2).
 pub mod scm;
 /// Spectral coherence, entropy, wavelet entropy, and manifold decay helpers.
@@ -63,7 +75,15 @@ pub mod world_model_horizon;
 
 // Re-export key types for convenience
 pub use aether::{BlockMetadata, DriftDetector, HierarchicalBlockTree};
+pub use diagram::{
+    bottleneck_distance, landscape_norm, persistence_image, persistence_landscape,
+    persistent_entropy, total_persistence, wasserstein_distance, ImageConfig, LandscapeConfig,
+};
 pub use manifold::{ManifoldPoint, SparseAttentionGraph, TimeDelayEmbedder, TopologicalPipeline};
+pub use persistence::{
+    persistent_homology, time_delay_persistence, BettiNumbers3, ComplexKind, PersistenceConfig,
+    PersistenceDiagram, PersistenceError, PersistencePair,
+};
 pub use scm::{LatentPredictor, SpectralContractionOperator};
 pub use topology::{
     compute_betti_0, compute_betti_1, compute_shape, verify_shape, TopologicalShape, VerifyResult,
