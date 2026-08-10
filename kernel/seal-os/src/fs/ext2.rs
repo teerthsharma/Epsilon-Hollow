@@ -174,6 +174,71 @@ impl Ext2Fs {
         Ok(())
     }
 
+    /// Validate on-disk superblock fields that later arithmetic in this file
+    /// treats as trusted, and compute the derived `block_size`.
+    ///
+    /// `s_log_block_size` is a raw `u32` read straight off disk, and
+    /// `1024u32 << n` is `2^(10+n)`: for `n` in `22..=31` that overflows
+    /// `u32`, and with neither Cargo profile in this crate setting
+    /// `overflow-checks`, release silently wraps it to exactly `0`; for
+    /// `n >= 32` the shift amount is masked to `n % 32` (defined behaviour
+    /// for `<<`, not UB), which merely yields a wrong block size rather
+    /// than a zero one — still wrong, rejected below for the same reason.
+    /// `self.block_size` then feeds roughly a dozen division sites in this
+    /// file (`read_bgd`, `read_inode`, `read_inode_data`,
+    /// `write_inode_data`, …); dividing by zero panics unconditionally in
+    /// Rust regardless of overflow-checks, and this kernel's profiles set
+    /// `panic = "abort"`, so an unvalidated `block_size` of `0` halts the
+    /// machine on the first block-group read after mount.
+    ///
+    /// The real ext2 spec permits block sizes 1024..=65536
+    /// (`s_log_block_size` 0..=6), but this file's own `rec_len:
+    /// self.block_size as u16` in `add_dir_entry` (new-block path) can only
+    /// hold values up to `65535` — a `block_size` of exactly `65536`
+    /// truncates to `0` there, which every directory-entry walker in this
+    /// file (`find_dir_entry`, `readdir`, `lookup`, …) reads as "end of
+    /// directory", silently corrupting the entry. So the range accepted
+    /// here is narrowed to `0..=5` (max block size 32768), not the spec's
+    /// `0..=6`.
+    ///
+    /// The same on-disk-divisor risk exists for `s_inodes_per_group`
+    /// (divisor in `read_inode`/`write_inode`/`allocate_inode`/
+    /// `free_inode`), `s_blocks_per_group` (divisor in
+    /// `allocate_block`/`free_block`, found while auditing every divisor in
+    /// this file — not on the field list this fix was scoped from, but the
+    /// same defect class), and `s_inode_size` (divisor, as `block_size /
+    /// inode_size`, only on the `s_rev_level >= 1` path — `rev_level 0`
+    /// hardcodes `128` and never reads this field; an `inode_size` bigger
+    /// than `block_size` floors `inodes_per_block` to `0`, a second,
+    /// indirect divide-by-zero). `s_first_data_block` is never a divisor,
+    /// but it is added un-checked into `bgd_block` below (`+ 1`), so it is
+    /// bounded to inside the volume to keep that addition from wrapping.
+    ///
+    /// `s_blocks_count` and `s_log_frag_size` were checked and cleared:
+    /// `s_blocks_count` is only ever a multiplicand/dividend in this file,
+    /// never a divisor, and `s_log_frag_size` is not read anywhere in this
+    /// file at all.
+    fn validate_superblock(sb: &Superblock) -> Result<u32, VfsError> {
+        if sb.s_log_block_size > 5 {
+            return Err(VfsError::IoError);
+        }
+        let block_size = 1024u32 << sb.s_log_block_size;
+
+        if sb.s_inodes_per_group == 0 || sb.s_blocks_per_group == 0 {
+            return Err(VfsError::IoError);
+        }
+
+        if sb.s_rev_level >= 1 && (sb.s_inode_size == 0 || sb.s_inode_size as u32 > block_size) {
+            return Err(VfsError::IoError);
+        }
+
+        if sb.s_first_data_block >= sb.s_blocks_count {
+            return Err(VfsError::IoError);
+        }
+
+        Ok(block_size)
+    }
+
     /// Read and verify the Ext2 superblock.
     pub fn mount(&mut self) -> Result<(), VfsError> {
         let mut buf = [0u8; 1024];
@@ -187,8 +252,9 @@ impl Ext2Fs {
         if sb.s_magic != EXT2_MAGIC {
             return Err(VfsError::IoError);
         }
+        let block_size = Self::validate_superblock(&sb)?;
         self.superblock = Some(sb);
-        self.block_size = 1024 << sb.s_log_block_size;
+        self.block_size = block_size;
         self.inodes_per_group = sb.s_inodes_per_group;
         self.inode_size = if sb.s_rev_level >= 1 {
             sb.s_inode_size as u32
@@ -432,6 +498,37 @@ impl Ext2Fs {
         }
 
         Ok(read_bytes)
+    }
+
+    /// Bound a directory inode's `i_size` against what the mounted filesystem
+    /// can physically hold, before it is used to size a scratch allocation.
+    ///
+    /// `i_size` is read straight off disk (`read_inode`) and is therefore
+    /// untrusted: a corrupted or crafted image can set a directory inode's
+    /// `i_size` to e.g. `0xFFFF_FFF0` (~4 GiB). Every directory-entry parser
+    /// used to do `alloc::vec![0u8; inode.i_size as usize]` with no upper
+    /// bound, which reaches the allocator before a single byte is read from
+    /// disk. `no_std` seal-os has no `#[alloc_error_handler]`, so an
+    /// allocation failure aborts the kernel outright rather than returning
+    /// an error — a single `ls` of a bit-rotted directory halts the machine.
+    ///
+    /// The ceiling is the total byte capacity of the mounted volume:
+    /// `block_size` (derived from superblock field `s_log_block_size`,
+    /// `mount()` above) times `s_blocks_count` (total block count, also
+    /// read from the superblock). No single inode can legitimately hold
+    /// more data than the whole filesystem, so an `i_size` beyond that is
+    /// definitionally corrupt. Fails closed: out-of-range returns an error
+    /// instead of allocating, and instead of silently truncating the read
+    /// (which would turn corruption into a wrong-but-plausible directory
+    /// listing).
+    fn checked_dir_size(&self, inode: &Inode) -> Result<usize, VfsError> {
+        let sb = self.superblock.as_ref().ok_or(VfsError::IoError)?;
+        let ceiling = (self.block_size as u64) * (sb.s_blocks_count as u64);
+        let size = inode.i_size as u64;
+        if size > ceiling {
+            return Err(VfsError::IoError);
+        }
+        Ok(size as usize)
     }
 
     /// Resolve or allocate the indirect block referenced by `inode.i_block[idx]`.
@@ -896,7 +993,7 @@ impl Ext2Fs {
 
     fn find_dir_entry(&self, dir_ino: u32, name: &str) -> Result<Option<u32>, VfsError> {
         let inode = self.read_inode(dir_ino)?;
-        let size = inode.i_size as usize;
+        let size = self.checked_dir_size(&inode)?;
         if size == 0 {
             return Ok(None);
         }
@@ -940,7 +1037,7 @@ impl Ext2Fs {
 
         let mut dir_inode = self.read_inode(dir_ino)?;
         let needed = Self::dir_entry_size(name.len());
-        let dir_size = dir_inode.i_size as usize;
+        let dir_size = self.checked_dir_size(&dir_inode)?;
 
         let mut dir_data = alloc::vec![0u8; dir_size];
         if dir_size > 0 {
@@ -1071,7 +1168,7 @@ impl Ext2Fs {
 
     fn remove_dir_entry(&mut self, dir_ino: u32, name: &str) -> Result<(), VfsError> {
         let mut dir_inode = self.read_inode(dir_ino)?;
-        let size = dir_inode.i_size as usize;
+        let size = self.checked_dir_size(&dir_inode)?;
         let mut dir_data = alloc::vec![0u8; size];
         self.read_inode_data(&dir_inode, 0, &mut dir_data)?;
 
@@ -1131,9 +1228,10 @@ impl FileSystem for Ext2Fs {
                 return Err(VfsError::NotADirectory);
             }
 
-            let mut dir_data = alloc::vec![0u8; inode.i_size as usize];
+            let dir_size = self.checked_dir_size(&inode)?;
+            let mut dir_data = alloc::vec![0u8; dir_size];
             let read_len = self.read_inode_data(&inode, 0, &mut dir_data)?;
-            if read_len != inode.i_size as usize {
+            if read_len != dir_size {
                 return Err(VfsError::IoError);
             }
 
@@ -1351,9 +1449,10 @@ impl FileSystem for Ext2Fs {
             return Err(VfsError::NotADirectory);
         }
 
-        let mut dir_data = alloc::vec![0u8; inode.i_size as usize];
+        let dir_size = self.checked_dir_size(&inode)?;
+        let mut dir_data = alloc::vec![0u8; dir_size];
         let read_len = self.read_inode_data(&inode, 0, &mut dir_data)?;
-        if read_len != inode.i_size as usize {
+        if read_len != dir_size {
             return Err(VfsError::IoError);
         }
 
@@ -1462,7 +1561,8 @@ impl FileSystem for Ext2Fs {
             return Err(VfsError::NotADirectory);
         }
 
-        let mut dir_data = alloc::vec![0u8; inode.i_size as usize];
+        let dir_size = self.checked_dir_size(&inode)?;
+        let mut dir_data = alloc::vec![0u8; dir_size];
         self.read_inode_data(&inode, 0, &mut dir_data)?;
 
         let mut offset = 0;
@@ -1510,7 +1610,7 @@ impl FileSystem for Ext2Fs {
 
         // Scan old_parent for the entry.
         let mut old_dir_inode = self.read_inode(old_parent_ino)?;
-        let old_dir_size = old_dir_inode.i_size as usize;
+        let old_dir_size = self.checked_dir_size(&old_dir_inode)?;
         let mut old_dir_data = alloc::vec![0u8; old_dir_size];
         self.read_inode_data(&old_dir_inode, 0, &mut old_dir_data)?;
 
@@ -1583,7 +1683,8 @@ impl FileSystem for Ext2Fs {
             // If moving a directory, update its ".." entry to point to new_parent.
             let mut moved_inode = self.read_inode(old_ino)?;
             if (moved_inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
-                let mut dir_data = alloc::vec![0u8; moved_inode.i_size as usize];
+                let dir_size = self.checked_dir_size(&moved_inode)?;
+                let mut dir_data = alloc::vec![0u8; dir_size];
                 self.read_inode_data(&moved_inode, 0, &mut dir_data)?;
                 let mut off = 0;
                 while off + core::mem::size_of::<DirEntryHeader>() <= dir_data.len() {
@@ -1714,5 +1815,382 @@ impl FileSystem for Ext2Fs {
         // fsync flushes the entire buffer cache for durability.
         self.buffer_cache.lock().sync();
         Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::test_assert;
+
+    fn make_superblock(blocks_count: u32, log_block_size: u32) -> Superblock {
+        Superblock {
+            s_inodes_count: 0,
+            s_blocks_count: blocks_count,
+            s_r_blocks_count: 0,
+            s_free_blocks_count: 0,
+            s_free_inodes_count: 0,
+            s_first_data_block: 1,
+            s_log_block_size: log_block_size,
+            s_log_frag_size: 0,
+            s_blocks_per_group: 8192,
+            s_frags_per_group: 8192,
+            s_inodes_per_group: 0,
+            s_mtime: 0,
+            s_wtime: 0,
+            s_mnt_count: 0,
+            s_max_mnt_count: 0,
+            s_magic: EXT2_MAGIC,
+            s_state: 0,
+            s_errors: 0,
+            s_minor_rev_level: 0,
+            s_lastcheck: 0,
+            s_checkinterval: 0,
+            s_creator_os: 0,
+            s_rev_level: 0,
+            s_def_resuid: 0,
+            s_def_resgid: 0,
+            s_first_ino: 0,
+            s_inode_size: 128,
+            s_block_group_nr: 0,
+            s_feature_compat: 0,
+            s_feature_incompat: 0,
+            s_feature_ro_compat: 0,
+            s_uuid: [0; 16],
+            s_volume_name: [0; 16],
+            s_last_mounted: [0; 64],
+            s_algo_bitmap: 0,
+            padding: [0; 788],
+        }
+    }
+
+    /// Build a mounted-in-memory `Ext2Fs` (no disk I/O) whose superblock
+    /// describes a filesystem of `blocks_count` blocks at `1024 << log_block_size`
+    /// bytes each — enough state for `checked_dir_size` to compute its ceiling.
+    fn make_fs(blocks_count: u32, log_block_size: u32) -> Ext2Fs {
+        let block_size = 1024u32 << log_block_size;
+        Ext2Fs {
+            dev_num: 0,
+            superblock: Some(make_superblock(blocks_count, log_block_size)),
+            block_size,
+            bgd_block: 0,
+            inodes_per_group: 0,
+            inode_size: 128,
+            buffer_cache: Mutex::new(BufferCache::new(1, block_size as usize)),
+        }
+    }
+
+    fn make_dir_inode(i_size: u32) -> Inode {
+        Inode {
+            i_mode: EXT2_S_IFDIR,
+            i_uid: 0,
+            i_size,
+            i_atime: 0,
+            i_ctime: 0,
+            i_mtime: 0,
+            i_dtime: 0,
+            i_gid: 0,
+            i_links_count: 0,
+            i_blocks: 0,
+            i_flags: 0,
+            i_osd1: 0,
+            i_block: [0; 15],
+            i_generation: 0,
+            i_file_acl: 0,
+            i_dir_acl: 0,
+            i_faddr: 0,
+            i_osd2: [0; 3],
+        }
+    }
+
+    /// RED: the defect this closes. Every directory-entry parser
+    /// (`find_dir_entry`, `add_dir_entry`, `remove_dir_entry`, `lookup`,
+    /// `readdir`, `rmdir`, `rename`) used to do
+    /// `alloc::vec![0u8; inode.i_size as usize]` with `i_size` read straight
+    /// off disk and no upper bound. A filesystem with 4096 1 KiB blocks
+    /// (~4 MiB real capacity) but a directory inode corrupted to claim
+    /// `i_size = 0xFFFF_FFF0` (~4 GiB) would reach that allocation before a
+    /// single byte is read from disk — and this `no_std` kernel registers no
+    /// `#[alloc_error_handler]`, so the allocation failure aborts rather than
+    /// returning an error. `checked_dir_size` must reject that inode instead
+    /// of handing back a size to allocate.
+    fn test_oversized_dir_i_size_is_rejected() -> TestResult {
+        let fs = make_fs(4096, 0); // 4096 * 1 KiB = 4 MiB filesystem capacity
+        let bad_inode = make_dir_inode(0xFFFF_FFF0);
+        let result = fs.checked_dir_size(&bad_inode);
+        test_assert!(
+            result.is_err(),
+            "i_size beyond filesystem capacity must be rejected, not allocated"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: a directory inode whose `i_size` fits inside the filesystem's
+    /// real capacity is legitimate and must still be accepted, unchanged.
+    fn test_in_bounds_dir_i_size_is_accepted() -> TestResult {
+        let fs = make_fs(4096, 0); // 4 MiB filesystem capacity
+        let good_inode = make_dir_inode(4096); // 4 KiB directory, well inside 4 MiB
+        let result = fs.checked_dir_size(&good_inode);
+        test_assert!(result.is_ok(), "in-bounds i_size must be accepted");
+        test_assert!(
+            result.unwrap() == 4096,
+            "checked size must match i_size when in bounds"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: the defect this closes. `mount()` (ext2.rs) read `s_log_block_size`
+    /// straight off disk and only validated the magic number:
+    ///
+    /// ```text
+    /// let sb = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Superblock) };
+    /// if sb.s_magic != EXT2_MAGIC {
+    ///     return Err(VfsError::IoError);
+    /// }
+    /// self.superblock = Some(sb);
+    /// self.block_size = 1024 << sb.s_log_block_size;
+    /// ```
+    ///
+    /// `1024u32 << 22 == 0`: `1024` is `2^10`, so the shift computes
+    /// `2^32`, which overflows `u32` and — with neither `[profile.dev]` nor
+    /// `[profile.release]` in Cargo.toml setting `overflow-checks` — wraps
+    /// to `0` in release. `self.block_size == 0` then reaches its first
+    /// divisor at `read_bgd` (`self.block_size / size_of::<BlockGroupDescriptor>()`,
+    /// ext2.rs `read_bgd`), which panics on integer division by zero
+    /// unconditionally (not gated by overflow-checks), and both Cargo
+    /// profiles here set `panic = "abort"` — so mounting a filesystem with
+    /// a corrupted or hostile `s_log_block_size` would halt the kernel on
+    /// the very first block-group read.
+    ///
+    /// This is a static assertion, not an executed mount: `mount()` needs a
+    /// live block device, which this in-kernel harness has none of. Instead
+    /// this exercises `validate_superblock`, the exact function `mount()`
+    /// now calls to compute `block_size` before any of that divisor code
+    /// runs — no QEMU, no disk I/O, this file's own arithmetic only.
+    fn test_oversized_log_block_size_is_rejected() -> TestResult {
+        // The contradicting arithmetic itself: this is what the unfixed
+        // `mount()` did before handing block_size to every divisor site.
+        // Routed through `black_box` so the shift amount isn't visible to
+        // the constant folder — otherwise clippy's `eq_op` (denied in this
+        // crate) flags the fully-folded `0 == 0` as comparing a value to
+        // itself, even though the two sides are written differently and
+        // the point is exactly to demonstrate that they collapse.
+        let n = core::hint::black_box(22u32);
+        test_assert!(
+            1024u32 << n == 0,
+            "regression precondition: 1024 << 22 must wrap to 0 for this test to mean anything"
+        );
+
+        let sb = make_superblock(4096, 22); // s_log_block_size = 22
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(
+            result.is_err(),
+            "s_log_block_size = 22 must be refused at mount, not yield block_size == 0"
+        );
+        TestResult::Pass
+    }
+
+    /// A previous reviewer mis-described `s_log_block_size >= 32` as
+    /// undefined behaviour. It is not: the shift amount is masked to
+    /// `n % 32` by `<<`'s defined semantics (`unchecked_shl` would be UB;
+    /// `<<` does not lower to it). `1024u32 << 32` therefore behaves as
+    /// `1024u32 << 0 == 1024` — a *wrong* block size, not a zero one, and
+    /// still rejected here on correctness grounds rather than UB.
+    fn test_shift_overflow_log_block_size_is_rejected() -> TestResult {
+        let sb = make_superblock(4096, 32); // s_log_block_size = 32
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(
+            result.is_err(),
+            "s_log_block_size = 32 must be refused, even though the masked shift is defined, not UB"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: every `s_log_block_size` ext2 actually mounts with (0..=6 per
+    /// spec, narrowed to 0..=5 here — see `validate_superblock`'s doc
+    /// comment for why 6 is rejected too) must still be accepted, and must
+    /// compute the exact `1024 << n` block size.
+    fn test_valid_log_block_size_is_accepted() -> TestResult {
+        for n in 0..=5u32 {
+            let sb = make_superblock(4096, n);
+            let result = Ext2Fs::validate_superblock(&sb);
+            test_assert!(result.is_ok(), "in-range s_log_block_size must mount");
+            test_assert!(
+                result.unwrap() == 1024u32 << n,
+                "block_size must equal 1024 << s_log_block_size when in range"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// The narrower-than-spec ceiling: `add_dir_entry`'s new-block path
+    /// writes `rec_len: self.block_size as u16`. `65536u32 as u16 == 0`,
+    /// which every dir-entry walker in this file reads as end-of-directory
+    /// — so `s_log_block_size == 6` (block_size 65536), legal per the ext2
+    /// spec, must still be refused by this file's own `validate_superblock`.
+    fn test_spec_legal_but_file_unsafe_log_block_size_is_rejected() -> TestResult {
+        test_assert!(
+            65536u32 as u16 == 0,
+            "regression precondition: block_size 65536 must truncate to 0 as u16"
+        );
+        let sb = make_superblock(4096, 6); // s_log_block_size = 6, block_size = 65536
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(
+            result.is_err(),
+            "s_log_block_size = 6 must be refused: block_size 65536 truncates to 0 as u16 in add_dir_entry's rec_len"
+        );
+        TestResult::Pass
+    }
+
+    /// `s_inodes_per_group == 0` divides by zero at `read_inode`/
+    /// `write_inode` (`(ino - 1) / self.inodes_per_group`) and at
+    /// `allocate_inode`/`free_inode`. Must be refused at mount instead of
+    /// panicking on the first inode lookup.
+    fn test_zero_inodes_per_group_is_rejected() -> TestResult {
+        let mut sb = make_superblock(4096, 2);
+        sb.s_inodes_per_group = 0;
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(result.is_err(), "s_inodes_per_group = 0 must be refused");
+        TestResult::Pass
+    }
+
+    /// `s_blocks_per_group == 0` divides by zero at `allocate_block`
+    /// (`s_blocks_count.div_ceil(s_blocks_per_group)`) and at `free_block`
+    /// (`(block - s_first_data_block) / s_blocks_per_group`). Same defect
+    /// class as `s_inodes_per_group`, found by auditing every divisor site
+    /// in this file rather than from the field checklist this fix started
+    /// from.
+    fn test_zero_blocks_per_group_is_rejected() -> TestResult {
+        let mut sb = make_superblock(4096, 2);
+        sb.s_blocks_per_group = 0;
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(result.is_err(), "s_blocks_per_group = 0 must be refused");
+        TestResult::Pass
+    }
+
+    /// `s_inode_size` (only read when `s_rev_level >= 1`) is a divisor via
+    /// `inodes_per_block = self.block_size / self.inode_size` in
+    /// `read_inode`/`write_inode`. Zero divides directly; a value larger
+    /// than `block_size` floors `inodes_per_block` to `0`, which is then
+    /// itself used as a divisor two lines later — an indirect divide by
+    /// zero either way.
+    fn test_invalid_inode_size_is_rejected_when_rev_level_ge_1() -> TestResult {
+        let mut sb = make_superblock(4096, 2); // block_size = 4096
+        sb.s_rev_level = 1;
+
+        sb.s_inode_size = 0;
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb).is_err(),
+            "s_inode_size = 0 must be refused when s_rev_level >= 1"
+        );
+
+        sb.s_inode_size = 8192; // > block_size (4096)
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb).is_err(),
+            "s_inode_size > block_size must be refused: it floors inodes_per_block to 0"
+        );
+        TestResult::Pass
+    }
+
+    /// `s_inode_size` is never read when `s_rev_level == 0` (`mount()`
+    /// hardcodes `128` on that path), so an out-of-range value there must
+    /// not block the mount.
+    fn test_inode_size_ignored_when_rev_level_0() -> TestResult {
+        let mut sb = make_superblock(4096, 2);
+        sb.s_rev_level = 0;
+        sb.s_inode_size = 0; // would be rejected if this field were read
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb).is_ok(),
+            "s_inode_size must be ignored on the rev_level 0 path"
+        );
+        TestResult::Pass
+    }
+
+    /// `s_first_data_block` is added un-checked into `bgd_block` in
+    /// `mount()` (`sb.s_first_data_block + 1`); an out-of-volume value can
+    /// wrap that addition with overflow-checks off. Bounding it to inside
+    /// the volume (`< s_blocks_count`) is this file's own justification,
+    /// independent of the wrap: `bgd_block` must reference a real block.
+    fn test_first_data_block_out_of_range_is_rejected() -> TestResult {
+        let mut sb = make_superblock(100, 2); // 100-block filesystem
+        sb.s_first_data_block = 100; // == s_blocks_count: outside the volume
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(
+            result.is_err(),
+            "s_first_data_block >= s_blocks_count must be refused"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: a fully in-range superblock — the shape `mount()` accepts
+    /// every day — must still mount cleanly through `validate_superblock`.
+    fn test_ordinary_superblock_is_accepted() -> TestResult {
+        let mut sb = make_superblock(4096, 2); // 4096 blocks, 4 KiB blocks
+        sb.s_inodes_per_group = 1024;
+        sb.s_blocks_per_group = 8192;
+        sb.s_rev_level = 1;
+        sb.s_inode_size = 256;
+        sb.s_first_data_block = 0;
+        let result = Ext2Fs::validate_superblock(&sb);
+        test_assert!(result.is_ok(), "an ordinary in-range superblock must mount");
+        test_assert!(
+            result.unwrap() == 4096,
+            "block_size must be 4096 for s_log_block_size = 2"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ext2::oversized_dir_i_size_is_rejected",
+            test_oversized_dir_i_size_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::in_bounds_dir_i_size_is_accepted",
+            test_in_bounds_dir_i_size_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::oversized_log_block_size_is_rejected",
+            test_oversized_log_block_size_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::shift_overflow_log_block_size_is_rejected",
+            test_shift_overflow_log_block_size_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::valid_log_block_size_is_accepted",
+            test_valid_log_block_size_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::spec_legal_but_file_unsafe_log_block_size_is_rejected",
+            test_spec_legal_but_file_unsafe_log_block_size_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::zero_inodes_per_group_is_rejected",
+            test_zero_inodes_per_group_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::zero_blocks_per_group_is_rejected",
+            test_zero_blocks_per_group_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::invalid_inode_size_is_rejected_when_rev_level_ge_1",
+            test_invalid_inode_size_is_rejected_when_rev_level_ge_1,
+        );
+        crate::testing::register_test(
+            "ext2::inode_size_ignored_when_rev_level_0",
+            test_inode_size_ignored_when_rev_level_0,
+        );
+        crate::testing::register_test(
+            "ext2::first_data_block_out_of_range_is_rejected",
+            test_first_data_block_out_of_range_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::ordinary_superblock_is_accepted",
+            test_ordinary_superblock_is_accepted,
+        );
     }
 }

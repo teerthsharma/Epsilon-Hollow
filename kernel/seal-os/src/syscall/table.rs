@@ -67,12 +67,22 @@ pub mod tests {
     use crate::testing::TestResult;
     use crate::{test_assert, test_assert_eq};
 
+    // NOTE: `test_main()` runs before any task is ever made the scheduler's
+    // `current` (see `ManifoldScheduler::new()`, `current: None`), so
+    // `crate::process::scheduler::set_current_uid()`/`set_current_euid()` and
+    // friends silently no-op here and `current_euid()` always reads back the
+    // default 0. A dispatch()-level test therefore always takes the
+    // privileged (euid==0) branch and can't exercise *denial* — that rule is
+    // covered directly below via `credential_change_allowed`, which takes
+    // plain ids and has no scheduler dependency.
+
     fn test_setuid_changes_uid() -> TestResult {
-        // Skip when running outside a proper scheduler task context.
         let current = crate::process::scheduler::current_uid();
-        // Just verify dispatch doesn't panic and returns OK (code >= 0).
         let result = dispatch(SYS_SETUID, 42, 0, 0);
-        test_assert!(result.code >= 0, "SYS_SETUID should succeed");
+        test_assert!(
+            result.code >= 0,
+            "SYS_SETUID should still succeed for a privileged (euid=0) caller"
+        );
         // Restore best-effort
         dispatch(SYS_SETUID, current as u64, 0, 0);
         TestResult::Pass
@@ -81,14 +91,89 @@ pub mod tests {
     fn test_setgid_changes_gid() -> TestResult {
         let current = crate::process::scheduler::current_gid();
         let result = dispatch(SYS_SETGID, 99, 0, 0);
-        test_assert!(result.code >= 0, "SYS_SETGID should succeed");
+        test_assert!(
+            result.code >= 0,
+            "SYS_SETGID should still succeed for a privileged (euid=0) caller"
+        );
         dispatch(SYS_SETGID, current as u64, 0, 0);
+        TestResult::Pass
+    }
+
+    /// RED: `table.rs`'s SYS_SETUID/SETGID/SETEUID/SETEGID arms used to call
+    /// `set_current_uid`/`_gid`/`_euid`/`_egid` unconditionally, with zero
+    /// regard for the caller's own privilege — any task could `setuid(0)`.
+    /// An unprivileged task (euid=1000) asking for an id it holds neither as
+    /// real nor effective (root, or some other arbitrary id) must be denied.
+    fn test_credential_change_denies_unprivileged_escalation() -> TestResult {
+        test_assert!(!credential_change_allowed(0, 1000, 1000));
+        test_assert!(!credential_change_allowed(1, 1000, 2000));
+        TestResult::Pass
+    }
+
+    fn test_credential_change_permits_id_already_held() -> TestResult {
+        test_assert!(credential_change_allowed(1000, 1000, 2000)); // matches real
+        test_assert!(credential_change_allowed(2000, 1000, 2000)); // matches effective
+        TestResult::Pass
+    }
+
+    fn test_credential_change_permits_root() -> TestResult {
+        test_assert!(credential_change_allowed(9999, 0, 0));
+        TestResult::Pass
+    }
+
+    /// RED: the SYS_WRITE arm for any fd other than stdout/stderr used to
+    /// ignore `buf_ptr`/`len` entirely and pull bytes from the process-wide
+    /// `SYSCALL_PATH` buffer instead, at hardcoded offset 0 — so an invalid
+    /// user pointer was never even inspected. A null pointer with `len > 0`
+    /// must now be rejected by `copy_from_user` (EFAULT) before the fd's
+    /// backing file is touched, leaving the fd's cursor exactly where it was.
+    fn test_write_rejects_invalid_pointer_without_touching_fd() -> TestResult {
+        let fd = 90_210u64; // unlikely to collide with a live fd
+        let starting_offset = 5usize; // simulate a cursor already advanced
+        {
+            let mut table = FILE_TABLE.lock();
+            table.insert(
+                fd,
+                FdEntry {
+                    handle: crate::fs::vfs::VfsHandle {
+                        fs_idx: 0,
+                        inode: 0,
+                    },
+                    path: String::from("/tmp/defect_b_probe"),
+                    offset: starting_offset,
+                },
+            );
+        }
+
+        let result = dispatch(SYS_WRITE, fd, 0, 8);
+        test_assert_eq!(result.code, -14); // EFAULT
+
+        let offset_after = FILE_TABLE.lock().get(&fd).map(|e| e.offset);
+        test_assert_eq!(offset_after, Some(starting_offset));
+
+        FILE_TABLE.lock().remove(&fd);
         TestResult::Pass
     }
 
     pub fn register_all() {
         crate::testing::register_test("syscall::setuid_changes_uid", test_setuid_changes_uid);
         crate::testing::register_test("syscall::setgid_changes_gid", test_setgid_changes_gid);
+        crate::testing::register_test(
+            "syscall::credential_change_denies_unprivileged_escalation",
+            test_credential_change_denies_unprivileged_escalation,
+        );
+        crate::testing::register_test(
+            "syscall::credential_change_permits_id_already_held",
+            test_credential_change_permits_id_already_held,
+        );
+        crate::testing::register_test(
+            "syscall::credential_change_permits_root",
+            test_credential_change_permits_root,
+        );
+        crate::testing::register_test(
+            "syscall::write_rejects_invalid_pointer_without_touching_fd",
+            test_write_rejects_invalid_pointer_without_touching_fd,
+        );
     }
 }
 pub const SYS_TELEPORT: u64 = 101;
@@ -305,6 +390,19 @@ fn chart_name_from_path(path: &str) -> String {
     }
 }
 
+/// Whether a task holding identity (`real`, `effective`) may change to
+/// `requested`, for the SYS_SETUID/SETGID/SETEUID/SETEGID arms below.
+///
+/// POSIX-style rule: permitted if the caller's effective id is 0 (root), or
+/// `requested` is an id the task already holds (its real or effective id).
+/// `Task` (process/task.rs) has no saved-set-uid/gid field, so the usual
+/// third leg of this check — the saved id — is intentionally omitted; only
+/// real and effective ids are consulted. Fails closed: anything else is
+/// denied.
+fn credential_change_allowed(requested: u32, real: u32, effective: u32) -> bool {
+    effective == 0 || requested == real || requested == effective
+}
+
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
     // Seccomp check
     let task_id = crate::process::scheduler::current_task_id();
@@ -349,15 +447,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 crate::serial_print!("{}", text);
                 return SyscallResult::ok(len as i64);
             }
-            let data = {
-                let guard = SYSCALL_PATH.lock();
-                guard.clone()
-            };
+            // File writes: fd validity first (matches SYS_READ's ordering),
+            // then copy the caller's actual bytes — not the process-wide
+            // SYSCALL_PATH string, which is last-writer-wins across every
+            // task and was never this fd's data to begin with. Bounded to
+            // 4096 bytes per call, same cap SYS_READ's file-fd branch uses;
+            // a caller writing more just loops, same as a short read/write.
             let mut table = FILE_TABLE.lock();
             if let Some(entry) = table.get_mut(&fd) {
-                match with_vfs(|vfs| vfs.write(entry.handle, data.as_bytes(), 0)) {
+                let mut buf = alloc::vec![0u8; len.min(4096)];
+                unsafe {
+                    if crate::security::smap_smep::copy_from_user(&mut buf, buf_ptr).is_err() {
+                        return SyscallResult::err(14); // EFAULT
+                    }
+                }
+                let offset = entry.offset as u64;
+                match with_vfs(|vfs| vfs.write(entry.handle, &buf, offset)) {
                     Ok(n) => {
-                        entry.offset = n;
+                        entry.offset += n;
                         SyscallResult::ok(n as i64)
                     }
                     Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
@@ -912,6 +1019,11 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
 
         SYS_SETUID => {
             let new_uid = arg0 as u32;
+            let real = crate::process::scheduler::current_uid();
+            let effective = crate::process::scheduler::current_euid();
+            if !credential_change_allowed(new_uid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
             crate::process::scheduler::set_current_uid(new_uid);
             crate::process::scheduler::set_current_euid(new_uid);
             SyscallResult::ok(0)
@@ -919,18 +1031,35 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
 
         SYS_SETGID => {
             let new_gid = arg0 as u32;
+            let real = crate::process::scheduler::current_gid();
+            let effective = crate::process::scheduler::current_egid();
+            if !credential_change_allowed(new_gid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
             crate::process::scheduler::set_current_gid(new_gid);
             crate::process::scheduler::set_current_egid(new_gid);
             SyscallResult::ok(0)
         }
 
         SYS_SETEUID => {
-            crate::process::scheduler::set_current_euid(arg0 as u32);
+            let new_euid = arg0 as u32;
+            let real = crate::process::scheduler::current_uid();
+            let effective = crate::process::scheduler::current_euid();
+            if !credential_change_allowed(new_euid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
+            crate::process::scheduler::set_current_euid(new_euid);
             SyscallResult::ok(0)
         }
 
         SYS_SETEGID => {
-            crate::process::scheduler::set_current_egid(arg0 as u32);
+            let new_egid = arg0 as u32;
+            let real = crate::process::scheduler::current_gid();
+            let effective = crate::process::scheduler::current_egid();
+            if !credential_change_allowed(new_egid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
+            crate::process::scheduler::set_current_egid(new_egid);
             SyscallResult::ok(0)
         }
 
