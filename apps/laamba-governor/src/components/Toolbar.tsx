@@ -3,10 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { useState } from "react";
 import FormulaEditor from "../panels/FormulaEditor";
+import { useShallow } from 'zustand/react/shallow';
 
 export default function Toolbar() {
-  const {
-    selectedDataset,
+  const { selectedDataset,
     isRunning,
     setRunning,
     addLog,
@@ -17,7 +17,20 @@ export default function Toolbar() {
     setClassifyResult,
     addExperiment,
     updateExperiment,
-  } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+   } = useStore(useShallow(s => ({
+    selectedDataset: s.selectedDataset,
+    isRunning: s.isRunning,
+    setRunning: s.setRunning,
+    addLog: s.addLog,
+    setBattleResult: s.setBattleResult,
+    setAnalysisResult: s.setAnalysisResult,
+    setRankResult: s.setRankResult,
+    setRegressResult: s.setRegressResult,
+    setClassifyResult: s.setClassifyResult,
+    addExperiment: s.addExperiment,
+    updateExperiment: s.updateExperiment
+  })));
 
   const [showFormula, setShowFormula] = useState(false);
 

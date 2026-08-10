@@ -3,9 +3,18 @@ import { Database, Eye, Loader2, Plus, Upload } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, type Dataset } from "../store";
+import { useShallow } from 'zustand/react/shallow';
 
 export default function SampleBay() {
-  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets  } = useStore(useShallow(s => ({
+    datasets: s.datasets,
+    selectedDataset: s.selectedDataset,
+    selectDataset: s.selectDataset,
+    setVitalsResult: s.setVitalsResult,
+    addLog: s.addLog,
+    setDatasets: s.setDatasets
+  })));
   const [loading, setLoading] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 

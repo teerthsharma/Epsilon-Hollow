@@ -1,8 +1,17 @@
 import { useStore } from "../store";
 import { Cpu, TrendingUp, Hash, Gauge, BarChart3, Tag } from "lucide-react";
+import { useShallow } from 'zustand/react/shallow';
 
 export default function ParameterRoll() {
-  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset  } = useStore(useShallow(s => ({
+    vitalsResult: s.vitalsResult,
+    analysisResult: s.analysisResult,
+    battleResult: s.battleResult,
+    regressResult: s.regressResult,
+    classifyResult: s.classifyResult,
+    selectedDataset: s.selectedDataset
+  })));
 
   const vitals = vitalsResult?.vitals || analysisResult?.vitals;
   const analysis = analysisResult;

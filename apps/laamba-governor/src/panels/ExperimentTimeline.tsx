@@ -1,8 +1,20 @@
 import { GitCommit, Trash2, BarChart3 } from "lucide-react";
 import { useStore } from "../store";
+import { useShallow } from 'zustand/react/shallow';
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult  } = useStore(useShallow(s => ({
+    experiments: s.experiments,
+    analysisResult: s.analysisResult,
+    battleResult: s.battleResult,
+    regressResult: s.regressResult,
+    classifyResult: s.classifyResult,
+    setAnalysisResult: s.setAnalysisResult,
+    setBattleResult: s.setBattleResult,
+    setRegressResult: s.setRegressResult,
+    setClassifyResult: s.setClassifyResult
+  })));
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;
