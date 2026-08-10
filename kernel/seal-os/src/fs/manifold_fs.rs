@@ -216,6 +216,14 @@ impl ManifoldFS {
             };
             if inode.name != "/" {
                 dirs.insert(inode.parent, &inode.name, id);
+                // mkdir() sets `.` -> self and `..` -> parent for every directory
+                // it creates (see mkdir() below); restore that same invariant here
+                // so store()/mkdir()/teleport()/duplicate() don't see a missing "."
+                // and wrongly reject a restored non-root directory as NotADirectory.
+                if matches!(inode.kind, InodeKind::Directory) {
+                    dirs.insert(id, ".", id);
+                    dirs.insert(id, "..", inode.parent);
+                }
             }
             if inode.parent != id || inode.name == "/" {
                 children.entry(inode.parent).or_default().push(id);
@@ -1610,6 +1618,17 @@ pub mod tests {
         };
         test_assert_eq!(fs.exists("old.txt", docs), false);
         test_assert_eq!(fs.exists("new.txt", docs), true);
+
+        // A restored non-root directory must keep the same `.`/`..` invariant
+        // mkdir() sets when it first creates a directory. store()/mkdir() both
+        // guard with `dirs.lookup(parent_id, ".").is_none() && parent_id != root_id`;
+        // if from_store() never rebuilds "." for `docs`, this wrongly fails with
+        // NotADirectory even though `docs` genuinely exists.
+        if fs.mkdir("nested2", docs).is_err() {
+            return TestResult::Fail(
+                "mkdir into restored non-root dir failed (missing './..' invariant)",
+            );
+        }
 
         if fs.delete("new.txt", docs).is_err() {
             return TestResult::Fail("delete failed after rename remount");
