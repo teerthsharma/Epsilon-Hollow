@@ -2159,6 +2159,12 @@ impl Interpreter {
                 1,
                 1,
                 Activation::ReLU,
+                // Conv2D::new gained an explicit seed. `None` selects the default
+                // seed 42. Note this builtin's weights DID change when the ML
+                // modules migrated to the shared `Lcg`: the increment constant
+                // and the float extraction both differ from the previous inline
+                // generator. Pass an explicit seed if a specific stream matters.
+                None,
             )))),
 
             // ML Ops

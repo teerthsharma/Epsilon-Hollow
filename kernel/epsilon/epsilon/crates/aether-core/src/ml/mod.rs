@@ -25,8 +25,11 @@ pub mod autograd;
 pub mod benchmark;
 pub mod convergence;
 pub mod convolution;
+pub mod dataloader;
+pub mod dispatch;
 pub mod linalg;
 pub mod regressor;
+pub mod rng;
 pub mod tensor;
 
 // Extended ML library

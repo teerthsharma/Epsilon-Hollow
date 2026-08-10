@@ -11,6 +11,8 @@
 
 use libm::{fabs, sqrt};
 
+use super::rng::Lcg;
+
 /// Maximum clusters
 const MAX_CLUSTERS: usize = 16;
 /// Maximum data points
@@ -145,11 +147,13 @@ impl<const D: usize> KMeans<D> {
         centroids: &mut [[f64; D]; MAX_CLUSTERS],
         k: usize,
     ) {
-        // Simple pseudo-random based on seed
-        let mut rng = self.seed;
+        let mut rng = Lcg::new(self.seed);
 
-        // First centroid: random point
-        let first_idx = (rng as usize) % n;
+        // First centroid: random point. `gen_range` rejection-samples off
+        // the high bits (see rng.rs), so seeds that are close multiples of
+        // `n` no longer collapse onto the same index the way a raw
+        // `seed % n` did.
+        let first_idx = rng.gen_range(n as u64) as usize;
         centroids[0] = data[first_idx];
 
         for c in 1..k {
@@ -166,9 +170,8 @@ impl<const D: usize> KMeans<D> {
                     }
                 }
 
-                // Probability proportional to D^2
-                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let weighted_dist = min_dist * ((rng % 1000) as f64 / 1000.0 + 0.5);
+                // Probability proportional to D^2, jittered into [0.5, 1.5).
+                let weighted_dist = min_dist * next_jitter(&mut rng);
 
                 if weighted_dist > max_dist {
                     max_dist = weighted_dist;
@@ -259,6 +262,15 @@ impl<const D: usize> KMeans<D> {
         }
         sum
     }
+}
+
+/// Advance the k-means++ jitter RNG one step and return the multiplier used
+/// to weight `min_dist` when scoring the next centroid candidate. Draws from
+/// the top 53 bits of the shared LCG (`Lcg::next_f64`, see `rng.rs`) instead
+/// of a raw `% 1000`, which inherited the low-bit periodicity of the LCG
+/// recurrence.
+fn next_jitter(rng: &mut Lcg) -> f64 {
+    rng.next_f64() + 0.5
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -609,6 +621,60 @@ impl<const D: usize> AgglomerativeClustering<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plusplus_first_centroid_uses_full_seed_not_just_low_bits() {
+        // Pre-fix, `first_idx = (rng as usize) % n` read the seed straight
+        // off with no mixing step at all -- not even one LCG step deep.
+        // Every seed that is an exact multiple of `n` had `seed % n == 0`
+        // and collapsed onto the same first centroid.
+        //
+        // `n = 7` (not a power of two) is deliberate: `2^64 mod 7 != 0`, so
+        // `gen_range`'s one real LCG mixing step (`state * A + C`) genuinely
+        // scrambles seeds that share a residue mod 7 -- unlike mod-8-style
+        // moduli, where reduction mod a 2^64-dividing power of two collapses
+        // to a function of the seed's low bits alone regardless of how many
+        // affine steps are applied. That degenerate case is a property of
+        // affine congruential generators generically, not a defect this fix
+        // targets; `n = 7` isolates the actual regression instead.
+        let data: [[f64; 1]; 7] = [[0.0], [1.0], [2.0], [3.0], [4.0], [5.0], [6.0]];
+        let n = 7usize;
+        let mut seen = [false; 7];
+        for mult in 0..64u64 {
+            let seed = mult * n as u64;
+            let km = KMeans::<1>::new(2).with_seed(seed);
+            let mut centroids = [[0.0; 1]; MAX_CLUSTERS];
+            km.init_centroids_plusplus(&data, n, &mut centroids, 2);
+            let idx = centroids[0][0] as usize;
+            seen[idx] = true;
+        }
+        let distinct = seen.iter().filter(|&&b| b).count();
+        assert!(
+            distinct > 1,
+            "all 64 seeds (multiples of n) picked the same first centroid index -- low-bit hazard, seen={seen:?}"
+        );
+    }
+
+    #[test]
+    fn plusplus_jitter_low_3_bits_are_not_period_8() {
+        // The k-means++ jitter draw is `next_jitter`, called once per
+        // candidate point. Pre-fix it ran the raw LCG recurrence and read
+        // `rng % 1000`; per the CRT split `1000 = 8 * 125`, `(rng % 1000) & 0b111`
+        // equals `rng & 0b111`, which is itself an LCG mod 8 with period
+        // exactly 8 (see rng.rs module docs) -- every lag-8 pair of draws
+        // shared low 3 bits. `next_jitter` now draws from `Lcg::next_f64`
+        // (top 53 bits), which must not reproduce that lock-step pattern.
+        let mut rng = Lcg::new(42);
+        let draws: [f64; 64] = core::array::from_fn(|_| next_jitter(&mut rng));
+        let low3 = |v: f64| (((v - 0.5) * 1000.0).round() as i64) & 0b111;
+        let repeats = (8..draws.len())
+            .filter(|&i| low3(draws[i]) == low3(draws[i - 8]))
+            .count();
+        assert!(
+            repeats < 56,
+            "low 3 bits of the jitter factor repeated at every lag-8 step ({repeats}/56) -- period-8 hazard"
+        );
+    }
 
     #[test]
     fn test_kmeans_basic() {

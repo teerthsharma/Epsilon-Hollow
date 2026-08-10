@@ -189,12 +189,10 @@ impl DenseLayer {
         // Xavier initialization
         let scale = sqrt(2.0 / (input_size + output_size) as f64);
 
-        let mut rng = seed.unwrap_or(42);
+        let mut rng = super::rng::Lcg::new(seed.unwrap_or(42));
         let mut w_data = Vec::with_capacity(input_size * output_size);
         for _ in 0..(input_size * output_size) {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let r = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-            w_data.push(r * scale);
+            w_data.push(rng.next_signed_f64() * scale);
         }
 
         let weights = Tensor::new(&w_data, &[output_size, input_size]);
@@ -500,6 +498,25 @@ fn exp(x: f64) -> f64 {
 mod tests {
     use super::OptimizerConfig;
     use super::*;
+
+    #[test]
+    fn dense_layer_weights_match_shared_lcg_implementation() {
+        // Pre-fix, DenseLayer ran its own inline copy of the LCG recurrence
+        // (`rng = rng * A + 1`, then `rng as f64 / u64::MAX as f64`). This
+        // pins its first weight to the shared `Lcg::next_signed_f64` draw,
+        // which uses a different additive constant and reads the top 53
+        // bits instead of converting the raw state -- the whole point of
+        // migrating every call site onto one implementation.
+        let layer = DenseLayer::new(2, 3, Activation::Linear, Some(7));
+        let scale = sqrt(2.0 / (2 + 3) as f64);
+        let mut rng = super::super::rng::Lcg::new(7);
+        let expected_first_weight = rng.next_signed_f64() * scale;
+        let actual_first_weight = layer.weights.get(&[0, 0]);
+        assert!(
+            (actual_first_weight - expected_first_weight).abs() < 1e-12,
+            "DenseLayer must draw its weights from the shared Lcg implementation: got {actual_first_weight}, expected {expected_first_weight}"
+        );
+    }
 
     #[test]
     fn test_mlp_xor() {
