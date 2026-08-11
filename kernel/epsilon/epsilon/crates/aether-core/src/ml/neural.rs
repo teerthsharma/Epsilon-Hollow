@@ -547,10 +547,42 @@ mod tests {
         ];
 
         let result = mlp.fit(&x, &y, 500);
-        println!("Final XOR Loss: {}", result.final_loss);
         assert!(result.converged);
-        // assert!(result.final_loss < 0.1);
-        // XOR sometimes fails with simple random init seed, but logic runs.
+
+        // Bound justified by measurement, not by guess. Sweeping 64 seed pairs
+        // (`(2s+42, 2s+43)` for `s` in `0..64`) through this exact topology and
+        // schedule puts every final loss in
+        // `[2.2214669674426596e-4, 4.126699150326758e-4]`; the pinned pair
+        // (42, 43) lands at `2.615295509201837e-4`. A 1e-3 ceiling therefore
+        // clears the worst observed seed by 2.4x — wide enough that reseeding or
+        // cross-target float reassociation cannot flake it — while still failing
+        // on any regression that costs so much as a factor of 4. The 0.1 this
+        // replaces was ~380x the true loss: an untrained network emits a
+        // constant 0.5 and scores 0.2505, so 0.1 would not even have caught
+        // training being switched off entirely, which is what a zeroed learning
+        // rate demonstrates.
+        assert!(
+            result.final_loss < 1e-3,
+            "XOR training regressed: final loss {} exceeds 1e-3 (measured range over 64 seeds: 2.22e-4 ..= 4.13e-4)",
+            result.final_loss
+        );
+
+        // Second, independent failure mode. The loss is an average, so it can be
+        // dragged under a threshold by three easy samples while the fourth is
+        // inverted; thresholding the decision boundary per sample cannot be. A
+        // NaN prediction fails here too, since every comparison against it is
+        // false.
+        for (xi, yi) in x.iter().zip(y.iter()) {
+            let predicted = mlp.predict(xi).get(&[0, 0]);
+            let expected = yi.get(&[0, 0]);
+            assert_eq!(
+                predicted > 0.5,
+                expected > 0.5,
+                "XOR({}, {}) misclassified: predicted {predicted}, expected {expected}",
+                xi.get(&[0, 0]),
+                xi.get(&[1, 0])
+            );
+        }
     }
 
     #[test]
