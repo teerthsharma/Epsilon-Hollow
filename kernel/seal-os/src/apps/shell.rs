@@ -29,6 +29,8 @@ pub struct Shell {
     media_player: MediaPlayer,
     last_model: Option<Vec<u8>>,
     vars: Vars,
+    /// Scripts open right now; see `MAX_SOURCE_DEPTH`.
+    source_depth: usize,
 }
 
 /// Absolute path named by a shell argument, or `None` when the argument is
@@ -443,6 +445,11 @@ fn run_filter(input: &str, stdin: &str) -> Option<String> {
         "sort" => filter_sort(args, stdin),
         "uniq" => filter_uniq(args, stdin),
         "tr" => filter_tr(args, stdin),
+        // `echo` reads no stdin and produces its argument text, verbatim and
+        // already expanded, with a terminator. It lives here because it needs
+        // no `Shell` either, and because a stage that ignores its input is
+        // still a stage: `echo a b c | wc -w` works like any other pipeline.
+        "echo" => Ok(format!("{}\n", args)),
         // A named file is `Shell::cmd_peek`'s job, and needs the filesystem.
         "cat" if args.trim().is_empty() => Ok(String::from(stdin)),
         _ => return None,
@@ -789,6 +796,132 @@ fn list_vars(vars: &Vars, exported_only: bool) -> String {
     out
 }
 
+/// Nested `source` calls a script may reach before the shell refuses.
+///
+/// A script that sources itself has no other stop: `Shell::cmd_source` runs
+/// each line through `Shell::run_line`, which re-enters `dispatch` and so this
+/// again, on the kernel stack. Eight levels is deep enough for a script that
+/// pulls in a settings file that pulls in another, and shallow enough that the
+/// chain of `run_line` → `run_pipeline` → `dispatch` → `run_script` frames
+/// cannot run the boot stack out. `expand_vars` bounded the same class of
+/// problem one layer down by expanding exactly once.
+const MAX_SOURCE_DEPTH: usize = 8;
+
+/// Largest script the shell will run, in bytes and in lines.
+///
+/// A script is a file from the filesystem and is read whole into the heap
+/// before the first line runs, so both are trust-boundary bounds rather than
+/// style limits. The byte cap is `PIPE_CAPACITY` because that is already what
+/// `< file` may read in — one number for "the largest file this shell takes at
+/// once". The line cap is separate because a file of empty lines is cheap in
+/// bytes and still walks the whole `run_line` path once per line.
+const MAX_SCRIPT_BYTES: usize = PIPE_CAPACITY;
+const MAX_SCRIPT_LINES: usize = 1024;
+
+/// `line` with any comment cut off and the surrounding whitespace trimmed.
+///
+/// A `#` opens a comment only where a word opens — at the start of the line or
+/// after whitespace. This shell has no quoting, so the alternative rule, "cut
+/// at every `#`", would quietly shorten `A=v#1` to `A=v` with no way at all to
+/// ask for the character back. With this rule the value keeps its `#`, and the
+/// cost is stated: `grep #tag` is a comment, and the literal is reached the
+/// same way any other metacharacter is, through a variable (`H=#`, then
+/// `grep $H` + `tag`).
+///
+/// Free-standing, and applied by `Shell::run_line` to every line from either
+/// source, so a comment behaves the same typed at the prompt as read from a
+/// file.
+fn strip_comment(line: &str) -> &str {
+    for (i, c) in line.char_indices() {
+        if c == '#' && (i == 0 || line[..i].ends_with(char::is_whitespace)) {
+            return line[..i].trim();
+        }
+    }
+    line.trim()
+}
+
+/// The lines of a script, or why it will not be run at all.
+///
+/// Refuses rather than truncates: half a script is not a shorter script, it is
+/// a different one, and the operator would have no way to tell which half ran.
+///
+/// Free-standing so both caps are exercisable without a `Shell`, which mounts
+/// — and on a blank disk formats — the AHCI block store.
+fn script_lines(text: &str) -> Result<Vec<&str>, String> {
+    if text.len() > MAX_SCRIPT_BYTES {
+        return Err(format!(
+            "seal: source: script is {} bytes, over the {}-byte limit",
+            text.len(),
+            MAX_SCRIPT_BYTES
+        ));
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() > MAX_SCRIPT_LINES {
+        return Err(format!(
+            "seal: source: script is {} lines, over the {}-line limit",
+            lines.len(),
+            MAX_SCRIPT_LINES
+        ));
+    }
+    Ok(lines)
+}
+
+/// Run every line of `text` through `run`, in order, and collect what they
+/// printed.
+///
+/// `depth` counts the scripts already open, this one included, and past
+/// `MAX_SOURCE_DEPTH` nothing runs at all — that is what terminates a script
+/// which sources itself.
+///
+/// A line stops the script when `run` reports `Err`, which is what
+/// `Shell::run_line` returns for a line it could not run at all: a syntax
+/// error, an expansion that left nothing, a redirection that was refused, an
+/// over-capacity pipe. Everything else continues, including a command that ran
+/// and printed an error, because this shell has no exit status — every arm of
+/// `Shell::dispatch` returns a `String` whether it worked or not, so `peek:
+/// 'x' not found` and a file's contents are the same thing here. Giving a
+/// script a real failure rule means giving the command table one first, which
+/// is a rewrite of ~60 arms rather than a change to script running.
+///
+/// Every line is handed on, blank and comment lines included, so the line
+/// number in the message is the line's number in the file. Skipping them is
+/// `Shell::run_line`'s job, in one place, for both a script and the prompt.
+///
+/// Takes the runner as a closure so the bound, the stop rule and the numbering
+/// are testable without a `Shell` and its AHCI mount, the way `run_pipeline`
+/// does.
+fn run_script<F>(text: &str, depth: usize, mut run: F) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    if depth > MAX_SOURCE_DEPTH {
+        return Err(format!(
+            "seal: source: more than {} nested scripts — a script that sources itself?",
+            MAX_SOURCE_DEPTH
+        ));
+    }
+    let lines = script_lines(text)?;
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        let produced = match run(line) {
+            Ok(produced) => produced,
+            // Whatever the script printed before it stopped goes with the
+            // message. There is one string on the way to the terminal, and
+            // dropping the earlier lines would leave the operator holding an
+            // error with no sight of how far the script got.
+            Err(e) => return Err(format!("{}seal: source: line {}: {}", out, i + 1, e)),
+        };
+        if produced.is_empty() {
+            continue;
+        }
+        out.push_str(&produced);
+        if !produced.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 impl Shell {
     pub fn new() -> Self {
         Self {
@@ -801,6 +934,7 @@ impl Shell {
             media_player: MediaPlayer::new(),
             last_model: None,
             vars: Vars::new(),
+            source_depth: 0,
         }
     }
 
@@ -821,6 +955,13 @@ impl Shell {
     /// Run one command line: an assignment, or a pipeline of one or more
     /// stages with optional `< file` on the first and `> file` / `>> file` on
     /// the last.
+    ///
+    /// A comment is cut first, before anything else reads the line, so a `#`
+    /// can never be a stage separator's neighbour or a redirection's file
+    /// name; expansion is last, so a `#` that comes out of a variable is text
+    /// and cannot retroactively comment out the rest of the line. A line with
+    /// nothing left — blank, or all comment — does nothing, which is what lets
+    /// a script hold both.
     ///
     /// `NAME=value` is a whole statement, tested before the line is split, so
     /// an assignment is never a pipeline and its value may hold any character
@@ -850,6 +991,15 @@ impl Shell {
     /// path: tokenize once into `Vec<String>` with `'`/`"` handling, split
     /// the pipeline on unquoted `|`, and hand each arm its argument vector.
     fn run_line(&mut self, input: &str) -> Result<String, String> {
+        // Comments go first, before the split and long before expansion: a
+        // '#' typed on the line ends it, and a '#' a variable expands to is
+        // text the command receives. Blank lines — a script's, and what a
+        // comment-only line leaves behind — do nothing at all.
+        let input = strip_comment(input);
+        if input.is_empty() {
+            return Ok(String::new());
+        }
+
         if let Some((name, value)) = parse_assignment(input) {
             let value = expand_vars(value, &self.vars)?;
             set_var(&mut self.vars, name, &value)?;
@@ -996,6 +1146,7 @@ impl Shell {
 
             // Scripting
             "run" => self.cmd_run(arg1),
+            "source" | "." => self.cmd_source(arg1),
             "aether" => String::from("[Aether-Lang] REPL mode — type expressions terminated with ~\nType 'exit~' to return to SealShell."),
 
             // Games
@@ -1055,8 +1206,9 @@ impl Shell {
             "formats" => MediaPlayer::supported_formats(),
 
             // The stdin filters: `grep`, `wc`, `head`, `tail`, `sort`,
-            // `uniq`, `tr` and a bare `cat`. They need no `Shell`, so they
-            // live in `run_filter` where a test can reach them.
+            // `uniq`, `tr`, a bare `cat`, and `echo`, which reads no stdin.
+            // They need no `Shell`, so they live in `run_filter` where a test
+            // can reach them.
             _ => match run_filter(input, stdin) {
                 Some(output) => output,
                 None => format!("seal: unknown command '{}' — type 'help' for the handbook", cmd),
@@ -1758,6 +1910,45 @@ impl Shell {
         match runtime.execute_file(file, "") {
             Ok(output) => output,
             Err(e) => format!("[Aether-Lang] {}: {}", file, e),
+        }
+    }
+
+    /// `source <file>` — run a file of shell lines in this shell.
+    ///
+    /// In this shell, not a new one: each line goes through `Shell::run_line`,
+    /// the same path a typed line takes, so a script's assignments, exports
+    /// and working directory are still there when it ends. That is the whole
+    /// point of `source` and the reason it is not `run`, which hands the file
+    /// to a separate Aether-Lang runtime.
+    ///
+    /// Reading the file needs the filesystem and so needs `&mut self`; the
+    /// bounds, the stop rule and the depth check do not, and live in
+    /// `script_lines` and `run_script` where a test without an AHCI mount can
+    /// reach them.
+    ///
+    /// ponytail: a failing script is reported to whatever sourced it as
+    /// ordinary output, because `dispatch` returns a `String` — so a script
+    /// that sources a script that fails carries on. Upgrade path is the same
+    /// one the `Shell::run_line` note names: an exit status for the command
+    /// table, at which point this returns it.
+    fn cmd_source(&mut self, file: &str) -> String {
+        if file.is_empty() {
+            return String::from("source: which file? Usage: source <file>");
+        }
+        if let Some(e) = self.deny(file, Permissions::R) {
+            return format!("source: {}", e);
+        }
+        let text = match self.fs.read_text(file, self.cwd) {
+            Some(t) => t,
+            None => return format!("source: '{}' not found", file),
+        };
+        self.source_depth += 1;
+        let depth = self.source_depth;
+        let result = run_script(&text, depth, |line| self.run_line(line));
+        self.source_depth -= 1;
+        match result {
+            Ok(out) => out,
+            Err(e) => e,
         }
     }
 
@@ -2979,6 +3170,212 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A `#` opens a comment where a word opens: at the start of the line, or
+    /// after whitespace. Anywhere else it is one of the argument's characters,
+    /// which is what keeps `A=v#1` the value it looks like — this shell has no
+    /// quoting, so a rule that cut at every `#` would silently shorten values
+    /// with no way to ask for the literal.
+    fn test_comment_starts_only_at_a_word_boundary() -> TestResult {
+        test_assert_eq!(strip_comment("echo hi # note"), "echo hi");
+        test_assert_eq!(strip_comment("echo hi #note"), "echo hi");
+        test_assert_eq!(strip_comment("# whole line"), "");
+        test_assert_eq!(strip_comment("   # indented"), "");
+        test_assert_eq!(strip_comment("#"), "");
+        // Blank lines come back empty, which is how a script skips them.
+        test_assert_eq!(strip_comment(""), "");
+        test_assert_eq!(strip_comment("  \t "), "");
+        // Not at a word boundary: the '#' stays in the argument.
+        test_assert_eq!(strip_comment("A=v#1"), "A=v#1");
+        test_assert_eq!(strip_comment("write tag.txt c#3"), "write tag.txt c#3");
+        test_assert_eq!(strip_comment("grep a#b | wc -l"), "grep a#b | wc -l");
+        // The stated cost of the boundary: a '#' that starts a word is a
+        // comment even when it was meant as a pattern. `grep $H` with H=#
+        // is the way to ask for the literal.
+        test_assert_eq!(strip_comment("grep #tag"), "grep");
+        // An assignment keeps its value when a comment follows it.
+        test_assert_eq!(
+            parse_assignment(strip_comment("A=1 # note")),
+            Some(("A", "1"))
+        );
+        // The whole line is trimmed, so an indented script line is the
+        // command it reads as rather than an unknown one.
+        test_assert_eq!(strip_comment("   look   "), "look");
+        TestResult::Pass
+    }
+
+    /// Comments are cut before the line is split into stages, and variables
+    /// are expanded after: a `#` typed on the line ends it, and a `#` that
+    /// arrives out of a value is text the command receives.
+    fn test_comments_are_cut_before_the_split_and_expansion_after() -> TestResult {
+        let line = strip_comment("look | grep a # | grep b");
+        test_assert_eq!(line, "look | grep a");
+        let stages = match parse_line(line) {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("the surviving line must parse"),
+        };
+        test_assert_eq!(stages.len(), 2);
+        test_assert_eq!(stages[1].cmd, "grep a");
+
+        // Expansion is later, so nothing a value holds can comment out a line.
+        let vars = vars_with(&[("H", "#")]);
+        let text = strip_comment("echo a $H b");
+        test_assert_eq!(text, "echo a $H b");
+        let expanded = expand_vars(text, &vars).unwrap_or_default();
+        test_assert_eq!(expanded, "echo a # b");
+        test_assert_eq!(filtered(&expanded, ""), "a # b\n");
+        TestResult::Pass
+    }
+
+    /// `echo` prints its argument text and a newline, ignoring stdin, so a
+    /// script has a way to say what it is doing.
+    fn test_echo_prints_its_argument() -> TestResult {
+        test_assert_eq!(filtered("echo hello there", ""), "hello there\n");
+        test_assert_eq!(filtered("echo", ""), "\n");
+        test_assert_eq!(filtered("echo  spaced  out", ""), " spaced  out\n");
+        // It reads no stdin: what it prints is its argument, not the stream.
+        test_assert_eq!(filtered("echo a b", FRUIT), "a b\n");
+        test_assert_eq!(filtered("wc -w", &filtered("echo a b c", "")), "3\n");
+        TestResult::Pass
+    }
+
+    /// A script is a file from the filesystem, so its size is bounded: past
+    /// either cap it is refused with a message rather than run in part.
+    fn test_script_bounds_refuse_an_over_long_file() -> TestResult {
+        // The numbers the handbook prints, pinned to the ones the code uses.
+        test_assert_eq!(MAX_SCRIPT_BYTES, 65536);
+        test_assert_eq!(MAX_SCRIPT_LINES, 1024);
+        test_assert_eq!(script_lines("a\nb\n").unwrap_or_default().len(), 2);
+        test_assert_eq!(script_lines("").unwrap_or_default().len(), 0);
+
+        let at_bytes = "x".repeat(MAX_SCRIPT_BYTES);
+        test_assert!(
+            script_lines(&at_bytes).is_ok(),
+            "exactly the byte cap must be allowed"
+        );
+        let over_bytes = "x".repeat(MAX_SCRIPT_BYTES + 1);
+        test_assert!(
+            script_lines(&over_bytes).is_err(),
+            "one byte over the cap must be refused"
+        );
+
+        let at_lines = "x\n".repeat(MAX_SCRIPT_LINES);
+        test_assert_eq!(
+            script_lines(&at_lines).unwrap_or_default().len(),
+            MAX_SCRIPT_LINES
+        );
+        let over_lines = "x\n".repeat(MAX_SCRIPT_LINES + 1);
+        test_assert!(
+            script_lines(&over_lines).is_err(),
+            "one line over the cap must be refused"
+        );
+        TestResult::Pass
+    }
+
+    /// A script that sources itself terminates at the depth bound, and the
+    /// bound is what stops it: one level under it still runs.
+    fn test_a_script_that_sources_itself_terminates() -> TestResult {
+        // The number the handbook prints, pinned to the one the code uses.
+        test_assert_eq!(MAX_SOURCE_DEPTH, 8);
+        test_assert!(
+            run_script("echo hi", MAX_SOURCE_DEPTH, |_| Ok(String::new())).is_ok(),
+            "the last allowed level must still run"
+        );
+        test_assert!(
+            run_script("echo hi", MAX_SOURCE_DEPTH + 1, |_| Ok(String::new())).is_err(),
+            "one level past the bound must be refused"
+        );
+
+        // The real shape: every line of the script sources the script again,
+        // which is what `Shell::cmd_source` does one frame lower.
+        fn again(depth: usize, runs: &mut usize) -> Result<String, String> {
+            run_script("source loop.sh", depth, |_| {
+                *runs += 1;
+                again(depth + 1, runs)
+            })
+        }
+        let mut runs = 0usize;
+        let out = again(1, &mut runs);
+        test_assert!(out.is_err(), "a self-sourcing script must stop");
+        test_assert_eq!(runs, MAX_SOURCE_DEPTH);
+        TestResult::Pass
+    }
+
+    /// A line the shell could not run at all stops the script; a command that
+    /// ran and printed an error does not, because this shell cannot tell that
+    /// output apart from any other. Line numbers count every line of the file.
+    fn test_a_line_that_cannot_run_stops_the_script() -> TestResult {
+        let mut ran: Vec<String> = Vec::new();
+        let stopped = run_script("one\ntwo\nthree", 1, |line| {
+            ran.push(String::from(line));
+            if line == "two" {
+                Err(String::from("seal: syntax error"))
+            } else {
+                Ok(String::from(line))
+            }
+        });
+        test_assert_eq!(ran.len(), 2);
+        match stopped {
+            Ok(_) => return TestResult::Fail("a line that cannot run must stop the script"),
+            Err(e) => {
+                // What ran before it is still shown, with the message after.
+                test_assert_eq!(e, "one\nseal: source: line 2: seal: syntax error");
+            }
+        }
+
+        // Blank and comment lines are handed on like any other, so the number
+        // reported is the line's number in the file.
+        let numbered = run_script("a\n\n# c\nboom", 1, |line| {
+            if line == "boom" {
+                Err(String::from("seal: syntax error"))
+            } else {
+                Ok(String::new())
+            }
+        });
+        match numbered {
+            Ok(_) => return TestResult::Fail("the failing line must stop the script"),
+            Err(e) => test_assert!(e.contains("line 4"), "the failing line must be named"),
+        }
+
+        // Output text that reads like an error is still output: every line
+        // runs, and each one's output is terminated.
+        let all = run_script("a\nb", 1, |line| Ok(format!("{}: not found", line)));
+        test_assert_eq!(
+            all.unwrap_or_default(),
+            "a: not found\nb: not found\n"
+        );
+        // A line that prints nothing adds nothing, not a blank line.
+        let quiet = run_script("a\nb", 1, |_| Ok(String::new()));
+        test_assert_eq!(quiet.unwrap_or_default(), "");
+        // Output that already ends in a newline is not given a second one.
+        let ended = run_script("a", 1, |_| Ok(String::from("x\n")));
+        test_assert_eq!(ended.unwrap_or_default(), "x\n");
+        TestResult::Pass
+    }
+
+    /// The handbook names `source`, `echo` and the comment rule, and each
+    /// token belongs to exactly one line of it — a token that matches two
+    /// lines proves nothing about the line it was meant to check.
+    fn test_handbook_documents_source_and_echo() -> TestResult {
+        let book = help::handbook();
+        for token in ["source <file>", "echo <text>", "# comment"] {
+            let lines = book.lines().filter(|l| l.contains(token)).count();
+            test_assert_eq!(lines, 1);
+        }
+        for topic in ["source", ".", "echo"] {
+            test_assert!(
+                !help::help_for(topic).starts_with("No help available"),
+                "source, '.' and echo each need a help page"
+            );
+        }
+        // The page carries the three bounds an operator hits.
+        let page = help::help_for("source");
+        test_assert!(
+            page.contains("8") && page.contains("1024") && page.contains("65536"),
+            "the script bounds belong in the handbook"
+        );
+        TestResult::Pass
+    }
+
     /// The handbook names the syntax, the three commands and both caps. A
     /// feature no `help` mentions cannot be found.
     fn test_handbook_documents_variables() -> TestResult {
@@ -3021,6 +3418,31 @@ pub mod tests {
     }
 
     pub fn register_all() {
+        crate::testing::register_test(
+            "shell::comment_starts_only_at_a_word_boundary",
+            test_comment_starts_only_at_a_word_boundary,
+        );
+        crate::testing::register_test(
+            "shell::comments_are_cut_before_the_split_and_expansion_after",
+            test_comments_are_cut_before_the_split_and_expansion_after,
+        );
+        crate::testing::register_test("shell::echo_prints_its_argument", test_echo_prints_its_argument);
+        crate::testing::register_test(
+            "shell::script_bounds_refuse_an_over_long_file",
+            test_script_bounds_refuse_an_over_long_file,
+        );
+        crate::testing::register_test(
+            "shell::a_script_that_sources_itself_terminates",
+            test_a_script_that_sources_itself_terminates,
+        );
+        crate::testing::register_test(
+            "shell::a_line_that_cannot_run_stops_the_script",
+            test_a_line_that_cannot_run_stops_the_script,
+        );
+        crate::testing::register_test(
+            "shell::handbook_documents_source_and_echo",
+            test_handbook_documents_source_and_echo,
+        );
         crate::testing::register_test(
             "shell::assignment_statements_are_recognized_and_others_fall_through",
             test_assignment_statements_are_recognized_and_others_fall_through,

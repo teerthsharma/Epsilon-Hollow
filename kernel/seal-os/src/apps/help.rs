@@ -51,6 +51,13 @@ pub fn handbook() -> String {
            set               List all of them\n\
            Example: OUT=hits.txt then peek notes.txt | grep seal > $OUT\n\
          \n\
+         Scripts (help source):\n\
+           source <file>     Run a file of these lines in this shell\n\
+           . <file>          The same command, spelled shorter\n\
+           echo <text>       Print the text, so a script can say what it does\n\
+           # comment         A '#' that starts a word ends the line\n\
+           Example: source setup.seal\n\
+         \n\
          Transfer:\n\
            copy <file>       Copy file to clipboard\n\
            paste             Paste here\n\
@@ -196,6 +203,12 @@ pub fn help_for(cmd: &str) -> String {
         ),
         "run" => String::from(
             "run <file.aether>\n  Execute an Aether-Lang script from ManifoldFS.\n  Scripts use Titan bytecode VM with topology opcodes.\n  Example: run hello.aether",
+        ),
+        "source" | "." | "script" | "scripts" | "comment" | "comments" => String::from(
+            "source <file>\n. <file>\n  Run every line of <file> as if it had been typed here.\n  In this shell, not a new one: the variables a script sets, the\n  names it exports and the folder it opens are still yours after it\n  ends. 'run' is the other one — it hands a file to Aether-Lang.\n  A blank line does nothing. A '#' that starts a line or follows a\n  space ends the line; a '#' anywhere else is part of the argument,\n  so 'A=v#1' keeps its '#' and 'grep #tag' is a comment. There is no\n  quoting, so the literal is reached through a variable: H=# then\n  grep $H.\n  A line the shell cannot run at all — a syntax error, a name that\n  expands to nothing, a refused redirection — stops the script and\n  names the line number. A command that runs and prints an error\n  does not: this shell has no exit status, so its message and its\n  output are the same thing.\n  At most 8 nested scripts, 1024 lines, 65536 bytes; a script over\n  any of them is refused whole rather than run in part.\n  Example: source setup.seal",
+        ),
+        "echo" => String::from(
+            "echo <text>\n  Print <text> and a newline. Variables in it are already expanded,\n  and no stdin is read, so it is the way a script says what it is\n  doing and the way a pipeline is given a literal first stage.\n  Example: echo $OUT | wc -c",
         ),
         "aether" => String::from(
             "aether\n  Launch the interactive Aether-Lang REPL.\n  Type Aether-Lang expressions, terminated with ~\n  Type 'exit~' to return to SealShell.",
