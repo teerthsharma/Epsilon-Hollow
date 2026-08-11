@@ -142,8 +142,9 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
 /// It bounds stack growth only. It is not a cure for a handler that re-enters a
 /// lock its own sender is holding: that stalls at the first nested delivery,
 /// below any depth a counter could reject. `tcp` avoids it by not transmitting
-/// under `TCP_SOCKETS`; `udp::sendto` still holds `UDP_SOCKETS` across its send
-/// and would stall the same way.
+/// under `TCP_SOCKETS`; `udp` avoids it the same way, by reading what it needs
+/// out from under `UDP_SOCKETS` and transmitting through `send_datagram` after
+/// the guard drops.
 pub const LOOPBACK_MAX_DEPTH: usize = 4;
 
 static LOOPBACK_DEPTH: AtomicUsize = AtomicUsize::new(0);
