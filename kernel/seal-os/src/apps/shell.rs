@@ -83,6 +83,160 @@ fn abs_path_in(cwd_path: &str, arg: &str) -> Option<String> {
     Some(joined)
 }
 
+/// Largest output one pipeline stage may hand the next, and the largest file
+/// `<` will read in.
+///
+/// Stages run to completion one after another (see `run_pipeline`), so the
+/// whole of a stage's output is resident at once and a runaway producer would
+/// otherwise be bounded only by the heap. Over the cap is an error, not a
+/// truncation: a downstream stage handed a silently cut buffer would report a
+/// confident wrong answer.
+const PIPE_CAPACITY: usize = 64 * 1024;
+
+/// One pipeline stage: its command text with the redirections removed, plus
+/// the files those redirections named.
+///
+/// `output` carries the append flag — `true` for `>>`, `false` for `>`.
+struct Stage<'a> {
+    cmd: &'a str,
+    input: Option<&'a str>,
+    output: Option<(&'a str, bool)>,
+}
+
+/// Split one pipeline stage into its command and its redirections.
+///
+/// The shell has no quoting, so `<` and `>` are metacharacters everywhere in
+/// a line and cannot be escaped; see the ceiling note on `Shell::run_line`.
+/// A redirection with no file after it is a syntax error rather than a
+/// no-op, and so is a redirection with no command before it.
+///
+/// Free-standing so the parse is exercisable without building a `Shell`,
+/// which mounts — and on a blank disk formats — the AHCI block store.
+fn parse_stage(stage: &str) -> Result<Stage<'_>, String> {
+    let is_redirect = |c: char| c == '<' || c == '>';
+    let split = stage.find(is_redirect).unwrap_or(stage.len());
+    let mut parsed = Stage {
+        cmd: stage[..split].trim(),
+        input: None,
+        output: None,
+    };
+    let mut rest = &stage[split..];
+    while let Some(first) = rest.chars().next() {
+        let (op, after) = if let Some(a) = rest.strip_prefix(">>") {
+            (">>", a)
+        } else if first == '>' {
+            (">", &rest[1..])
+        } else {
+            ("<", &rest[1..])
+        };
+        let end = after.find(is_redirect).unwrap_or(after.len());
+        let target = after[..end].trim();
+        if target.is_empty() {
+            return Err(format!("seal: syntax error: '{}' needs a file name", op));
+        }
+        if op == "<" {
+            parsed.input = Some(target);
+        } else {
+            parsed.output = Some((target, op == ">>"));
+        }
+        rest = &after[end..];
+    }
+    if parsed.cmd.is_empty() {
+        return Err(format!(
+            "seal: syntax error: missing command in '{}'",
+            stage.trim()
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Split a command line into its pipeline stages.
+///
+/// Redirection is confined to the ends of the pipeline: `<` on the first
+/// stage, `>`/`>>` on the last. A `>` in the middle would send that stage's
+/// output to a file and leave the next stage with nothing, which is `sh`
+/// behaviour but is far more likely a typo here; refusing it costs the user a
+/// retry and never silently empties a stage.
+///
+/// Free-standing for the same reason as `parse_stage`: no `Shell`, so no
+/// AHCI mount.
+fn parse_line(input: &str) -> Result<Vec<Stage<'_>>, String> {
+    let raw: Vec<&str> = input.split('|').collect();
+    let last = raw.len() - 1;
+    let mut stages = Vec::with_capacity(raw.len());
+    for (i, part) in raw.iter().enumerate() {
+        let stage = parse_stage(part)?;
+        if stage.input.is_some() && i != 0 {
+            return Err(String::from(
+                "seal: '<' is only allowed on the first stage of a pipeline",
+            ));
+        }
+        if stage.output.is_some() && i != last {
+            return Err(String::from(
+                "seal: '>' is only allowed on the last stage of a pipeline",
+            ));
+        }
+        stages.push(stage);
+    }
+    Ok(stages)
+}
+
+/// Run `commands` in order, each one's output becoming the next one's stdin.
+///
+/// Sequential, not concurrent: a stage runs to completion into a buffer and
+/// the next stage starts on that buffer. There is no process-level stdin or
+/// stdout to plumb — commands are `&mut Shell` methods returning a `String`
+/// (`Shell::dispatch`) — and a kernel shell has no interactive pipeline to
+/// keep responsive, so the only thing concurrency would buy is unbounded
+/// buffering complexity.
+///
+/// A stage feeding another stage more than `PIPE_CAPACITY` bytes aborts the
+/// pipeline with an error; the last stage is uncapped because its output goes
+/// to the terminal, which is what a bare command already does today.
+///
+/// Takes the runner as a closure so the composition is testable without a
+/// `Shell` and its AHCI mount.
+fn run_pipeline<F>(commands: &[&str], stdin: String, mut run: F) -> Result<String, String>
+where
+    F: FnMut(&str, &str) -> String,
+{
+    let mut buffer = stdin;
+    for (i, cmd) in commands.iter().enumerate() {
+        let produced = run(cmd, &buffer);
+        if i + 1 < commands.len() && produced.len() > PIPE_CAPACITY {
+            return Err(format!(
+                "seal: stage {} produced {} bytes, over the {}-byte pipe buffer",
+                i + 1,
+                produced.len(),
+                PIPE_CAPACITY
+            ));
+        }
+        buffer = produced;
+    }
+    Ok(buffer)
+}
+
+/// Lines of `stdin` containing `pattern`, each keeping its terminator.
+fn grep_lines(pattern: &str, stdin: &str) -> String {
+    let mut out = String::new();
+    for line in stdin.lines() {
+        if line.contains(pattern) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Bytes a redirection target must hold afterwards: `produced` alone for `>`,
+/// or whatever was there followed by `produced` for `>>`.
+fn redirected_content(existing: Option<String>, produced: &str, append: bool) -> String {
+    match existing {
+        Some(prior) if append => prior + produced,
+        _ => String::from(produced),
+    }
+}
+
 impl Shell {
     pub fn new() -> Self {
         Self {
@@ -105,6 +259,104 @@ impl Shell {
 
         self.history.push(String::from(input));
 
+        match self.run_line(input) {
+            Ok(output) => output,
+            Err(e) => e,
+        }
+    }
+
+    /// Run one command line: a pipeline of one or more stages, with optional
+    /// `< file` on the first and `> file` / `>> file` on the last.
+    ///
+    /// Nothing here can observe that a command failed. Every arm of
+    /// `Shell::dispatch` returns a `String` whether it succeeded or not, so a
+    /// stage's error text is indistinguishable from its output and flows
+    /// downstream as stdin like anything else — only the parse errors and the
+    /// redirect I/O errors raised here abort the line. Giving the pipeline a
+    /// real exit status means turning ~60 dispatch arms into
+    /// `Result<String, String>`, which is a rewrite of the command table
+    /// rather than a change to composition.
+    ///
+    /// ponytail: no quoting, so `|`, `<` and `>` are metacharacters
+    /// everywhere and cannot appear literally in an argument — `write note a
+    /// > b` redirects instead of writing `a > b`. The shell had no quoting
+    /// before this change either, and adding it means a real tokenizer in
+    /// front of the `splitn(3, ' ')` every command arm is built on. Upgrade
+    /// path: tokenize once into `Vec<String>` with `'`/`"` handling, split
+    /// the pipeline on unquoted `|`, and hand each arm its argument vector.
+    fn run_line(&mut self, input: &str) -> Result<String, String> {
+        let stages = parse_line(input)?;
+        let last = stages.len() - 1;
+
+        let stdin = match stages[0].input {
+            Some(file) => self.read_stdin(file)?,
+            None => String::new(),
+        };
+        let redirect = stages[last].output;
+        let commands: Vec<&str> = stages.iter().map(|s| s.cmd).collect();
+        let output = run_pipeline(&commands, stdin, |cmd, stdin| self.dispatch(cmd, stdin))?;
+
+        match redirect {
+            Some((file, append)) => {
+                self.write_redirect(file, &output, append)?;
+                Ok(String::new())
+            }
+            None => Ok(output),
+        }
+    }
+
+    /// Contents of the file named by `< file`, refused if the access policy
+    /// denies the read, if it does not exist, or if it is larger than one
+    /// pipe buffer.
+    fn read_stdin(&self, file: &str) -> Result<String, String> {
+        if let Some(e) = self.deny(file, Permissions::R) {
+            return Err(format!("seal: {}", e));
+        }
+        let text = self
+            .fs
+            .read_text(file, self.cwd)
+            .ok_or_else(|| format!("seal: '{}' not found", file))?;
+        if text.len() > PIPE_CAPACITY {
+            return Err(format!(
+                "seal: '{}' is {} bytes, over the {}-byte pipe buffer",
+                file,
+                text.len(),
+                PIPE_CAPACITY
+            ));
+        }
+        Ok(text)
+    }
+
+    /// Write a pipeline's output to the file named by `>` or `>>`.
+    ///
+    /// `ManifoldFS::store` refuses a name that already exists
+    /// (fs/manifold_fs.rs:364), so both forms rewrite the whole entry: the
+    /// full contents are assembled first, and only then is the old entry
+    /// removed. Nothing is deleted unless the write is authorized.
+    fn write_redirect(&mut self, file: &str, output: &str, append: bool) -> Result<(), String> {
+        if let Some(e) = self.deny(file, Permissions::W) {
+            return Err(format!("seal: {}", e));
+        }
+        let existed = self.fs.exists(file, self.cwd);
+        let existing = if existed {
+            self.fs.read_text(file, self.cwd)
+        } else {
+            None
+        };
+        let content = redirected_content(existing, output, append);
+        if existed {
+            self.fs
+                .delete(file, self.cwd)
+                .map_err(|e| format!("seal: {}: {}", file, e))?;
+        }
+        self.fs
+            .store_text(file, &content, self.cwd)
+            .map(|_| ())
+            .map_err(|e| format!("seal: {}: {}", file, e))
+    }
+
+    /// Run a single command with `stdin` as its standard input.
+    fn dispatch(&mut self, input: &str, stdin: &str) -> String {
         let parts: Vec<&str> = input.splitn(3, ' ').collect();
         let cmd = parts[0];
         let arg1 = parts.get(1).copied().unwrap_or("");
@@ -136,6 +388,14 @@ impl Shell {
                     input.split_once(' ').map(|x| x.1).unwrap_or(arg1)
                 };
                 self.cmd_search(query)
+            }
+            "grep" => {
+                let pattern = input.split_once(' ').map(|x| x.1.trim()).unwrap_or("");
+                if pattern.is_empty() {
+                    String::from("grep: what text? Usage: <command> | grep <text>")
+                } else {
+                    grep_lines(pattern, stdin)
+                }
             }
             "info" => self.cmd_info(arg1),
             "seal" => self.cmd_seal(),
@@ -1462,7 +1722,236 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Stage N's output is stage N+1's stdin, in order, with the `< file`
+    /// contents seeding stage 1. The recorded `(command, stdin)` pairs are the
+    /// whole contract of the pipeline: getting the buffer from the wrong
+    /// stage, or dropping it, shows up here and nowhere else.
+    fn test_pipeline_forwards_each_stage_output_as_the_next_stdin() -> TestResult {
+        let mut seen: Vec<String> = Vec::new();
+        let out = run_pipeline(&["one", "two", "three"], String::from("seed"), |cmd, stdin| {
+            seen.push(format!("{}<{}", cmd, stdin));
+            format!("{}-out", cmd)
+        });
+        test_assert!(out.is_ok());
+        test_assert_eq!(out.unwrap_or_default(), "three-out");
+        test_assert_eq!(seen.len(), 3);
+        test_assert_eq!(seen[0], "one<seed");
+        test_assert_eq!(seen[1], "two<one-out");
+        test_assert_eq!(seen[2], "three<two-out");
+        TestResult::Pass
+    }
+
+    /// Three filters compose, and each one narrows the stream: dropping any
+    /// single stage leaves a different set of lines.
+    fn test_three_stage_pipeline_composes() -> TestResult {
+        let text = "alpha.txt\nalpha.log\nbeta.log\nnotes\n";
+        let filter = |cmd: &str, stdin: &str| {
+            grep_lines(cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
+        };
+        let out = run_pipeline(
+            &["grep .", "grep alpha", "grep log"],
+            String::from(text),
+            filter,
+        );
+        test_assert_eq!(out.unwrap_or_default(), "alpha.log\n");
+
+        // Each stage is load-bearing: without the middle one, beta.log stays.
+        let two = run_pipeline(&["grep .", "grep log"], String::from(text), filter);
+        test_assert_eq!(two.unwrap_or_default(), "alpha.log\nbeta.log\n");
+        TestResult::Pass
+    }
+
+    /// A stage that matches nothing hands the next stage an empty stdin
+    /// rather than its own input, and the pipeline still completes.
+    fn test_stage_with_no_output_feeds_empty_stdin() -> TestResult {
+        let mut downstream_stdin = String::from("unset");
+        let out = run_pipeline(
+            &["grep zzz", "grep alpha"],
+            String::from("alpha.txt\nbeta.log\n"),
+            |cmd, stdin| {
+                if cmd == "grep alpha" {
+                    downstream_stdin = String::from(stdin);
+                }
+                grep_lines(cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
+            },
+        );
+        test_assert_eq!(out.unwrap_or_default(), "");
+        test_assert_eq!(downstream_stdin, "");
+        TestResult::Pass
+    }
+
+    /// A stage feeding another stage more than `PIPE_CAPACITY` bytes aborts
+    /// the line before the next stage runs. The last stage is uncapped — its
+    /// output goes to the terminal, which a bare command already does.
+    fn test_pipeline_stage_over_capacity_is_refused() -> TestResult {
+        let over = "x".repeat(PIPE_CAPACITY + 1);
+        let mut reached_second = false;
+        let refused = run_pipeline(&["big", "grep x"], String::new(), |cmd, _| {
+            if cmd == "grep x" {
+                reached_second = true;
+            }
+            over.clone()
+        });
+        test_assert!(refused.is_err(), "over-capacity stage must abort the line");
+        test_assert!(
+            !reached_second,
+            "an over-capacity buffer must not reach the next stage"
+        );
+
+        let alone = run_pipeline(&["big"], String::new(), |_, _| over.clone());
+        test_assert_eq!(alone.unwrap_or_default().len(), PIPE_CAPACITY + 1);
+
+        let exact = "x".repeat(PIPE_CAPACITY);
+        let at_cap = run_pipeline(&["big", "grep x"], String::new(), |_, _| exact.clone());
+        test_assert!(at_cap.is_ok(), "exactly one buffer must be allowed");
+        TestResult::Pass
+    }
+
+    /// `>` and `>>` name the same file and differ only in the append flag,
+    /// `<` is a separate channel, and both may appear on one stage.
+    fn test_stage_parse_separates_command_from_redirection() -> TestResult {
+        let truncate = match parse_stage("peek notes.txt > out.txt") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("'>' stage must parse"),
+        };
+        test_assert_eq!(truncate.cmd, "peek notes.txt");
+        test_assert!(truncate.input.is_none());
+        test_assert_eq!(truncate.output, Some(("out.txt", false)));
+
+        let append = match parse_stage("peek notes.txt >> out.txt") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("'>>' stage must parse"),
+        };
+        test_assert_eq!(append.cmd, "peek notes.txt");
+        test_assert_eq!(append.output, Some(("out.txt", true)));
+
+        let both = match parse_stage("grep alpha < in.txt >> out.txt") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("'<' with '>>' must parse"),
+        };
+        test_assert_eq!(both.cmd, "grep alpha");
+        test_assert_eq!(both.input, Some("in.txt"));
+        test_assert_eq!(both.output, Some(("out.txt", true)));
+
+        let plain = match parse_stage(" look ") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("a bare command must parse"),
+        };
+        test_assert_eq!(plain.cmd, "look");
+        test_assert!(plain.input.is_none() && plain.output.is_none());
+        TestResult::Pass
+    }
+
+    /// `>` replaces what the file held; `>>` keeps it and adds. The two must
+    /// not produce the same bytes for the same output.
+    fn test_truncate_replaces_and_append_extends() -> TestResult {
+        let prior = || Some(String::from("old"));
+        test_assert_eq!(redirected_content(prior(), "new", false), "new");
+        test_assert_eq!(redirected_content(prior(), "new", true), "oldnew");
+        test_assert!(
+            redirected_content(prior(), "new", false) != redirected_content(prior(), "new", true)
+        );
+        // A file that does not exist yet holds exactly the output either way.
+        test_assert_eq!(redirected_content(None, "new", true), "new");
+        test_assert_eq!(redirected_content(None, "new", false), "new");
+        TestResult::Pass
+    }
+
+    /// A line splits on `|` into one stage each, and the redirections land on
+    /// the stages that may carry them. Without the split the whole line is
+    /// one command and `| grep x` is an argument, which is what the shell did
+    /// before pipelines existed.
+    fn test_line_splits_into_stages() -> TestResult {
+        let three = match parse_line("look | grep alpha | grep .txt") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("a three-stage line must parse"),
+        };
+        test_assert_eq!(three.len(), 3);
+        test_assert_eq!(three[0].cmd, "look");
+        test_assert_eq!(three[1].cmd, "grep alpha");
+        test_assert_eq!(three[2].cmd, "grep .txt");
+
+        let ends = match parse_line("grep alpha < in.txt | grep log >> out.txt") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("end-stage redirections must parse"),
+        };
+        test_assert_eq!(ends.len(), 2);
+        test_assert_eq!(ends[0].input, Some("in.txt"));
+        test_assert!(ends[0].output.is_none());
+        test_assert!(ends[1].input.is_none());
+        test_assert_eq!(ends[1].output, Some(("out.txt", true)));
+
+        // A bare command is a one-stage pipeline, unchanged from before.
+        let one = match parse_line("look") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("a bare command must parse"),
+        };
+        test_assert_eq!(one.len(), 1);
+        test_assert_eq!(one[0].cmd, "look");
+
+        // Redirection away from the ends, and empty stages, are refused.
+        for line in [
+            "look > f.txt | grep a",
+            "look | grep a < f.txt",
+            "| look",
+            "look |",
+            "look | | grep a",
+        ] {
+            test_assert!(parse_line(line).is_err(), "malformed line must be refused");
+        }
+        TestResult::Pass
+    }
+
+    /// A stage with no command, or a redirection with no file, is an error
+    /// the operator sees — never a silently skipped stage or a lost write.
+    fn test_malformed_stage_is_a_syntax_error() -> TestResult {
+        for stage in [
+            "", "   ", "> out.txt", ">> out.txt", "< in.txt", "peek f >", "peek f >>",
+            "grep a <", "peek f > ",
+        ] {
+            test_assert!(
+                parse_stage(stage).is_err(),
+                "malformed stage must be refused"
+            );
+        }
+        test_assert!(parse_stage("look").is_ok());
+        test_assert!(parse_stage("look > f").is_ok());
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "shell::pipeline_forwards_each_stage_output_as_the_next_stdin",
+            test_pipeline_forwards_each_stage_output_as_the_next_stdin,
+        );
+        crate::testing::register_test(
+            "shell::three_stage_pipeline_composes",
+            test_three_stage_pipeline_composes,
+        );
+        crate::testing::register_test(
+            "shell::stage_with_no_output_feeds_empty_stdin",
+            test_stage_with_no_output_feeds_empty_stdin,
+        );
+        crate::testing::register_test(
+            "shell::pipeline_stage_over_capacity_is_refused",
+            test_pipeline_stage_over_capacity_is_refused,
+        );
+        crate::testing::register_test(
+            "shell::stage_parse_separates_command_from_redirection",
+            test_stage_parse_separates_command_from_redirection,
+        );
+        crate::testing::register_test(
+            "shell::truncate_replaces_and_append_extends",
+            test_truncate_replaces_and_append_extends,
+        );
+        crate::testing::register_test(
+            "shell::line_splits_into_stages",
+            test_line_splits_into_stages,
+        );
+        crate::testing::register_test(
+            "shell::malformed_stage_is_a_syntax_error",
+            test_malformed_stage_is_a_syntax_error,
+        );
         crate::testing::register_test(
             "shell::plain_name_resolves_against_cwd",
             test_plain_name_resolves_against_cwd,
