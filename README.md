@@ -4932,6 +4932,112 @@ Twelve markers. Twelve of these. One of them is the one described above and I am
 **Estimated time: twenty minutes.**
 **Actual time: a day and a half, one real defect, one reduced feature set, and a permanent change in how I read the word "pass."**
 
+## The Day Six Gates Ran For The First Time
+
+There are twenty-seven proof gates in the QEMU job. They run in order. Each one
+greps the serial log for a marker the kernel is supposed to have printed, and if
+the marker is missing or wrong, the step fails and every step after it is
+skipped.
+
+That last clause is the whole story. A red gate is not one failure. It is one
+failure and a silent agreement not to ask about anything downstream.
+
+For most of this project's life the pipeline died at gate ten, on the Atlas chart
+graft proof, because `relobj::parse()` read a section header's fields at the
+wrong offsets and no chart had ever loaded — not once, not since the subsystem
+was written. Fixing that moved the failure to gate twelve, the raw-block
+installer proof, which failed because `ManifoldFS::write` accepted an `offset`
+parameter and then ignored it, so the second user account written to `/etc/passwd`
+destroyed the first one.
+
+Fixing *that* produced the following, which is the most interesting thing that
+has ever happened to this repository:
+
+```
+success  Verify raw-block installer proof
+success  Verify FAT/ext2 parity proof
+success  Verify stratum fit-control proof
+success  Verify foliation KV cache policy proof
+success  Verify GCN ISA GPU bench proof
+success  Verify KASLR mapping proof
+success  Verify per-feature security proof
+failure  Verify unsafe-audit census against the source tree
+```
+
+Six gates executed for the first time in the history of this project. Six
+subsystems — the filesystem parity check, the stratum fit control, the foliation
+KV cache policy, the GPU ISA bench, the KASLR randomisation proof, and the
+per-feature security gate — had markers, had checkers, had CI steps with
+confident names, and had never once been asked whether they were telling the
+truth.
+
+All six passed. I want to be clear that this is a good outcome and also that I
+had no right to expect it. Six mechanisms nobody had ever run, all correct on the
+first attempt, is not a testament to my care. It is a testament to the fact that
+they were written by someone who could not check them and therefore had to be
+careful, which is a worse development process that occasionally produces better
+code.
+
+Eighteen gates green. One red. Eight still standing behind it in the dark.
+
+### And now the part that is funny
+
+The gate that failed is the unsafe-code audit.
+
+It failed because it contains two different functions for counting unsafe blocks,
+and they disagree.
+
+The checker counts occurrences of the literal `unsafe {`. The inventory generator
+counts *lines* matching any of `unsafe {`, `unsafe{`, `unsafe fn`, or
+`unsafe impl`. On one file — `drivers/acpi/madt.rs`, byte-identical across both
+commits, nobody touched it — the recorded fixture says 12, the checker says 18,
+and the generator says 20.
+
+Three numbers. One file. Zero changes.
+
+The fixture that these tools are arguing about opens with a comment I wrote, in
+which I warn myself, in writing, that:
+
+> the host checker and the kernel-side parser must agree exactly, or the gate is
+> measuring two different things
+
+I then wrote two scanners that do not agree exactly, put them 5,000 lines apart in
+the same file, and never ran the gate that would have told me.
+
+There is a version of this where I am embarrassed. Instead I am delighted,
+because the divergence turns out to hide a real hole: the checker misses
+`unsafe{` written without a space. That is valid Rust. Unsafe code written that
+way is invisible to the audit. The only reason nothing has ever slipped through
+is that the `cargo fmt` gate runs first and quietly inserts the space — which
+means, for the entire life of this project, the security audit has been
+load-bearing on a formatter.
+
+### The number I am not going to defend
+
+While failing, the gate printed this:
+
+```
+blocks=594 justified=9 unjustified=585 undocumented_permille=984 result=pass
+```
+
+Read the last two fields together. **98.4% of the unsafe blocks in this kernel
+have no `SAFETY:` comment**, the audit measures that to a tenth of a percent, and
+it reports `pass`.
+
+It is not broken. It is doing exactly what it was written to do, which is check
+that the count of unsafe blocks hasn't drifted from a recorded fixture. It just
+also computes, prints, and then walks past a statistic that describes the actual
+state of the codebase far better than the thing it's gating on.
+
+I am not fixing that in the same change that fixes the scanner, because
+tightening a ratchet from 1.6% would fail every build from now until someone
+writes 585 safety comments, and that is a decision about how this project spends
+the next month rather than a bug. But I am writing the number down here, in the
+README, where it is harder to forget than in a log line inside a job that had
+never run.
+
+Nine of five hundred and ninety-four. I looked at it for a while.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
