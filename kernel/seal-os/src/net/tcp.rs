@@ -105,9 +105,16 @@ impl TcpHeader {
 
 const FLAG_FIN: u16 = 1;
 const FLAG_SYN: u16 = 2;
-const _FLAG_RST: u16 = 4;
+const FLAG_RST: u16 = 4;
 const FLAG_PSH: u16 = 8;
 const FLAG_ACK: u16 = 16;
+
+/// Retransmit timeout a fresh socket starts with, in timer ticks.
+const RTO_INITIAL: u64 = 1000;
+
+/// Ceiling the exponential backoff stops at, in timer ticks. A peer that never
+/// answers is retried at this fixed slow rate rather than forever faster.
+const RTO_MAX: u64 = 64_000;
 
 pub const TCP_FLOW_INDEX_BUCKETS: usize = 256;
 pub const TCP_FLOW_INDEX_MAX_PROBES: usize = TCP_FLOW_INDEX_BUCKETS;
@@ -148,7 +155,7 @@ impl TcpSocket {
             rx_buffer: Vec::new(),
             tx_buffer: Vec::new(),
             retransmit_queue: Vec::new(),
-            rto: 1000,
+            rto: RTO_INITIAL,
             pending_accept: Vec::new(),
         }
     }
@@ -263,24 +270,87 @@ impl TcpSocket {
         }
     }
 
+    /// Whether an incoming reset is acceptable, per RFC 793 section 3.4.
+    ///
+    /// In SYN-SENT nothing has been received, so the only test available is
+    /// whether the reset acknowledges our SYN: `connect` leaves `seq_num` at the
+    /// initial send sequence and the SYN occupies it, so that acknowledgement is
+    /// `seq_num + 1`. Every synchronised state instead requires the reset to
+    /// land on the next byte expected. A reset that fails either test is
+    /// dropped, so guessing the four-tuple is not on its own enough to tear a
+    /// connection down.
+    fn accepts_reset(&self, flags: u16, seq: u32, ack: u32) -> bool {
+        match self.state {
+            TcpState::Closed | TcpState::Listen => false,
+            TcpState::SynSent => flags & FLAG_ACK != 0 && ack == self.seq_num.wrapping_add(1),
+            _ => seq == self.ack_num,
+        }
+    }
+
+    /// Abort the connection without disturbing the socket table.
+    ///
+    /// `accept` hands out indices into `TCP_SOCKETS` and both demux indexes
+    /// store them, so removing the element would silently retarget every handle
+    /// a caller still holds at whatever socket slid into the slot. The socket
+    /// becomes `Closed` in place instead, which `tcp_flow_key` and
+    /// `tcp_listener_key` report as unkeyable, so the `refresh_*` calls at the
+    /// end of `handle_tcp_packet` drop it out of both indexes. A caller that was
+    /// polling `state(idx)` sees `Closed` rather than waiting on `SynSent`
+    /// forever. Bytes already delivered stay in `rx_buffer` and remain readable.
+    fn abort(&mut self) {
+        self.state = TcpState::Closed;
+        self.retransmit_queue.clear();
+        self.rto = RTO_INITIAL;
+    }
+
     fn purge_acked(&mut self, ack: u32) {
+        let before = self.retransmit_queue.len();
         self.retransmit_queue.retain(|e| {
             let end = e.seq + e.payload.len() as u32;
             end > ack || (ack < 1000 && end < 1000)
         });
+        if self.retransmit_queue.len() != before {
+            // Forward progress, so the backoff accumulated while the peer was
+            // silent is spent: the next loss is retried promptly.
+            self.rto = RTO_INITIAL;
+        }
     }
 
+    /// Retransmit the oldest segment whose timer has expired.
+    ///
+    /// The entry is taken off the queue before `send_tcp_packet` puts it back,
+    /// so the queue holds one entry per unacknowledged segment however many
+    /// times that segment is retransmitted. It previously grew by one on every
+    /// expiry -- the condition that queues a segment is the same one that put it
+    /// there, so the resend always queued a second copy -- and the original kept
+    /// its old timestamp, so the next `poll` picked it straight back up and the
+    /// connection retransmitted at poll rate rather than at the RTO. A
+    /// `connect` to a host that never answers grew that queue without bound.
+    ///
+    /// `seq_num` is restored afterwards. Leaving it at the retransmitted
+    /// segment's sequence rewound the connection permanently, and the next
+    /// `send` then reused those numbers for different bytes.
+    ///
+    /// The re-push is unconditional in effect: `send_tcp_packet` queues when the
+    /// payload is non-empty or the segment is SYN or FIN, which is exactly what
+    /// admitted this entry in the first place.
     fn retransmit_expired(&mut self) {
         let now = crate::drivers::interrupts::ticks();
-        let found = self
+        let Some(pos) = self
             .retransmit_queue
             .iter()
-            .find(|entry| now.wrapping_sub(entry.time) >= self.rto)
-            .map(|entry| (entry.seq, entry.flags, entry.payload.clone()));
-        if let Some((seq, flags, payload)) = found {
-            self.seq_num = seq;
-            self.send_tcp_packet(flags, &payload);
-        }
+            .position(|entry| now.wrapping_sub(entry.time) >= self.rto)
+        else {
+            return;
+        };
+        // ponytail: remove(pos) is O(n) on a queue that holds single digits,
+        // the same ceiling the flush loop already carries.
+        let entry = self.retransmit_queue.remove(pos);
+        let next_seq = self.seq_num;
+        self.seq_num = entry.seq;
+        self.send_tcp_packet(entry.flags, &entry.payload);
+        self.seq_num = next_seq;
+        self.rto = self.rto.saturating_mul(2).min(RTO_MAX);
     }
 }
 
@@ -1479,85 +1549,126 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
             if let Some(sock) = sockets.get_mut(idx) {
                 let old_key = tcp_flow_key(sock);
                 let old_listener_key = tcp_listener_key(sock);
-                match sock.state {
-                    TcpState::Listen => {
-                        if flags & FLAG_SYN != 0 {
-                            pending_syn = Some((dst_port, src, src_port, seq));
-                        }
+                if flags & FLAG_RST != 0 {
+                    // A reset is never processed as anything else, acceptable
+                    // or not. Before this, a bare reset at ESTABLISHED did
+                    // nothing at all -- the data arm below needs an ACK flag or
+                    // a payload and a reset carries neither -- while a RST+ACK
+                    // fell into that arm and was treated as an ordinary
+                    // acknowledgement, moving `ack_num` to wherever it pointed
+                    // and leaving the connection up.
+                    if sock.accepts_reset(flags, seq, ack) {
+                        sock.abort();
                     }
-                    TcpState::SynSent => {
-                        if flags & FLAG_SYN != 0 && flags & FLAG_ACK != 0 {
-                            sock.ack_num = seq + 1;
-                            sock.seq_num += 1;
-                            sock.send_tcp_packet(FLAG_ACK, &[]);
-                            sock.state = TcpState::Established;
+                } else {
+                    match sock.state {
+                        TcpState::Listen => {
+                            if flags & FLAG_SYN != 0 {
+                                pending_syn = Some((dst_port, src, src_port, seq));
+                            }
                         }
-                    }
-                    TcpState::SynReceived => {
-                        if flags & FLAG_ACK != 0 && ack == sock.seq_num && seq == sock.ack_num {
-                            sock.state = TcpState::Established;
-                            sock.ack_num = seq + payload.len() as u32;
-                            if !payload.is_empty() {
-                                sock.push_rx(payload);
+                        TcpState::SynSent => {
+                            if flags & FLAG_SYN != 0 && flags & FLAG_ACK != 0 {
+                                sock.ack_num = seq + 1;
+                                sock.seq_num += 1;
                                 sock.send_tcp_packet(FLAG_ACK, &[]);
-                            }
-                        }
-                    }
-                    TcpState::Established => {
-                        if flags & FLAG_FIN != 0 {
-                            sock.ack_num = seq + 1;
-                            sock.send_tcp_packet(FLAG_ACK, &[]);
-                            sock.state = TcpState::CloseWait;
-                        } else if !payload.is_empty() || flags & FLAG_ACK != 0 {
-                            sock.ack_num = seq + payload.len() as u32;
-                            if !payload.is_empty() {
-                                sock.push_rx(payload);
-                            }
-                            if flags & FLAG_PSH != 0 || !payload.is_empty() {
-                                sock.send_tcp_packet(FLAG_ACK, &[]);
-                            }
-                            if flags & FLAG_ACK != 0 {
+                                sock.state = TcpState::Established;
+                                // The SYN this answers is still on the
+                                // retransmit queue; only the ESTABLISHED arm
+                                // used to purge, so it survived the handshake
+                                // and was resent one RTO into a connection that
+                                // was already up.
                                 sock.purge_acked(ack);
                             }
                         }
-                    }
-                    TcpState::FinWait1 => {
-                        if flags & FLAG_FIN != 0 && flags & FLAG_ACK != 0 {
-                            sock.ack_num = seq + 1;
-                            sock.send_tcp_packet(FLAG_ACK, &[]);
-                            sock.state = TcpState::TimeWait;
-                        } else if flags & FLAG_ACK != 0 {
-                            sock.state = TcpState::FinWait2;
+                        TcpState::SynReceived => {
+                            if flags & FLAG_ACK != 0 && ack == sock.seq_num && seq == sock.ack_num {
+                                sock.state = TcpState::Established;
+                                sock.ack_num = seq + payload.len() as u32;
+                                sock.purge_acked(ack);
+                                if !payload.is_empty() {
+                                    sock.push_rx(payload);
+                                    sock.send_tcp_packet(FLAG_ACK, &[]);
+                                }
+                            }
                         }
-                    }
-                    TcpState::FinWait2 => {
-                        if flags & FLAG_FIN != 0 {
-                            sock.ack_num = seq + 1;
-                            sock.send_tcp_packet(FLAG_ACK, &[]);
-                            sock.state = TcpState::TimeWait;
+                        TcpState::Established => {
+                            // RFC 793 section 3.9, "first check sequence
+                            // number". The SYN-RECEIVED arm above already
+                            // required this and this one did not, so a
+                            // duplicate retransmission from an ordinary peer
+                            // appended its payload a second time, and anything
+                            // that knew the four-tuple could inject at any
+                            // sequence at all.
+                            //
+                            // The test is strict equality against the next byte
+                            // expected, matching that sibling rather than the
+                            // full `RCV.NXT <= SEG.SEQ < RCV.NXT + RCV.WND`
+                            // window: a segment that arrives out of order is
+                            // dropped, not held, because there is no reassembly
+                            // queue to hold it in, and the peer retransmits it
+                            // in order. Nothing is acknowledged on the drop --
+                            // RFC 793 asks for an ACK there, but two peers each
+                            // holding a stale sequence would then trade
+                            // acknowledgements without end, and it hands an
+                            // off-path prober a reply to measure.
+                            if seq == sock.ack_num {
+                                if flags & FLAG_FIN != 0 {
+                                    sock.ack_num = seq + 1;
+                                    sock.send_tcp_packet(FLAG_ACK, &[]);
+                                    sock.state = TcpState::CloseWait;
+                                } else if !payload.is_empty() || flags & FLAG_ACK != 0 {
+                                    sock.ack_num = seq + payload.len() as u32;
+                                    if !payload.is_empty() {
+                                        sock.push_rx(payload);
+                                    }
+                                    if flags & FLAG_PSH != 0 || !payload.is_empty() {
+                                        sock.send_tcp_packet(FLAG_ACK, &[]);
+                                    }
+                                    if flags & FLAG_ACK != 0 {
+                                        sock.purge_acked(ack);
+                                    }
+                                }
+                            }
                         }
-                    }
-                    TcpState::CloseWait => {
-                        if flags & FLAG_ACK != 0 {
-                            sock.send_tcp_packet(FLAG_FIN | FLAG_ACK, &[]);
-                            sock.state = TcpState::LastAck;
+                        TcpState::FinWait1 => {
+                            if flags & FLAG_FIN != 0 && flags & FLAG_ACK != 0 {
+                                sock.ack_num = seq + 1;
+                                sock.send_tcp_packet(FLAG_ACK, &[]);
+                                sock.state = TcpState::TimeWait;
+                            } else if flags & FLAG_ACK != 0 {
+                                sock.state = TcpState::FinWait2;
+                            }
                         }
-                    }
-                    TcpState::LastAck => {
-                        if flags & FLAG_ACK != 0 {
-                            sock.state = TcpState::Closed;
+                        TcpState::FinWait2 => {
+                            if flags & FLAG_FIN != 0 {
+                                sock.ack_num = seq + 1;
+                                sock.send_tcp_packet(FLAG_ACK, &[]);
+                                sock.state = TcpState::TimeWait;
+                            }
                         }
-                    }
-                    TcpState::Closing => {
-                        if flags & FLAG_ACK != 0 {
-                            sock.state = TcpState::TimeWait;
+                        TcpState::CloseWait => {
+                            if flags & FLAG_ACK != 0 {
+                                sock.send_tcp_packet(FLAG_FIN | FLAG_ACK, &[]);
+                                sock.state = TcpState::LastAck;
+                            }
                         }
-                    }
-                    TcpState::TimeWait => {
-                        // RFC 793: remain in TIME-WAIT for 2*MSL; ignore further data
-                    }
-                    TcpState::Closed => {
-                        // No-op: closed sockets ignore all incoming packets
+                        TcpState::LastAck => {
+                            if flags & FLAG_ACK != 0 {
+                                sock.state = TcpState::Closed;
+                            }
+                        }
+                        TcpState::Closing => {
+                            if flags & FLAG_ACK != 0 {
+                                sock.state = TcpState::TimeWait;
+                            }
+                        }
+                        TcpState::TimeWait => {
+                            // RFC 793: remain in TIME-WAIT for 2*MSL; ignore further data
+                        }
+                        TcpState::Closed => {
+                            // No-op: closed sockets ignore all incoming packets
+                        }
                     }
                 }
                 refresh_exact_flow_socket(idx, old_key, sock);
@@ -1583,7 +1694,20 @@ mod tests {
         TCP_FLOW_INDEX.lock().clear();
         TCP_LISTENER_INDEX.lock().clear();
         PENDING_SYN_QUEUE.lock().clear();
+        TCP_TX_QUEUE.lock().clear();
         *NEXT_TCP_PORT.lock() = 40000;
+    }
+
+    /// Push an already-configured socket and index its flow, the way `socket`
+    /// and `poll` do. The four cases below that push into `TCP_SOCKETS` without
+    /// this step fail before this change and after it, because
+    /// `handle_tcp_packet` demuxes through `TCP_FLOW_INDEX` and finds nothing.
+    fn push_indexed(sock: TcpSocket) -> usize {
+        let mut sockets = TCP_SOCKETS.lock();
+        let idx = sockets.len();
+        sockets.push(sock);
+        index_exact_flow_socket(idx, &sockets[idx]);
+        idx
     }
 
     fn make_tcp_header(flags: u16, seq: u32, ack: u32, dst_port: u16) -> Vec<u8> {
@@ -1814,5 +1938,175 @@ mod tests {
         assert!(proof.index_lookup_probes_max <= proof.index_probe_bound);
         assert!(proof.cleanup_ok);
         assert!(TCP_SOCKETS.lock().is_empty());
+    }
+
+    /// A bare reset at ESTABLISHED used to do nothing whatever: the arm needed
+    /// an ACK flag or a payload to run, and a reset carries neither. The socket
+    /// must abort, stop retransmitting, and leave the flow index with it, so
+    /// the four-tuple no longer resolves.
+    #[test]
+    fn reset_in_window_aborts_established_socket() {
+        reset_tcp_for_test();
+        let remote = crate::net::IpAddr::V4([192, 0, 2, 7]);
+        let mut sock = TcpSocket::new(9000);
+        sock.remote_ip = remote;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5000;
+        sock.ack_num = 700;
+        sock.send(b"unacked");
+        assert_eq!(sock.retransmit_queue.len(), 1);
+        let idx = push_indexed(sock);
+
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST, 700, 0, 9000));
+
+        assert_eq!(state(idx), TcpState::Closed);
+        assert!(TCP_SOCKETS.lock()[idx].retransmit_queue.is_empty());
+
+        // The flow left the index with the socket, so a later segment for the
+        // same four-tuple reaches nothing.
+        let mut data = make_tcp_header(FLAG_ACK | FLAG_PSH, 700, 5008, 9000);
+        data.extend_from_slice(b"after");
+        handle_tcp_packet(remote, &data);
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].state, TcpState::Closed);
+        assert!(sockets[idx].rx_buffer.is_empty());
+    }
+
+    /// A reset that does not land on the next expected byte is a blind guess at
+    /// the sequence space and must be dropped -- and dropped whole, not
+    /// half-processed as an ordinary ACK, which is what the ESTABLISHED arm did
+    /// with any RST+ACK it was handed.
+    #[test]
+    fn reset_out_of_window_is_ignored_at_established() {
+        reset_tcp_for_test();
+        let remote = crate::net::IpAddr::V4([192, 0, 2, 11]);
+        let mut sock = TcpSocket::new(9010);
+        sock.remote_ip = remote;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5000;
+        sock.ack_num = 700;
+        let idx = push_indexed(sock);
+
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 5700, 5000, 9010));
+
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].state, TcpState::Established);
+        assert_eq!(sockets[idx].ack_num, 700);
+    }
+
+    /// RFC 793: in SYN-SENT a reset is acceptable only if it acknowledges the
+    /// SYN. `connect` leaves `seq_num` at the initial send sequence and the SYN
+    /// occupies it, so the acknowledgement of that SYN is `seq_num + 1`. A bare
+    /// reset, or one acknowledging anything else, leaves the socket connecting.
+    #[test]
+    fn reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn() {
+        reset_tcp_for_test();
+        let remote = crate::net::IpAddr::V4([192, 0, 2, 12]);
+        let mut idxs = [0usize; 3];
+        for (n, slot) in idxs.iter_mut().enumerate() {
+            let mut sock = TcpSocket::new(9020 + n as u16);
+            sock.connect(remote, 80);
+            assert_eq!(sock.seq_num, 1000);
+            *slot = push_indexed(sock);
+        }
+
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 1001, 9020));
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST, 0, 0, 9021));
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 4242, 9022));
+
+        assert_eq!(state(idxs[0]), TcpState::Closed);
+        assert_eq!(state(idxs[1]), TcpState::SynSent);
+        assert_eq!(state(idxs[2]), TcpState::SynSent);
+        let sockets = TCP_SOCKETS.lock();
+        assert!(sockets[idxs[0]].retransmit_queue.is_empty());
+        assert_eq!(sockets[idxs[1]].retransmit_queue.len(), 1);
+        assert_eq!(sockets[idxs[2]].retransmit_queue.len(), 1);
+    }
+
+    /// Retransmitting used to re-push the segment without removing the entry it
+    /// came from, so the queue grew by one per expiry and the original kept its
+    /// stale timestamp -- retransmitting again on the very next call rather than
+    /// one RTO later. It also left `seq_num` pointing at the older segment, so
+    /// the next `send` would have reused those numbers for different bytes.
+    #[test]
+    fn retransmit_rearms_one_entry_and_leaves_seq_num_alone() {
+        reset_tcp_for_test();
+        let mut sock = TcpSocket::new(9030);
+        sock.remote_ip = crate::net::IpAddr::V4([192, 0, 2, 13]);
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 1000;
+        sock.send(b"hello");
+        sock.send(b"world");
+        assert_eq!(sock.retransmit_queue.len(), 2);
+        assert_eq!(sock.seq_num, 1010);
+        let rto0 = sock.rto;
+
+        crate::drivers::interrupts::mock_advance_ticks(rto0 + 1);
+        TCP_TX_QUEUE.lock().clear();
+
+        sock.retransmit_expired();
+        sock.retransmit_expired();
+        sock.retransmit_expired();
+
+        assert_eq!(sock.retransmit_queue.len(), 2);
+        assert_eq!(sock.seq_num, 1010);
+        assert_eq!(tcp_tx_queued(), 1);
+        assert!(sock.rto > rto0);
+
+        let queued = TCP_TX_QUEUE.lock();
+        let hdr = TcpHeader::from_bytes(&queued[0].1[..20]).unwrap();
+        let seq = hdr.seq;
+        assert_eq!(seq, 1000);
+        assert_eq!(&queued[0].1[20..], b"hello");
+        drop(queued);
+
+        // Re-stamped, so the next attempt is a whole backed-off RTO away.
+        crate::drivers::interrupts::mock_advance_ticks(sock.rto + 1);
+        sock.retransmit_expired();
+        assert_eq!(sock.retransmit_queue.len(), 2);
+        assert_eq!(tcp_tx_queued(), 2);
+
+        sock.purge_acked(1010);
+        assert!(sock.retransmit_queue.is_empty());
+        assert_eq!(sock.rto, rto0);
+    }
+
+    /// The SYN-RECEIVED arm compares `seq` against `ack_num`; the ESTABLISHED
+    /// arm did not, so a duplicate retransmission appended its payload twice and
+    /// anything that knew the four-tuple could inject at any sequence at all.
+    /// The first segment is the control: the check must not turn every segment
+    /// into a drop.
+    #[test]
+    fn established_accepts_only_the_next_expected_sequence() {
+        reset_tcp_for_test();
+        let remote = crate::net::IpAddr::V4([192, 0, 2, 14]);
+        let mut sock = TcpSocket::new(9040);
+        sock.remote_ip = remote;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5000;
+        sock.ack_num = 700;
+        let idx = push_indexed(sock);
+
+        let mut in_order = make_tcp_header(FLAG_ACK | FLAG_PSH, 700, 5000, 9040);
+        in_order.extend_from_slice(b"abc");
+        handle_tcp_packet(remote, &in_order);
+        handle_tcp_packet(remote, &in_order);
+
+        let mut injected = make_tcp_header(FLAG_ACK | FLAG_PSH, 60_000, 5000, 9040);
+        injected.extend_from_slice(b"evil");
+        handle_tcp_packet(remote, &injected);
+
+        handle_tcp_packet(remote, &make_tcp_header(FLAG_FIN | FLAG_ACK, 60_000, 5000, 9040));
+
+        let mut buf = [0u8; 16];
+        let n = recv(idx, &mut buf);
+        assert_eq!(&buf[..n], b"abc");
+        let sockets = TCP_SOCKETS.lock();
+        assert_eq!(sockets[idx].ack_num, 703);
+        assert_eq!(sockets[idx].state, TcpState::Established);
     }
 }
