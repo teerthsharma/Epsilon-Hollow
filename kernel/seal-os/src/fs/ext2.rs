@@ -177,48 +177,74 @@ impl Ext2Fs {
     /// Validate on-disk superblock fields that later arithmetic in this file
     /// treats as trusted, and compute the derived `block_size`.
     ///
-    /// `s_log_block_size` is a raw `u32` read straight off disk, and
-    /// `1024u32 << n` is `2^(10+n)`: for `n` in `22..=31` that overflows
-    /// `u32`, and with neither Cargo profile in this crate setting
-    /// `overflow-checks`, release silently wraps it to exactly `0`; for
-    /// `n >= 32` the shift amount is masked to `n % 32` (defined behaviour
-    /// for `<<`, not UB), which merely yields a wrong block size rather
-    /// than a zero one — still wrong, rejected below for the same reason.
-    /// `self.block_size` then feeds roughly a dozen division sites in this
-    /// file (`read_bgd`, `read_inode`, `read_inode_data`,
-    /// `write_inode_data`, …); dividing by zero panics unconditionally in
-    /// Rust regardless of overflow-checks, and this kernel's profiles set
-    /// `panic = "abort"`, so an unvalidated `block_size` of `0` halts the
-    /// machine on the first block-group read after mount.
+    /// `s_log_frag_size` and `s_frags_per_group` were checked and cleared:
+    /// neither is read anywhere in this file.
     ///
-    /// The real ext2 spec permits block sizes 1024..=65536
-    /// (`s_log_block_size` 0..=6), but this file's own `rec_len:
-    /// self.block_size as u16` in `add_dir_entry` (new-block path) can only
-    /// hold values up to `65535` — a `block_size` of exactly `65536`
-    /// truncates to `0` there, which every directory-entry walker in this
-    /// file (`find_dir_entry`, `readdir`, `lookup`, …) reads as "end of
-    /// directory", silently corrupting the entry. So the range accepted
-    /// here is narrowed to `0..=5` (max block size 32768), not the spec's
-    /// `0..=6`.
+    /// The remaining fields are bounded here because each one sizes an
+    /// allocation, bounds a loop, or computes an index:
     ///
-    /// The same on-disk-divisor risk exists for `s_inodes_per_group`
-    /// (divisor in `read_inode`/`write_inode`/`allocate_inode`/
-    /// `free_inode`), `s_blocks_per_group` (divisor in
-    /// `allocate_block`/`free_block`, found while auditing every divisor in
-    /// this file — not on the field list this fix was scoped from, but the
-    /// same defect class), and `s_inode_size` (divisor, as `block_size /
-    /// inode_size`, only on the `s_rev_level >= 1` path — `rev_level 0`
-    /// hardcodes `128` and never reads this field; an `inode_size` bigger
-    /// than `block_size` floors `inodes_per_block` to `0`, a second,
-    /// indirect divide-by-zero). `s_first_data_block` is never a divisor,
-    /// but it is added un-checked into `bgd_block` below (`+ 1`), so it is
-    /// bounded to inside the volume to keep that addition from wrapping.
+    /// * `s_blocks_count` is the sole multiplicand of `checked_size`'s
+    ///   ceiling, which is the entire basis of the directory-`i_size` and
+    ///   regular-file-`total_size` bounds this file already carries. Left
+    ///   unbounded it re-opens both: `s_blocks_count = u32::MAX` puts that
+    ///   ceiling at 4 TiB even on a 1 MiB device, so a directory inode
+    ///   claiming `i_size = 0xFFFF_FFF0` passes `checked_dir_size` and
+    ///   reaches `alloc::vec![0u8; 4 GiB]` — and this `no_std` kernel
+    ///   registers no `#[alloc_error_handler]`, so the allocation failure
+    ///   aborts. It also bounds `allocate_block`'s group scan. `device_sectors`
+    ///   is the extent of the device the superblock was read from, so the
+    ///   ceiling is a physical fact rather than a disk-controlled claim.
+    /// * `s_inodes_count` bounds `allocate_inode`'s group scan the same way
+    ///   `s_blocks_count` bounds `allocate_block`'s. It is tied to the block
+    ///   count here through the group count they must agree on, which is
+    ///   ext2's own invariant, so the now device-bounded block count bounds
+    ///   the inode scan too.
+    /// * `s_blocks_per_group` and `s_inodes_per_group` bound `local` in
+    ///   `free_block`/`free_inode`, whose `local / 8` then indexes a `Vec`
+    ///   exactly one block long. A group's block bitmap and inode bitmap are
+    ///   one block each by construction, so `block_size * 8` is both the real
+    ///   ext2 ceiling and precisely the bound that keeps `byte_idx` inside
+    ///   that `Vec`: at the maximum, `((block_size * 8) - 1) / 8 ==
+    ///   block_size - 1`. Without it, `s_blocks_per_group = 0x8000_0000` and
+    ///   a corrupt `i_block` entry index `buf[268435455]` of a 1024-byte
+    ///   buffer, which panics, and this kernel's profiles set
+    ///   `panic = "abort"`.
+    /// * `s_inode_size` (only read when `s_rev_level >= 1`) divides
+    ///   `block_size` into `inodes_per_block` and then scales the offset that
+    ///   `read_inode`/`write_inode` hand to `read_unaligned::<Inode>`. Zero
+    ///   divides directly and a value above `block_size` floors
+    ///   `inodes_per_block` to zero, a second divide by zero — but anything
+    ///   below `size_of::<Inode>()` is worse than either: `s_inode_size = 1`
+    ///   puts the last inode of a block at offset 1023 and reads 128 bytes
+    ///   from there, 127 of them past the end of the buffer, through a raw
+    ///   pointer that will not trap.
+    /// * `s_log_block_size` is a raw `u32`, and `1024u32 << n` is
+    ///   `2^(10+n)`: for `n` in `22..=31` that overflows `u32`, and with
+    ///   neither Cargo profile in this crate setting `overflow-checks`,
+    ///   release silently wraps it to exactly `0`; for `n >= 32` the shift
+    ///   amount is masked to `n % 32` (defined behaviour for `<<`, not UB),
+    ///   which merely yields a wrong block size rather than a zero one —
+    ///   still wrong, rejected below for the same reason. `self.block_size`
+    ///   then feeds roughly a dozen division sites in this file (`read_bgd`,
+    ///   `read_inode`, `read_inode_data`, `write_inode_data`, …); dividing by
+    ///   zero panics unconditionally in Rust regardless of overflow-checks.
+    ///   The real ext2 spec permits block sizes 1024..=65536
+    ///   (`s_log_block_size` 0..=6), but this file's own `rec_len:
+    ///   self.block_size as u16` in `add_dir_entry` (new-block path) can only
+    ///   hold values up to `65535` — a `block_size` of exactly `65536`
+    ///   truncates to `0` there, which every directory-entry walker in this
+    ///   file (`find_dir_entry`, `readdir`, `lookup`, …) reads as "end of
+    ///   directory", silently corrupting the entry. So the range accepted
+    ///   here is narrowed to `0..=5` (max block size 32768), not the spec's
+    ///   `0..=6`.
+    /// * `s_first_data_block` is never a divisor, but it is added un-checked
+    ///   into `bgd_block` below (`+ 1`), so it is bounded to inside the
+    ///   volume to keep that addition from wrapping.
     ///
-    /// `s_blocks_count` and `s_log_frag_size` were checked and cleared:
-    /// `s_blocks_count` is only ever a multiplicand/dividend in this file,
-    /// never a divisor, and `s_log_frag_size` is not read anywhere in this
-    /// file at all.
-    fn validate_superblock(sb: &Superblock) -> Result<u32, VfsError> {
+    /// Every rejection is an error, never a clamp: a filesystem whose own
+    /// superblock does not describe it is refused rather than mounted with
+    /// values this driver invented.
+    fn validate_superblock(sb: &Superblock, device_sectors: u64) -> Result<u32, VfsError> {
         if sb.s_log_block_size > 5 {
             return Err(VfsError::IoError);
         }
@@ -228,7 +254,18 @@ impl Ext2Fs {
             return Err(VfsError::IoError);
         }
 
-        if sb.s_rev_level >= 1 && (sb.s_inode_size == 0 || sb.s_inode_size as u32 > block_size) {
+        // One bitmap block per group covers `block_size * 8` entries.
+        let bits_per_bitmap_block = block_size * 8;
+        if sb.s_blocks_per_group > bits_per_bitmap_block
+            || sb.s_inodes_per_group > bits_per_bitmap_block
+        {
+            return Err(VfsError::IoError);
+        }
+
+        if sb.s_rev_level >= 1
+            && ((sb.s_inode_size as u32) < core::mem::size_of::<Inode>() as u32
+                || (sb.s_inode_size as u32) > block_size)
+        {
             return Err(VfsError::IoError);
         }
 
@@ -236,11 +273,43 @@ impl Ext2Fs {
             return Err(VfsError::IoError);
         }
 
+        // `block_size` is at least 1024, so the sector count per block is at
+        // least 2 and the product cannot exceed `u32::MAX * 64`.
+        if (sb.s_blocks_count as u64) * (block_size as u64 / 512) > device_sectors {
+            return Err(VfsError::IoError);
+        }
+
+        // `allocate_block` derives its group count from the block side and
+        // `allocate_inode` from the inode side; ext2 requires them to agree,
+        // and only the block side is bounded by the device.
+        let groups = sb.s_blocks_count.div_ceil(sb.s_blocks_per_group) as u64;
+        if sb.s_inodes_count as u64 > groups * sb.s_inodes_per_group as u64 {
+            return Err(VfsError::IoError);
+        }
+
         Ok(block_size)
     }
 
     /// Read and verify the Ext2 superblock.
+    ///
+    /// Mounts once per instance. The last thing this function does is replace
+    /// the buffer cache, and `BufferCache` has no `Drop` impl
+    /// (`fs/buffer_cache.rs`), so on a second call every dirty buffer the
+    /// filesystem has accumulated — inode table, bitmaps, directory blocks,
+    /// file data — is dropped without being written back, silently discarding
+    /// writes that already reported success to their caller. No caller in the
+    /// tree can reach that today: `fs::init_vfs`, `apps::installer`, and
+    /// `fs::parity::measure` each build a fresh `Ext2Fs::new` and mount it
+    /// exactly once. `mount` is `pub` on a `pub` struct, so the guard is here
+    /// rather than at those three call sites, and it fails closed: a remount
+    /// is refused, not silently turned into a flush-and-remount, because
+    /// nothing needs remount semantics and inventing them would be inventing
+    /// a crash-consistency story to go with them.
     pub fn mount(&mut self) -> Result<(), VfsError> {
+        if self.superblock.is_some() {
+            return Err(VfsError::InvalidOperation);
+        }
+
         let mut buf = [0u8; 1024];
 
         // Superblock is always located at offset 1024 of the device.
@@ -252,7 +321,17 @@ impl Ext2Fs {
         if sb.s_magic != EXT2_MAGIC {
             return Err(VfsError::IoError);
         }
-        let block_size = Self::validate_superblock(&sb)?;
+
+        // The extent of the device this superblock claims to describe. The
+        // read above already resolved `dev_num` through the same registry, so
+        // a device missing here means it was unregistered mid-mount.
+        let device_sectors = crate::drivers::block::list_devices()
+            .into_iter()
+            .find(|(dev, _)| *dev == self.dev_num)
+            .map(|(_, sectors)| sectors)
+            .ok_or(VfsError::IoError)?;
+
+        let block_size = Self::validate_superblock(&sb, device_sectors)?;
         self.superblock = Some(sb);
         self.block_size = block_size;
         self.inodes_per_group = sb.s_inodes_per_group;
@@ -1861,9 +1940,29 @@ pub mod tests {
     use crate::testing::TestResult;
     use crate::test_assert;
 
+    /// Device extent large enough that the device bound cannot be what a test
+    /// is observing. Tests that isolate one non-device superblock field pass
+    /// this, so a failure there is unambiguously about that field.
+    const ANY_DEVICE: u64 = u64::MAX;
+
+    /// A superblock describing a legal filesystem of `blocks_count` blocks at
+    /// `1024 << log_block_size` bytes each. Each test mutates the one field it
+    /// is about, so every other field has to be in range or the test observes
+    /// the wrong rejection.
+    ///
+    /// `s_inodes_per_group` and `s_inodes_count` used to default to `0`, and
+    /// `validate_superblock` has rejected `s_inodes_per_group == 0` since
+    /// commit ea6e899 — so `test_valid_log_block_size_is_accepted` (all six
+    /// `s_log_block_size` values) and `test_inode_size_ignored_when_rev_level_0`
+    /// have been asserting `is_ok()` against a superblock this file refuses.
+    /// Nothing caught it: `kernel/seal-os` is outside the root workspace, its
+    /// `#[cfg(test)]` functions never compile, and the in-kernel harness these
+    /// are registered with has never executed in this project's history. The
+    /// assertions are unchanged; the fixture they run against is now a
+    /// filesystem that can actually exist.
     fn make_superblock(blocks_count: u32, log_block_size: u32) -> Superblock {
         Superblock {
-            s_inodes_count: 0,
+            s_inodes_count: 128,
             s_blocks_count: blocks_count,
             s_r_blocks_count: 0,
             s_free_blocks_count: 0,
@@ -1873,7 +1972,7 @@ pub mod tests {
             s_log_frag_size: 0,
             s_blocks_per_group: 8192,
             s_frags_per_group: 8192,
-            s_inodes_per_group: 0,
+            s_inodes_per_group: 128,
             s_mtime: 0,
             s_wtime: 0,
             s_mnt_count: 0,
@@ -2141,7 +2240,7 @@ pub mod tests {
         );
 
         let sb = make_superblock(4096, 22); // s_log_block_size = 22
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(
             result.is_err(),
             "s_log_block_size = 22 must be refused at mount, not yield block_size == 0"
@@ -2157,7 +2256,7 @@ pub mod tests {
     /// still rejected here on correctness grounds rather than UB.
     fn test_shift_overflow_log_block_size_is_rejected() -> TestResult {
         let sb = make_superblock(4096, 32); // s_log_block_size = 32
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(
             result.is_err(),
             "s_log_block_size = 32 must be refused, even though the masked shift is defined, not UB"
@@ -2172,7 +2271,7 @@ pub mod tests {
     fn test_valid_log_block_size_is_accepted() -> TestResult {
         for n in 0..=5u32 {
             let sb = make_superblock(4096, n);
-            let result = Ext2Fs::validate_superblock(&sb);
+            let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
             test_assert!(result.is_ok(), "in-range s_log_block_size must mount");
             test_assert!(
                 result.unwrap() == 1024u32 << n,
@@ -2193,7 +2292,7 @@ pub mod tests {
             "regression precondition: block_size 65536 must truncate to 0 as u16"
         );
         let sb = make_superblock(4096, 6); // s_log_block_size = 6, block_size = 65536
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(
             result.is_err(),
             "s_log_block_size = 6 must be refused: block_size 65536 truncates to 0 as u16 in add_dir_entry's rec_len"
@@ -2208,7 +2307,7 @@ pub mod tests {
     fn test_zero_inodes_per_group_is_rejected() -> TestResult {
         let mut sb = make_superblock(4096, 2);
         sb.s_inodes_per_group = 0;
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(result.is_err(), "s_inodes_per_group = 0 must be refused");
         TestResult::Pass
     }
@@ -2222,7 +2321,7 @@ pub mod tests {
     fn test_zero_blocks_per_group_is_rejected() -> TestResult {
         let mut sb = make_superblock(4096, 2);
         sb.s_blocks_per_group = 0;
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(result.is_err(), "s_blocks_per_group = 0 must be refused");
         TestResult::Pass
     }
@@ -2239,14 +2338,37 @@ pub mod tests {
 
         sb.s_inode_size = 0;
         test_assert!(
-            Ext2Fs::validate_superblock(&sb).is_err(),
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
             "s_inode_size = 0 must be refused when s_rev_level >= 1"
         );
 
         sb.s_inode_size = 8192; // > block_size (4096)
         test_assert!(
-            Ext2Fs::validate_superblock(&sb).is_err(),
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
             "s_inode_size > block_size must be refused: it floors inodes_per_block to 0"
+        );
+
+        // Below `size_of::<Inode>()` the divisions all succeed and the damage
+        // moves to the raw read they scale: `read_inode` places the last
+        // inode of a block at `(block_size / inode_size - 1) * inode_size`
+        // and reads 128 bytes from there. At `s_inode_size = 64` that is
+        // offset 4032 of a 4096-byte block, so the last 32 bytes come from
+        // past the end of the buffer — through `read_unaligned`, which will
+        // not trap on the way out.
+        sb.s_inode_size = 64;
+        test_assert!(
+            (4096 / 64 - 1) * 64 + core::mem::size_of::<Inode>() > 4096,
+            "regression precondition: an inode_size of 64 must overrun the block"
+        );
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
+            "s_inode_size < size_of::<Inode>() must be refused: read_inode reads 128 bytes past the block"
+        );
+
+        sb.s_inode_size = core::mem::size_of::<Inode>() as u16;
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_ok(),
+            "the smallest inode size ext2 defines must still mount"
         );
         TestResult::Pass
     }
@@ -2259,7 +2381,7 @@ pub mod tests {
         sb.s_rev_level = 0;
         sb.s_inode_size = 0; // would be rejected if this field were read
         test_assert!(
-            Ext2Fs::validate_superblock(&sb).is_ok(),
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_ok(),
             "s_inode_size must be ignored on the rev_level 0 path"
         );
         TestResult::Pass
@@ -2273,7 +2395,7 @@ pub mod tests {
     fn test_first_data_block_out_of_range_is_rejected() -> TestResult {
         let mut sb = make_superblock(100, 2); // 100-block filesystem
         sb.s_first_data_block = 100; // == s_blocks_count: outside the volume
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(
             result.is_err(),
             "s_first_data_block >= s_blocks_count must be refused"
@@ -2290,11 +2412,176 @@ pub mod tests {
         sb.s_rev_level = 1;
         sb.s_inode_size = 256;
         sb.s_first_data_block = 0;
-        let result = Ext2Fs::validate_superblock(&sb);
+        let result = Ext2Fs::validate_superblock(&sb, ANY_DEVICE);
         test_assert!(result.is_ok(), "an ordinary in-range superblock must mount");
         test_assert!(
             result.unwrap() == 4096,
             "block_size must be 4096 for s_log_block_size = 2"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: the defect this closes. `s_blocks_count` is read straight off
+    /// disk and `mount()` compared it against nothing. It is the sole
+    /// multiplicand of `checked_size`'s ceiling
+    /// (`block_size * s_blocks_count`), which is the entire basis of the two
+    /// bounds this file already carries — the directory `i_size` bound and
+    /// the regular-file `total_size` bound added in 532e121. So an image on
+    /// a 1 MiB device claiming `s_blocks_count = u32::MAX` does not merely
+    /// lie about its size: it lifts that ceiling to 4 TiB and thereby
+    /// re-opens both earlier fixes, letting a directory inode claiming
+    /// `i_size = 0xFFFF_FFF0` through `checked_dir_size` and into
+    /// `alloc::vec![0u8; 4 GiB]`. This `no_std` kernel registers no
+    /// `#[alloc_error_handler]`, so that allocation failing aborts.
+    /// Bounding the claim against the extent of the device it was read from
+    /// makes the ceiling a physical fact again.
+    fn test_blocks_count_beyond_device_is_rejected() -> TestResult {
+        let device_sectors = 2048u64; // a 1 MiB device
+        let mut sb = make_superblock(1024, 0); // 1 KiB blocks
+        sb.s_blocks_count = u32::MAX;
+
+        // What that claim does to the ceiling the earlier fixes rest on.
+        let ceiling = 1024u64 * sb.s_blocks_count as u64;
+        test_assert!(
+            ceiling > device_sectors * 512,
+            "regression precondition: the claimed capacity must exceed the device"
+        );
+        test_assert!(
+            ceiling >= 0xFFFF_FFF0,
+            "regression precondition: the inflated ceiling must clear a 4 GiB i_size"
+        );
+
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, device_sectors).is_err(),
+            "s_blocks_count beyond the device extent must be refused"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: the ext2 parity fixture (`fs::parity::format_ext2`) — 1024
+    /// blocks of 1 KiB on a 2048-sector `MemDisk`, exactly filling it — must
+    /// still mount. This is the shape the `Verify FAT/ext2 parity proof` CI
+    /// gate depends on, and it sits on the boundary the check uses, so an
+    /// off-by-one in either direction shows up here.
+    fn test_blocks_count_filling_the_device_is_accepted() -> TestResult {
+        let sb = make_superblock(1024, 0);
+        // Routed through `black_box` so the constant folder cannot collapse
+        // this to `2048 == 2048`, which clippy's `eq_op` (denied in this
+        // crate) reads as comparing a value to itself.
+        let blocks = core::hint::black_box(1024u64);
+        test_assert!(
+            blocks * (1024 / 512) == 2048,
+            "regression precondition: the fixture exactly fills its 2048-sector device"
+        );
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, 2048).is_ok(),
+            "a filesystem that exactly fills its device must mount"
+        );
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, 2047).is_err(),
+            "one sector short of the claim must be refused"
+        );
+        TestResult::Pass
+    }
+
+    /// `s_blocks_per_group` and `s_inodes_per_group` bound `local` in
+    /// `free_block`/`free_inode`, and `local / 8` then indexes a `Vec` that
+    /// is exactly one block long. Only `== 0` was rejected, so
+    /// `s_blocks_per_group = 0x8000_0000` plus a corrupt `i_block` entry of
+    /// `u32::MAX` indexes `buf[268435455]` of a 1024-byte buffer — a panic,
+    /// and this kernel's profiles set `panic = "abort"`. One bitmap block
+    /// holds `block_size * 8` bits, which is both ext2's real ceiling for a
+    /// group and precisely the bound that keeps the index inside the buffer.
+    fn test_oversized_group_counts_are_rejected() -> TestResult {
+        // The index arithmetic `free_block` performs, at the largest value
+        // the bound accepts, for every block size this file mounts.
+        for log_block_size in 0..=5u32 {
+            let block_size = 1024u32 << log_block_size;
+            let local = (block_size * 8) - 1; // worst case under the bound
+            test_assert!(
+                local / 8 < block_size,
+                "the accepted maximum must keep byte_idx inside the bitmap block"
+            );
+        }
+
+        let mut sb = make_superblock(4096, 0); // block_size 1024, 8192 bits
+        sb.s_blocks_per_group = 0x8000_0000;
+        test_assert!(
+            (u32::MAX - 1) % sb.s_blocks_per_group / 8 >= 1024,
+            "regression precondition: this s_blocks_per_group must index past the block"
+        );
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
+            "s_blocks_per_group beyond one bitmap block must be refused"
+        );
+
+        let mut sb = make_superblock(4096, 0);
+        sb.s_inodes_per_group = 8193; // one past 1024 * 8
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
+            "s_inodes_per_group beyond one bitmap block must be refused"
+        );
+
+        let mut sb = make_superblock(4096, 0);
+        sb.s_blocks_per_group = 8192; // exactly one bitmap block
+        sb.s_inodes_per_group = 8192;
+        sb.s_inodes_count = 8192;
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_ok(),
+            "a group that exactly fills its bitmap block must still mount"
+        );
+        TestResult::Pass
+    }
+
+    /// `s_inodes_count` bounds `allocate_inode`'s group scan
+    /// (`s_inodes_count.div_ceil(s_inodes_per_group)`) the same way
+    /// `s_blocks_count` bounds `allocate_block`'s, and nothing checked it: on
+    /// the one-group fixture, `u32::MAX` inodes makes that loop scan
+    /// 33,554,432 groups, each iteration a `read_bgd` reading a block far
+    /// outside the block-group descriptor table and interpreting whatever it
+    /// finds as a descriptor. Tying it to the group count the block side
+    /// yields — ext2's own invariant — bounds it by the now device-bounded
+    /// block count.
+    fn test_inodes_count_beyond_group_capacity_is_rejected() -> TestResult {
+        let mut sb = make_superblock(1024, 0); // one group, 128 inodes in it
+        sb.s_inodes_count = u32::MAX;
+        test_assert!(
+            sb.s_inodes_count.div_ceil(sb.s_inodes_per_group) == 33_554_432,
+            "regression precondition: the unbounded count drives a 33554432-group scan"
+        );
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_err(),
+            "more inodes than the filesystem's groups can hold must be refused"
+        );
+
+        let mut sb = make_superblock(1024, 0);
+        sb.s_inodes_count = sb.s_inodes_per_group; // exactly one group's worth
+        test_assert!(
+            Ext2Fs::validate_superblock(&sb, ANY_DEVICE).is_ok(),
+            "an inode count the groups can hold must still mount"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: the defect this closes. The last thing `mount()` does is
+    /// `*self.buffer_cache.lock() = BufferCache::new(..)`, and `BufferCache`
+    /// has no `Drop` impl (`fs/buffer_cache.rs`), so a second `mount()` drops
+    /// every dirty buffer — inode table, bitmaps, directory blocks, file data
+    /// — without writing any of it back, discarding writes that already
+    /// returned `Ok` to their caller. Latent at HEAD: `fs::init_vfs`,
+    /// `apps::installer`, and `fs::parity::measure` each build a fresh
+    /// `Ext2Fs::new` and mount it once, so no in-tree caller reaches it. The
+    /// guard is on `mount` rather than on those three because `mount` is
+    /// `pub` on a `pub` struct.
+    ///
+    /// This runs the real `mount()`, not a stand-in: the guard is the first
+    /// thing it does, so the refusal is observable with no block device
+    /// attached — the `read_block` on the next line is never reached.
+    fn test_second_mount_is_refused() -> TestResult {
+        let mut fs = make_fs(4096, 0); // already carries a mounted superblock
+        test_assert!(
+            matches!(fs.mount(), Err(VfsError::InvalidOperation)),
+            "mounting an already-mounted Ext2Fs must be refused, not silently discard the buffer cache"
         );
         TestResult::Pass
     }
@@ -2363,6 +2650,26 @@ pub mod tests {
         crate::testing::register_test(
             "ext2::ordinary_superblock_is_accepted",
             test_ordinary_superblock_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::blocks_count_beyond_device_is_rejected",
+            test_blocks_count_beyond_device_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::blocks_count_filling_the_device_is_accepted",
+            test_blocks_count_filling_the_device_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::oversized_group_counts_are_rejected",
+            test_oversized_group_counts_are_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::inodes_count_beyond_group_capacity_is_rejected",
+            test_inodes_count_beyond_group_capacity_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::second_mount_is_refused",
+            test_second_mount_is_refused,
         );
     }
 }
