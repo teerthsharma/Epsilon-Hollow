@@ -123,6 +123,7 @@ pub fn load(
     let headers = read_program_headers(elf_data)?;
 
     let base = if e_type == 3 { aslr_base } else { 0 };
+    let entry_point = validate_entry_point(entry, base, &headers)?;
     let dynamic = parse_dynamic_link_info(elf_data, &headers)?;
 
     // Tracks every frame allocated below (PML4, segment pages, stack pages)
@@ -188,7 +189,7 @@ pub fn load(
     rollback.commit();
 
     Ok(LoadedElf {
-        entry_point: entry + base,
+        entry_point,
         stack_pointer: sp,
         page_table: pml4_frame.as_u64(),
         file_mode,
@@ -447,6 +448,56 @@ fn validate_segment_range(p_vaddr: u64, base: u64, p_memsz: u64) -> Result<(u64,
     }
 
     Ok((seg_start, seg_end))
+}
+
+/// Validate the ELF entry point (`e_entry`) before it is carried out of this
+/// module and eventually loaded into `RIP`.
+///
+/// `entry` is `read_u64(elf_data, 24)` — the raw header field, exactly as
+/// attacker-controlled as `p_vaddr` or a relocation's `r_offset` — and
+/// `entry + base` was a plain, unchecked `u64` add with no bound at all.
+/// Nothing in this file ever builds a `VirtAddr` from it, so it can't panic
+/// here — but that is not the hazard. `LoadedElf::entry_point` is handed to
+/// `process::scheduler` -> `process::task` ->
+/// `process::userspace::enter_userspace_trampoline`, which pushes it as
+/// `RIP` on the `iretq` frame with ring-3 `CS`. No consumer downstream of
+/// this module validates it. A kernel-half `entry_point` is not a page
+/// fault, it's a kernel-mode jump into attacker-chosen bytes; for ET_EXEC
+/// (`base == 0`) that is the raw header field, unmodified.
+///
+/// Being inside user space is necessary but not sufficient: an address
+/// that merely wasn't rejected can still point at a page nothing mapped,
+/// or at loaded-but-non-executable data. `entry_point` must fall inside
+/// `[seg_start, seg_end)` of some `PT_LOAD` segment that is both validated
+/// (reuses `validate_segment_range` — same bound, not a second copy of it)
+/// and marked executable (`p_flags & 0x1`, already read for `NO_EXECUTE`
+/// in `map_load_segments`). Every compiler-produced binary points
+/// `e_entry` into its own `.text`, which is exactly such a segment, so this
+/// does not reject legitimate input.
+fn validate_entry_point(
+    entry: u64,
+    base: u64,
+    headers: &[ProgramHeader],
+) -> Result<u64, ElfError> {
+    let entry_point = entry.checked_add(base).ok_or(ElfError::InvalidSegment)?;
+    if exceeds_user_space(entry_point) {
+        return Err(ElfError::InvalidSegment);
+    }
+
+    let in_executable_segment = headers.iter().any(|ph| {
+        if ph.p_type != PT_LOAD || ph.p_flags & 0x1 == 0 {
+            return false;
+        }
+        match validate_segment_range(ph.p_vaddr, base, ph.p_memsz) {
+            Ok((seg_start, seg_end)) => entry_point >= seg_start && entry_point < seg_end,
+            Err(_) => false,
+        }
+    });
+    if !in_executable_segment {
+        return Err(ElfError::InvalidSegment);
+    }
+
+    Ok(entry_point)
 }
 
 fn map_load_segments(
@@ -758,6 +809,67 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Executable `PT_LOAD` header covering `[p_vaddr, p_vaddr + p_memsz)`,
+    /// file-backed for its whole length — enough for `validate_entry_point`
+    /// to accept an entry point inside it.
+    fn exec_header(p_vaddr: u64, p_memsz: u64) -> ProgramHeader {
+        ProgramHeader {
+            p_type: PT_LOAD,
+            p_flags: 0x1, // PF_X
+            p_offset: 0,
+            p_vaddr,
+            p_filesz: p_memsz,
+            p_memsz,
+        }
+    }
+
+    /// `e_entry` in the kernel half, ET_EXEC (`base == 0`) — the raw header
+    /// field reaches this check unmodified, same as `test_rejects_kernel_half_vaddr`.
+    fn test_rejects_entry_in_kernel_half() -> TestResult {
+        let result = validate_entry_point(0xFFFF_8000_0000_0000, 0, &[]);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// ET_DYN: `entry` chosen so `entry + base` lands exactly on the
+    /// kernel-half floor — proves the check runs on the sum, not on
+    /// `e_entry` in isolation.
+    fn test_rejects_aslr_entry_landing_in_kernel_half() -> TestResult {
+        let base = 0x1000u64;
+        let entry = 0xFFFF_8000_0000_0000u64 - base;
+        let result = validate_entry_point(entry, base, &[]);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// `entry + base` overflowing `u64` must be rejected via `checked_add`,
+    /// not wrapped into some other address.
+    fn test_rejects_entry_plus_base_overflow() -> TestResult {
+        let result = validate_entry_point(u64::MAX - 10, 4096, &[]);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// A legitimate entry point inside the loaded, executable segment must
+    /// be accepted — this is what every compiler-produced binary looks
+    /// like.
+    fn test_accepts_entry_inside_executable_segment() -> TestResult {
+        let headers = [exec_header(0x1000, 0x2000)];
+        let result = validate_entry_point(0x1500, 0, &headers);
+        test_assert_eq!(result, Ok(0x1500));
+        TestResult::Pass
+    }
+
+    /// An entry point under `USER_SPACE_TOP` and otherwise canonical, but
+    /// outside every `PT_LOAD` segment, must still be rejected — being in
+    /// user space is necessary but not sufficient.
+    fn test_rejects_entry_outside_any_segment() -> TestResult {
+        let headers = [exec_header(0x1000, 0x2000)];
+        let result = validate_entry_point(0x9000, 0, &headers);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
     /// Defect B: a frame tracked in `LoadRollback` but never committed
     /// (the shape every early-return failure path in `load` and
     /// `load_shared_object` now takes) must be freed back to the allocator
@@ -811,6 +923,26 @@ pub mod tests {
         crate::testing::register_test(
             "elf_loader::uncommitted_rollback_frees_tracked_frames",
             test_uncommitted_rollback_frees_tracked_frames,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_entry_in_kernel_half",
+            test_rejects_entry_in_kernel_half,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_aslr_entry_landing_in_kernel_half",
+            test_rejects_aslr_entry_landing_in_kernel_half,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_entry_plus_base_overflow",
+            test_rejects_entry_plus_base_overflow,
+        );
+        crate::testing::register_test(
+            "elf_loader::accepts_entry_inside_executable_segment",
+            test_accepts_entry_inside_executable_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_entry_outside_any_segment",
+            test_rejects_entry_outside_any_segment,
         );
     }
 }
