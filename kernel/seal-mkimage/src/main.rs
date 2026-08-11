@@ -4752,6 +4752,50 @@ impl AppState {
     }
 
     #[test]
+    fn language_hygiene_allows_only_quarantine_cited_host_language_lines() {
+        let root = unique_temp_dir("language-hygiene-quarantine");
+        let docs = root.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(
+            docs.join("layout.md"),
+            "| `tests/` | Host Python tests; quarantined host surface, see `docs/HOST_LANGUAGE_QUARANTINE.md` |\n| `build/` | The kernel image is produced by a Python build script |\n",
+        )
+        .unwrap();
+
+        let err = check_language_hygiene(&root).unwrap_err();
+        assert!(
+            err.contains("layout.md:2"),
+            "host-language line without a quarantine citation must still be reported: {err}"
+        );
+        assert!(
+            !err.contains("layout.md:1"),
+            "line citing the quarantine policy documents a quarantined surface: {err}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn language_hygiene_quarantine_citation_does_not_cover_neighbouring_lines() {
+        let root = unique_temp_dir("language-hygiene-quarantine-negative");
+        let workflows = root.join(".github").join("workflows");
+        fs::create_dir_all(&workflows).unwrap();
+        fs::write(
+            workflows.join("ci.yml"),
+            "# policy: docs/HOST_LANGUAGE_QUARANTINE.md\n      - run: python3 scripts/build_image.py\n",
+        )
+        .unwrap();
+
+        let err = check_language_hygiene(&root).unwrap_err();
+        assert!(
+            err.contains("ci.yml:2"),
+            "a build step running a host interpreter must fail even one line below a citation: {err}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sha256_matches_known_answer() {
         assert_eq!(
             sha256_hex(b"abc"),
@@ -9873,6 +9917,12 @@ fn language_line_allowed(line: &str) -> bool {
         || line.contains("python_runtime=0")
         || line.contains("without python")
         || line.contains("rejects python-backed")
+        // A line that cites the quarantine policy by path is documenting a
+        // legacy host surface that `docs/HOST_LANGUAGE_QUARANTINE.md` already
+        // declares out of the runtime, boot, build and proof paths. The marker
+        // is per line, so a build step that actually runs a host interpreter
+        // still fails even when the same file cites the policy elsewhere.
+        || line.contains("docs/host_language_quarantine.md")
 }
 
 fn strip_allowed_comment(line: &str) -> &str {
