@@ -780,7 +780,13 @@ pub mod tests {
             ),
             Ok(RelocWrite::W4(0xF7))
         );
-        // Negative displacement sign-extends.
+        // Negative displacement sign-extends. `R_X86_64_PLT32` is `L + A - P`
+        // in the psABI, and with no lazy-binding PLT the loader resolves `L` to
+        // the veneer address it just wrote, so the addend applies exactly as it
+        // does to `R_X86_64_PC32`: 0x1000 - 4 - 0x1100 = -0x104 = 0xFFFF_FEFC.
+        // Expecting 0xFFFF_FF00 here would be `S - P`, i.e. the addend silently
+        // dropped, which for the `call rel32` this patches lands 4 bytes past
+        // the callee entry.
         test_assert_eq!(
             compute_reloc(
                 relobj::R_X86_64_PLT32,
@@ -788,12 +794,26 @@ pub mod tests {
                 -4,
                 0xFFFF_9000_0000_1100
             ),
-            Ok(RelocWrite::W4(0xFFFF_FF00))
+            Ok(RelocWrite::W4(0xFFFF_FEFC))
         );
         // 32S truncates to a sign-extendable 32-bit value.
         test_assert_eq!(
             compute_reloc(relobj::R_X86_64_32S, 0x42, 0, 0),
             Ok(RelocWrite::W4(0x42))
+        );
+        // 32S is `S + A` too: the addend must survive this branch as well.
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x1_0000, -4, 0),
+            Ok(RelocWrite::W4(0xFFFC))
+        );
+        // The exact edge of the sign-extendable range, from both sides.
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x7FFF_FFFF, 0, 0),
+            Ok(RelocWrite::W4(0x7FFF_FFFF))
+        );
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x8000_0000, 0, 0),
+            Err(ObjError::RelocationOverflow)
         );
         // Out of +/-2 GiB must be refused, not silently wrapped.
         test_assert_eq!(
