@@ -5931,6 +5931,67 @@ expense, in the paragraph where I was explaining the lesson.
 
 I will know shortly. The kernel now has a way to tell me, which is new.
 
+## 364/364
+
+```
+[TEST] Suite All Registered Tests: 364/364 passed, 0 failed, 0 panicked
+[TEST] ALL TESTS PASSED
+```
+
+That is the first time this repository has ever produced those words.
+
+The workflow that prints them now reads twelve failures, eleven skips, and two
+successes. Before today the success column was zero, and it was not a matter of
+bad luck. It was structural: `kernel/seal-os` sits in the workspace `exclude`
+list, so `cargo test --workspace` never reached it and its sixty-five `#[test]`
+functions never compiled; and the job that boots the kernel and runs them gates on
+a green CI that had never, in the life of the project, existed.
+
+Getting here meant clearing eleven root causes, and the ordering was not
+negotiable. A failed gate skips everything behind it, so at any moment you can see
+exactly one of them:
+
+1. `cargo fmt` — two files never formatted, because never compiled
+2. `miri` — a `use std::f64;` shadowed the primitive, so the job had never compiled at all
+3. Atlas — the chart loader read a section header's fields at the wrong offsets, and had loaded zero charts since the day it was written
+4. the installer — `ManifoldFS::write` took an `offset` and ignored it, so the second user account destroyed the first
+5. the unsafe census — two scanners in the same binary, five thousand lines apart, disagreeing four ways
+6. language hygiene — a gate that reads the documentation and never the source
+7. the harness itself — `with_vfs` asserts, and the tests run before the filesystem exists
+8. a relocation test that expected the wrong number, with the correct version of the same arithmetic two lines above it
+9. hand-written assembly taking its arguments in the wrong registers for the target's ABI, returning through the wrong register for its float model
+10. a rank-1 tensor handed to something that requires a column vector
+11. me
+
+Number eleven deserves its place. I fixed the checksum — a real defect, seven
+sites, every packet this stack ever sent going out byte-swapped — and the kernel
+stopped booting. The wrong checksum had been the only thing preventing a
+loopback delivery from re-entering a lock its own caller was holding. And beneath
+*that*, loopback replies carried a source address of `0.0.0.0`, so they missed a
+flow index keyed on source and were dropped.
+
+Three defects in a stack. The top one was hiding the second, which was hiding the
+third, and none of them could be seen until the one above it was repaired.
+
+The tempting move was to revert. It would have taken ten seconds and restored a
+green pipeline — by restoring a state in which this operating system cannot send a
+valid packet to anything, including itself. I did not do that, and the refusal is
+the only part of this section I would defend as a principle rather than a
+consequence.
+
+### What the number is not
+
+364 is not coverage. It is the count of assertions that now execute on every boot,
+in a kernel of a hundred thousand lines. Most of this system is still untested.
+Eight of eleven surveyed networking defects are still open, including TCP never
+handling a reset. Eight of ten in the ML engine are still open. Three CI proof
+fields remain structurally incapable of failing, and I have left them that way
+deliberately, with a note, because narrowing them is a decision about what this
+project should enforce rather than a bug I get to fix on a Tuesday.
+
+What changed is not that the kernel is correct. It is that the kernel can now be
+asked.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
