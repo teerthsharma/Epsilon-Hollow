@@ -168,7 +168,9 @@ pub fn send_icmpv6_echo_request(dst: [u8; 16], seq: u16) {
     pseudo.push(58);
     let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
     pseudo.extend_from_slice(bytes);
-    pkt.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+    // Network order, like `id` and `seq` above: this struct is blitted raw.
+    // The three explicit-shift sites below already write network order.
+    pkt.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
     let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
     send_ipv6_packet(dst, 58, bytes);
 }
