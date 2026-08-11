@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2026-10-27 - Prevented O(N) Re-renders with Individual Zustand Selectors
+**Learning:** When using Zustand for state management, destructuring from the full store (e.g., `const { a, b } = useStore()`) subscribes the component to the entire store, causing a re-render on *any* state update. This can lead to massive performance bottlenecks, especially in root components like App.tsx.
+**Action:** Always use individual selectors (e.g., `const a = useStore(s => s.a)`) or `useShallow` to restrict re-renders strictly to when the selected state changes.
