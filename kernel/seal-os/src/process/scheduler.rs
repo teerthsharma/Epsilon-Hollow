@@ -903,6 +903,46 @@ impl ManifoldScheduler {
         }
     }
 
+    /// Fork the current task: the kernel stack, the xsave area, a COW clone of
+    /// the page table, and the parent's credentials, cwd, brk and signal state.
+    ///
+    /// Two resources are deliberately not inherited, because neither can be
+    /// inherited from this module.
+    ///
+    /// **File descriptors.** `syscall::table::FILE_TABLE` is one
+    /// `BTreeMap<u64, FdEntry>` for the whole system, keyed by the fd number
+    /// alone, and `fd_lookup` resolves `fd` as `table.get(&fd)` filtered on
+    /// `entry.owner == current_task_id()`. Every number the parent holds is
+    /// therefore already taken, so an entry cloned from here would have to
+    /// carry a fresh number off `NEXT_FD` — which the child, resuming inside
+    /// the parent's code with the parent's integers, can never name. That is
+    /// not inheritance; it is an unnameable, unclosable entry left in a global
+    /// map for every child ever forked, so the child is left with none
+    /// instead. Real inheritance needs the table keyed by `(owner, fd)` so the
+    /// child's copy can keep the number, and that is `table.rs`'s to change.
+    /// Note also that `FdEntry` holds `offset` by value: duplicating one gives
+    /// the child an independent cursor, not the shared open-file description
+    /// POSIX specifies, which would need a refcounted description in
+    /// `table.rs` rather than a per-descriptor field.
+    ///
+    /// **mmap regions.** `clone_page_table_cow` aliases the parent's mapped
+    /// pages into the child's PML4, but `memory::mmap::REGIONS` gains no entry
+    /// under the child's page table, and both consumers of that list compare
+    /// `region.page_table` against a freshly read `Cr3`. So `munmap_user`
+    /// refuses the child's unmap of its own inherited pages, and
+    /// `handle_page_fault` declines to back a page the parent reserved but
+    /// never touched — that fault falls past the demand-paging arm in
+    /// `drivers::interrupts::page_fault_handler` to the hard-fault path.
+    /// `REGIONS` is `pub(super)` within `memory` and is not reachable here.
+    ///
+    /// ponytail: a forked child inherits no descriptors and no registered
+    /// regions. Upgrade path: `syscall::table::inherit_fds(parent_id,
+    /// child_id)` and `memory::mmap::inherit_regions(parent_pt, child_pt)`,
+    /// both invoked from the free `fork_current()` below *after* its scheduler
+    /// guard is dropped, and neither consulting the scheduler itself.
+    /// `fd_lookup` already takes `FILE_TABLE` and then `scheduler_lock`
+    /// (through `current_task_id`), so reaching either from in here, under the
+    /// guard, inverts that order on a non-reentrant `spin::Mutex`.
     pub fn fork_current(&mut self) -> Option<u64> {
         let idx = self.current?;
 
