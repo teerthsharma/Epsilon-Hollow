@@ -75,6 +75,23 @@ impl Csw {
         }
         Ok(csw)
     }
+
+    /// Validate the status and residue fields of a parsed CSW.
+    ///
+    /// `status != 0` means the device reports the command itself failed.
+    /// `residue != 0` means the Bulk-Only Transport data stage moved fewer
+    /// bytes than the CBW's `dCBWDataTransferLength` promised — none of the
+    /// mass-storage callers can act on a partial transfer, so a nonzero
+    /// residue is an error, not a truncated success.
+    fn check(&self) -> Result<(), &'static str> {
+        if self.status != 0 {
+            return Err("CSW reports command failure");
+        }
+        if self.residue != 0 {
+            return Err("CSW reports short transfer (residue != 0)");
+        }
+        Ok(())
+    }
 }
 
 /// Maximum sectors per SCSI READ/WRITE 10 command (limited by Normal TRB length).
@@ -259,9 +276,7 @@ impl UsbMassStorage {
         let mut raw = [0u8; 13];
         Self::recv_bulk_in(inner, &mut raw)?;
         let csw = Csw::parse(&raw)?;
-        if csw.status != 0 {
-            return Err("CSW reports command failure");
-        }
+        csw.check()?;
         Ok(csw)
     }
 
@@ -346,5 +361,72 @@ pub fn poll() {
         let msc_ref: &'static UsbMassStorage = unsafe { &*msc_ptr };
         crate::drivers::block::register_block_device(1, msc_ref);
         serial_println!("[MSC] Registered as block device 1");
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    fn raw_csw(signature: u32, tag: u32, residue: u32, status: u8) -> [u8; 13] {
+        let mut raw = [0u8; 13];
+        raw[0..4].copy_from_slice(&signature.to_le_bytes());
+        raw[4..8].copy_from_slice(&tag.to_le_bytes());
+        raw[8..12].copy_from_slice(&residue.to_le_bytes());
+        raw[12] = status;
+        raw
+    }
+
+    /// The exact defect shape: `status == 0` (command succeeded) but a
+    /// nonzero `residue` — the device admits it moved fewer bytes than the
+    /// CBW promised. `Csw::parse` alone used to accept this silently.
+    fn test_nonzero_residue_with_success_status_rejects() -> TestResult {
+        let raw = raw_csw(CSW_SIGNATURE, 7, 4, 0);
+        let Ok(csw) = Csw::parse(&raw) else {
+            return TestResult::Fail("well-formed CSW failed to parse");
+        };
+        test_assert!(
+            csw.check().is_err(),
+            "nonzero residue must not be accepted as success"
+        );
+        TestResult::Pass
+    }
+
+    fn test_zero_residue_zero_status_accepts() -> TestResult {
+        let raw = raw_csw(CSW_SIGNATURE, 7, 0, 0);
+        let Ok(csw) = Csw::parse(&raw) else {
+            return TestResult::Fail("well-formed CSW failed to parse");
+        };
+        test_assert_eq!(csw.check(), Ok(()));
+        TestResult::Pass
+    }
+
+    /// Guards against the residue check replacing the status check instead
+    /// of adding to it.
+    fn test_nonzero_status_rejects_even_with_zero_residue() -> TestResult {
+        let raw = raw_csw(CSW_SIGNATURE, 7, 0, 1);
+        let Ok(csw) = Csw::parse(&raw) else {
+            return TestResult::Fail("well-formed CSW failed to parse");
+        };
+        test_assert!(csw.check().is_err(), "nonzero status must be rejected");
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "mass_storage::nonzero_residue_with_success_status_rejects",
+            test_nonzero_residue_with_success_status_rejects,
+        );
+        crate::testing::register_test(
+            "mass_storage::zero_residue_zero_status_accepts",
+            test_zero_residue_zero_status_accepts,
+        );
+        crate::testing::register_test(
+            "mass_storage::nonzero_status_rejects_even_with_zero_residue",
+            test_nonzero_status_rejects_even_with_zero_residue,
+        );
+        super::xhci::tests::register_all();
     }
 }

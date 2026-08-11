@@ -98,6 +98,15 @@ impl Trb {
         ((self.data[2] >> 24) & 0xFF) as u8
     }
 
+    /// Bytes the endpoint did not move, for a Transfer Event TRB (xHCI spec
+    /// §6.4.2.1's "TRB Transfer Length" field on the event, low 24 bits of
+    /// dword 2). Zero means the associated Normal TRB moved every byte it was
+    /// asked to move; a Short Packet completion (`code == 13`) always
+    /// carries a nonzero value here.
+    fn transfer_residual(&self) -> u32 {
+        self.data[2] & 0x00FF_FFFF
+    }
+
     fn slot_id(&self) -> u8 {
         ((self.data[3] >> 24) & 0xFF) as u8
     }
@@ -859,6 +868,13 @@ impl XhciController {
                     // Transfer Event
                     let code = evt.completion_code();
                     if code == 1 || code == 13 {
+                        if evt.transfer_residual() != 0 {
+                            // Device moved fewer bytes than the Normal TRB
+                            // requested. None of the mass-storage callers
+                            // can act on a partial write, so this is an
+                            // error, not a truncated success.
+                            return Err("bulk OUT short transfer");
+                        }
                         return Ok(());
                     } else {
                         return Err("bulk OUT transfer failed");
@@ -900,6 +916,13 @@ impl XhciController {
                     // Transfer Event
                     let code = evt.completion_code();
                     if code == 1 || code == 13 {
+                        if evt.transfer_residual() != 0 {
+                            // Device moved fewer bytes than requested.
+                            // Returning Ok(()) here would hand the caller a
+                            // buffer whose tail this transfer never wrote —
+                            // treat it as a hard error instead.
+                            return Err("bulk IN short transfer");
+                        }
                         return Ok(());
                     } else {
                         return Err("bulk IN transfer failed");
@@ -1232,4 +1255,59 @@ where
     F: FnOnce(&mut XhciController) -> R,
 {
     XHCI_GLOBAL.lock().as_mut().map(f)
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// A Transfer Event TRB's dword 2 packs an 8-bit completion code in the
+    /// top byte and a 24-bit residual byte count in the rest. The two must
+    /// decode independently.
+    fn test_completion_code_and_residual_decode_independently() -> TestResult {
+        let mut trb = Trb::zero();
+        trb.data[2] = 0xFFFF_FFFF;
+        test_assert_eq!(trb.completion_code(), 0xFFu8);
+        test_assert_eq!(trb.transfer_residual(), 0x00FF_FFFFu32);
+        TestResult::Pass
+    }
+
+    fn test_success_completion_zero_residual() -> TestResult {
+        let mut trb = Trb::zero();
+        trb.data[2] = 1 << 24; // code 1, residual 0
+        test_assert_eq!(trb.completion_code(), 1u8);
+        test_assert_eq!(trb.transfer_residual(), 0u32);
+        TestResult::Pass
+    }
+
+    /// The exact shape the defect used to accept as full success: a Short
+    /// Packet completion carrying a nonzero residual.
+    fn test_short_packet_reports_nonzero_residual() -> TestResult {
+        let mut trb = Trb::zero();
+        trb.data[2] = (13 << 24) | 100; // code 13, residual 100 bytes
+        test_assert_eq!(trb.completion_code(), 13u8);
+        test_assert_eq!(trb.transfer_residual(), 100u32);
+        test_assert!(
+            trb.transfer_residual() != 0,
+            "a Short Packet completion must report a nonzero residual"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "xhci::completion_code_and_residual_decode_independently",
+            test_completion_code_and_residual_decode_independently,
+        );
+        crate::testing::register_test(
+            "xhci::success_completion_zero_residual",
+            test_success_completion_zero_residual,
+        );
+        crate::testing::register_test(
+            "xhci::short_packet_reports_nonzero_residual",
+            test_short_packet_reports_nonzero_residual,
+        );
+    }
 }

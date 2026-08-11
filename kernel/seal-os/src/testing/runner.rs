@@ -31,9 +31,13 @@ pub fn test_main() -> ! {
     crate::pkg::channel::tests::register_all();
     crate::drivers::apic::tests::register_all();
     crate::drivers::block::ahci::tests::register_all();
+    crate::drivers::block::virtio_blk::tests::register_all();
+    crate::drivers::block::ramdisk::tests::register_all();
     crate::drivers::acpi::rsdp::tests::register_all();
     crate::drivers::acpi::madt::tests::register_all();
     crate::drivers::acpi::fadt::tests::register_all();
+    // Chains xhci::tests — see drivers/usb/mass_storage.rs.
+    crate::drivers::usb::mass_storage::tests::register_all();
     crate::drivers::gpu::gpu_bench::tests::register_all();
     // Chains x509::tests and ecdhe::tests — see drivers/net/tls.rs.
     crate::drivers::net::tls::tests::register_all();
