@@ -979,8 +979,28 @@ impl Ext2Fs {
     }
 
     /// Clear a bit in the block bitmap.
+    ///
+    /// `block` is untrusted: `free_inode_blocks` feeds this every `u32` it
+    /// finds in an inode's `i_block` array and in the indirect blocks those
+    /// point at, all read straight off the disk.
+    ///
+    /// Below `s_first_data_block` the subtraction wraps — neither Cargo
+    /// profile in this crate sets `overflow-checks` — and beyond
+    /// `s_blocks_count` the block is simply not part of this volume. Either
+    /// way `group` names a block group that does not exist, `read_bgd` reads
+    /// whatever block that lands on and interprets it as a descriptor, and the
+    /// bit finally cleared belongs to some other group's bitmap. The
+    /// `% s_blocks_per_group` below keeps `byte_idx` inside the one-block
+    /// bitmap `Vec` (see `validate_superblock`), so the result is silent
+    /// allocator corruption — a block marked free that is still in use, handed
+    /// out again by the next `allocate_block` — rather than an out-of-bounds
+    /// write. Fails closed, because a block outside the volume cannot be
+    /// freed into any group correctly.
     pub fn free_block(&mut self, block: u32) -> Result<(), VfsError> {
         let sb = self.superblock.ok_or(VfsError::IoError)?;
+        if block < sb.s_first_data_block || block >= sb.s_blocks_count {
+            return Err(VfsError::InvalidOperation);
+        }
         let group = (block - sb.s_first_data_block) / sb.s_blocks_per_group;
         let local = (block - sb.s_first_data_block) % sb.s_blocks_per_group;
         let byte_idx = (local / 8) as usize;
@@ -1034,8 +1054,20 @@ impl Ext2Fs {
     }
 
     /// Clear a bit in the inode bitmap.
+    ///
+    /// Same defect class as `free_block` above, and the same untrusted origin:
+    /// `unlink` and `rmdir` pass the inode number out of a directory entry
+    /// read off disk. Ext2 numbers inodes from 1, so `ino == 0` wraps
+    /// `(ino - 1)` to `u32::MAX` and an `ino` past `s_inodes_count` names a
+    /// group that does not exist; the modulo then keeps the index inside the
+    /// bitmap block, so the damage is a bit cleared in the wrong group's
+    /// bitmap rather than a bad write. `read_inode` already refuses `ino == 0`
+    /// for its own division; this is the same refusal on the free path.
     pub fn free_inode(&mut self, ino: u32) -> Result<(), VfsError> {
         let sb = self.superblock.ok_or(VfsError::IoError)?;
+        if ino == 0 || ino > sb.s_inodes_count {
+            return Err(VfsError::InvalidOperation);
+        }
         let group = (ino - 1) / sb.s_inodes_per_group;
         let local = (ino - 1) % sb.s_inodes_per_group;
         let byte_idx = (local / 8) as usize;
@@ -1204,6 +1236,21 @@ impl Ext2Fs {
                 core::ptr::read_unaligned(dir_data.as_ptr().add(offset) as *const DirEntryHeader)
             };
             if header.inode == 0 && header.rec_len as usize >= needed {
+                // `rec_len` came off the disk. The comparison above only
+                // established that the entry *claims* room for `needed`
+                // bytes; nothing has established that the entry is inside the
+                // buffer that was actually read. A free entry sitting at
+                // `dir_data.len() - 8` with `rec_len` inflated to 4000 puts
+                // `name_start` at `dir_data.len()`, and the name copy below
+                // then slices past the end — which panics, and both Cargo
+                // profiles in this crate set `panic = "abort"`. Refused
+                // rather than clamped: an entry that claims to extend past
+                // the directory data is a corrupt image, and writing a
+                // truncated name into it would leave a second corruption
+                // behind.
+                if offset + header.rec_len as usize > dir_data.len() {
+                    return Err(VfsError::IoError);
+                }
                 let new_header = DirEntryHeader {
                     inode: ino,
                     rec_len: header.rec_len,
@@ -1264,6 +1311,20 @@ impl Ext2Fs {
             if last_header.inode != 0 {
                 let actual = Self::dir_entry_size(last_header.name_len as usize);
                 if last_header.rec_len as usize >= actual + needed {
+                    // Same untrusted `rec_len`, and this site is the worse of
+                    // the two: the loop above deliberately accepts a last
+                    // entry whose `rec_len` runs to or past the end of the
+                    // data, so `new_offset = last_offset + actual` can land
+                    // outside `dir_data` entirely — and the first thing done
+                    // there is an unchecked `write_unaligned` of an eight-byte
+                    // header, an out-of-bounds heap *write*, before the name
+                    // copy below panics. In a well-formed directory the last
+                    // entry ends exactly at the end of its block, so this
+                    // bound holds with equality and costs a legitimate image
+                    // nothing.
+                    if last_offset + last_header.rec_len as usize > dir_data.len() {
+                        return Err(VfsError::IoError);
+                    }
                     let new_rec_len = last_header.rec_len - actual as u16;
                     let mut updated_header = last_header;
                     updated_header.rec_len = actual as u16;
@@ -1300,6 +1361,22 @@ impl Ext2Fs {
         let block_idx = dir_size as u32 / self.block_size;
         let phys_block =
             self.get_or_allocate_data_block(&mut dir_inode, block_idx, self.block_size / 512)?;
+        // ponytail: `i_size` and `i_blocks` are `u32` and both of these wrap on
+        // a directory approaching 4 GiB, with `overflow-checks` off in both
+        // Cargo profiles. Deliberately left un-guarded rather than fixed
+        // blind. Reaching it requires clearing `checked_dir_size` first, whose
+        // ceiling is `block_size * s_blocks_count` and is itself bounded by
+        // the device extent (`validate_superblock`), so the precondition is a
+        // volume of at least 4 GiB — and the line before that allocates
+        // `alloc::vec![0u8; dir_size]`, i.e. 4 GiB of kernel heap, which this
+        // `no_std` kernel has no `#[alloc_error_handler]` for. The wrap is
+        // therefore corruption reachable only behind an allocation that aborts
+        // first, and no harness in this tree can construct the case: the host
+        // harness for this file runs its images under Miri in an in-memory
+        // `Vec`. Upgrade path when a 4 GiB image fixture exists:
+        // `i_size.checked_add(self.block_size).ok_or(VfsError::IoError)?`,
+        // same for `i_blocks`, and a test that drives `add_dir_entry` on a
+        // directory at `u32::MAX - block_size`.
         dir_inode.i_size += self.block_size;
         dir_inode.i_blocks += self.block_size / 512;
 
@@ -1720,6 +1797,17 @@ impl FileSystem for Ext2Fs {
 
         let mut offset = 0;
         while offset < dir_data.len() {
+            // `offset` is advanced by the previous entry's on-disk `rec_len`,
+            // so it can land anywhere inside `dir_data` — including on the
+            // last byte. `while offset < dir_data.len()` alone permits that,
+            // and the `read_unaligned` below then takes eight bytes from
+            // there, seven of them past the end of the `Vec`: an out-of-bounds
+            // read through a raw pointer, which is undefined behaviour rather
+            // than a trap. Same check, same shape, as `lookup` and `readdir`.
+            if offset + core::mem::size_of::<DirEntryHeader>() > dir_data.len() {
+                break;
+            }
+
             let header = unsafe {
                 core::ptr::read_unaligned(dir_data.as_ptr().add(offset) as *const DirEntryHeader)
             };
@@ -2702,6 +2790,79 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: the defect this closes. `free_block` computed
+    /// `(block - sb.s_first_data_block)` with nothing checking that `block` is
+    /// inside the volume, and `free_inode_blocks` hands it every `u32` it
+    /// finds in an inode's `i_block` array and in the indirect blocks those
+    /// point at — all disk-controlled. Below `s_first_data_block` the
+    /// subtraction wraps (neither Cargo profile here sets `overflow-checks`),
+    /// so `block = 0` on a 1 KiB-block filesystem, where `s_first_data_block`
+    /// is 1, yields `u32::MAX`. The `% s_blocks_per_group` that follows keeps
+    /// `byte_idx` inside the one-block bitmap `Vec`, so this is not an
+    /// out-of-bounds write and no existing bound catches it: it is a bit
+    /// cleared in a group that does not exist, marking a block free that is
+    /// still in use, for the next `allocate_block` to hand out twice.
+    ///
+    /// Both refusals are observable with no block device attached because the
+    /// guard is the first thing each function does — `read_bgd` on the next
+    /// line is never reached. The in-range cases below assert the *absence* of
+    /// that refusal rather than a specific error, since without a device they
+    /// go on to fail at the buffer cache: the point is that the guard let them
+    /// through, not what happened afterwards.
+    fn test_out_of_volume_block_free_is_refused() -> TestResult {
+        let mut fs = make_fs(4096, 0); // s_first_data_block = 1, 4096 blocks
+        test_assert!(
+            0u32.wrapping_sub(1) / 8192 == 524_287,
+            "regression precondition: freeing block 0 must wrap into a group that does not exist"
+        );
+        test_assert!(
+            matches!(fs.free_block(0), Err(VfsError::InvalidOperation)),
+            "a block below s_first_data_block must be refused, not wrapped into another group's bitmap"
+        );
+        test_assert!(
+            matches!(fs.free_block(u32::MAX), Err(VfsError::InvalidOperation)),
+            "a block past the end of the volume must be refused"
+        );
+        test_assert!(
+            matches!(fs.free_block(4096), Err(VfsError::InvalidOperation)),
+            "s_blocks_count is one past the last block: freeing it must be refused"
+        );
+        test_assert!(
+            !matches!(fs.free_block(1), Err(VfsError::InvalidOperation)),
+            "the first data block is legitimate and must still reach the bitmap"
+        );
+        test_assert!(
+            !matches!(fs.free_block(4095), Err(VfsError::InvalidOperation)),
+            "the last block of the volume is legitimate and must still reach the bitmap"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: the same defect on the inode side. Ext2 numbers inodes from 1, so
+    /// `free_inode(0)` wraps `(ino - 1)` to `u32::MAX`; `unlink` and `rmdir`
+    /// take that number from a directory entry read off disk, where a zeroed
+    /// or corrupted `inode` field is exactly what a deleted entry looks like.
+    fn test_out_of_range_inode_free_is_refused() -> TestResult {
+        let mut fs = make_fs(4096, 0); // s_inodes_count = 128
+        test_assert!(
+            matches!(fs.free_inode(0), Err(VfsError::InvalidOperation)),
+            "inode 0 does not exist in ext2 and must be refused, not wrapped to u32::MAX"
+        );
+        test_assert!(
+            matches!(fs.free_inode(129), Err(VfsError::InvalidOperation)),
+            "an inode past s_inodes_count must be refused"
+        );
+        test_assert!(
+            !matches!(fs.free_inode(1), Err(VfsError::InvalidOperation)),
+            "the first inode is legitimate and must still reach the bitmap"
+        );
+        test_assert!(
+            !matches!(fs.free_inode(128), Err(VfsError::InvalidOperation)),
+            "the last inode of the volume is legitimate and must still reach the bitmap"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "ext2::oversized_dir_i_size_is_rejected",
@@ -2794,6 +2955,14 @@ pub mod tests {
         crate::testing::register_test(
             "ext2::second_mount_is_refused",
             test_second_mount_is_refused,
+        );
+        crate::testing::register_test(
+            "ext2::out_of_volume_block_free_is_refused",
+            test_out_of_volume_block_free_is_refused,
+        );
+        crate::testing::register_test(
+            "ext2::out_of_range_inode_free_is_refused",
+            test_out_of_range_inode_free_is_refused,
         );
     }
 }
