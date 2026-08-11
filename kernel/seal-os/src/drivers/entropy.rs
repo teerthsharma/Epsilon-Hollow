@@ -4,6 +4,7 @@
 //! Hardware entropy driver using x86_64 RDRAND and RDSEED instructions.
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use spin::Mutex;
 
 static RDRAND_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static RDSEED_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -100,4 +101,57 @@ pub fn getrandom(buf: &mut [u8]) -> bool {
         buf[filled..].copy_from_slice(&bytes[..remaining]);
     }
     true
+}
+
+// ---------------------------------------------------------------------------
+// Software fallback, for the rare CPU with neither RDRAND nor RDSEED.
+//
+// Single shared copy: two callers (net::dns's transaction IDs, net::udp's
+// ephemeral ports) both need "hardware entropy, else something better than a
+// bare counter" and had each grown their own xorshift64 construction before
+// this was pulled out here -- exactly the drift risk a security primitive
+// shouldn't have two copies of. `security::aslr` has a separate, unrelated
+// xorshift64 seeded the same way for address-space randomization; it is not
+// consolidated with this one -- different module, different purpose (memory
+// layout, not network-protocol unpredictability), out of this item's scope.
+// ---------------------------------------------------------------------------
+
+static FALLBACK_RNG_STATE: Mutex<Option<u64>> = Mutex::new(None);
+
+/// Draw a 64-bit value from the software fallback PRNG (xorshift64, seeded
+/// once from RDTSC on first use).
+///
+/// This is *not* a security-grade fallback, stated plainly rather than left
+/// for a future reader to assume: `xorshift64` is linear and fully
+/// invertible, so an attacker who observes a few dozen of its (even
+/// truncated) outputs can recover the complete 64-bit generator state and
+/// then predict every subsequent value it will ever produce, with no
+/// brute-forcing required. There is also no reseeding -- the RDTSC sample
+/// taken on first use is the *only* entropy this generator ever has, so
+/// under sustained observation the effective unpredictability converges
+/// toward that one seed's entropy, and on a deterministic virtualized boot
+/// (fixed vCPU cycle count before first use) that can be close to zero. It
+/// is still strictly better than the bare incrementing counter it replaced
+/// (unpredictable from a *single* induced observation, unlike a counter),
+/// which is the only property callers here rely on.
+///
+/// This path only executes when the CPU has neither RDRAND nor RDSEED --
+/// essentially no x86_64 hardware manufactured since 2012. Callers should
+/// try `getrandom` (or `rdseed_u64().or_else(rdrand_u64)`) first and only
+/// reach for this once those report no hardware source available.
+pub fn fallback_random_u64() -> u64 {
+    let mut state = FALLBACK_RNG_STATE.lock();
+    let mut s = state.unwrap_or_else(|| {
+        let seed = unsafe { core::arch::x86_64::_rdtsc() };
+        if seed == 0 {
+            0x9e37_79b9_7f4a_7c15
+        } else {
+            seed
+        }
+    });
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    *state = Some(s);
+    s
 }

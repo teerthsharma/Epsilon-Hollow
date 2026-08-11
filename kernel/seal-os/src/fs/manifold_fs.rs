@@ -89,6 +89,18 @@ pub struct ManifoldFS {
     total_teleports: u64,
     total_lookups: u64,
     activity_log: Vec<TheoremEvent>,
+    /// Per-node ownership as `(uid, gid)`, keyed by inode id. A node with no
+    /// entry is root-owned; see `ManifoldFS::owner`.
+    ///
+    /// ponytail: a side table rather than a field on `InodeMetadata`, so
+    /// ownership does not survive a remount. `Inode` and `InodeMetadata` are
+    /// built by struct literal in `fs/block_store.rs`, and the on-disk
+    /// `InodeRecord` would have to carry the two words as well; both are out of
+    /// this change's scope. The upgrade path is `uid`/`gid` on `InodeMetadata`
+    /// written into the eight bytes `InodeRecord::to_record` leaves zero at
+    /// offset 248..256, which existing disks already read back as root and so
+    /// needs no superblock version bump.
+    owners: BTreeMap<u64, (u32, u32)>,
     /// Optional ext2 backend for faithful raw-byte persistence.
     ext2_backend: Option<Mutex<Ext2Fs>>,
 }
@@ -216,6 +228,14 @@ impl ManifoldFS {
             };
             if inode.name != "/" {
                 dirs.insert(inode.parent, &inode.name, id);
+                // mkdir() sets `.` -> self and `..` -> parent for every directory
+                // it creates (see mkdir() below); restore that same invariant here
+                // so store()/mkdir()/teleport()/duplicate() don't see a missing "."
+                // and wrongly reject a restored non-root directory as NotADirectory.
+                if matches!(inode.kind, InodeKind::Directory) {
+                    dirs.insert(id, ".", id);
+                    dirs.insert(id, "..", inode.parent);
+                }
             }
             if inode.parent != id || inode.name == "/" {
                 children.entry(inode.parent).or_default().push(id);
@@ -269,6 +289,9 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            // Nothing on disk records an owner, so every restored node is
+            // root-owned. That is the fail-closed reading, not a guess.
+            owners: BTreeMap::new(),
             ext2_backend: None,
         };
         fs.update_entropy();
@@ -329,6 +352,7 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            owners: BTreeMap::new(),
             ext2_backend: None,
         }
     }
@@ -840,6 +864,35 @@ impl ManifoldFS {
         self.inodes.get(id)
     }
 
+    /// Ownership of the node `id` as `(uid, gid)`.
+    ///
+    /// A node with no recorded owner is reported as root-owned. Root is the
+    /// truthful answer for every node this kernel has created so far — nodes
+    /// are created by the boot task and `process::scheduler::current_uid`
+    /// returns 0 for the whole uptime — and it is also the only safe answer:
+    /// `security::manifold_acl::check_access` guards a root-owned node more
+    /// tightly than any other, so a missing owner narrows access rather than
+    /// widening it.
+    ///
+    /// This does not by itself make the filesystem multi-user. Nothing records
+    /// a non-root owner yet, because no creating task has a non-root identity
+    /// to record; see commit 67a5c1e for why that ordering is deliberate.
+    pub fn owner(&self, id: u64) -> (u32, u32) {
+        self.owners.get(&id).copied().unwrap_or((0, 0))
+    }
+
+    /// Record `uid` and `gid` as the owner of the node `id`.
+    ///
+    /// An id that no live inode holds is rejected, so a stale id cannot leave
+    /// an ownership entry behind for the slab to hand to a later node.
+    pub fn set_owner(&mut self, id: u64, uid: u32, gid: u32) -> Result<(), FsError> {
+        if self.inodes.get(id).is_none() {
+            return Err(FsError::NotFound);
+        }
+        self.owners.insert(id, (uid, gid));
+        Ok(())
+    }
+
     pub fn is_dir(&self, id: u64) -> bool {
         self.inodes
             .get(id)
@@ -911,6 +964,7 @@ impl ManifoldFS {
         self.dirs.remove(dir_id, name);
         self.unlink_child(dir_id, inode_id);
         self.inodes.free(inode_id);
+        self.owners.remove(&inode_id);
         self.update_entropy();
         self.path_cache.bump_generation();
         self.log_event("T1/TSS", format!("deleted '{}'", name));
@@ -1145,7 +1199,7 @@ impl FileSystem for ManifoldFS {
         Ok(len)
     }
 
-    fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
         let old_inode = self
             .inodes
             .get(handle.inode)
@@ -1154,10 +1208,20 @@ impl FileSystem for ManifoldFS {
         if !matches!(old_inode.kind, InodeKind::File) {
             return Err(VfsError::InvalidOperation);
         }
+        // Write `buf` at `offset`, growing the file (zero-filling any gap) if
+        // `offset + buf.len()` exceeds the current length, exactly like
+        // `Ext2Fs::write` — the file is never truncated by a write, only
+        // extended. This keeps the two backends' offset semantics in sync;
+        // `read()` above already honors `offset`, so `write()` must too.
+        let off = offset as usize;
+        let end = off.saturating_add(buf.len());
         if let Some(inode) = self.inodes.get_mut(handle.inode) {
-            inode.payload = encoder::encode_data(buf);
-            inode.data = Vec::from(buf);
-            inode.metadata.original_size = buf.len() as u64;
+            if end > inode.data.len() {
+                inode.data.resize(end, 0);
+            }
+            inode.data[off..end].copy_from_slice(buf);
+            inode.payload = encoder::encode_data(&inode.data);
+            inode.metadata.original_size = inode.data.len() as u64;
             inode.metadata.modified_ms = now_ms();
         }
         let updated = self
@@ -1165,7 +1229,7 @@ impl FileSystem for ManifoldFS {
             .get(handle.inode)
             .cloned()
             .ok_or(VfsError::NotFound)?;
-        if let Err(_err) = self.store.write_inode(&updated, buf) {
+        if let Err(_err) = self.store.write_inode(&updated, &updated.data) {
             if self.store.is_mounted() {
                 if let Some(inode) = self.inodes.get_mut(handle.inode) {
                     *inode = old_inode;
@@ -1173,7 +1237,7 @@ impl FileSystem for ManifoldFS {
                 return Err(VfsError::IoError);
             }
         }
-        self.persist_raw_to_ext2(handle.inode, buf);
+        self.persist_raw_to_ext2(handle.inode, &updated.data);
         Ok(buf.len())
     }
 
@@ -1291,11 +1355,15 @@ impl FileSystem for ManifoldFS {
             InodeKind::File => VfsNodeType::File,
             InodeKind::Directory => VfsNodeType::Directory,
         };
+        // The node's recorded owner, or root when none was recorded. Reporting
+        // a fixed 0 here made every access check in the kernel decide on the
+        // same fabricated identity; see `ManifoldFS::owner`.
+        let (uid, gid) = self.owner(handle.inode);
         Ok(VfsNode {
             size: inode.metadata.original_size,
             permissions: inode.metadata.permissions,
-            uid: 0,
-            gid: 0,
+            uid,
+            gid,
             mode: inode.metadata.permissions,
             atime: inode.metadata.modified_ms,
             mtime: inode.metadata.modified_ms,
@@ -1611,6 +1679,17 @@ pub mod tests {
         test_assert_eq!(fs.exists("old.txt", docs), false);
         test_assert_eq!(fs.exists("new.txt", docs), true);
 
+        // A restored non-root directory must keep the same `.`/`..` invariant
+        // mkdir() sets when it first creates a directory. store()/mkdir() both
+        // guard with `dirs.lookup(parent_id, ".").is_none() && parent_id != root_id`;
+        // if from_store() never rebuilds "." for `docs`, this wrongly fails with
+        // NotADirectory even though `docs` genuinely exists.
+        if fs.mkdir("nested2", docs).is_err() {
+            return TestResult::Fail(
+                "mkdir into restored non-root dir failed (missing './..' invariant)",
+            );
+        }
+
         if fs.delete("new.txt", docs).is_err() {
             return TestResult::Fail("delete failed after rename remount");
         }
@@ -1652,6 +1731,108 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `write` must honor `offset` (not silently truncate the file), the
+    /// same as `read` already does — see `FileSystem::write` on `ManifoldFS`.
+    fn test_write_honors_offset() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = fs.root_id();
+        let id = fs.store_text("f.txt", "0123456789", root).unwrap();
+        let handle = VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        };
+
+        // A write at offset 0 shorter than the existing file must not
+        // truncate the tail.
+        fs.write(handle, b"AB", 0).unwrap();
+        let mut buf = [0u8; 10];
+        let n = fs.read(handle, &mut buf, 0).unwrap();
+        test_assert_eq!(n, 10);
+        test_assert_eq!(&buf[..], b"AB23456789");
+
+        // Two sequential appends both survive.
+        let size1 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"CD", size1).unwrap();
+        let size2 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"EF", size2).unwrap();
+        let mut buf2 = [0u8; 14];
+        let n2 = fs.read(handle, &mut buf2, 0).unwrap();
+        test_assert_eq!(n2, 14);
+        test_assert_eq!(&buf2[..], b"AB23456789CDEF");
+
+        // A write past the current end zero-fills the gap, and a read back
+        // at that offset returns what was written.
+        let size3 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"Z", size3 + 3).unwrap();
+        let data = fs.inode(id).unwrap().data.clone();
+        test_assert_eq!(data.len(), (size3 + 4) as usize);
+        test_assert_eq!(data[size3 as usize], 0);
+        test_assert_eq!(data[size3 as usize + 1], 0);
+        test_assert_eq!(data[size3 as usize + 2], 0);
+        let mut tail = [0u8; 1];
+        let nt = fs.read(handle, &mut tail, size3 + 3).unwrap();
+        test_assert_eq!(nt, 1);
+        test_assert_eq!(tail[0], b'Z');
+
+        TestResult::Pass
+    }
+
+    /// `stat` must report the ownership a node actually carries, and must
+    /// report root for a node whose owner was never recorded. A node with no
+    /// recorded owner is root-owned, never unowned: `manifold_acl` treats a
+    /// root-owned node as the guarded case, so the default has to fail closed.
+    fn test_stat_reports_recorded_owner() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = fs.root_id();
+        let id = fs.store_text("owned.txt", "data", root).unwrap();
+        let handle = VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        };
+
+        // Nothing recorded yet: root, not unowned.
+        let node = match fs.stat(handle) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat of a fresh node failed"),
+        };
+        test_assert_eq!(node.uid, 0);
+        test_assert_eq!(node.gid, 0);
+
+        if fs.set_owner(id, 1000, 1000).is_err() {
+            return TestResult::Fail("set_owner rejected a live inode id");
+        }
+        let node = match fs.stat(handle) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat after set_owner failed"),
+        };
+        test_assert_eq!(node.uid, 1000);
+        test_assert_eq!(node.gid, 1000);
+        test_assert_eq!(fs.owner(id), (1000, 1000));
+
+        // Ownership is per node, not global.
+        let other = fs.store_text("unowned.txt", "data", root).unwrap();
+        let other_node = match fs.stat(VfsHandle {
+            fs_idx: 0,
+            inode: other,
+        }) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat of the sibling node failed"),
+        };
+        test_assert_eq!(other_node.uid, 0);
+        test_assert_eq!(other_node.gid, 0);
+
+        // A freed id keeps no ownership behind it, and cannot take one.
+        if fs.delete("owned.txt", root).is_err() {
+            return TestResult::Fail("delete of the owned node failed");
+        }
+        test_assert_eq!(fs.owner(id), (0, 0));
+        test_assert!(
+            fs.set_owner(id, 1000, 1000).is_err(),
+            "set_owner accepted an id no live inode holds"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
         crate::testing::register_test(
@@ -1677,6 +1858,14 @@ pub mod tests {
         );
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
+        crate::testing::register_test(
+            "filesystem::write_honors_offset",
+            test_write_honors_offset,
+        );
+        crate::testing::register_test(
+            "filesystem::stat_reports_recorded_owner",
+            test_stat_reports_recorded_owner,
+        );
     }
 }
 

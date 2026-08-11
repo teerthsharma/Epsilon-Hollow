@@ -296,10 +296,10 @@ fn handle_click(
         return true;
     }
 
-    // Power button
-    let power_x = fb.width.saturating_sub(40);
-    if mx >= power_x && mx < power_x + 24 && my >= taskbar_y + 6 && my < taskbar_y + 22 {
-        state.power_menu.toggle(power_x, taskbar_y);
+    // Power button. The rectangle comes from the code that draws it.
+    let (power_x, power_y, power_w, power_h) = taskbar::power_button_rect(fb.width, fb.height);
+    if mx >= power_x && mx < power_x + power_w && my >= power_y && my < power_y + power_h {
+        state.power_menu.toggle(power_x, taskbar_y, fb.width);
         state.start_menu.close();
         return true;
     }

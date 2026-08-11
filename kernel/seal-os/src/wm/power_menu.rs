@@ -56,9 +56,17 @@ impl PowerMenu {
         }
     }
 
-    pub fn toggle(&mut self, x: u32, taskbar_y: u32) {
+    /// Open or close the menu, anchored at `x` but never extending past the
+    /// right edge of a `fb_width`-wide screen.
+    ///
+    /// The menu is wider than the gap between the power button and the right
+    /// edge, and `fill_rect` clips at the framebuffer edge, so an unclamped
+    /// anchor rendered only the first few columns of every item. Clamping here
+    /// rather than at the call site keeps `draw` and `handle_click` in
+    /// agreement: both read `self.x`, so the hit rows move with the drawn box.
+    pub fn toggle(&mut self, x: u32, taskbar_y: u32, fb_width: u32) {
         self.open = !self.open;
-        self.x = x;
+        self.x = x.min(fb_width.saturating_sub(self.width));
         self.y = taskbar_y.saturating_sub(self.height);
     }
 

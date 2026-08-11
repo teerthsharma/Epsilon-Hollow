@@ -8,7 +8,7 @@
 use uefi::boot::MemoryType;
 use uefi::mem::memory_map::MemoryMap;
 use uefi::prelude::*;
-use uefi::proto::console::gop::GraphicsOutput;
+use uefi::proto::console::gop::{GraphicsOutput, PixelFormat};
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::table::cfg::ACPI2_GUID;
 
@@ -16,6 +16,40 @@ use super::boot_info::{BootInfo, MemoryDescriptor, MAX_MEMORY_DESCRIPTORS};
 #[cfg(not(test))]
 use crate::graphics::framebuffer::Framebuffer;
 use crate::serial_println;
+
+/// Bytes per pixel that `Framebuffer` can render for a GOP pixel format, or
+/// `None` if the format is unrenderable and the mode must be refused.
+///
+/// `Framebuffer::put_pixel` stores a whole `u32` per pixel, so only the two
+/// formats UEFI defines as 32-bit are usable:
+///
+/// - `Rgb` and `Bgr` are 24-bit colour plus a reserved byte, always 4 bytes.
+/// - `Bitmask` carries explicit channel masks and may be any width; RGB565 is
+///   the common case. Its scanline stride is `stride * 2`, so the `stride * 4`
+///   pitch below would be double the truth and every write from the middle of
+///   the frame onward would land past the end of the framebuffer.
+/// - `BltOnly` has no CPU-visible linear buffer at all. It is refused here
+///   rather than downstream: `GraphicsOutput::frame_buffer` asserts on it, so
+///   reaching that call with a `BltOnly` mode panics during boot instead of
+///   returning the null address the caller checks for.
+const fn gop_format_bytes_per_pixel(format: PixelFormat) -> Option<u32> {
+    match format {
+        PixelFormat::Rgb | PixelFormat::Bgr => Some(4),
+        PixelFormat::Bitmask | PixelFormat::BltOnly => None,
+    }
+}
+
+// The UEFI build evaluates these; the crate has no host test target.
+const _: () = assert!(matches!(
+    gop_format_bytes_per_pixel(PixelFormat::Rgb),
+    Some(4)
+));
+const _: () = assert!(matches!(
+    gop_format_bytes_per_pixel(PixelFormat::Bgr),
+    Some(4)
+));
+const _: () = assert!(gop_format_bytes_per_pixel(PixelFormat::Bitmask).is_none());
+const _: () = assert!(gop_format_bytes_per_pixel(PixelFormat::BltOnly).is_none());
 
 const GOP_MIN_WIDTH: usize = 640;
 const GOP_MIN_HEIGHT: usize = 480;
@@ -164,6 +198,10 @@ fn try_gop_framebuffer() -> Option<BootInfo> {
     let mut best_size = (0usize, 0usize);
     for mode in gop.modes() {
         let info = mode.info();
+        // A mode the framebuffer cannot render is not a candidate at all.
+        if gop_format_bytes_per_pixel(info.pixel_format()).is_none() {
+            continue;
+        }
         let (w, h) = info.resolution();
         if best_mode.is_none() || gop_mode_is_better((w, h), best_size) {
             best_size = (w, h);
@@ -184,15 +222,29 @@ fn try_gop_framebuffer() -> Option<BootInfo> {
             w.saturating_mul(h)
         );
     } else {
-        serial_println!("[BOOT] No GOP modes found");
+        serial_println!("[BOOT] No GOP mode with a renderable pixel format found");
         return None;
     }
 
     let mode_info = gop.current_mode_info();
     let (width, height) = mode_info.resolution();
     let stride = mode_info.stride();
+    // Re-check the format of the mode the firmware actually ended up in, before
+    // touching the frame buffer: `gop.frame_buffer()` panics on `BltOnly`.
+    let Some(bytes_per_pixel) = gop_format_bytes_per_pixel(mode_info.pixel_format()) else {
+        serial_println!(
+            "[BOOT] GOP current mode has unrenderable pixel format {:?}",
+            mode_info.pixel_format()
+        );
+        return None;
+    };
+    // The firmware reports pixels per scanline, never bytes; the byte stride is
+    // that count times the width the format defines.
+    let pitch = stride.saturating_mul(bytes_per_pixel as usize);
+    let bpp = (bytes_per_pixel * 8) as u8;
     let mut fb = gop.frame_buffer();
     let fb_addr = fb.as_mut_ptr() as u64;
+    let fb_size = fb.size();
 
     // Reject clearly invalid framebuffers.
     if fb_addr == 0 || width == 0 || height == 0 {
@@ -205,6 +257,27 @@ fn try_gop_framebuffer() -> Option<BootInfo> {
         return None;
     }
 
+    // The kernel writes `pitch * height` bytes. `fb_size` is the only bound the
+    // firmware measures for us, and UEFI 2.10 12.9 defines it as the size
+    // needed to support the active mode, so it should never be the smaller of
+    // the two.
+    // ponytail: reported only, not enforced — no OVMF build was available to
+    // confirm the value it reports, and refusing the mode on an unverified
+    // number would risk the boot path. Once one boot log shows this line absent
+    // and `needed <= fb_size` holds on real firmware, make this a `return None`
+    // alongside the other rejections above.
+    let needed = pitch.saturating_mul(height);
+    if fb_size != 0 && needed > fb_size {
+        serial_println!(
+            "[WARN] GOP framebuffer smaller than the mode needs: {}x{} pitch {} needs {} bytes, firmware reports {}",
+            width,
+            height,
+            pitch,
+            needed,
+            fb_size
+        );
+    }
+
     if width < 640 || height < 480 {
         serial_println!(
             "[WARN] GOP framebuffer resolution {}x{} is smaller than expected",
@@ -215,15 +288,8 @@ fn try_gop_framebuffer() -> Option<BootInfo> {
 
     #[cfg(not(test))]
     {
-        let fb_test = unsafe {
-            Framebuffer::new(
-                fb_addr,
-                width as u32,
-                height as u32,
-                (stride * 4) as u32,
-                32,
-            )
-        };
+        let fb_test =
+            unsafe { Framebuffer::new(fb_addr, width as u32, height as u32, pitch as u32, bpp) };
         if fb_test.is_ready() {
             serial_println!("[BOOT] Framebuffer accessibility test passed");
         } else {
@@ -237,8 +303,8 @@ fn try_gop_framebuffer() -> Option<BootInfo> {
         fb_addr,
         fb_width: width as u32,
         fb_height: height as u32,
-        fb_pitch: (stride * 4) as u32,
-        fb_bpp: 32,
+        fb_pitch: pitch as u32,
+        fb_bpp: bpp,
         kernel_base: 0,
         kernel_size: 0,
         memory_map: [MemoryDescriptor {

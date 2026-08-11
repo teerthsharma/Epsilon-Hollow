@@ -24,6 +24,40 @@ pub fn handbook() -> String {
            rename <old> <n>  Rename a file/folder\n\
            info <file>       File details\n\
          \n\
+         Filters (read the pipeline, write the pipeline):\n\
+           grep [-cinv] <t>  Lines holding <t>; -v inverts, -i folds case,\n\
+                             -n numbers them, -c counts them\n\
+           wc [-l|-w|-c]     Lines, words, bytes\n\
+           head [-n <k>]     First <k> lines (10 by default)\n\
+           tail [-n <k>]     Last <k> lines (10 by default)\n\
+           sort [-r] [-u]    Sort lines; -r reverses, -u drops repeats\n\
+           uniq [-c]         Collapse adjacent equal lines; -c counts each\n\
+           tr <from> <to>    Replace one character with another\n\
+           cat [file]        A file, or the pipeline, unchanged\n\
+         \n\
+         Pipelines and redirection (help pipes):\n\
+           a | b | c         Run a, feed its output to b, then to c\n\
+           b < file          Read file as the first stage's input\n\
+           b > file          Write the last stage's output to file\n\
+           b >> file         Append it to file instead\n\
+           Example: peek notes.txt | grep -i seal | sort -u > hits.txt\n\
+         \n\
+         Variables (help variables):\n\
+           NAME=value        Name a value; no spaces in it, no quoting here\n\
+           $NAME  ${NAME}    Use it; an unset name expands to nothing\n\
+           export NAME       Mark it for the environment; export NAME=v too\n\
+           unset NAME        Forget it\n\
+           env               List the exported ones\n\
+           set               List all of them\n\
+           Example: OUT=hits.txt then peek notes.txt | grep seal > $OUT\n\
+         \n\
+         Scripts (help source):\n\
+           source <file>     Run a file of these lines in this shell\n\
+           . <file>          The same command, spelled shorter\n\
+           echo <text>       Print the text, so a script can say what it does\n\
+           # comment         A '#' that starts a word ends the line\n\
+           Example: source setup.seal\n\
+         \n\
          Transfer:\n\
            copy <file>       Copy file to clipboard\n\
            paste             Paste here\n\
@@ -113,6 +147,33 @@ pub fn help_for(cmd: &str) -> String {
         "search" => String::from(
             "search <query>\n  Content-addressable search across ManifoldFS.\n  Encodes query as geometry and finds nearest files by\n  cosine similarity in the Voronoi index.",
         ),
+        "grep" => String::from(
+            "grep [-c] [-i] [-n] [-v] <text>\n  Keep the lines of the pipeline that hold <text>.\n  -v keeps the lines that do not, -i ignores case,\n  -n prefixes each line with its number, -c reports how many.\n  <text> is matched literally; there are no regular expressions.\n  Example: peek notes.txt | grep -in seal",
+        ),
+        "wc" => String::from(
+            "wc [-l] [-w] [-c]\n  Count the pipeline: lines, words, then bytes.\n  A flag selects one count; with none, all three are printed.\n  Example: look | wc -l",
+        ),
+        "head" => String::from(
+            "head [-n <lines>]\n  The first <lines> lines of the pipeline, 10 by default.\n  A count that is zero, negative or not a number is refused.\n  Example: peek log.txt | head -n 3",
+        ),
+        "tail" => String::from(
+            "tail [-n <lines>]\n  The last <lines> lines of the pipeline, 10 by default.\n  A count that is zero, negative or not a number is refused.\n  Example: peek log.txt | tail -n 3",
+        ),
+        "sort" => String::from(
+            "sort [-r] [-u]\n  Sort the pipeline's lines in byte order.\n  -r reverses the order, -u drops repeated lines.\n  Every line comes out terminated, even if the input's last was not.\n  Example: look | sort -u",
+        ),
+        "uniq" => String::from(
+            "uniq [-c]\n  Collapse runs of identical neighbouring lines into one.\n  -c prefixes each with the length of its run.\n  Only neighbours: sort first to collapse every duplicate.\n  Example: peek words.txt | sort | uniq -c",
+        ),
+        "tr" => String::from(
+            "tr <from> <to>\n  Replace every <from> character in the pipeline with <to>.\n  One character each — no ranges (a-z) and no classes.\n  Example: peek data.csv | tr , ;",
+        ),
+        "cat" => String::from(
+            "cat [file]\n  With a file, print it, like 'peek'.\n  With none, pass the pipeline through unchanged, which is how\n  'cat < file | grep x' reads a file into a pipeline.",
+        ),
+        "pipes" | "pipe" | "redirect" | "redirection" => String::from(
+            "Pipelines and redirection\n  a | b | c    Run a, hand its output to b, then b's to c.\n  b < file     The first stage reads file as its input.\n  b > file     The last stage's output replaces file.\n  b >> file    The last stage's output is added to the end of file.\n  '<' is only allowed on the first stage and '>' on the last.\n  A stage handing on more than 65536 bytes stops the line.\n  There is no quoting, so | < > cannot appear inside an argument.\n  Example: peek notes.txt | grep -i seal | sort -u > hits.txt",
+        ),
         "info" => String::from(
             "info <file>\n  Show detailed file information:\n  size, payload points, Voronoi cell, cluster ID, permissions.",
         ),
@@ -143,6 +204,12 @@ pub fn help_for(cmd: &str) -> String {
         "run" => String::from(
             "run <file.aether>\n  Execute an Aether-Lang script from ManifoldFS.\n  Scripts use Titan bytecode VM with topology opcodes.\n  Example: run hello.aether",
         ),
+        "source" | "." | "script" | "scripts" | "comment" | "comments" => String::from(
+            "source <file>\n. <file>\n  Run every line of <file> as if it had been typed here.\n  In this shell, not a new one: the variables a script sets, the\n  names it exports and the folder it opens are still yours after it\n  ends. 'run' is the other one — it hands a file to Aether-Lang.\n  A blank line does nothing. A '#' that starts a line or follows a\n  space ends the line; a '#' anywhere else is part of the argument,\n  so 'A=v#1' keeps its '#' and 'grep #tag' is a comment. There is no\n  quoting, so the literal is reached through a variable: H=# then\n  grep $H.\n  A line the shell cannot run at all — a syntax error, a name that\n  expands to nothing, a refused redirection — stops the script and\n  names the line number. A command that runs and prints an error\n  does not: this shell has no exit status, so its message and its\n  output are the same thing.\n  At most 8 nested scripts, 1024 lines, 65536 bytes; a script over\n  any of them is refused whole rather than run in part.\n  Example: source setup.seal",
+        ),
+        "echo" => String::from(
+            "echo <text>\n  Print <text> and a newline. Variables in it are already expanded,\n  and no stdin is read, so it is the way a script says what it is\n  doing and the way a pipeline is given a literal first stage.\n  Example: echo $OUT | wc -c",
+        ),
         "aether" => String::from(
             "aether\n  Launch the interactive Aether-Lang REPL.\n  Type Aether-Lang expressions, terminated with ~\n  Type 'exit~' to return to SealShell.",
         ),
@@ -157,7 +224,19 @@ pub fn help_for(cmd: &str) -> String {
             "theme <name>\n  Change the desktop theme.\n  Available: dark, light, seal, matrix\n  Example: theme matrix",
         ),
         "set" => String::from(
-            "set <key> <value>\n  Change a system setting.\n  Example: set font-size 16",
+            "set\n  With no argument, list every shell variable, sorted by name.\n  set <key> <value>\n  Change a system setting.\n  Example: set font-size 16",
+        ),
+        "variables" | "variable" | "var" | "$" => String::from(
+            "Shell variables\n  NAME=value   Name a value. NAME is a letter or '_' followed by\n               letters, digits or '_'; anything else is a command.\n  $NAME        Use it. ${NAME} does the same and can touch the text\n  ${NAME}      after it, as in ${F}.txt. An unset name expands to\n               nothing, and a '$' no name follows is a plain '$'.\n  A value may not contain a space. There is no quoting here, so\n  'A=1 look' cannot be told from a value with a space in it, and the\n  two readings do opposite things; it is refused instead.\n  The line is split on | < > first and expanded second, so a value\n  holding one of them is an argument and never an operator.\n  Expansion is one pass: what a value expands to is never re-read,\n  so no pair of variables can chase each other.\n  At most 64 variables, 4096 bytes of names and values together.\n  There is no $? — this shell has no exit status.\n  Example: OUT=hits.txt then peek notes.txt | grep seal > $OUT",
+        ),
+        "export" => String::from(
+            "export <NAME>\nexport <NAME>=<value>\n  Mark a variable for the environment; 'env' lists the marked set.\n  Exporting a name that is not set yet creates it empty.\n  Reassigning a marked variable keeps the mark; 'unset' clears it.",
+        ),
+        "unset" => String::from(
+            "unset <NAME>\n  Forget a variable, along with any 'export' mark it carried.\n  Unsetting a name that was never set is not an error.",
+        ),
+        "env" => String::from(
+            "env\n  List the exported variables as NAME=value, sorted by name.\n  'set' with no argument lists every variable, exported or not.\n  Nothing is passed to a command's environment: Seal OS commands are\n  shell methods, not processes, so 'export' only marks the set that\n  'env' reports.",
         ),
         "history" => String::from("history\n  Show command history for this session."),
         "clear" => String::from("clear\n  Clear the terminal screen."),

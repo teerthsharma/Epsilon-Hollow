@@ -9,7 +9,8 @@
 //! of training states decomposes the same way: `underfit`, `wellfit` and
 //! `overfit` are open strata a run moves through, and `collapsing` is the
 //! singular stratum where the trajectory stops being a manifold at all. The
-//! detector assigns a stratum; the actuator pushes the run toward a better one.
+//! detector assigns a stratum; the controller names the way out of it (see
+//! [`FitAction`] for how far "names" goes — it is short of enforcement today).
 //! Distinct from `atlas`/`chart`/`germ`/`nerve` (code) and `bundle`/`section`
 //! (firmware).
 //!
@@ -82,11 +83,18 @@
 //! # What the kernel can actually observe
 //!
 //! Honestly: nothing about the model's weights. A `no_std` kernel cannot walk a
-//! userspace autograd graph. It observes what the training process pushes
-//! through the Seal ABI — two scalars per step, `(train_loss, val_loss)` — plus
-//! what the kernel already owns for that task (heap break, I/O prefetch state).
-//! Every signal below derives from those two scalars. Activation statistics and
-//! gradient structure are **not** observed; claiming otherwise would be a lie.
+//! userspace autograd graph. It observes exactly what the training process
+//! pushes through the Seal ABI — two scalars per step, `(train_loss, val_loss)`
+//! — and every signal below derives from those two. Nothing the kernel already
+//! owns for the task is read: not the heap break, not the I/O prefetch state.
+//! Activation statistics and gradient structure are **not** observed; claiming
+//! otherwise would be a lie.
+//!
+//! # What the kernel can actually do about it
+//!
+//! Report. [`FitAction`] is returned across the ABI in full and enforced in no
+//! part; each of its fields documents how far it reaches. A trainer that ignores
+//! the verdict is not slowed, capped or throttled by this module.
 //!
 //! # Streaming bound
 //!
@@ -191,6 +199,11 @@ impl Regime {
 
 /// Topological signals measured from the current window. All dimensionless and
 /// invariant under uniform rescaling of the loss axis.
+///
+/// The documented range of each measured field holds *when the field is
+/// finite*. A stream whose losses overflow the squares these ratios are built
+/// from reports NaN rather than a plausible number it did not measure; see
+/// [`FitSignals::measurable`], which is what [`classify`] gates on.
 #[derive(Debug, Clone, Copy)]
 pub struct FitSignals {
     /// Finite observations accepted so far.
@@ -222,6 +235,24 @@ pub struct FitSignals {
 }
 
 impl FitSignals {
+    /// True when every measured signal is a real number.
+    ///
+    /// The measurements are ratios of quantities derived from the losses
+    /// themselves, so a loss large enough to overflow a square (`|v| > 1e154`)
+    /// takes the numerator and the denominator to `inf` together and the ratio
+    /// to NaN. Every comparison against NaN is false, so a NaN that reaches
+    /// [`classify`] cannot fire a single gate — the verdict would be `WellFit`
+    /// by default. A signal that could not be computed is not evidence of
+    /// health, so `classify` fails closed on this instead.
+    pub fn measurable(&self) -> bool {
+        self.loop_score.is_finite()
+            && self.h0_death.is_finite()
+            && self.shatter.is_finite()
+            && self.spread.is_finite()
+            && self.resid_drift.is_finite()
+            && self.train_drift.is_finite()
+    }
+
     const fn empty() -> Self {
         Self {
             samples: 0,
@@ -299,20 +330,51 @@ pub const DEFAULT_CALIBRATION: FitCalibration = FitCalibration {
     min_samples: 16,
 };
 
+/// Largest accepted [`FitCalibration::min_samples`].
+///
+/// Every signal is computed from at most [`STRATUM_WINDOW`] points, so this
+/// field buys no extra evidence — it only delays the first verdict past an
+/// early transient. 2²⁰ observations is 16384 full windows; past that the field
+/// is not warming the detector up, it is switching it off. The ABI hands
+/// `f64::from_bits` of a userspace word to [`FitCalibration::set_field`], and
+/// Rust's float-to-integer cast *saturates*: without this ceiling `1e300`
+/// becomes `u64::MAX`, a gate `samples` cannot reach in any run.
+pub const MIN_SAMPLES_MAX: u64 = 1 << 20;
+
 impl FitCalibration {
-    /// Set one field by ABI field id. Returns false for an unknown id or a
-    /// non-finite value.
+    /// Set one field by ABI field id. Returns false for an unknown id, a
+    /// non-finite value, or a value outside the range its consumer can use.
+    ///
+    /// This is the ABI's trust boundary: `SYS_FIT_CALIBRATE` passes a userspace
+    /// word here with no further checking. Each bound is the range of the signal
+    /// the field is compared against, so a refused value is one that could not
+    /// have moved the boundary anywhere the detector can reach:
+    ///
+    /// | id | field | accepted | why |
+    /// |----|-------|----------|-----|
+    /// | 0 | `loop_min` | `[0, 1]` | `loop_score` is a rank normalised by point count and capped at 1 |
+    /// | 1 | `resid_rise_min` | `[-1, 1]` | `resid_drift` is a bounded quartile ratio |
+    /// | 2 | `spread_trend_max` | `[0, 1]` | `spread` is a participation ratio in `[1/3, 1]` |
+    /// | 3 | `collapse_shatter_min` | `[1, ∞)` | `shatter` is max/median of the same edge set, so never below 1; unbounded above |
+    /// | 4 | `collapse_rise` | `[-1, 1]` | `train_drift` is a bounded quartile ratio |
+    /// | 5 | `min_samples` | whole numbers in `[0, MIN_SAMPLES_MAX]` | see [`MIN_SAMPLES_MAX`]; the cast saturates in both directions |
+    ///
+    /// Out of range is refused, never clamped. A clamp would report success for
+    /// a boundary the caller did not ask for, and the caller has no way to read
+    /// back what it actually got except by inference from later verdicts.
     pub fn set_field(&mut self, field: u32, value: f64) -> bool {
         if !value.is_finite() {
             return false;
         }
         match field {
-            0 => self.loop_min = value,
-            1 => self.resid_rise_min = value,
-            2 => self.spread_trend_max = value,
-            3 => self.collapse_shatter_min = value,
-            4 => self.collapse_rise = value,
-            5 => self.min_samples = value as u64,
+            0 if (0.0..=1.0).contains(&value) => self.loop_min = value,
+            1 if (-1.0..=1.0).contains(&value) => self.resid_rise_min = value,
+            2 if (0.0..=1.0).contains(&value) => self.spread_trend_max = value,
+            3 if value >= 1.0 => self.collapse_shatter_min = value,
+            4 if (-1.0..=1.0).contains(&value) => self.collapse_rise = value,
+            5 if (0.0..=MIN_SAMPLES_MAX as f64).contains(&value) && libm::trunc(value) == value => {
+                self.min_samples = value as u64
+            }
             _ => return false,
         }
         true
@@ -321,28 +383,45 @@ impl FitCalibration {
 
 // ── Actuation ───────────────────────────────────────────────────────────────
 
-/// What the controller does about a regime.
+/// What the controller recommends about a regime.
 ///
-/// `prefetch_epsilon` and `clamp_heap` are **real kernel control**: the kernel
-/// owns both and [`apply_action`] enforces them. `reg_scale`, `lr_scale` and
-/// `batch_scale` are **advisory** — the kernel cannot reach into a userspace
-/// optimizer and change its regularisation coefficient, so it returns the
-/// recommendation across the ABI and the trainer chooses whether to honour it.
+/// **Every field is advisory today, and nothing here is enforced against a task
+/// that ignores it.** The kernel returns the whole action across the ABI and the
+/// trainer chooses what to honour. Three of the fields could never be anything
+/// else: a `no_std` kernel cannot reach into a userspace optimizer and change
+/// its regularisation coefficient, learning rate or batch size. The other two
+/// name kernel-owned quantities, and are documented per field with exactly how
+/// far they currently reach — which is short of enforcement in both cases.
 #[derive(Debug, Clone, Copy)]
 pub struct FitAction {
     /// Regime this action responds to.
     pub regime: Regime,
-    /// REAL. Prefetch decision threshold for model-training I/O.
+    /// Prefetch decision threshold recommended for model-training I/O.
     /// `should_prefetch` fires when `p_fetch > epsilon`, so *lower* is more
-    /// aggressive. Clamped to the engine's own [0.1, 0.9] range.
+    /// aggressive.
+    ///
+    /// [`apply_action`] publishes this kernel-side, clamped to the engine's own
+    /// [0.1, 0.9] range, and `PrefetchEngine::new_model_training` adopts it at
+    /// construction. **Nothing in this tree constructs that preset** — the AHCI
+    /// read path and the shell both build `new_gaming` — so the published value
+    /// currently reaches no I/O decision. Wiring a training read path to that
+    /// constructor is what would make this real; until then it is a
+    /// recommendation like the other four, one the kernel holds as well as
+    /// returns.
     pub prefetch_epsilon: f32,
-    /// REAL. Freeze the training task's heap break where it stands.
+    /// Recommendation that the training task stop growing its heap.
+    ///
+    /// **Not enforced.** The kernel has no heap ceiling to set: `dispatch_brk`
+    /// grows `brk_end` by request and consults no limit, and this kernel's
+    /// `setrlimit(RLIMIT_DATA, ..)` assigns `brk_end` rather than bounding it,
+    /// so there is no value of this flag that can refuse an allocation. Making
+    /// it real means giving `dispatch_brk` a per-task ceiling to check.
     pub clamp_heap: bool,
-    /// ADVISORY. Multiplier the trainer should apply to its regularisation term.
+    /// Multiplier the trainer should apply to its regularisation term.
     pub reg_scale: f64,
-    /// ADVISORY. Multiplier the trainer should apply to its learning rate.
+    /// Multiplier the trainer should apply to its learning rate.
     pub lr_scale: f64,
-    /// ADVISORY. Multiplier the trainer should apply to its batch size.
+    /// Multiplier the trainer should apply to its batch size.
     pub batch_scale: f64,
 }
 
@@ -389,25 +468,33 @@ pub fn plan_action(regime: Regime) -> FitAction {
     }
 }
 
-/// Prefetch threshold override published to the I/O path. `None` = engine default.
+/// Prefetch threshold published to the I/O path. `None` = engine default.
+///
+/// ponytail: one global rather than one per stream. With two workloads
+/// registered the later `SYS_FIT_REGIME` caller overwrites the earlier one's
+/// threshold, and [`unregister`] clears the value for both. Move it into
+/// [`FitStream`] and key [`training_prefetch_epsilon`] by task id when a second
+/// training workload can actually exist.
 static PREFETCH_OVERRIDE: Mutex<Option<f32>> = Mutex::new(None);
 
-/// Read by `PrefetchEngine::new_model_training`. Real coupling, one direction.
+/// The threshold last published by [`apply_action`], for a model-training
+/// prefetch engine to adopt at construction. `None` until a registered workload
+/// asks for one, and again once it unregisters.
 pub fn training_prefetch_epsilon() -> Option<f32> {
     *PREFETCH_OVERRIDE.lock()
 }
 
-/// Enforce the real knobs. Must be called from the training task's own context
-/// (the heap clamp applies to the current task).
+/// Publish the kernel-side half of an action: the prefetch threshold, clamped to
+/// the range `PrefetchEngine` itself holds `epsilon` in.
+///
+/// `clamp_heap` is not acted on, because there is nothing here to act on it
+/// with. This kernel has no heap ceiling: `dispatch_brk` grows `brk_end` on
+/// request and consults no limit, and `setrlimit(RLIMIT_DATA, ..)` assigns
+/// `brk_end` directly rather than bounding it — so the only thing this function
+/// could do with the flag is move the break, which is the opposite of freezing
+/// it. See [`FitAction`] for what each field is worth.
 pub fn apply_action(action: &FitAction) {
     *PREFETCH_OVERRIDE.lock() = Some(action.prefetch_epsilon.clamp(0.1, 0.9));
-    if action.clamp_heap {
-        // RLIMIT_DATA == 2 in this kernel's setrlimit encoding: it pins brk_end.
-        let brk = crate::process::scheduler::getrlimit(2);
-        if brk != 0 {
-            crate::process::scheduler::setrlimit(2, brk);
-        }
-    }
 }
 
 // ── Streaming state ─────────────────────────────────────────────────────────
@@ -555,7 +642,18 @@ impl FitStream {
         // Sampling-density discontinuity, measured on the raw cloud.
         let (raw_max, raw_med) = mst_edge_stats(raw);
 
-        if radius < EPS_FLOOR || raw_max < EPS_FLOOR {
+        if !radius.is_finite() {
+            // The cloud's own scale overflowed: `d*d` in `distance` is `inf`, so
+            // every pairwise distance is `inf`, so Prim's algorithm records no
+            // finite edge and `raw_max` comes back 0 — indistinguishable, from
+            // here, from a single coincident point. Reporting the degenerate
+            // numbers would state that a trajectory oscillating between 1e200
+            // and 2e200 sits still. Report the geometry as unmeasured instead
+            // and let `classify` fail closed on it.
+            sig.shatter = f64::NAN;
+            sig.h0_death = f64::NAN;
+            sig.loop_score = f64::NAN;
+        } else if radius < EPS_FLOOR || raw_max < EPS_FLOOR {
             // Degenerate: every point coincides.
             sig.shatter = 1.0;
             sig.h0_death = 0.0;
@@ -598,8 +696,19 @@ impl FitStream {
 ///    ceiling, so this ordering is not hypothetical.
 /// 3. `Underfit` on the spread floor.
 /// 4. `WellFit` otherwise.
+///
+/// Both fail-closed checks — the latched non-finite *input* and the unmeasurable
+/// *signal* — sit ahead of the warm-up gate deliberately. Waiting for more
+/// samples cannot make either measurable, and behind the gate a `min_samples`
+/// the run can never reach would suppress the only two verdicts that survive a
+/// stream whose numbers have stopped meaning anything.
 pub fn classify(sig: &FitSignals, cal: &FitCalibration) -> Regime {
     if sig.nonfinite > 0 {
+        return Regime::Collapsing;
+    }
+    if !sig.measurable() {
+        // Never let a NaN decide a branch: every comparison below is false
+        // against one, which would elect `WellFit` by exhaustion.
         return Regime::Collapsing;
     }
     if sig.samples < cal.min_samples {
@@ -819,8 +928,16 @@ pub fn register(handle: u64) -> u64 {
 }
 
 /// Drop a registered workload. Returns true if it existed.
+///
+/// Also drops the published prefetch threshold. A process that exits leaves no
+/// claim on kernel I/O behind it, and the threshold is one global — left set, it
+/// would steer every later model-training read for the rest of the boot.
 pub fn unregister(handle: u64) -> bool {
-    STREAMS.lock().remove(&handle).is_some()
+    let existed = STREAMS.lock().remove(&handle).is_some();
+    if existed {
+        *PREFETCH_OVERRIDE.lock() = None;
+    }
+    existed
 }
 
 /// Push one observation. Returns the last computed regime (O(1); signals are
@@ -1268,6 +1385,116 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A run that has diverged to 1e200 and plateaued there is not healthy, and
+    /// every value it feeds in is finite, so the `nonfinite` latch never arms —
+    /// what overflows is the cloud's own scale, not the input.
+    ///
+    /// Two variants, because they fail through different paths. Alternating both
+    /// losses drives `participation_ratio` to NaN through `inf/inf`. Diverging
+    /// only the validation loss leaves every signal finite and *fabricated*:
+    /// every pairwise distance in the delay embedding overflows, Prim's
+    /// algorithm records no finite edge at all, and the degenerate branch then
+    /// reports the same numbers a single coincident point would.
+    fn test_diverged_stream_is_not_wellfit() -> TestResult {
+        let mut both = FitStream::new(DEFAULT_CALIBRATION);
+        for i in 0..20u32 {
+            let v = if i % 2 == 0 { 1e200 } else { 2e200 };
+            both.observe(v, v);
+        }
+        let sig = both.signals();
+        test_assert!(
+            sig.nonfinite == 0,
+            "the trigger must not arm the non-finite latch, or it proves nothing"
+        );
+        test_assert!(
+            sig.samples >= DEFAULT_CALIBRATION.min_samples,
+            "the trigger must clear the warm-up gate, or it proves nothing"
+        );
+        test_assert_eq!(both.regime(), Regime::Collapsing);
+
+        let mut val_only = FitStream::new(DEFAULT_CALIBRATION);
+        for i in 0..40u32 {
+            val_only.observe(0.5, if i % 2 == 0 { 1e200 } else { 2e200 });
+        }
+        test_assert!(
+            !val_only.signals().measurable(),
+            "a cloud whose own scale overflowed must not report measured signals"
+        );
+        test_assert_eq!(val_only.regime(), Regime::Collapsing);
+        TestResult::Pass
+    }
+
+    /// Calibration is the ABI's trust boundary: `SYS_FIT_CALIBRATE` hands
+    /// `f64::from_bits` of a userspace word straight to `set_field`. A float that
+    /// no consumer can use has to be refused, because the alternative is a
+    /// saturating cast — `1e300 as u64` is `u64::MAX`, a warm-up gate `samples`
+    /// can never reach, which switches the detector off for the rest of the boot.
+    fn test_calibrate_rejects_unusable_ranges() -> TestResult {
+        let mut s = FitStream::new(DEFAULT_CALIBRATION);
+        for t in 0..PROOF_STEPS {
+            let (a, b) = ProofCase::Collapsing.sample(t);
+            s.observe(a, b);
+        }
+        test_assert_eq!(s.regime(), Regime::Collapsing);
+
+        test_assert!(
+            !s.calibrate(5, 1e300),
+            "a min_samples that saturates the cast must be refused"
+        );
+        test_assert!(
+            s.calibration().min_samples == DEFAULT_CALIBRATION.min_samples,
+            "a refused calibration must leave the field unchanged"
+        );
+        test_assert_eq!(s.regime(), Regime::Collapsing);
+        test_assert!(
+            !s.calibrate(5, -1.0),
+            "a negative min_samples must be refused, not saturated to zero"
+        );
+        test_assert_eq!(s.regime(), Regime::Collapsing);
+
+        // Every field, at a value outside the range its consumer can use.
+        let unusable: [(u32, f64); 11] = [
+            (0, 1.5),   // loop_score never exceeds 1
+            (0, -0.1),  // nor drops below 0
+            (1, 2.0),   // resid_drift is bounded in [-1, 1]
+            (1, -2.0),
+            (2, 1.5), // spread is bounded in [1/3, 1]
+            (2, -0.5),
+            (3, 0.5), // shatter is a max/median ratio, never below 1
+            (4, 1.5), // train_drift is bounded in [-1, 1]
+            (4, -1.5),
+            (5, 1e19), // below u64::MAX, still unreachable by any real run
+            (5, 0.5),  // not a whole number of observations
+        ];
+        for (field, bad) in unusable {
+            test_assert!(
+                !s.calibrate(field, bad),
+                "a calibration outside its consumer's range must be refused"
+            );
+        }
+
+        // The knob must still turn.
+        let usable: [(u32, f64); 6] = [
+            (0, 1.0),
+            (1, 0.25),
+            (2, 0.5),
+            (3, 1.0),
+            (4, 0.5),
+            (5, 0.0),
+        ];
+        for (field, good) in usable {
+            test_assert!(
+                s.calibrate(field, good),
+                "an in-range calibration must still apply"
+            );
+        }
+        test_assert!(
+            s.calibration().min_samples == 0,
+            "an accepted calibration must be applied"
+        );
+        TestResult::Pass
+    }
+
     /// TDA invariant: scaling every loss by c > 0 scales the cloud radius and
     /// every derived scale by c, so no Betti number and no ratio may move.
     fn test_scale_equivariance() -> TestResult {
@@ -1336,6 +1563,37 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The published prefetch threshold is a single global, so the workload that
+    /// asked for it has to take it away when it leaves. Otherwise the last
+    /// `SYS_FIT_REGIME` caller steers every later training read for the rest of
+    /// the boot, including after that process has exited.
+    fn test_unregister_clears_prefetch_override() -> TestResult {
+        let handle = 0xF17_0002;
+        register(handle);
+        apply_action(&plan_action(Regime::Collapsing));
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.9));
+        test_assert!(unregister(handle), "unregister must find the stream");
+        test_assert_eq!(training_prefetch_epsilon(), None);
+        TestResult::Pass
+    }
+
+    /// Publishing the threshold is the whole of what `apply_action` does, so the
+    /// range it promises the I/O engine has to hold for any action it is handed.
+    fn test_apply_action_clamps_published_epsilon() -> TestResult {
+        let handle = 0xF17_0003;
+        let mut action = plan_action(Regime::WellFit);
+        action.prefetch_epsilon = 5.0;
+        apply_action(&action);
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.9));
+        action.prefetch_epsilon = -1.0;
+        apply_action(&action);
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.1));
+        // Leave the global as this test found it.
+        register(handle);
+        unregister(handle);
+        TestResult::Pass
+    }
+
     fn test_proof_line_passes() -> TestResult {
         let line = stratum_proof_line();
         test_assert!(line.starts_with("[MLFIT] proof version=1"), "proof prefix");
@@ -1387,6 +1645,14 @@ pub mod tests {
         crate::testing::register_test("stratum::empty_stream", test_empty_stream);
         crate::testing::register_test("stratum::constant_loss_no_nan", test_constant_loss_no_nan);
         crate::testing::register_test("stratum::nonfinite_guard", test_nonfinite_guard);
+        crate::testing::register_test(
+            "stratum::diverged_stream_is_not_wellfit",
+            test_diverged_stream_is_not_wellfit,
+        );
+        crate::testing::register_test(
+            "stratum::calibrate_rejects_unusable_ranges",
+            test_calibrate_rejects_unusable_ranges,
+        );
         crate::testing::register_test("stratum::scale_equivariance", test_scale_equivariance);
         crate::testing::register_test(
             "stratum::translation_invariance",
@@ -1395,6 +1661,14 @@ pub mod tests {
         crate::testing::register_test(
             "stratum::calibration_knob_moves_boundary",
             test_calibration_knob_moves_boundary,
+        );
+        crate::testing::register_test(
+            "stratum::unregister_clears_prefetch_override",
+            test_unregister_clears_prefetch_override,
+        );
+        crate::testing::register_test(
+            "stratum::apply_action_clamps_published_epsilon",
+            test_apply_action_clamps_published_epsilon,
         );
         crate::testing::register_test("stratum::proof_line_passes", test_proof_line_passes);
         crate::testing::register_test("stratum::registry_roundtrip", test_registry_roundtrip);

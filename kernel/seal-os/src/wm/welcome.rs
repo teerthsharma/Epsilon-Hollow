@@ -163,8 +163,12 @@ impl WelcomeScreen {
                 self.mouse_x = (self.mouse_x + dx).clamp(0, max_x);
                 self.mouse_y = (self.mouse_y + dy).clamp(0, max_y);
             }
+            // Button 0 is the left button: `drivers::interrupts::mouse_handler`
+            // emits 0 for PS/2 bit 0 and 1 for bit 1, and `usb::hid` uses the
+            // same numbering. Every other consumer (`wm::desktop`,
+            // `wm::app_state`, `apps::installer`) acts on 0 only.
             InputEvent::MouseButton {
-                button: 1,
+                button: 0,
                 pressed: true,
             } => {
                 let mx = self.mouse_x as u32;
@@ -246,5 +250,76 @@ impl WelcomeScreen {
 impl Default for WelcomeScreen {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// Park the cursor on the "Get Started" button using the default 1024x768
+    /// geometry a freshly constructed screen assumes.
+    fn screen_over_get_started() -> WelcomeScreen {
+        let mut screen = WelcomeScreen::new();
+        let gs_y = screen.fb_height.saturating_sub(36 + 60) as i32;
+        screen.handle_event(InputEvent::MouseMove {
+            dx: 0,
+            dy: gs_y + 18 - screen.mouse_y,
+        });
+        screen
+    }
+
+    /// The wizard must dismiss on the same button the rest of the window
+    /// manager acts on. `drivers::interrupts::mouse_handler` emits 0 for the
+    /// left button and 1 for the right; `wm::desktop`, `wm::app_state` and
+    /// `apps::installer` all act on 0. Accepting 1 here left first boot
+    /// dismissable only by Enter or the 500-tick timeout.
+    fn test_get_started_takes_the_left_button() -> TestResult {
+        let mut screen = screen_over_get_started();
+        test_assert!(
+            screen.handle_event(InputEvent::MouseButton {
+                button: 0,
+                pressed: true,
+            }),
+            "left click on Get Started did not dismiss the wizard"
+        );
+
+        // Negative control: the right button must stay inert, and so must a
+        // release of the left button.
+        let mut right = screen_over_get_started();
+        test_assert!(
+            !right.handle_event(InputEvent::MouseButton {
+                button: 1,
+                pressed: true,
+            }),
+            "right click dismissed the wizard"
+        );
+        test_assert!(
+            !right.handle_event(InputEvent::MouseButton {
+                button: 0,
+                pressed: false,
+            }),
+            "left button release dismissed the wizard"
+        );
+
+        // Negative control on geometry: the same button off the target misses.
+        let mut off_target = WelcomeScreen::new();
+        test_assert!(
+            !off_target.handle_event(InputEvent::MouseButton {
+                button: 0,
+                pressed: true,
+            }),
+            "left click at the default cursor position hit Get Started"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "welcome::get_started_takes_the_left_button",
+            test_get_started_takes_the_left_button,
+        );
     }
 }

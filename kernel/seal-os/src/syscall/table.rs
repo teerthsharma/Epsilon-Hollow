@@ -67,28 +67,319 @@ pub mod tests {
     use crate::testing::TestResult;
     use crate::{test_assert, test_assert_eq};
 
-    fn test_setuid_changes_uid() -> TestResult {
-        // Skip when running outside a proper scheduler task context.
-        let current = crate::process::scheduler::current_uid();
-        // Just verify dispatch doesn't panic and returns OK (code >= 0).
-        let result = dispatch(SYS_SETUID, 42, 0, 0);
-        test_assert!(result.code >= 0, "SYS_SETUID should succeed");
-        // Restore best-effort
-        dispatch(SYS_SETUID, current as u64, 0, 0);
+    // NOTE: `test_main()` runs before any task is ever made the scheduler's
+    // `current` (see `ManifoldScheduler::new()`, `current: None`), so
+    // `crate::process::scheduler::set_current_uid()`/`set_current_euid()` and
+    // friends no-op here and `current_euid()` always reads back the default 0.
+    // A dispatch()-level test therefore always takes the privileged (euid==0)
+    // branch and can't exercise *denial* — that rule is covered directly below
+    // via `credential_change_allowed`, which takes plain ids and has no
+    // scheduler dependency. What a dispatch()-level test does hold the identity
+    // arms to is that they report the dropped write instead of claiming it
+    // landed.
+
+    /// RED: this test asserted `result.code >= 0` — success — from a
+    /// `SYS_SETUID` whose write the scheduler had already thrown away, and so
+    /// asserted the defect itself. 67a5c1e made the setters return `bool`
+    /// because they no-op with no current task, which is every boot; the arm
+    /// kept answering `ok(0)` regardless. A task that asks to drop privilege,
+    /// is told 0, and keeps its old uid cannot detect that it is still root.
+    /// The half of the old assertion that was worth keeping — a euid=0 caller
+    /// is not *refused* — is asserted below as a positive control, and covered
+    /// without any scheduler by `test_credential_change_permits_root`.
+    fn test_setuid_reports_dropped_uid_write() -> TestResult {
+        let before = crate::process::scheduler::current_uid();
+        // Precondition, and the state of the machine for its whole uptime: no
+        // task holds identity, so the write below goes nowhere. If a scheduler
+        // bootstrap ever lands, this fires and the success case wants writing.
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
+        test_assert!(
+            credential_change_allowed(42, before, crate::process::scheduler::current_euid()),
+            "positive control: uid 42 is permitted here, so the code below is the dropped write and not EPERM"
+        );
+        test_assert_eq!(dispatch(SYS_SETUID, 42, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_uid(), before);
+        test_assert_eq!(crate::process::scheduler::current_euid(), before);
         TestResult::Pass
     }
 
-    fn test_setgid_changes_gid() -> TestResult {
-        let current = crate::process::scheduler::current_gid();
-        let result = dispatch(SYS_SETGID, 99, 0, 0);
-        test_assert!(result.code >= 0, "SYS_SETGID should succeed");
-        dispatch(SYS_SETGID, current as u64, 0, 0);
+    /// Same defect, same shape, on the gid side. See above.
+    fn test_setgid_reports_dropped_gid_write() -> TestResult {
+        let before = crate::process::scheduler::current_gid();
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
+        test_assert!(
+            credential_change_allowed(99, before, crate::process::scheduler::current_egid()),
+            "positive control: gid 99 is permitted here, so the code below is the dropped write and not EPERM"
+        );
+        test_assert_eq!(dispatch(SYS_SETGID, 99, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_gid(), before);
+        test_assert_eq!(crate::process::scheduler::current_egid(), before);
+        TestResult::Pass
+    }
+
+    /// The other two arms of the family drop their write in exactly the same
+    /// place and must answer the same way. `SYS_SETEUID` matters most of the
+    /// four in practice: it is the one a privileged service uses to put its
+    /// privilege down temporarily, which is worthless if it can be reported as
+    /// done without being done.
+    fn test_effective_id_syscalls_report_dropped_write() -> TestResult {
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
+        let euid_before = crate::process::scheduler::current_euid();
+        let egid_before = crate::process::scheduler::current_egid();
+        test_assert_eq!(dispatch(SYS_SETEUID, 1000, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(dispatch(SYS_SETEGID, 1000, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_euid(), euid_before);
+        test_assert_eq!(crate::process::scheduler::current_egid(), egid_before);
+        // The dropped-write code is distinct from the refusal code, so a
+        // caller and the audit trail can tell "not permitted" from "nowhere to
+        // put it". ENOSYS on an unknown number is untouched by either.
+        test_assert_eq!(dispatch(9_999_999, 0, 0, 0).code, -38);
+        TestResult::Pass
+    }
+
+    /// RED: `table.rs`'s SYS_SETUID/SETGID/SETEUID/SETEGID arms used to call
+    /// `set_current_uid`/`_gid`/`_euid`/`_egid` unconditionally, with zero
+    /// regard for the caller's own privilege — any task could `setuid(0)`.
+    /// An unprivileged task (euid=1000) asking for an id it holds neither as
+    /// real nor effective (root, or some other arbitrary id) must be denied.
+    fn test_credential_change_denies_unprivileged_escalation() -> TestResult {
+        test_assert!(!credential_change_allowed(0, 1000, 1000));
+        test_assert!(!credential_change_allowed(1, 1000, 2000));
+        TestResult::Pass
+    }
+
+    fn test_credential_change_permits_id_already_held() -> TestResult {
+        test_assert!(credential_change_allowed(1000, 1000, 2000)); // matches real
+        test_assert!(credential_change_allowed(2000, 1000, 2000)); // matches effective
+        TestResult::Pass
+    }
+
+    fn test_credential_change_permits_root() -> TestResult {
+        test_assert!(credential_change_allowed(9999, 0, 0));
+        TestResult::Pass
+    }
+
+    /// RED: the SYS_WRITE arm for any fd other than stdout/stderr used to
+    /// ignore `buf_ptr`/`len` entirely and pull bytes from the process-wide
+    /// `SYSCALL_PATH` buffer instead, at hardcoded offset 0 — so an invalid
+    /// user pointer was never even inspected. A null pointer with `len > 0`
+    /// must now be rejected by `copy_from_user` (EFAULT) before the fd's
+    /// backing file is touched, leaving the fd's cursor exactly where it was.
+    fn test_write_rejects_invalid_pointer_without_touching_fd() -> TestResult {
+        let fd = 90_210u64; // unlikely to collide with a live fd
+        let starting_offset = 5usize; // simulate a cursor already advanced
+        {
+            let mut table = FILE_TABLE.lock();
+            table.insert(
+                fd,
+                FdEntry {
+                    handle: crate::fs::vfs::VfsHandle {
+                        fs_idx: 0,
+                        inode: 0,
+                    },
+                    path: String::from("/tmp/defect_b_probe"),
+                    offset: starting_offset,
+                    owner: crate::process::scheduler::current_task_id(),
+                },
+            );
+        }
+
+        let result = dispatch(SYS_WRITE, fd, 0, 8);
+        test_assert_eq!(result.code, -14); // EFAULT
+
+        let offset_after = FILE_TABLE.lock().get(&fd).map(|e| e.offset);
+        test_assert_eq!(offset_after, Some(starting_offset));
+
+        FILE_TABLE.lock().remove(&fd);
+        TestResult::Pass
+    }
+
+    /// Pure-predicate check for the empty-path guard shape shared by every
+    /// path-taking syscall arm (`SYS_OPEN`, `SYS_EXEC`, `SYS_CHDIR`, and —
+    /// after this fix — `SYS_STAT`, `SYS_MKDIR`, `SYS_UNLINK`, `SYS_RMDIR`,
+    /// `SYS_RENAME`). `copy_path_from_user` returns `Ok(String::new())` for a
+    /// pointer to a single NUL byte, so `path.is_empty()` is the exact
+    /// condition each arm tests, and EINVAL (22) is the errno each arm
+    /// returns for it.
+    ///
+    /// This is tested as a predicate rather than by driving `dispatch()`:
+    /// `test_main()` runs before any task is current, so there is no mapped
+    /// user page table for `copy_path_from_user` to safely dereference here
+    /// (mirrors `smap_smep::tests::test_user_ptr_validation`, which for the
+    /// same reason tests `is_user_ptr` in isolation rather than exercising
+    /// `copy_from_user` end to end).
+    fn test_empty_path_guard_shape() -> TestResult {
+        let empty = String::new();
+        let non_empty = String::from("/etc/passwd");
+        test_assert!(empty.is_empty(), "empty path must trip the guard");
+        test_assert!(
+            !non_empty.is_empty(),
+            "non-empty path must not trip the guard"
+        );
+        let guarded = SyscallResult::err(22);
+        test_assert_eq!(guarded.code, -22);
+        TestResult::Pass
+    }
+
+    /// Insert an entry owned by some task other than the caller and hand back
+    /// its fd number. Models the exact reachable situation: `NEXT_FD` is one
+    /// global monotonic counter, so every live fd is a small integer any task
+    /// can name from `rdi`.
+    fn plant_foreign_fd(fd: u64, offset: usize) {
+        let foreign = crate::process::scheduler::current_task_id().wrapping_add(1);
+        FILE_TABLE.lock().insert(
+            fd,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 0,
+                },
+                path: String::from("/etc/shadow"),
+                offset,
+                owner: foreign,
+            },
+        );
+    }
+
+    /// RED: `FILE_TABLE` is one map for the whole system and every arm turned
+    /// an fd number into an entry with a bare `table.get(&fd)`, consulting
+    /// nothing about the caller — so guessing a small integer handed a task
+    /// read, write, seek, ioctl and close on another task's open file. Every
+    /// one of those paths must now refuse, and refusing must leave the
+    /// victim's entry open with its cursor where it was.
+    fn test_fd_lookup_denies_another_tasks_descriptor() -> TestResult {
+        let fd = 90_211u64;
+        let offset = 7usize;
+        plant_foreign_fd(fd, offset);
+
+        test_assert_eq!(dispatch(SYS_LSEEK, fd, 4096, 0).code, -9); // EBADF
+        test_assert_eq!(crate::syscall::pipe::dispatch_dup(fd).code, -9);
+        test_assert_eq!(crate::syscall::ioctl::dispatch_ioctl(fd, 0, 0).code, -9);
+        test_assert_eq!(dispatch(SYS_CLOSE, fd, 0, 0).code, -9);
+
+        let survived = FILE_TABLE.lock().get(&fd).map(|e| e.offset);
+        test_assert_eq!(survived, Some(offset));
+
+        FILE_TABLE.lock().remove(&fd);
+        TestResult::Pass
+    }
+
+    /// RED: `dispatch_dup2` inserted at a caller-supplied fd number, replacing
+    /// whatever sat there. Aiming it at another task's fd closed that task's
+    /// file and left the attacker's handle under the victim's number.
+    fn test_dup2_refuses_to_clobber_another_tasks_descriptor() -> TestResult {
+        let mine = 90_212u64;
+        let theirs = 90_213u64;
+        let free = 90_214u64;
+        FILE_TABLE.lock().insert(
+            mine,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 1,
+                },
+                path: String::from("/tmp/mine"),
+                offset: 0,
+                owner: crate::process::scheduler::current_task_id(),
+            },
+        );
+        plant_foreign_fd(theirs, 7);
+
+        test_assert_eq!(
+            crate::syscall::pipe::dispatch_dup2(mine, theirs).code,
+            -9 // EBADF
+        );
+        let victim = FILE_TABLE.lock().get(&theirs).map(|e| e.handle.inode);
+        test_assert_eq!(victim, Some(0u64)); // still the victim's, not inode 1
+
+        // Positive control: an unoccupied target still works.
+        test_assert_eq!(
+            crate::syscall::pipe::dispatch_dup2(mine, free).code,
+            free as i64
+        );
+        let copied = FILE_TABLE.lock().get(&free).map(|e| e.handle.inode);
+        test_assert_eq!(copied, Some(1u64));
+
+        let mut table = FILE_TABLE.lock();
+        table.remove(&mine);
+        table.remove(&theirs);
+        table.remove(&free);
+        TestResult::Pass
+    }
+
+    /// The caller's own descriptor stays fully usable — the check denies other
+    /// tasks, not everyone. `test_main()` runs with no task current, so
+    /// `current_task_id()` is 0 for both the insert and the lookups here.
+    fn test_fd_lookup_permits_own_descriptor() -> TestResult {
+        let fd = 90_215u64;
+        FILE_TABLE.lock().insert(
+            fd,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 2,
+                },
+                path: String::from("/tmp/own"),
+                offset: 0,
+                owner: crate::process::scheduler::current_task_id(),
+            },
+        );
+
+        test_assert_eq!(dispatch(SYS_LSEEK, fd, 4096, 0).code, 4096);
+        let duped = crate::syscall::pipe::dispatch_dup(fd);
+        test_assert!(duped.code >= 3, "dup of an owned fd must yield an fd");
+        test_assert_eq!(dispatch(SYS_CLOSE, fd, 0, 0).code, 0);
+        test_assert!(FILE_TABLE.lock().get(&fd).is_none());
+
+        FILE_TABLE.lock().remove(&(duped.code as u64));
         TestResult::Pass
     }
 
     pub fn register_all() {
-        crate::testing::register_test("syscall::setuid_changes_uid", test_setuid_changes_uid);
-        crate::testing::register_test("syscall::setgid_changes_gid", test_setgid_changes_gid);
+        crate::testing::register_test(
+            "syscall::setuid_reports_dropped_uid_write",
+            test_setuid_reports_dropped_uid_write,
+        );
+        crate::testing::register_test(
+            "syscall::setgid_reports_dropped_gid_write",
+            test_setgid_reports_dropped_gid_write,
+        );
+        crate::testing::register_test(
+            "syscall::effective_id_syscalls_report_dropped_write",
+            test_effective_id_syscalls_report_dropped_write,
+        );
+        crate::testing::register_test(
+            "syscall::credential_change_denies_unprivileged_escalation",
+            test_credential_change_denies_unprivileged_escalation,
+        );
+        crate::testing::register_test(
+            "syscall::credential_change_permits_id_already_held",
+            test_credential_change_permits_id_already_held,
+        );
+        crate::testing::register_test(
+            "syscall::credential_change_permits_root",
+            test_credential_change_permits_root,
+        );
+        crate::testing::register_test(
+            "syscall::write_rejects_invalid_pointer_without_touching_fd",
+            test_write_rejects_invalid_pointer_without_touching_fd,
+        );
+        crate::testing::register_test(
+            "syscall::empty_path_guard_shape",
+            test_empty_path_guard_shape,
+        );
+        crate::testing::register_test(
+            "syscall::fd_lookup_denies_another_tasks_descriptor",
+            test_fd_lookup_denies_another_tasks_descriptor,
+        );
+        crate::testing::register_test(
+            "syscall::dup2_refuses_to_clobber_another_tasks_descriptor",
+            test_dup2_refuses_to_clobber_another_tasks_descriptor,
+        );
+        crate::testing::register_test(
+            "syscall::fd_lookup_permits_own_descriptor",
+            test_fd_lookup_permits_own_descriptor,
+        );
     }
 }
 pub const SYS_TELEPORT: u64 = 101;
@@ -173,10 +464,40 @@ pub(crate) struct FdEntry {
     #[allow(dead_code)] // REASON: path stored for future syscall debugging and fcntl(F_GETPATH)
     pub(crate) path: String,
     pub(crate) offset: usize,
+    /// Task id that opened this descriptor. Only that task may name it.
+    pub(crate) owner: u64,
 }
 
 pub(crate) static FILE_TABLE: Mutex<BTreeMap<u64, FdEntry>> = Mutex::new(BTreeMap::new());
 pub(crate) static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0=stdin, 1=stdout, 2=stderr
+
+/// Whether the task making the current syscall may name `entry`.
+///
+/// `FILE_TABLE` is one map for the whole system and `NEXT_FD` is one global
+/// monotonic counter, so fd numbers are unique system-wide — but uniqueness is
+/// not ownership. They are small sequential integers, so without this check any
+/// task can read, write, seek, ioctl or close another task's open file by
+/// guessing one. Every lookup routes through `fd_lookup`/`fd_lookup_mut` so the
+/// decision is made in exactly one place.
+///
+/// Fails closed: `current_task_id()` reports 0 when no task is current, and
+/// real ids start at 1 (`ManifoldScheduler::new()` sets `next_id: 1`), so a
+/// task can never match an entry opened in kernel context, and an entry whose
+/// owner has exited is named by nothing.
+fn fd_owned_by_caller(entry: &FdEntry) -> bool {
+    entry.owner == crate::process::scheduler::current_task_id()
+}
+
+/// Resolve `fd` to the calling task's entry, or `None` if it names nothing the
+/// caller owns. The only sanctioned way to turn an fd number into an entry.
+pub(crate) fn fd_lookup(table: &BTreeMap<u64, FdEntry>, fd: u64) -> Option<&FdEntry> {
+    table.get(&fd).filter(|e| fd_owned_by_caller(e))
+}
+
+/// Mutable counterpart of [`fd_lookup`], for the arms that advance a cursor.
+pub(crate) fn fd_lookup_mut(table: &mut BTreeMap<u64, FdEntry>, fd: u64) -> Option<&mut FdEntry> {
+    table.get_mut(&fd).filter(|e| fd_owned_by_caller(e))
+}
 
 /// Stdin ring buffer for keyboard input.
 const STDIN_BUF_SIZE: usize = 256;
@@ -305,6 +626,57 @@ fn chart_name_from_path(path: &str) -> String {
     }
 }
 
+/// Whether a task holding identity (`real`, `effective`) may change to
+/// `requested`, for the SYS_SETUID/SETGID/SETEUID/SETEGID arms below.
+///
+/// POSIX-style rule: permitted if the caller's effective id is 0 (root), or
+/// `requested` is an id the task already holds (its real or effective id).
+/// `Task` (process/task.rs) has no saved-set-uid/gid field, so the usual
+/// third leg of this check — the saved id — is intentionally omitted; only
+/// real and effective ids are consulted. Fails closed: anything else is
+/// denied.
+fn credential_change_allowed(requested: u32, real: u32, effective: u32) -> bool {
+    effective == 0 || requested == real || requested == effective
+}
+
+/// What to report after an identity setter has run: `ok(0)` when a task existed
+/// to receive the write, ESRCH when the scheduler dropped it.
+///
+/// The setters `scheduler::set_current_uid`/`_gid`/`_euid`/`_egid` return `()`
+/// and only print when the write is discarded, so the outcome is recovered from
+/// the condition they themselves test. They write through
+/// `ManifoldScheduler::current` into a live slab entry, and
+/// `scheduler::current_task_id()` reports 0 in exactly the two cases where that
+/// write goes nowhere — `current` is `None`, or it indexes no entry. Task ids
+/// start at 1 (`ManifoldScheduler::new()`, `next_id: 1`), the invariant
+/// `fd_owned_by_caller` above already relies on, so 0 never names a live task.
+/// That condition holds for the whole uptime today (see `scheduler::current_uid`
+/// for why `current` is never assigned), which is precisely why these arms must
+/// stop answering 0: a program that calls `setuid(1000)` to drop privilege, is
+/// told it succeeded, and keeps running as root has no way to detect it.
+///
+/// ESRCH rather than EPERM, deliberately. EPERM is this dispatch's answer for a
+/// *refused* credential change, and a dropped write is not a refusal — sharing
+/// the code would make an unprivileged `setuid(0)` attempt and a kernel with
+/// nowhere to put the write indistinguishable both to the caller and in the
+/// audit trail, which is the one place that distinction is worth money. ESRCH
+/// states what happened, "no such process", and is what `process/signal.rs`
+/// already returns (`-3`) when a call names a task that is not there. EAGAIN was
+/// rejected: it invites a retry loop against a condition that does not clear,
+/// and on Linux it means RLIMIT_NPROC, a different and transient thing.
+///
+/// Reads the scheduler a second time rather than threading the setters' `bool`
+/// out through their `()` wrappers, which `security/passwd.rs` also calls. The
+/// gap between write and read is not a race worth closing here: both observe
+/// "is there a current task", nothing in these arms yields, and the answer is
+/// `None` on every path today.
+fn identity_write_outcome() -> SyscallResult {
+    if crate::process::scheduler::current_task_id() == 0 {
+        return SyscallResult::err(3); // ESRCH — no task held the write
+    }
+    SyscallResult::ok(0)
+}
+
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
     // Seccomp check
     let task_id = crate::process::scheduler::current_task_id();
@@ -349,15 +721,24 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 crate::serial_print!("{}", text);
                 return SyscallResult::ok(len as i64);
             }
-            let data = {
-                let guard = SYSCALL_PATH.lock();
-                guard.clone()
-            };
+            // File writes: fd validity first (matches SYS_READ's ordering),
+            // then copy the caller's actual bytes — not the process-wide
+            // SYSCALL_PATH string, which is last-writer-wins across every
+            // task and was never this fd's data to begin with. Bounded to
+            // 4096 bytes per call, same cap SYS_READ's file-fd branch uses;
+            // a caller writing more just loops, same as a short read/write.
             let mut table = FILE_TABLE.lock();
-            if let Some(entry) = table.get_mut(&fd) {
-                match with_vfs(|vfs| vfs.write(entry.handle, data.as_bytes(), 0)) {
+            if let Some(entry) = fd_lookup_mut(&mut table, fd) {
+                let mut buf = alloc::vec![0u8; len.min(4096)];
+                unsafe {
+                    if crate::security::smap_smep::copy_from_user(&mut buf, buf_ptr).is_err() {
+                        return SyscallResult::err(14); // EFAULT
+                    }
+                }
+                let offset = entry.offset as u64;
+                match with_vfs(|vfs| vfs.write(entry.handle, &buf, offset)) {
                     Ok(n) => {
-                        entry.offset = n;
+                        entry.offset += n;
                         SyscallResult::ok(n as i64)
                     }
                     Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
@@ -383,7 +764,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 return SyscallResult::ok(read_len as i64);
             }
             let table = FILE_TABLE.lock();
-            if let Some(entry) = table.get(&fd) {
+            if let Some(entry) = fd_lookup(&table, fd) {
                 let handle = entry.handle;
                 drop(table);
                 let mut buf = alloc::vec![0u8; len.min(4096)];
@@ -435,6 +816,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                             handle,
                             path: path.clone(),
                             offset: 0,
+                            owner: task_id,
                         },
                     );
                     SyscallResult::ok(fd as i64)
@@ -451,6 +833,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                                     handle,
                                     path: path.clone(),
                                     offset: 0,
+                                    owner: task_id,
                                 },
                             );
                             SyscallResult::ok(fd as i64)
@@ -465,7 +848,8 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_CLOSE => {
             let fd = arg0;
             let mut table = FILE_TABLE.lock();
-            if table.remove(&fd).is_some() {
+            if fd_lookup(&table, fd).is_some() {
+                table.remove(&fd);
                 SyscallResult::ok(0)
             } else {
                 SyscallResult::err(9) // EBADF
@@ -680,6 +1064,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14),
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -708,6 +1095,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14),
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -912,26 +1302,48 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
 
         SYS_SETUID => {
             let new_uid = arg0 as u32;
+            let real = crate::process::scheduler::current_uid();
+            let effective = crate::process::scheduler::current_euid();
+            if !credential_change_allowed(new_uid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
             crate::process::scheduler::set_current_uid(new_uid);
             crate::process::scheduler::set_current_euid(new_uid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_SETGID => {
             let new_gid = arg0 as u32;
+            let real = crate::process::scheduler::current_gid();
+            let effective = crate::process::scheduler::current_egid();
+            if !credential_change_allowed(new_gid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
             crate::process::scheduler::set_current_gid(new_gid);
             crate::process::scheduler::set_current_egid(new_gid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_SETEUID => {
-            crate::process::scheduler::set_current_euid(arg0 as u32);
-            SyscallResult::ok(0)
+            let new_euid = arg0 as u32;
+            let real = crate::process::scheduler::current_uid();
+            let effective = crate::process::scheduler::current_euid();
+            if !credential_change_allowed(new_euid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
+            crate::process::scheduler::set_current_euid(new_euid);
+            identity_write_outcome()
         }
 
         SYS_SETEGID => {
-            crate::process::scheduler::set_current_egid(arg0 as u32);
-            SyscallResult::ok(0)
+            let new_egid = arg0 as u32;
+            let real = crate::process::scheduler::current_gid();
+            let effective = crate::process::scheduler::current_egid();
+            if !credential_change_allowed(new_egid, real, effective) {
+                return SyscallResult::err(1); // EPERM
+            }
+            crate::process::scheduler::set_current_egid(new_egid);
+            identity_write_outcome()
         }
 
         SYS_CHDIR => {
@@ -1030,7 +1442,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let offset = arg1 as i64;
             let whence = arg2;
             let mut table = FILE_TABLE.lock();
-            if let Some(entry) = table.get_mut(&fd) {
+            if let Some(entry) = fd_lookup_mut(&mut table, fd) {
                 let new_offset = match whence {
                     0 => offset,                       // SEEK_SET
                     1 => entry.offset as i64 + offset, // SEEK_CUR
@@ -1060,6 +1472,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -1079,6 +1494,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -1099,12 +1517,18 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if old.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             let new = unsafe {
                 match copy_path_from_user(new_ptr) {
                     Ok(p) => p,
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if new.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             match with_vfs(|vfs| vfs.rename(&old, &new)) {
                 Ok(_) => SyscallResult::ok(0),
                 Err(e) => SyscallResult::err(vfs_error_to_errno(e)),

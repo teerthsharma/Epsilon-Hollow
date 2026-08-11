@@ -190,13 +190,44 @@ fn aether_mmio_allowed(addr: u64, width: u64) -> bool {
 // Kernel callbacks — called by Aether-Lang interpreter via function pointers.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Ceiling on any single string an `.aether` script hands across the FFI
+/// boundary (fs path, window title, on-screen text). Matches POSIX
+/// `PATH_MAX` — the largest string this boundary legitimately needs to
+/// accept is a filesystem path; titles and draw-text strings are always far
+/// shorter in practice, so one ceiling covers every caller without a second
+/// invented number.
+const AETHER_STR_MAX: usize = 4096;
+
+/// Convert an interpreter-supplied `(ptr, len)` into a validated `&str`.
+///
+/// Every `extern "C"` callback that receives a string from the Aether-Lang
+/// interpreter must route through here before touching the bytes: `ptr` may
+/// be null or wild, `len` may be unbounded, and the bytes are not guaranteed
+/// to be valid UTF-8. Returns `None` — a defined refusal — instead of ever
+/// producing a `&str` that would violate `from_utf8_unchecked`'s safety
+/// contract.
+///
+/// # Safety
+/// `ptr` must be valid for reads of `len` bytes when non-null (the FFI
+/// caller's contract, same as `slice::from_raw_parts`). This function only
+/// guarantees it will not read past a null pointer, past `AETHER_STR_MAX`
+/// bytes, or interpret non-UTF-8 bytes as `&str`.
+unsafe fn aether_str<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
+    if ptr.is_null() || len > AETHER_STR_MAX {
+        return None;
+    }
+    core::str::from_utf8(slice::from_raw_parts(ptr, len)).ok()
+}
+
 extern "C" fn aether_fs_read(
     path: *const u8,
     path_len: usize,
     buf: *mut u8,
     buf_len: usize,
 ) -> isize {
-    let path = unsafe { core::str::from_utf8_unchecked(slice::from_raw_parts(path, path_len)) };
+    let Some(path) = (unsafe { aether_str(path, path_len) }) else {
+        return -1;
+    };
     crate::fs::vfs::with_vfs(|vfs| {
         let handle = match vfs.lookup(path) {
             Ok(h) => h,
@@ -222,7 +253,9 @@ extern "C" fn aether_fs_write(
     data: *const u8,
     data_len: usize,
 ) -> isize {
-    let path = unsafe { core::str::from_utf8_unchecked(slice::from_raw_parts(path, path_len)) };
+    let Some(path) = (unsafe { aether_str(path, path_len) }) else {
+        return -1;
+    };
     crate::fs::vfs::with_vfs(|vfs| {
         let handle = match vfs.lookup(path) {
             Ok(h) => h,
@@ -237,12 +270,16 @@ extern "C" fn aether_fs_write(
 }
 
 extern "C" fn aether_fs_exists(path: *const u8, path_len: usize) -> bool {
-    let path = unsafe { core::str::from_utf8_unchecked(slice::from_raw_parts(path, path_len)) };
+    let Some(path) = (unsafe { aether_str(path, path_len) }) else {
+        return false;
+    };
     crate::fs::vfs::with_vfs(|vfs| vfs.lookup(path).is_ok())
 }
 
 extern "C" fn aether_fs_mkdir(path: *const u8, path_len: usize) -> isize {
-    let path = unsafe { core::str::from_utf8_unchecked(slice::from_raw_parts(path, path_len)) };
+    let Some(path) = (unsafe { aether_str(path, path_len) }) else {
+        return -1;
+    };
     crate::fs::vfs::with_vfs(|vfs| match vfs.mkdir(path) {
         Ok(_) => 0,
         Err(_) => -1,
@@ -359,12 +396,14 @@ extern "C" fn aether_gfx_draw_text(
     text_len: usize,
     color: u32,
 ) {
+    let Some(text) = (unsafe { aether_str(text, text_len) }) else {
+        return;
+    };
     unsafe {
         let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
         if comp.is_null() {
             return;
         }
-        let text = core::str::from_utf8_unchecked(core::slice::from_raw_parts(text, text_len));
         if let Some(win) = (*comp).window_mut(win_id) {
             crate::graphics::htek::render_text_small(win, x, y, text, color);
         }
@@ -457,12 +496,14 @@ extern "C" fn aether_win_create(
     width: u32,
     height: u32,
 ) -> u32 {
+    let Some(title) = (unsafe { aether_str(title, title_len) }) else {
+        return 0;
+    };
     unsafe {
         let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
         if comp.is_null() {
             return 0;
         }
-        let title = core::str::from_utf8_unchecked(core::slice::from_raw_parts(title, title_len));
         (*comp).create_window(title, 100, 100, width, height)
     }
 }
@@ -481,12 +522,14 @@ extern "C" fn aether_win_close(id: u32) {
 }
 
 extern "C" fn aether_win_set_title(id: u32, title: *const u8, title_len: usize) {
+    let Some(title) = (unsafe { aether_str(title, title_len) }) else {
+        return;
+    };
     unsafe {
         let comp = AETHER_COMPOSITOR.load(core::sync::atomic::Ordering::SeqCst);
         if comp.is_null() {
             return;
         }
-        let title = core::str::from_utf8_unchecked(core::slice::from_raw_parts(title, title_len));
         if let Some(win) = (*comp).window_mut(id) {
             win.title = String::from(title);
             win.render_decorations();
@@ -570,5 +613,89 @@ extern "C" fn aether_input_key_pressed(buf: *mut u8, buf_len: usize) -> isize {
             .min(buf_len);
         core::ptr::copy_nonoverlapping(key.as_ptr(), buf, n);
         n as isize
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// RED: every `extern "C"` fs/gfx/window callback in this file used to
+    /// call `core::str::from_utf8_unchecked(slice::from_raw_parts(ptr, len))`
+    /// directly on interpreter-supplied `(ptr, len)` pairs — no null check,
+    /// no length cap, no UTF-8 validation, despite `from_utf8_unchecked`'s
+    /// safety contract requiring valid UTF-8. A null pointer dereferences
+    /// immediately; invalid UTF-8 produces a `&str` that violates its own
+    /// invariant (undefined behaviour). `aether_str` is the guard every one
+    /// of those call sites now routes through — this test proves a null
+    /// pointer yields a defined `None`, never a dereference.
+    fn test_aether_str_rejects_null_pointer() -> TestResult {
+        let result = unsafe { aether_str(core::ptr::null(), 4) };
+        test_assert!(result.is_none(), "null pointer must be refused, not read");
+        // Zero length makes the null pointer's dereference moot for
+        // `slice::from_raw_parts`, so it is covered separately too: a null
+        // pointer must be refused regardless of len.
+        let result_zero_len = unsafe { aether_str(core::ptr::null(), 0) };
+        test_assert!(result_zero_len.is_none());
+        TestResult::Pass
+    }
+
+    /// RED: `path_len`/`text_len`/`title_len` were trusted verbatim from the
+    /// interpreter with no upper bound, so a corrupted or malicious length
+    /// value drove `slice::from_raw_parts` to read arbitrarily far past
+    /// whatever the pointer actually backs. `AETHER_STR_MAX` (POSIX
+    /// `PATH_MAX`) caps it.
+    fn test_aether_str_rejects_over_length() -> TestResult {
+        let data = vec![b'a'; AETHER_STR_MAX + 1];
+        let result = unsafe { aether_str(data.as_ptr(), data.len()) };
+        test_assert!(
+            result.is_none(),
+            "length beyond AETHER_STR_MAX must be refused"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: `from_utf8_unchecked` is documented UB on non-UTF-8 input, and
+    /// nothing in this file validated the bytes first — a script could pass
+    /// arbitrary bytes (e.g. a lone continuation byte) as a "path" and the
+    /// resulting `&str` would already violate its own invariant before any
+    /// kernel code inspected it.
+    fn test_aether_str_rejects_invalid_utf8() -> TestResult {
+        let bad = [0xFFu8, 0xFE, 0x00];
+        let result = unsafe { aether_str(bad.as_ptr(), bad.len()) };
+        test_assert!(result.is_none(), "invalid UTF-8 must be refused");
+        TestResult::Pass
+    }
+
+    fn test_aether_str_accepts_valid_input() -> TestResult {
+        let text = "/seal/etc/config.toml";
+        let result = unsafe { aether_str(text.as_ptr(), text.len()) };
+        test_assert_eq!(result, Some(text));
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "lang::aether_str_rejects_null_pointer",
+            test_aether_str_rejects_null_pointer,
+        );
+        crate::testing::register_test(
+            "lang::aether_str_rejects_over_length",
+            test_aether_str_rejects_over_length,
+        );
+        crate::testing::register_test(
+            "lang::aether_str_rejects_invalid_utf8",
+            test_aether_str_rejects_invalid_utf8,
+        );
+        crate::testing::register_test(
+            "lang::aether_str_accepts_valid_input",
+            test_aether_str_accepts_valid_input,
+        );
     }
 }

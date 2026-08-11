@@ -45,9 +45,11 @@ pub mod net;
 #[cfg(not(test))]
 pub mod pkg;
 pub mod process;
+pub mod sandbox;
 pub mod security;
 pub mod sync;
 pub mod syscall;
+pub mod tuner;
 #[cfg(not(test))]
 pub mod wm;
 
@@ -439,6 +441,18 @@ fn boot_graphical(fb: &'static Framebuffer) {
         x86_64::instructions::hlt();
     }
 
+    // This runs before `init_scheduler()` below, but moving it after would
+    // change nothing. `set_current_user` writes the uid into the scheduler's
+    // current task, and there is never one: `ManifoldScheduler::current` is
+    // assigned only inside `schedule()`, which both `yield_current()` and
+    // `scheduler_tick()` refuse to enter while `PerCpu::current_task` is null —
+    // and that field is cleared by nothing and set only by that same
+    // assignment. So the write is dropped here and would still be dropped after
+    // `init_scheduler()`, after the first yield, and after every timer tick.
+    // The identity survives only in `passwd::BOOT_USER`, which
+    // `passwd::get_current_user()` reads and `scheduler::current_uid()` does
+    // not — see `current_uid`'s note for why it must not until
+    // `ManifoldFS::stat` reports real per-node ownership.
     if let Some(user) = login.authenticated_user() {
         crate::security::passwd::set_current_user(user.clone());
         serial_println!(

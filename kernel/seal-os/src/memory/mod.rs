@@ -91,6 +91,12 @@ pub fn total_ram(boot_info: &BootInfo) -> u64 {
 #[cfg(feature = "test-mode")]
 pub mod tests {
     pub fn register_all() {
-        // Memory tests will be registered here once implemented
+        // `testing/runner.rs` has always called this. Until now it registered
+        // nothing, so the memory subsystem looked wired into the harness while
+        // contributing no assertions at all. Add a line here for each submodule
+        // that gains a `tests::register_all`.
+        super::virt::tests::register_all();
+        super::mmap::tests::register_all();
+        super::swap::tests::register_all();
     }
 }

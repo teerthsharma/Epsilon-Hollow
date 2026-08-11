@@ -113,15 +113,21 @@ pub fn tensor_from_data(data: Vec<f64>, shape: Vec<usize>) -> Result<Tensor, Str
 }
 
 /// Matrix multiply two tensors.
+///
+/// `Tensor::matmul` handles rank exactly 2 and `assert_eq!`s on anything
+/// else, so this rank check must be exact rather than a lower bound: the
+/// kernel builds with `panic = "abort"`, which makes that assertion a machine
+/// stop instead of an error the shell can print. Accepting rank 3 here and
+/// letting it reach `matmul` is not a laxer contract, it is a halt.
+/// `seal-graph`'s `matmul_shape` guards the same call the same way.
 pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
-    if a.shape.len() < 2 || b.shape.len() < 2 {
-        return Err(String::from(
-            "Both tensors must have at least 2 dimensions for matmul",
+    if a.shape.len() != 2 || b.shape.len() != 2 {
+        return Err(format!(
+            "Matmul requires 2D tensors, got {:?} x {:?}",
+            a.shape, b.shape
         ));
     }
-    let a_cols = a.shape.last().unwrap();
-    let b_rows = b.shape[b.shape.len().saturating_sub(2)];
-    if a_cols != &b_rows {
+    if a.shape[1] != b.shape[0] {
         return Err(format!(
             "Incompatible shapes for matmul: {:?} x {:?}",
             a.shape, b.shape
@@ -132,6 +138,15 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 
 /// Train a simple MLP on synthetic XOR-like data.
 /// Returns (human-readable report, serialized model bytes).
+///
+/// Samples are column vectors — `[features, 1]`, not `[features]`.
+/// `DenseLayer::forward` computes `weights.matmul(input)` with weights shaped
+/// `[out, in]`, and `Tensor::matmul` `assert_eq!`s that both operands are rank
+/// 2. A rank-1 sample therefore does not train badly, it aborts the kernel:
+/// the crate builds with `panic = "abort"`. aether-core's own `xor_problem`
+/// fixture uses the same `[2, 1]` / `[1, 1]` pair. Every read below indexes
+/// with both axes for the same reason — `Tensor::compute_offset` asserts that
+/// the index rank matches the shape rank.
 pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
     let mut mlp = MLP::new(
         OptimizerConfig::Adam {
@@ -149,16 +164,16 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
 
     // Synthetic XOR dataset
     let x = vec![
-        Tensor::new(&[0.0, 0.0], &[2]),
-        Tensor::new(&[0.0, 1.0], &[2]),
-        Tensor::new(&[1.0, 0.0], &[2]),
-        Tensor::new(&[1.0, 1.0], &[2]),
+        Tensor::new(&[0.0, 0.0], &[2, 1]),
+        Tensor::new(&[0.0, 1.0], &[2, 1]),
+        Tensor::new(&[1.0, 0.0], &[2, 1]),
+        Tensor::new(&[1.0, 1.0], &[2, 1]),
     ];
     let y = vec![
-        Tensor::new(&[0.0], &[1]),
-        Tensor::new(&[1.0], &[1]),
-        Tensor::new(&[1.0], &[1]),
-        Tensor::new(&[0.0], &[1]),
+        Tensor::new(&[0.0], &[1, 1]),
+        Tensor::new(&[1.0], &[1, 1]),
+        Tensor::new(&[1.0], &[1, 1]),
+        Tensor::new(&[0.0], &[1, 1]),
     ];
 
     let result = mlp.fit(&x, &y, epochs);
@@ -180,13 +195,13 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
 
     for (i, input) in x.iter().enumerate() {
         let pred = mlp.predict(input);
-        let val = pred.get(&[0]);
+        let val = pred.get(&[0, 0]);
         out.push_str(&format!(
             "  Input [{:.0}, {:.0}] -> Output {:.4} (target: {:.0})\n",
-            input.get(&[0]),
-            input.get(&[1]),
+            input.get(&[0, 0]),
+            input.get(&[1, 0]),
             val,
-            y[i].get(&[0])
+            y[i].get(&[0, 0])
         ));
     }
 
@@ -310,8 +325,17 @@ pub fn serialize_mlp(mlp: &MLP) -> Vec<u8> {
 }
 
 /// Deserialize an MLP from bytes.
+///
+/// Every count read out of the file (layer count, weight length, bias
+/// length) is untrusted — it comes straight from whatever `ml load <name>`
+/// read off disk. Each one is checked against the bytes actually remaining
+/// in `bytes` *before* it sizes a `Vec::with_capacity` or is used to index,
+/// mirroring the `at()`-style bounds checks in `atlas/relobj.rs`. This crate
+/// builds with `panic = "abort"` and defines no `#[alloc_error_handler]`, so
+/// an unchecked huge allocation or an out-of-bounds index would halt the
+/// kernel rather than just fail the load.
 pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
-    if &bytes[..8] != b"SEALML01" {
+    if bytes.len() < 8 || &bytes[..8] != b"SEALML01" {
         return Err(String::from("Invalid model magic bytes"));
     }
     let mut off = 8;
@@ -333,14 +357,36 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         let act_u8 = read_u8(bytes, &mut off).ok_or("Missing activation")?;
         let activation = activation_from_u8(act_u8).ok_or("Invalid activation")?;
 
-        // Weights
+        // Weights. `w_len` is a raw u32 off the file (up to ~4e9); each
+        // element is an 8-byte f64, so the buffer itself gives a hard,
+        // non-invented ceiling: it cannot hold more than
+        // `(bytes.len() - off) / 8` of them. Reject before `with_capacity`
+        // ever sees the untrusted count.
         let w_len = read_u32(bytes, &mut off).ok_or("Missing weights len")? as usize;
+        if w_len > bytes.len().saturating_sub(off) / 8 {
+            return Err(String::from("Weight count exceeds remaining model bytes"));
+        }
+        // The declared shape must exactly account for the weight buffer.
+        // This is also what `Tensor::from_vec` asserts internally (it
+        // panics — not `Result` — on a mismatch), and, since `w_len` is now
+        // bounded above, it caps `input_size * output_size` before
+        // `DenseLayer::new` does its own Xavier-init allocation of that size.
+        if input_size.checked_mul(output_size) != Some(w_len) {
+            return Err(String::from("Weight length does not match layer shape"));
+        }
         let mut w_data = Vec::with_capacity(w_len);
         for _ in 0..w_len {
             w_data.push(read_f64(bytes, &mut off).ok_or("Missing weight")?);
         }
-        // Biases
+        // Biases — same buffer-derived cap, and count must equal output_size
+        // (bias tensor shape is [output_size, 1]) for the same reason.
         let b_len = read_u32(bytes, &mut off).ok_or("Missing biases len")? as usize;
+        if b_len > bytes.len().saturating_sub(off) / 8 {
+            return Err(String::from("Bias count exceeds remaining model bytes"));
+        }
+        if b_len != output_size {
+            return Err(String::from("Bias length does not match layer shape"));
+        }
         let mut b_data = Vec::with_capacity(b_len);
         for _ in 0..b_len {
             b_data.push(read_f64(bytes, &mut off).ok_or("Missing bias")?);
@@ -472,4 +518,189 @@ pub fn demo_generate_text(seed: &str, length: usize) -> String {
     let mut chain = MarkovChain::new(3);
     chain.train(DEFAULT_CORPUS);
     chain.generate(seed, length)
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Defect A: the old code did `&bytes[..8]` with no length check first.
+    /// A 7-byte buffer indexed that way panics (abort, under `panic = "abort"`).
+    fn test_truncated_buffer_rejected() -> TestResult {
+        let bytes = [0x53u8, 0x45, 0x41, 0x4C, 0x4D, 0x4C, 0x30]; // "SEALML0", 7 bytes
+        test_assert!(bytes.len() < 8);
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a buffer shorter than the magic must be rejected, not panic"
+        );
+        TestResult::Pass
+    }
+
+    fn test_empty_buffer_rejected() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&[]).is_err(),
+            "an empty buffer must be rejected, not panic"
+        );
+        TestResult::Pass
+    }
+
+    fn test_bad_magic_rejected() -> TestResult {
+        let bytes = *b"NOTSEAL!";
+        test_assert!(deserialize_mlp(&bytes).is_err(), "wrong magic must be rejected");
+        TestResult::Pass
+    }
+
+    /// Defect B: `w_len` came straight off the file into
+    /// `Vec::with_capacity(w_len)` with no check against the buffer. A
+    /// header claiming ~4e9 weights with zero bytes left to back them must
+    /// be rejected before that allocation is attempted.
+    fn test_oversized_weight_len_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // output_size
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // w_len ~ 4e9, no data follows
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a weight length the buffer cannot hold must be rejected before allocating"
+        );
+        TestResult::Pass
+    }
+
+    /// Same class as Defect B, on the bias length.
+    fn test_oversized_bias_len_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // output_size
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // w_len = 1, matches shape
+        bytes.extend_from_slice(&0.0f64.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // b_len ~ 4e9, no data follows
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a bias length the buffer cannot hold must be rejected before allocating"
+        );
+        TestResult::Pass
+    }
+
+    /// Third site: `w_len` fitting the buffer is not enough — it must also
+    /// match `input_size * output_size`, or `Tensor::from_vec`'s internal
+    /// `assert_eq!` panics instead of this function returning `Err`.
+    fn test_mismatched_shape_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // output_size (needs w_len == 4)
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // w_len = 1, fits buffer but wrong shape
+        bytes.extend_from_slice(&0.0f64.to_le_bytes());
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a weight length that fits the buffer but not the declared shape must be rejected"
+        );
+        TestResult::Pass
+    }
+
+    /// `Tensor::matmul` handles rank exactly 2 and `assert_eq!`s otherwise.
+    /// The pre-fix guard here only demanded rank >= 2, so a rank-3 pair
+    /// cleared it and reached that assertion — which, under `panic = "abort"`,
+    /// halts the machine instead of returning the `Err` the shell prints.
+    /// Both directions are checked: a guard that refused everything would
+    /// also stop the abort and would also be wrong.
+    fn test_matmul_rejects_non_2d() -> TestResult {
+        let cube = match tensor_from_data(vec![1.0; 8], vec![2, 2, 2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("rank-3 tensor must be constructible"),
+        };
+        let vector = match tensor_from_data(vec![1.0, 2.0], vec![2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("rank-1 tensor must be constructible"),
+        };
+        let square = match tensor_from_data(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("2x2 tensor must be constructible"),
+        };
+
+        test_assert!(
+            tensor_matmul(&cube, &square).is_err(),
+            "a rank-3 left operand must be rejected, not handed to matmul's assertion"
+        );
+        test_assert!(
+            tensor_matmul(&square, &cube).is_err(),
+            "a rank-3 right operand must be rejected, not handed to matmul's assertion"
+        );
+        test_assert!(
+            tensor_matmul(&vector, &square).is_err(),
+            "a rank-1 left operand must be rejected, not handed to matmul's assertion"
+        );
+
+        // The shell's `ml matmul` still has to compute. [[1,2],[3,4]] squared
+        // is [[7,10],[15,22]]; both values are exact in f64.
+        let product = match tensor_matmul(&square, &square) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("a 2x2 by 2x2 multiply must still be accepted"),
+        };
+        test_assert_eq!(product.shape, vec![2, 2]);
+        test_assert_eq!(product.get(&[0, 0]), 7.0);
+        test_assert_eq!(product.get(&[1, 1]), 22.0);
+        TestResult::Pass
+    }
+
+    /// The fix must fail closed on garbage without breaking a real model.
+    /// Reaches `demo_train_mlp`, so it is also the case that the rank-1
+    /// training samples aborted in `Tensor::matmul` before the fix.
+    fn test_valid_roundtrip_still_loads() -> TestResult {
+        let (_, bytes) = demo_train_mlp(1);
+        let mlp = deserialize_mlp(&bytes);
+        test_assert!(
+            mlp.is_ok(),
+            "a genuinely serialized model must still deserialize"
+        );
+        test_assert_eq!(mlp.unwrap().layers.len(), 2);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ml_engine::deserialize_truncated_buffer_rejected",
+            test_truncated_buffer_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_empty_buffer_rejected",
+            test_empty_buffer_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_bad_magic_rejected",
+            test_bad_magic_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_oversized_weight_len_rejected",
+            test_oversized_weight_len_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_oversized_bias_len_rejected",
+            test_oversized_bias_len_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_mismatched_shape_rejected",
+            test_mismatched_shape_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::matmul_rejects_non_2d",
+            test_matmul_rejects_non_2d,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_valid_roundtrip_still_loads",
+            test_valid_roundtrip_still_loads,
+        );
+    }
 }

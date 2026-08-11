@@ -47,6 +47,10 @@
 - [The 30-Second Pitch](#the-30-second-pitch)
 - [Why I Did This To Myself](#why-i-did-this-to-myself)
 - [The FAQ Nobody Asked For](#the-faq-nobody-asked-for)
+- [The Gate That Is Currently Red](#the-gate-that-is-currently-red)
+- [Nothing In The Kernel Has Ever Been Tested](#nothing-in-the-kernel-has-ever-been-tested)
+- [How This Repository Gets Reviewed Now](#how-this-repository-gets-reviewed-now)
+- [Nine Things The Verifier Caught That The Author Did Not](#nine-things-the-verifier-caught-that-the-author-did-not)
 - [Honest Status Dashboard](#honest-status-dashboard)
 - [The Ten Subsystems That Just Landed](#the-ten-subsystems-that-just-landed)
 - [Why An Operating System Should Have Opinions About Your Loss Curve](#why-an-operating-system-should-have-opinions-about-your-loss-curve)
@@ -256,10 +260,15 @@ The naming scheme is inconsistent and borderline unhinged:
 ## The FAQ Nobody Asked For
 
 ### Q: Is this a real operating system?
-**A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
+**A:** It boots under the QEMU headless proof gate and passes theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, TLS, and benchmark sentinels. **One gate is currently failing at `main`: `--check-atlas-proof` reports `wx=fail`,** meaning a loadable chart's executable pages are not being flipped from `RW+NX` to `RX`. That is the W^X guarantee for runtime module loading, and it is not holding. Read [The Gate That Is Currently Red](#the-gate-that-is-currently-red) before you believe anything else in this file.
+
+Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes — though see above, because right now it also proves one of them wrong, out loud, on every boot, which is either a bug or the most honest feature in the repository.
 
 ### Q: Can I use this as my daily driver?
 **A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi used to be "simulated"; it is now *honestly broken*, which is a genuine upgrade — see below. Your therapist will bill you hourly.
+
+### Q: You put a section in your own README admitting a gate is red. Why?
+**A:** Because the alternative is a README that lies, and this project's entire pitch is that its claims are checkable. A proof gate you quietly stop looking at is worse than no proof gate at all — no gate is honest ignorance, an ignored gate is a decoration. See below. It is not a fun section. It is the most important one.
 
 ### Q: Wait, "honestly broken" is an upgrade?
 **A:** Yes, and I will die on this hill. The old WiFi driver returned a deterministic list of fake SSIDs from a fake state machine. It looked like it worked. It printed "connected." It was a lie wearing a lab coat. The simulation has now been **deleted**, not disabled, not feature-flagged, not "off by default" — removed from the source tree. `scan()` returns an empty list and there is no code path anywhere in the kernel that can produce an SSID. What replaced it is `bundle`, a real firmware-provisioning subsystem that says `section_missing` and names the exact section it wants. A driver that tells you why it is down beats a driver that tells you it is up.
@@ -295,7 +304,177 @@ The naming scheme is inconsistent and borderline unhinged:
 **A:** Primarily one person, with occasional contributions from people who looked at the code, said "huh," and then quietly left. I treasure those contributors.
 
 ### Q: Is this production-ready?
-**A:** Define "production." If you mean "runs in a VM and passes CI gates," yes. If you mean "I would bet my company's infrastructure on it," absolutely not. If you mean "could I demo it at a conference and look smart," definitely yes.
+**A:** Define "production." If you mean "runs in a VM and passes CI gates," mostly — one gate is red, see the very next section, and I am not going to bury it under three hundred lines of jokes about topology. If you mean "I would bet my company's infrastructure on it," absolutely not. If you mean "could I demo it at a conference and look smart," definitely yes, right up until someone in row three asks to see the CI dashboard.
+
+---
+
+## The Gate That Was Red, And The Four Nobody Has Ever Seen
+
+This section exists because a README that grades its own homework is worth nothing, and this one has a section further down titled *Negative Controls: A Proof That Cannot Fail Is Not A Proof*. Applying that standard to the README itself: a claim nobody rechecks is not a claim, it is set dressing.
+
+An earlier version of this section said the Atlas gate was red and promised it would be rewritten rather than deleted when it went green, because "we fixed it" is also a claim. It is green. Here are the receipts, including the part where this section's own diagnosis was wrong.
+
+### What it was
+
+```
+[seal-audit] ATLAS PROOF FAIL: Atlas proof expected wx=text_rx_data_rw_nx, got wx=fail
+```
+
+`wx=fail` reads as "write-xor-execute enforcement failed," and that is how it was investigated: page permissions, remapping, TLB coherency, the `ChartImage::seal` → `remap_region` → `unmap_page` + `map_page` chain. This section previously asserted, in as many words, that "the defect is not in atlas's parsing."
+
+**That was exactly backwards.** The defect was entirely in atlas's parsing, and none of the permission machinery was ever reached.
+
+`relobj::parse()` read `Elf64_Shdr` as though the 8-byte `sh_addr` field did not exist:
+
+```rust
+offset: rd_u64(bytes, base + 16)?,   // that is sh_addr — a relocatable object writes 0 here
+size:   rd_u64(bytes, base + 24)?,   // that is the real sh_offset
+```
+
+The true layout is `sh_name` 0, `sh_type` 4, `sh_flags` 8, **`sh_addr` 16**, `sh_offset` 24, `sh_size` 32, `sh_link` 40, `sh_info` 44, `sh_addralign` 48, `sh_entsize` 56. Every field from `sh_link` onward was read correctly, which is precisely why it survived from the subsystem's first commit — nine of eleven fields were right, and the two that were wrong were wrong by exactly one field width.
+
+Consequence: `.symtab` was read with `size = 280`, which is that section's real file offset. `280 % 24 != 0`, so `parse()` rejected it as a malformed symbol table and returned `NoSymbolTable` — before `ChartImage::alloc`, before `seal()`, before any page-table code. **Atlas had never loaded a chart. Not once, in its entire existence.**
+
+### The evidence was printed on every boot and nobody read past the first field
+
+The same proof marker also said:
+
+```
+sections_placed=0 image_bytes=0 charts_before=0 charts_peak=0 charts_after=0
+init_code=0x8000000000000000
+```
+
+`charts_peak=0` means no chart was ever registered — valid signature, valid germ, irrelevant. `init_code` is `i64::MIN`, the sentinel for `graft()` returning `Err`. Both fields say the loader never reached the code everyone was theorising about. They were sitting in the same line as the `wx=fail` being quoted.
+
+Two things made that easy to miss, and both are now fixed:
+
+**A diagnostic that conflates two failures decides which wrong thing you investigate.** `Atlas::sealed()` returns `Option<bool>`; the call site did `.unwrap_or(false)`, so "chart absent" and "chart present but unsealed" both printed `wx=fail`. It now prints `absent`, `unsealed`, or `text_rx_data_rw_nx`. The gate is unchanged — the checker exact-matches the pass string — but a human reading the line now learns which half of the system to look at.
+
+**A lead that fits your hypothesis feels confirmed without being tested.** A scout had independently flagged that `map_page_inner` performs no TLB shootdown, unlike `unmap_page`. Real finding, correctly recorded, and completely unreachable in this path — `charts_peak=0` refuted it and had been printed all along.
+
+### What is red now, and the fifteen gates nobody has ever seen
+
+```
+success  Verify Atlas chart graft proof
+success  Verify firmware bundle proof
+failure  Verify raw-block installer proof
+skipped  Verify FAT/ext2 parity proof
+skipped  Verify stratum fit-control proof
+skipped  Verify foliation KV cache policy proof
+skipped  Verify GCN ISA GPU bench proof
+skipped  Verify KASLR mapping proof
+skipped  Verify per-feature security proof
+skipped  Verify unsafe-audit census against the source tree
+skipped  Verify T1-T5 runtime theorem coverage
+skipped  Verify Seal ABI/no-POSIX discipline
+skipped  Verify Seal OS language hygiene
+skipped  Verify Aether/Rust migration gates
+skipped  Verify O(1) allocator hot path
+skipped  Verify O(1) TCP demux indexes
+skipped  Inventory unsafe Rust blocks
+skipped  Verify soft boot milestones
+```
+
+The installer gate fails on one field, `auth_topo5000=0`, while everything around it passes — GPT written and CRC-verified on both copies, ext2 formatted and mounted with `.` and `..` present, all three refusal guards refusing correctly. Its root cause turned out to be `ManifoldFS::write` discarding its `offset` argument, so `add_user` truncated `/etc/passwd` and `/etc/shadow` down to the new account's single line instead of appending. That is fixed, and it was a data-loss bug on any real boot, not a test artifact.
+
+But that is not the headline of this section.
+
+**Every gate after the first failure is skipped.** The proof job runs sequentially. Atlas failed at stage one from the day the subsystem was written, so nothing past it ever ran. Not failed — *never executed*. Nobody has ever seen the result.
+
+Read that list again with the README's own claims in hand:
+
+- **`Verify T1-T5 runtime theorem coverage`.** The status table below marks "Theorem-gated boot (T1-T10)" with a ✅. The gate that checks the theorems at runtime has never run.
+- **`Verify O(1) allocator hot path`** and **`Verify O(1) TCP demux indexes`.** The pitch says every "O(1)" is "either tied to a proof gate or explicitly marked pending." The gates exist. They have never executed.
+- **`Verify KASLR mapping proof`**, **`Verify per-feature security proof`**, **`Inventory unsafe Rust blocks`**, **`Verify unsafe-audit census against the source tree`.** The entire security-posture section rests on these.
+- **`stratum` and `foliation`** — the two ML subsystems this README leads with, the reason the project claims an operating system should have opinions about your loss curve.
+
+Fifteen gates, hidden behind one parser reading `Elf64_Shdr` one field short.
+
+That is what a red gate actually costs. Not one defect deferred — the entire depth of the pipeline past the first stop, invisible for exactly as long as the first stop stands, while every badge and every ✅ upstream of it keeps rendering.
+
+An earlier revision of this very section said "four gates." That was wrong: it was written from a truncated step list without going back for the full one. The number is fifteen. Correcting it here rather than quietly editing the figure, because a document that claims its numbers are checkable has to show its own corrections too.
+
+---
+
+## Nothing In The Kernel Has Ever Been Tested
+
+> **This section is superseded and is kept for the record.** On 11 August 2026 the
+> in-kernel harness executed for the first time and reported 151 passes and 1
+> failure. Everything below was true when it was written and every mechanism it
+> describes was measured. What it got wrong was the implication that this was
+> permanent. See [The Tests Ran](#the-tests-ran) for what changed, what the 151
+> covers, and the twenty-three test groups that still have not run.
+>
+> The table below is left exactly as it was. Correcting it in place would delete
+> the evidence of how long this state persisted, which is the part worth keeping.
+
+That heading is not a joke and this section is not a bit. It is the single most important thing in this file.
+
+The kernel is 70,683 lines across 20 subsystems. Here is every mechanism that is supposed to verify it, and what each one actually does:
+
+| Mechanism | Reality |
+| --- | --- |
+| `cargo test --workspace` | Never reaches it. `kernel/seal-os` is in the workspace `exclude` list. |
+| The 65 `#[test]` functions in the kernel | Never compiled, never run. They compile in the sense that a poem compiles. |
+| The in-kernel harness under QEMU | **Never executed.** See below. |
+| `miri (UB detection)` | Failed to compile for its entire existence, so never detected any UB. Fixed this session. |
+| `memory::tests::register_all()` | An empty stub containing one comment, faithfully called by the harness every boot. Fixed this session. |
+
+The third row is the one that matters. `.github/workflows/kernel-tests.yml` is the *only* thing that boots the test-mode image and runs `testing::runner::test_main()`. It is triggered by `workflow_run` from CI, and gated:
+
+```yaml
+    if: github.event.workflow_run.conclusion == 'success'
+```
+
+CI has never concluded successfully. The Atlas boot proof failed at stage one from the day that subsystem was written, so the whole workflow has always ended in `failure`, so this job has always been skipped. Fifteen consecutive runs, every one `skipped`, on every branch.
+
+**The in-kernel test harness has never run. Not once.**
+
+Which means the honest statement about this kernel is not "the tests pass," and it is not "the tests are gated behind QEMU." It is: *there is no evidence any of it works beyond the fact that it boots and prints markers.* The boot markers are real — the machine genuinely comes up, mounts a filesystem, draws a desktop, completes a TLS handshake. Everything past that is unmeasured.
+
+The tests themselves are fine. They are written, they are registered, they are correct as far as anyone can tell by reading. They are pointed at a job that has never fired.
+
+The fix for this is not a testing change. It is the boot proof going green — the moment CI concludes successfully, `Kernel Tests` fires for the first time and every registered test executes at once. That is one gate away, and this session spent most of its time getting there.
+
+---
+
+## How This Repository Gets Reviewed Now
+
+Given the above, "review" here cannot mean "the tests caught it." It means people and process. The loop:
+
+- **scout** — read-only, one subsystem, finds defects and refuses to invent them. `DEFECT: none` is a valid and encouraged answer.
+- **smith** — implements exactly one item inside a handed file scope. Writes the failing check first and has to paste the failure. A check nobody watched fail proves nothing.
+- **shaman** — tries to *refute* the smith. Defaults to REFUTED when the evidence is thin. Confirming something wrong costs far more than sending something right back for another look.
+- **oracle** — for anything touching persistence, filtrations, diagrams, or sparse attention, checks that the invariants a wrong implementation would violate are actually asserted. Stability under perturbation. Scale equivariance. The `sqrt(3) * r` death time for a circle's H1 bar, which is a sharp non-obvious constant that a plausible-but-wrong implementation gets wrong.
+- **medic** — runs when something is on fire and has the authority to stop everything else. Currently deployed on the section above.
+
+The rule that matters: **an item counts when the shaman confirms it, not when the smith finishes it.** Those are different numbers, and pretending otherwise is how a changelog fills with work that was never checked.
+
+---
+
+## Nine Things The Verifier Caught That The Author Did Not
+
+Presented in the spirit of *A Proof That Cannot Fail Is Not A Proof*. Every one of these got past the person who wrote it, past the tests, and past a re-read of the diff. Every one was caught by someone whose only job was to attack the change.
+
+**1. A canonical-address check that admitted kernel space.** The ELF loader was hardened to stop a panic on a non-canonical `p_vaddr`. x86_64 canonical form is *two* disjoint ranges, and `VirtAddr::try_new` sign-extends bit 47, so it accepts `0xFFFF_8000_...` as readily as user space. Combined with `base = 0` for `ET_EXEC`, an unconditional `USER_ACCESSIBLE` flag, and a shallow upper-half PML4 clone, a crafted static binary could map a user-accessible page into page tables shared with the live kernel. The fix stopped a panic and left the mapping open.
+
+**2. The same file's entry point, disclosed with the wrong reason.** `entry_point: entry + base` was flagged in a commit message as "an unchecked addition — it does not reach `VirtAddr::new` in this file." True. Irrelevant. It reaches `context.rdi`, then the `iretq` frame, then `RIP`. A defect disclosed with the wrong reason attached is worse than one missed silently, because it reads as examined.
+
+**3. A DNS fix that added approximately zero entropy.** Response validation was tightened to require a matching transaction ID, source address, and source port. The transaction ID was a monotonic counter starting at 1. The source address is the configured resolver and the port is 53 — precisely the two values a spoofer forges in order to impersonate the server. Meanwhile the ephemeral destination port, the one field carrying real entropy, was parsed two lines earlier for the DHCP branch and discarded for DNS. Attacker cost after the fix: one packet.
+
+**4. A test that measured the wrong property.** `gen_range_covers_every_residue_without_low_bit_bias` asserted that each of 8 buckets received more than 800 of 8000 draws. A perfect period-8 sawtooth fills every bucket *exactly* equally and sails through. The name claimed non-periodicity; the body checked occupancy. The replacement asserts on the sequence, and against the old implementation reports `only 0 of 56 pairs differ`.
+
+**5. Two tests that were tautologies.** `default_seed_matches_historical_42` compared the new code path against itself and its comment claimed "unchanged behaviour." The values had moved — seed 42's first draw went from `-0.019956656468772427` to `0.1364606532878152`. The tests passed, the code was correct, and the *documentation* was the defect. A green suite does not audit its own comments.
+
+**6. A fallback that was not a bound.** `xorshift64` is linear and fully invertible: observe a few dozen truncated outputs and you recover the entire 64-bit state. With one RDTSC seed and no reseeding, the sustained-attack floor is the seed's entropy, not the per-draw entropy — near zero on a deterministic virtualized boot. "Random fallback" reads like a guarantee and is not one.
+
+**7. A fix that traded a bounded problem for an unbounded one.** To stop `UDP_SOCKETS` growing per DNS query, one revision replaced per-query sockets with a single shared, rebindable one. Under a preemptive scheduler a second query's rebind lands between the first query's rebind and its send, changing the on-wire source port of a query that has not gone out yet — so the legitimate response then fails the very check the work had just added. Reverted. The residual growth causes port *collisions*; the shared socket caused dropped lookups.
+
+**8. A driver that documented a contract nothing honoured.** `ahci.rs` accepted transfers up to 128 KiB, moved 4 KiB, and returned `Ok(())`. Its own module doc said "a transfer larger than one page must be split by the caller — see the `BlockDevice` impl." The `BlockDevice` impl does not split. `verify_gpt` reads 16 KiB of partition entries in one call, so 96 of 128 entries were whatever the buffer previously held, then CRC'd as though they were disk.
+
+**9. A checksum computed over the wrong memory.** `parse_madt` copied the ACPI header by value with `read_unaligned()` before validating it, so `from_raw_parts(self, self.length)` walked from a *stack* address. The checksum said nothing about the table, and the unbounded read ran off the stack rather than the ACPI region. Bounding the length alone would have produced a check that verified nothing.
+
+The through-line, if you want one: **none of these is a wrong function.** Almost every one is two individually-correct pieces of code disagreeing about the same value — a path string, an address range, a length, a contract in a doc comment. That class does not show up in a per-file review. It shows up when someone asks who else touches this value, and what it costs an attacker.
 
 ---
 
@@ -559,7 +738,7 @@ To Linux, to Windows, to macOS, to Redox, to every kernel that has ever booted o
 
 A training run is not a noun. It is a **trajectory**. It has a direction, a curvature, a place it is going, and — this is the part every OS throws away — a *shape*. Two runs with identical RSS, identical page-fault counts, identical `%CPU`, identical wall time, and identical I/O profiles can be in completely different places: one is converging beautifully and one has been memorising its training set for forty minutes and is now actively getting worse. The kernel sees the same process. Two identical rows in `top`. One of them is on fire.
 
-And the kernel *could* know. That is the maddening part. The information required to distinguish those two runs is two floating-point numbers per step. Not the weights. Not the activations. Two `f64`s. Every framework on earth already computes them, prints them to a terminal nobody is watching, and throws them away. The kernel — the one component that outlives the run, owns the memory, owns the I/O queue, owns the scheduler, and is still standing when your Python process OOMs — is never told.
+And the kernel *could* know. That is the maddening part. The information required to distinguish those two runs is two floating-point numbers per step. Not the weights. Not the activations. Two `f64`s. Every framework on earth already computes them, prints them to a terminal nobody is watching, and throws them away. The kernel — the one component that outlives the run, owns the memory, owns the I/O queue, owns the scheduler, and is still standing when your training process OOMs — is never told.
 
 ### An analogy I am too pleased with
 
@@ -581,7 +760,7 @@ Here is what userspace **cannot** do, in order of how much I care:
 
 Correct. I cannot see the model. I have said this so many times in this README that I have considered making it a `<marquee>`.
 
-A `no_std` kernel cannot walk a userspace autograd graph. It cannot read your weight tensors, it cannot hook your backward pass, and any kernel that claims it can is either lying or has quietly redefined "kernel" to include a 400 MB Python runtime it links against. `stratum` observes **two scalars per step**, `(train_loss, val_loss)`, pushed across the Seal ABI by the training process itself.
+A `no_std` kernel cannot walk a userspace autograd graph. It cannot read your weight tensors, it cannot hook your backward pass, and any kernel that claims it can is either lying or has quietly redefined "kernel" to include a 400 MB host interpreter runtime it links against. `stratum` observes **two scalars per step**, `(train_loss, val_loss)`, pushed across the Seal ABI by the training process itself.
 
 That is a genuine limitation and it is also, annoyingly for the objection, *enough*. The claim is not "the kernel understands your model." The claim is:
 
@@ -882,8 +1061,8 @@ And the actuation, with the honesty column that this README exists to carry:
 
 | Knob | Real or advisory | Why |
 |---|---|---|
-| `prefetch_epsilon` | **REAL** | the kernel owns the I/O prefetch engine; clamped to [0.1, 0.9] and read by `PrefetchEngine::new_model_training` |
-| `clamp_heap` | **REAL** | pins the training task's `brk_end` via `setrlimit`; only fires on `Collapsing` |
+| `prefetch_epsilon` | **published, not enforced** | clamped to [0.1, 0.9] and published for `PrefetchEngine::new_model_training` — which has zero call sites, so nothing reads it. Every engine actually constructed is `new_gaming`. |
+| `clamp_heap` | **removed** | it read `brk_end` and wrote the same value straight back. A provable no-op. And `dispatch_brk` consults no limit, so even a different value would not have clamped anything — `RLIMIT_DATA` does not exist in this tree. |
 | `reg_scale` | advisory | the kernel cannot reach into your optimizer's regularisation coefficient |
 | `lr_scale` | advisory | see above, with feeling |
 | `batch_scale` | advisory | see above, with more feeling |
@@ -1060,7 +1239,7 @@ Everything above is the pitch. This is the invoice. Nothing here is buried in a 
 
 **1. The kernel observes two scalars per step. That is the entire input.**
 
-`(train_loss, val_loss)`, `f64`, pushed by the training process across syscall 121. Not weights. Not activations. Not gradients. Not attention entropy, not per-layer norms, not anything else in the long list of things that would be genuinely useful. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to has either linked a Python runtime or is describing a research paper. Every signal `stratum` reports derives from those two numbers plus what the kernel already owns for that task — heap break, I/O prefetch state. I could have made the claim bigger. I preferred to make it true, and I want credit for how boring that decision was.
+`(train_loss, val_loss)`, `f64`, pushed by the training process across syscall 121. Not weights. Not activations. Not gradients. Not attention entropy, not per-layer norms, not anything else in the long list of things that would be genuinely useful. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to has either linked a host interpreter runtime or is describing a research paper. Every signal `stratum` reports derives from those two numbers plus what the kernel already owns for that task — heap break, I/O prefetch state. I could have made the claim bigger. I preferred to make it true, and I want credit for how boring that decision was.
 
 **2. `loop_score > 0` does NOT imply a fold.**
 
@@ -4762,6 +4941,1412 @@ Twelve markers. Twelve of these. One of them is the one described above and I am
 
 **Estimated time: twenty minutes.**
 **Actual time: a day and a half, one real defect, one reduced feature set, and a permanent change in how I read the word "pass."**
+
+## The Day Six Gates Ran For The First Time
+
+There are twenty-seven proof gates in the QEMU job. They run in order. Each one
+greps the serial log for a marker the kernel is supposed to have printed, and if
+the marker is missing or wrong, the step fails and every step after it is
+skipped.
+
+That last clause is the whole story. A red gate is not one failure. It is one
+failure and a silent agreement not to ask about anything downstream.
+
+For most of this project's life the pipeline died at gate ten, on the Atlas chart
+graft proof, because `relobj::parse()` read a section header's fields at the
+wrong offsets and no chart had ever loaded — not once, not since the subsystem
+was written. Fixing that moved the failure to gate twelve, the raw-block
+installer proof, which failed because `ManifoldFS::write` accepted an `offset`
+parameter and then ignored it, so the second user account written to `/etc/passwd`
+destroyed the first one.
+
+Fixing *that* produced the following, which is the most interesting thing that
+has ever happened to this repository:
+
+```
+success  Verify raw-block installer proof
+success  Verify FAT/ext2 parity proof
+success  Verify stratum fit-control proof
+success  Verify foliation KV cache policy proof
+success  Verify GCN ISA GPU bench proof
+success  Verify KASLR mapping proof
+success  Verify per-feature security proof
+failure  Verify unsafe-audit census against the source tree
+```
+
+Six gates executed for the first time in the history of this project. Six
+subsystems — the filesystem parity check, the stratum fit control, the foliation
+KV cache policy, the GPU ISA bench, the KASLR randomisation proof, and the
+per-feature security gate — had markers, had checkers, had CI steps with
+confident names, and had never once been asked whether they were telling the
+truth.
+
+All six passed. I want to be clear that this is a good outcome and also that I
+had no right to expect it. Six mechanisms nobody had ever run, all correct on the
+first attempt, is not a testament to my care. It is a testament to the fact that
+they were written by someone who could not check them and therefore had to be
+careful, which is a worse development process that occasionally produces better
+code.
+
+Eighteen gates green. One red. Eight still standing behind it in the dark.
+
+### And now the part that is funny
+
+The gate that failed is the unsafe-code audit.
+
+It failed because it contains two different functions for counting unsafe blocks,
+and they disagree.
+
+The checker counts occurrences of the literal `unsafe {`. The inventory generator
+counts *lines* matching any of `unsafe {`, `unsafe{`, `unsafe fn`, or
+`unsafe impl`. On one file — `drivers/acpi/madt.rs`, byte-identical across both
+commits, nobody touched it — the recorded fixture says 12, the checker says 18,
+and the generator says 20.
+
+Three numbers. One file. Zero changes.
+
+The fixture that these tools are arguing about opens with a comment I wrote, in
+which I warn myself, in writing, that:
+
+> the host checker and the kernel-side parser must agree exactly, or the gate is
+> measuring two different things
+
+I then wrote two scanners that do not agree exactly, put them 5,000 lines apart in
+the same file, and never ran the gate that would have told me.
+
+There is a version of this where I am embarrassed. Instead I am delighted,
+because the divergence turns out to hide a real hole: the checker misses
+`unsafe{` written without a space. That is valid Rust. Unsafe code written that
+way is invisible to the audit. The only reason nothing has ever slipped through
+is that the `cargo fmt` gate runs first and quietly inserts the space — which
+means, for the entire life of this project, the security audit has been
+load-bearing on a formatter.
+
+### The number I am not going to defend
+
+While failing, the gate printed this:
+
+```
+blocks=594 justified=9 unjustified=585 undocumented_permille=984 result=pass
+```
+
+Read the last two fields together. **98.4% of the unsafe blocks in this kernel
+have no `SAFETY:` comment**, the audit measures that to a tenth of a percent, and
+it reports `pass`.
+
+It is not broken. It is doing exactly what it was written to do, which is check
+that the count of unsafe blocks hasn't drifted from a recorded fixture. It just
+also computes, prints, and then walks past a statistic that describes the actual
+state of the codebase far better than the thing it's gating on.
+
+I am not fixing that in the same change that fixes the scanner, because
+tightening a ratchet from 1.6% would fail every build from now until someone
+writes 585 safety comments, and that is a decision about how this project spends
+the next month rather than a bug. But I am writing the number down here, in the
+README, where it is harder to forget than in a log line inside a job that had
+never run.
+
+Nine of five hundred and ninety-four. I looked at it for a while.
+
+## Four Bugs That Were Not There
+
+A thing I did not expect from putting a verification pass in front of every fix
+is how often the verification pass comes back and says there was nothing to fix.
+
+Four times now. Each one cost a full investigation. Each one was worth it, and I
+want to write them down, because a repository that only records its fixes is
+quietly claiming that every hunch it had was correct.
+
+**The doc comment that wasn't copy-pasted.** A report claimed `aegis-core`'s
+`lib.rs` opened with a doc comment pasted from another crate. The verifier ran
+`git show HEAD` and found the file had no doc comment at all. It then refused to
+write a fix, on the grounds that it would have had to invent a "before" state to
+have something to improve. I think about that refusal a lot. It would have been
+very easy to write a nice doc comment, commit it, and describe it as fixing a
+copy-paste error, and nobody would ever have known that the error did not exist.
+
+**The TLB shootdown that was innocent.** The Atlas boot proof was red, and I was
+confident it was a stale TLB entry in `map_page_inner` — a real hazard, in a
+function that genuinely has one. The evidence that refuted it was in the log I
+had already read: `charts_peak=0`. Not "the wrong chart was mapped." Zero charts.
+The subsystem had never loaded anything, ever, and the fault was a section header
+parser reading fields at the wrong offsets. My hypothesis was about the wrong
+half of the system, and the number that disproved it had been sitting in front of
+me the whole time.
+
+**The password hashes that were fine.** Same shape, a day later. The installer
+proof was red and I was sure it was `passwd_embedded_hashes`. The refutation was
+reading what `add_user` actually writes to disk. It was fine. The real defect was
+one layer down, in `ManifoldFS::write`, which accepted an `offset` parameter and
+then ignored it, so writing the second account destroyed the first.
+
+Two of the four were mine. Both were refuted by evidence I already had. This is
+worth being precise about: the failure mode is not that my sources were bad. It
+is that I formed a hypothesis, found it plausible, and did not go back and check
+it against the log I had read twenty minutes earlier.
+
+**The UDP sockets that never move.** A scout reported that the UDP socket table
+hands out array indices as handles, and that removal shifts entries so an old
+index names the wrong socket. Real defect class, correctly described, and the
+kind of thing that produces a use-after-free with a straight face.
+
+The verifier grepped the file for every operation that could shrink a `Vec`. Two
+hits. Both were `self.rx_buffer` — the datagram queue *inside* a single socket,
+not the table of sockets. The socket table has exactly one length-changing
+operation in the entire file, and it is a `push`. It has never removed anything.
+It cannot remove anything. There is no `close`.
+
+The scout had read `remove(0)` and pattern-matched to the defect. So would I
+have. So, I suspect, would you.
+
+The verifier also declined to add a generation-tagged handle scheme, on the
+grounds that it would protect against a removal path that does not exist. It did
+leave one note, which is the most useful sentence in the whole report: the day
+someone adds socket reclamation — and they will, because the table currently
+grows forever — they must not implement it with `Vec::remove`. That is the day
+this bug becomes real.
+
+It filed a warning about a bug that hasn't happened yet, then closed the ticket
+for the bug that hadn't happened yet. I find this an unreasonably good outcome
+for a process I mostly set up so I would stop trusting myself.
+
+## The Number Nobody Reads
+
+I want to add to the unsafe-audit story, because fixing it turned up two things
+worse than the thing I was fixing.
+
+Recall the setup: a gate that counts unsafe blocks in the kernel and compares
+that count against a checked-in fixture. It failed because two scanners
+disagreed. Fine. Unified them, regenerated the fixture, 628 blocks across 84
+files, done.
+
+Except.
+
+**The kernel computes a statistic and no one is on the other end.** Every boot,
+the audit emits:
+
+```
+blocks=628 justified=9 unjustified=619 files=84 undocumented_permille=985
+```
+
+That fifth field is the fraction of unsafe blocks with no `SAFETY:` comment,
+expressed in parts per thousand. 985. The kernel calculates it, formats it, and
+prints it into the serial log at every single boot.
+
+The checker's list of fields it compares is `blocks`, `justified`,
+`unjustified`, `files`.
+
+`undocumented_permille` appears in the checker's source exactly twice, both times
+inside a test string literal. Nothing reads it. It has been computed and thrown
+away on every boot this kernel has ever performed. It is the most informative
+number the audit produces and it goes directly into the bin.
+
+**And the gate does not do what its own documentation says.** The fixture header
+states that a listed file gaining an unjustified block fails the gate. The
+implementation builds a per-file `drift` vector and a per-file `ratchet` vector,
+which is exactly the machinery you would need for that — and then both failure
+conditions compare *global sums*.
+
+So a file gaining an unsafe block while another file loses one passes silently.
+The per-file vectors are built and discarded. And `drift`, the vector that would
+tell you which files moved, is only printed inside the branch that fires when the
+totals mismatch — meaning in the one case where the totals match and the files
+have shifted underneath, it is populated, correct, and invisible.
+
+I wrote that header. I wrote that implementation. I have no memory of intending
+either to be a lie about the other, which is precisely the problem: nobody
+decided this. It drifted, in a file whose entire job is detecting drift, and the
+gate that would have caught it had never run.
+
+### The tally I am obliged to report
+
+Nine of 628 unsafe blocks in this kernel carry a `SAFETY:` comment.
+
+All nine live in four files: `fs/block_store.rs` (2 of 2 — perfect score,
+congratulations), `security/features.rs` (4 of 4 — likewise), `net/tcp.rs` (1 of
+3), and `lang/mod.rs` (2 of 40).
+
+`lang/mod.rs` having 40 unsafe blocks and 2 comments is the single most honest
+line in this document.
+
+I am not fixing that in the same change. Tightening the ratchet from 1.6% fails
+every build from now until someone writes 619 safety comments, and that is a
+decision about how this project spends the next month, not a bug I get to fix on
+a Tuesday. But it is in the README now, which is harder to lose than a log line
+inside a job that had never executed.
+
+The audit works. It has always worked. It was just never *asked*.
+
+## The Gate That Reads The Documentation And Not The Code
+
+I have to write this section carefully, because the gate it is about scans this
+file, and if I name the thing plainly the gate will fail and you will not be
+reading this at all. So: there is a host scripting language, extremely popular,
+named after a comedy troupe. You know the one. I am going to call it **the
+language** for the next several paragraphs and we will both cope.
+
+`Verify Seal OS language hygiene` exists to keep host scripting out of a kernel
+that is supposed to be `no_std` Rust all the way down. Good goal. Real risk. I
+wrote it on purpose.
+
+It works by scanning `README.md`, `docs/`, `.github/workflows/`, and `scripts/`
+for a list of banned substrings, and failing if it finds one.
+
+Note the list of things it scans. Note, in particular, what is not on it.
+
+It does not scan source code.
+
+When it finally ran — twenty-one gates deep into a pipeline that had never
+reached this far — it produced seven findings. Three were prose in this README,
+in sentences making fun of *other people's* systems for linking a 400 MB runtime.
+Four were entries in `docs/` accurately stating that the `tests/` directory
+contains host tests written in the language, and that `epsilon_core` is a
+compatibility area for it.
+
+Those four are true. There are eighty-nine source files in that language in this
+repository. The gate cannot see a single one of them.
+
+So the sole thing this gate has ever caught, in its entire existence, is the
+documentation being honest about the contents of the repository it documents.
+
+I want to be fair to it. It does enforce something real: it stops a host runtime
+from being introduced *by documentation*, which is roughly how these things
+actually spread — a README suggests a helper script, someone writes the helper
+script, six months later the build depends on it. Catching that at the doc layer
+is not stupid.
+
+But a check that reads the description and never the thing being described is a
+particular kind of failure, and it is the same one this entire document has been
+circling: **two things that are each individually reasonable, disagreeing about
+what they are talking about.** The gate believes it is enforcing a property of
+the codebase. It is enforcing a property of the prose. Those were the same thing
+only for as long as nobody looked.
+
+There is an allowlist, `language_line_allowed`, containing entries like
+`host runner` and `host ci` — phrases that mark a mention as being about the
+quarantined host side rather than the kernel. So past me understood the problem
+and built the mechanism. Past me then never ran the gate, so the mechanism was
+never exercised, and the documentation drifted freely for however long
+`docs/repository-layout.md` has existed.
+
+The fix is not mine to make casually, because the honest options are:
+
+1. Reword the docs so they stop saying the tests are written in the language —
+   which makes them false, to make a light turn green.
+2. Extend the allowlist so accurate descriptions of the quarantined surface are
+   permitted — which is what the mechanism is for, and which requires deciding
+   exactly what remains catchable afterward.
+3. Make the gate scan source, at which point it finds eighty-nine files and the
+   conversation becomes a very different one.
+
+Option 1 is off the table. A repository that edits its own documentation into
+inaccuracy in order to satisfy its own automated check has invented a machine for
+lying to itself, and has done so with a straight face and a green checkmark.
+
+Option 3 is honest and enormous. Option 2 is honest and small. I know which one
+gets done first, and I know that is not the same as knowing which one is right.
+
+## Eleven Things Wrong With A Window Manager Nobody Had Read
+
+Someone read the whole window manager. All of it — 22 files, 5,699 lines across
+`wm/` and `graphics/` — in one sitting, with instructions to report only things
+they could name a trigger for.
+
+Eleven defects. Three missing capabilities. I want to walk through the ones that
+say something, because collectively they explain what a green CI gate is and is
+not.
+
+### First, what the green gate actually proves
+
+`Verify desktop compositor soak marker` has been passing for as long as it has
+existed. It runs `run_desktop_soak_probe`: twenty-four iterations of "render the
+desktop, mark the whole screen dirty, compose, blit," nudging the mouse a little
+every third frame, at whatever mode the firmware handed us.
+
+Its own output line contains `input_events=0`.
+
+So it proves the kernel survives redrawing itself twenty-four times. It proves
+nothing whatsoever about clicking, dragging, resizing, maximizing, the taskbar,
+menus, changing theme, the keyboard, any colour depth other than 32-bit, or any
+resolution other than 1024x768. The welcome screen auto-dismisses after 500
+ticks, so CI has never touched that screen's input path either.
+
+Every defect below lives in that gap. They did not survive because they were
+subtle. They survived because nothing ever asked.
+
+### The screen is 1024x768 and always has been
+
+`Compositor::screen_w` and `screen_h` are initialised to `1024` and `768`. The
+only thing that ever writes them is `mouse_move`. The only live caller of
+`mouse_move` passes `1024, 768` as literals.
+
+Every drawing function in the same file reads the real `fb.width` and
+`fb.height`.
+
+So on any machine whose firmware picks 1280x1024 — and mode selection scores
+purely on resolution, so plenty will — the cursor stops dead at x=1023, the power
+button is drawn somewhere it can never be reached, and maximizing a window makes
+it 1024 wide on a 1280-wide screen. On an 800x600 screen the cursor walks off the
+visible area entirely and disappears, because `put_pixel` quietly refuses to draw
+it, and clicks in the bottom 168 pixels are routed to taskbar logic operating on
+a taskbar that is drawn 168 pixels higher.
+
+The soak probe, incidentally, passes `fb.width` and `fb.height` correctly.
+Whoever wrote the probe knew. The knowledge just never made it four files over.
+
+### The power button has two different left edges
+
+It is drawn starting at `fb.width - 36`.
+
+It is hit-tested starting at `fb.width - 40`.
+
+Four columns of visible red button do nothing when clicked. Four columns of
+apparently-empty taskbar open the power menu. Both numbers are correct
+implementations of "near the right edge." Neither is aware the other exists.
+
+The power menu itself then opens anchored by its *left* edge to that button, and
+it is 150 pixels wide with about 40 pixels of screen remaining. You get `Shut`,
+`Rebo`, `Logo`. They are still clickable. You just have to know what they say.
+
+### The welcome screen wants you to right-click
+
+`welcome.rs` matches on mouse button `1`. The mouse driver emits `0` for left and
+`1` for right. All five other places in the codebase that handle a click read `0`.
+
+So on first boot, clicking "Get Started" does nothing. Clicking any of the four
+theme buttons does nothing. The wizard can be escaped with Enter, or by waiting
+500 ticks for it to give up on you.
+
+Right-clicking works perfectly. I did not design this. I could not have designed
+this.
+
+### The compositor's best feature has never run
+
+`Compositor::compose` implements damage tracking: it unions the dirty rectangles,
+clips to them, redraws only what changed, and skips frames adaptively. The module
+documentation advertises it. `Rect::union`, `Rect::intersects`, and `Rect::area`
+exist to support it.
+
+It has zero call sites. Everything calls `compose_full`, which redraws the entire
+screen. On every input event. Forever.
+
+And there is a second-order consequence I like very much. `themes::theme_changed()`
+is a flag, and it has exactly one consumer: a line inside `compose`. Since
+`compose` never runs, the flag is set and never read. So when you pick a theme in
+the welcome wizard, the desktop and taskbar change colour — they read the current
+theme every frame — while every window's title bar, border, and buttons stay in
+the old palette, because those are baked into the window's own buffer and only
+repainted when the window is focused, resized, or renamed.
+
+Your desktop is one theme. Your windows are another. Clicking each window fixes
+it, one at a time, which reads as a feature if you squint.
+
+### You can type into a window you cannot see
+
+`z_order` is assigned once, when a window is created, and never written again.
+The sort that determines paint order is stable, so paint order is permanently
+creation order.
+
+Clicking a window focuses it. Focus determines who receives keystrokes. It does
+not determine who is painted on top, because nothing does.
+
+So: boot, restore an app from the taskbar, click back to the terminal. The
+terminal has focus. The terminal receives every key you press. The other app is
+still painted over the top of it. You are typing into a window that is behind
+another window, and the only evidence that it is working is that the thing you
+can see is not changing.
+
+### And the one that actually kills the machine
+
+`render_decorations` computes its three title-bar button positions as `w - 20`,
+`w - 40`, and `w - 60`. These are unsigned. Release builds have no overflow
+checks. Nothing anywhere establishes a minimum window width.
+
+A script can ask for a window four pixels wide. `4 - 40` is not `-36`; it is
+`4294967260`. The loop that follows is not empty, and the first thing it does is
+index a 104-element buffer at offset 4294967276.
+
+`panic = "abort"`. No unwind. The machine stops.
+
+That one is being fixed as I write this, which is a sentence I can only publish
+because someone read all 5,699 lines instead of the 200 the failing test pointed
+at.
+
+## Right About The Bug, Wrong About Both Numbers
+
+Here is the strongest argument I have for making somebody check the report before
+somebody acts on it, and it is not the case where the report was wrong. It is the
+case where the report was right.
+
+Someone read the window manager and found that `render_decorations` computes
+`w - 20`, `w - 40`, and `w - 60` on unsigned integers with no minimum window
+width. That is a real defect. A four-pixel window makes `4 - 40` evaluate to
+4294967260, and the loop that follows indexes a 104-element buffer at
+4294967276. The machine stops. All of that is correct and it is exactly what
+happens.
+
+The report then said two more things, both reasonable, both load-bearing for the
+fix, and both wrong.
+
+**"The safe minimum width is 12."** It is 60.
+
+The person who fixed it did not take that number. They swept every width from 0
+to 200 through the actual rendering body and printed what happened. Widths 12
+through 59 do not crash. They wrap `w - 60` and the resulting index lands *back
+inside the buffer*, so the write succeeds, in the wrong place, silently.
+
+Think about what shipping the reported number would have done. It would have
+raised the floor to 12, closed the crash, produced a green test, and converted
+every window between 12 and 59 pixels wide from a loud immediate abort into
+quiet pixel corruption. The bug report would have been closed. The defect would
+have gotten harder to find.
+
+**"It's reachable from the shell's `run` command."** It is not.
+
+`cmd_run` calls `execute_file(file, "")`. It passes an empty source string. It
+never opens the file. That entire path is dead, and had the fix been justified
+solely by it, the justification would have been fiction.
+
+The real path is `SYS_EXEC` on any file ending in `.aether`, which does read the
+bytes, and where the window dimension arrives via
+`get_arg_num(args, 1).unwrap_or(640.0) as u32`. That cast saturates, so a
+negative literal produces 0 and a huge literal produces `u32::MAX`. Both ends of
+the range are reachable, and neither goes anywhere near the shell.
+
+### The part I want to keep
+
+Three claims. The defect was real. The threshold was wrong by a factor of five,
+in the direction that would have hidden the problem. The trigger was wrong
+entirely, and the fix's stated justification would have described a code path
+that cannot execute.
+
+A reviewer reading the diff would have caught none of this. The diff was fine.
+The numbers *in* the diff were the problem, and the only thing that finds a wrong
+number is measuring it.
+
+Which is the whole thesis, really. Every gate in this repository was written by
+someone confident about a number. The unsafe audit was confident about 594. The
+compositor is confident the screen is 1024 pixels wide. A test was confident that
+a loss below 0.1 meant a network had learned, when the real value was 0.00026 and
+the bound was four hundred times too loose to notice anything going wrong.
+
+None of them were lying. All of them were unmeasured.
+
+## The Tests Ran
+
+Earlier in this document there is a section explaining that nothing in this
+kernel had ever been tested. Seventy thousand lines, sixty-five `#[test]`
+functions that never compiled, an in-kernel harness that boots under QEMU and
+greps for `ALL TESTS PASSED`, and a CI job to run it that had reported `skipped`
+on every run on every branch since it was written, because it gates on a green CI
+that had never existed.
+
+That section is now wrong, and I am leaving it in, because how it became wrong is
+the only interesting part.
+
+Six root causes, in order, each one hiding the next:
+
+1. `cargo fmt` failed on two files that had never been formatted, because they
+   had never been compiled.
+2. `miri` had never compiled at all — a `use std::f64;` shadowed the primitive
+   type, so `f64::MAX` quietly resolved to the deprecated module constant.
+3. The Atlas boot proof failed because `relobj::parse()` read the section header's
+   fields at the wrong offsets. Not "sometimes wrong": no chart had ever loaded,
+   ever, and the boot log had been printing `charts_peak=0` the entire time.
+4. The installer proof failed because `ManifoldFS::write` accepted an `offset`
+   parameter and ignored it, so creating a second user account destroyed the
+   first one.
+5. The unsafe-block census failed because the audit contained two scanners that
+   disagreed with each other.
+6. The language-hygiene gate failed on documentation that was accurately
+   describing the repository.
+
+And then, at 04:49 on a Tuesday:
+
+```
+[TEST] === Suite: All Registered Tests ===
+TEST_PASS: installer::gpt_header_crc_matches_independent
+TEST_PASS: installer::write_to_unselected_device_is_refused
+TEST_PASS: shell::root_secret_denied_for_unprivileged_shell
+TEST_PASS: virt::map_page_inner_refuses_present_leaf
+TEST_PASS: mmap::munmap_user_refuses_foreign_page_table
+TEST_PASS: filesystem::write_honors_offset
+...
+```
+
+**151 passed. 1 failed.**
+
+I have written a lot of words in this README about not trusting things that look
+like verification. So let me be precise about what that number is and is not.
+
+### What it is
+
+Those are real assertions, executing on a real x86_64 kernel, booted under real
+firmware, on a machine that is not mine. `filesystem::write_honors_offset` is the
+test for the bug that was eating `/etc/passwd`. It ran. It passed. That is no
+longer a claim I am making; it is a thing that happened.
+
+### What it is not
+
+**The suite did not finish.** It aborted at registration group 31 of 54.
+
+The thirty-second group reaches `with_vfs`, which is `.expect("VFS not
+initialized")`, and this kernel builds with `panic = "abort"`, so there is no
+catching it. Everything after that never ran: the network stack, the language
+runtime, all three ACPI parsers, TLS, AHCI, virtio, the ramdisk, the ML engine.
+Twenty-three groups.
+
+151 is a floor. I do not know what the total is. Nobody does yet.
+
+### Update, four hours later: 296 passed, 0 failed
+
+The abort was `with_vfs`, which is `.expect("VFS not initialized")`. The harness
+runs from `kernel_main_continue` immediately after the entropy driver, many layers
+before the filesystem is set up — and under the test-mode build, `init_vfs` is
+never reached at all. So the tests had always been running before the filesystem
+existed. Nobody could have known, because the tests had never run.
+
+The file the panic named was not at fault, incidentally. `bundle` already guarded
+its filesystem access correctly; the unguarded call was two frames deeper, in the
+package installer, reached through a test fixture. That is the third time in one
+day that the location a report named turned out to be one layer off the cause.
+
+With a test-mode filesystem root mounted on first use:
+
+```
+PASS=296  FAIL=2  PANIC=0
+```
+
+All fifty-four registration groups execute. The suite finishes.
+
+And the moment it did, it found two more:
+
+```
+TEST_FAIL: dns::legit_response_accepted
+TEST_FAIL: ahci::large_read_matches_chunked_small_reads - 16 KiB read from boot device failed
+```
+
+Both live in suites that had never executed. Both are now being investigated, and
+I genuinely do not know yet whether the code or the test is wrong in either case —
+which, four hours ago, was not a question this project was capable of asking.
+
+The DNS one has a suspect. Earlier in this same series, a commit made DNS query IDs
+and source ports unguessable, drawn from hardware entropy, specifically to stop
+cache poisoning. If that test's fixture hardcodes a query ID, then a security fix
+broke it by doing precisely what it was supposed to do. The correct repair is to
+teach the test to use the real generated ID — not to relax the check that makes it
+unpredictable.
+
+### The one that failed on the first run
+
+```
+TEST_FAIL: atlas::relocation_arithmetic
+  compute_reloc(R_X86_64_PLT32, 0xFFFF_9000_0000_1000, -4, 0xFFFF_9000_0000_1100)
+  != Ok(RelocWrite::W4(0xFFFF_FF00))
+```
+
+`PLT32` is `L + A - P`. The operands give `-0x104`, which is `0xFFFF_FEFC`. The
+test wanted `0xFFFF_FF00`, which is `-0x100`. It dropped the addend.
+
+The code was right. The test was wrong.
+
+And here is the part that made me laugh out loud: **the assertion two lines above
+it tests `PC32` with the same `A = -4` and expects the correct answer.** Same
+file. Same function. Same sitting. The addend was honoured in one branch and
+forgotten in the next, and then the whole thing sat there being wrong for the
+entire life of the project, because there was no mechanism on Earth that would
+have told anyone.
+
+That is the shape of every defect in this document, one last time, and this time
+the thing that caught it was the project's own test harness — working correctly,
+on the first occasion it was ever permitted to try.
+
+## Three Subsystems That Had Never Once Worked
+
+This is the finding I did not expect and still find slightly upsetting.
+
+Not "had a bug." Not "failed in an edge case." Three separate subsystems of this
+operating system had, from the day they were written until today, never
+successfully performed their function a single time. Each one reported success.
+Each one was wired into the boot, referenced in documentation, and visible in the
+logs. All three did nothing.
+
+**Atlas, the chart loader.** `relobj::parse()` read a section header's fields at
+the wrong offsets — it took the address where the file offset lives, and the file
+offset where the size lives. So the loader read garbage, rejected it, and moved
+on. The boot log had been printing `charts_peak=0` the entire time, on every boot,
+for the life of the subsystem. Zero charts. Not "sometimes fails to load a chart."
+It had never loaded one.
+
+**The filesystem's write path.** `ManifoldFS::write` took an `offset` parameter and
+ignored it, replacing the file contents on every call. The read path honoured its
+offset correctly. So writing the second user account to `/etc/passwd` destroyed
+the first, and the installer proof had been red for as long as it had existed.
+
+**The DNS resolver.** This one is my favourite, because the bug is four bytes wide
+and the consequence is total.
+
+A DNS answer's owner name is almost always a compression pointer — two bytes
+saying "the name is back at offset 12." The parser consumed those two bytes
+correctly. Then it also ran its *other* clause, the one that skips the single zero
+byte terminating an uncompressed name, and ate the high byte of the field that
+follows.
+
+The field that follows is the record type. It reads `0x0001` for an A record. Read
+one byte late, it reads `0x0100`. So the check for "is this an A record" was
+comparing 256 against 1, forever, and the answer was silently skipped.
+
+Every real resolver on Earth emits that pointer form. **No legitimate DNS response
+had ever been cached.** The resolver accepted the packet, validated the
+transaction ID, validated the source address, validated the port, validated the
+question echo — five checks, all passing, all correct — and then threw the answer
+away because it was reading the type field one byte too far along.
+
+### What these three have in common
+
+Nothing, technically. An ELF offset error, a discarded function parameter, and an
+off-by-one in a name parser. Different subsystems, different authors' moods,
+different decades of prior art to get wrong.
+
+What they share is that **none of them could fail loudly.** The chart loader
+returned "no charts." The write path returned success. The resolver returned "no
+answer for that name," which is a perfectly ordinary thing for a resolver to say.
+
+And the one mechanism that would have caught all three — a test suite running
+against a booted kernel — existed, was correctly written, was wired into CI, and
+had never executed, because it was gated behind a green build that had never
+happened.
+
+You can have every part of a verification pipeline and still verify nothing, if
+one link is a condition that is never true. I had twenty-seven proof gates and a
+test harness and 70,000 lines of kernel, and three of my subsystems were
+elaborately-decorated no-ops.
+
+The fix for the resolver, incidentally, was a deletion. The file already contained
+a correct name decoder that handles the pointer-versus-terminator distinction
+properly. Both skip loops now call it instead of open-coding it wrongly. Twenty-four
+lines removed.
+
+That is usually how it goes. The correct code was already there, twelve lines up,
+being ignored.
+
+## Checks That Cannot Fail: A Complete Taxonomy
+
+By this point in the document you have watched me discover, repeatedly, that
+something I believed was verifying my code was not. I have now found enough of
+them to sort them into kinds, which feels like progress and is actually just
+filing.
+
+Here is every distinct way a check in this repository has turned out to be
+incapable of failing. All seven were found in a single day. All seven were green.
+
+**1. The check that was commented out.** `test_mlp_xor` trained a neural network
+on XOR and then had `// assert!(result.final_loss < 0.1);`. It passed whether
+training converged, diverged, or produced NaN. Someone commented it out, presumably
+intending to come back.
+
+**2. The check whose subject was hardcoded.** One line below that, in the same
+test, `assert!(result.converged)` — where `fit()` sets `converged = true`
+unconditionally, under the comment `// Simple logic`. Two assertions, adjacent,
+neither capable of failing, for different reasons.
+
+**3. The check with the wrong expected value.** `atlas::relocation_arithmetic`
+expected `0xFFFF_FF00` where the ABI requires `0xFFFF_FEFC`. The addend was
+dropped. And the assertion two lines above it, testing a sibling relocation with
+the *same* addend, gets it right. One author, one sitting, honoured in one branch
+and forgotten in the next.
+
+**4. The check that measured a tautology.** The foliation proof reports
+`bounded=ok`, computed as `long_points <= STRATUM_WINDOW` — where the only code
+that increments `long_points` does so inside `if len < STRATUM_WINDOW`. It cannot
+exceed it. The documentation says this field reports failure "if the memory bound
+is exceeded." It is gated in CI.
+
+**5. The check whose failing state is unconstructible.** The same proof reports
+`referenced_evictions=0`. It is computed after `pick_victim` has already skipped
+every leaf with a non-zero refcount, and nothing mutates a refcount in between.
+Zero is not a measurement. It is the only value the expression can produce. Also
+gated in CI. There is a third one exactly like it.
+
+**6. The statistic computed and discarded.** Every boot, the unsafe-code audit
+emits `undocumented_permille=985` — the fraction of unsafe blocks with no safety
+comment, to a tenth of a percent. The checker compares four fields. That is not
+one of them. It appears in the checker's source exclusively inside test string
+literals. Nine hundred and eighty-five per mille, computed and binned, on every
+boot this kernel has ever performed.
+
+**7. The check that killed the machine before it could report.**
+`topo_asm::distance_basic` asserts a distance of 3.0 from a function that returns
+0.0 for every input — the comparison uses `jbe`, which skips the larger candidate,
+so an accumulator seeded at zero never moves. That test should fail loudly on every
+boot. It does not, because something in the same hand-written assembly takes the
+kernel down first, and a dead kernel prints no failures.
+
+That last one is my favourite and I want to be precise about why. **The test
+correctly detects the bug. The bug prevents the test from reporting it.** The suite
+runs 318 assertions, passes every one, and then goes quiet — no failure, no panic,
+no summary line — and because the harness never prints its verdict, the job that
+greps for that verdict fails with no explanation. Three separate mechanisms, each
+working exactly as designed, arranged in a sequence that produces silence.
+
+### Epilogue to case 7, four hours later
+
+The test was right the whole time.
+
+`topo_asm::distance_basic` asserted a distance of 3.0. The function returned 0.0.
+The test would have caught it on the first boot it was allowed to run.
+
+What killed the kernel was not the arithmetic. It was that **every hand-written
+assembly block in that module took its arguments in System V registers, on a
+target whose ABI is Win64.** `rustc --print target-spec-json --target
+x86_64-unknown-uefi` says `"entry-abi": "win64"` — arguments arrive in `rcx`,
+`rdx`, `r8`. The code read `rdi`, which held whatever the caller happened to leave
+there, and used it as a load base. The loop bound came from `rdx`, which under the
+real ABI holds the *second pointer*. So it swept memory from a garbage address for
+something like a hundred million iterations until it walked out of the mapping.
+
+That was proved by lifting the assembly verbatim into a host binary and watching
+it fault on the first call — `STATUS_ACCESS_VIOLATION`, printing its "about to
+call" line and nothing after, which is precisely the shape of the serial log. Feed
+the identical bytes System V registers and the crash disappears.
+
+There was a second one nobody had suspected. The kernel builds `+soft-float`.
+Compiling a caller with `--emit asm` shows it reading `%rax` and calling
+`__gtdf2`, the software floating-point comparison. The old code returned its
+result in `xmm0`. Garbage even on the paths that didn't fault.
+
+And `simd_betti_accumulate` had the identical fatal ABI bug, sitting quietly
+beside it, unnoticed by everyone including the survey that found the first one.
+
+The AVX-512 path was deleted rather than repaired: `git grep xsetbv` finds nothing
+in this kernel, so XCR0 is never enabled, so executing a ZMM instruction there is
+`#UD` — the same silent death, waiting for the first machine that reported the
+CPUID bit.
+
+The result, on the first run that contained the fix:
+
+```
+TEST_PASS: topo_asm::distance_identity
+TEST_PASS: topo_asm::distance_basic
+TEST_PASS: topo_asm::distance_peak_at_end
+TEST_PASS: topo_asm::betti_count
+TEST_PASS: topo_asm::betti_count_rejects_nan
+```
+
+359 assertions passing, zero failures.
+
+**The test had been correct, and armed, and pointed directly at the defect, for
+the entire life of the function.** It simply lived inside the blast radius.
+
+### The thing they have in common
+
+Not one of these is a mistake in the sense of someone doing arithmetic wrong. Every
+single one is a check whose *shape* is correct and whose *content* is empty. They
+read like verification. They occupy the place in the file where verification goes.
+They emit the strings verification emits.
+
+A gate is not evidence. A gate is a **claim** that evidence exists. The only way
+to find out is to make it fail on purpose and watch.
+
+I know that now because a smith working on filesystem ownership deliberately
+corrupted a journal entry to see whether any test would notice, none did, and
+that is how we learned the write-ahead log has never journalled anything — the
+`TOPJ` header and the journal entries are written to the same sectors, so nothing
+has ever parsed, and `replay_journal` has replayed nothing since the day it was
+written.
+
+It found that by breaking its own code on purpose. There is no other way.
+
+## The Network Stack, Or: Two Packets That Ended The Machine
+
+Somebody read all 5,237 lines of the networking code in one sitting. I want to
+report the two worst findings first, because they are the kind of thing that
+should make a person stop and check their own repository.
+
+**One UDP packet to port 68 aborts the kernel.** The DHCP option loop guards with
+`if i + len > pkt.len() { break; }` — which bounds the length the *packet claims*
+— and then reads a fixed one or four bytes regardless. A 242-byte payload with
+option 53 and a declared length of zero passes that guard and indexes byte 242 of
+a 242-byte buffer. No authentication. No prior DHCP exchange. The only other gate
+is a transaction ID hardcoded to `0x12345678` and never written, so it is not a
+secret.
+
+**One IPv4 header aborts the kernel.** The parser establishes that the header
+length is at least 20, checks that the total length does not exceed the buffer,
+and then slices `&pkt[ihl..total_len]`. A total length of zero passes both checks
+and produces a slice that starts at 20 and ends at 0. Rust panics on a reversed
+range, and this kernel builds with `panic = "abort"`.
+
+Both are now fixed. Both existed because the guard bounded a different quantity
+than the code read — which is the same defect this document has been describing
+for several thousand lines, arriving in a form where a stranger on the network
+gets to trigger it.
+
+### And then the quieter ones
+
+**Every checksum this stack has ever sent went out byte-swapped.** `internet_checksum`
+returns a host-order number; seven sites stored it into a packed header without
+converting. The receive path verifies by recomputing and comparing to zero — so
+the kernel rejected its own packets, including on loopback.
+
+The reason nobody caught it by reading is genuinely interesting: **there was no
+single correct example to copy.** The tree holds three conventions. Four sites
+write the bytes explicitly with shifts and are right. Two more are right a third
+way, because that struct holds host order in every field and converts on the way
+out. Which means there are two structs both named `TcpHeader`, one file apart,
+with opposite in-memory conventions. Open one file and you learn one rule; open
+the other and you learn a different one.
+
+**ARP requests were addressed to this machine.** The Ethernet header wants
+destination in bytes 0..6 and source in 6..12. `send_arp_request` wrote its own
+MAC first and the broadcast address second. So every request went out addressed to
+itself, sourced from broadcast — a frame no peer accepts and most switches drop.
+
+On-demand address resolution has therefore never once succeeded. The cache filled
+only by accident, from ARP traffic addressed to other hosts. Four sibling sites in
+the same tree get the order right. One did not.
+
+**And TCP has never handled a reset.** `_FLAG_RST` is defined with a leading
+underscore, and a repository-wide grep finds exactly one hit: the definition. So
+connecting to a closed port — the most ordinary failure on a network — leaves the
+socket in `SynSent` forever, feeding a retransmit queue that never removes its
+entries and grows by one per poll, permanently, while re-sending SYNs at poll rate
+rather than at the retransmit timeout.
+
+That one is not fixed yet. It is written down, which is the difference between a
+bug and a secret.
+
+## I Fixed The Checksum And The Kernel Stopped Booting
+
+This one is mine, it happened while writing the sections above, and it is the
+best illustration in this entire document of the thing the document is about. So
+it goes in, in the present tense, unresolved at time of writing.
+
+Recall the checksum defect: `internet_checksum` returns a host-order number, seven
+sites stored it into a packed header without converting, and every packet this
+stack ever sent went out byte-swapped. The receive path verifies by recomputing
+and comparing against zero, so the kernel rejected its own packets — including on
+loopback, where `send_ipv4_packet` routes 127.0.0.1 straight back into
+`handle_ipv4_packet`.
+
+I fixed it. Seven `.to_be()` calls. Proven by round-tripping a packet the kernel
+builds through the verifier the kernel uses, which is about as unambiguous as
+evidence gets.
+
+CI went red. The boot stops. Fourteen milestones pass, eleven do not, no panic
+message, no fault report — the serial log just ends.
+
+The first line missing from the log, compared against the last good boot, is
+`[BENCH] tcp-roundtrip`. That benchmark opens eight TCP connections with both
+endpoints set to `127.0.0.1`.
+
+And `send_ipv4_packet`'s loopback branch does not queue. It calls
+`handle_ipv4_packet` **synchronously, from inside the send path.**
+
+My first guess was that this recursed forever — send, loop back, dispatch, answer,
+send. That guess was wrong, and the real answer is tidier and worse.
+
+`poll()` takes the lock on the socket table. **While still holding it**, it sends
+the SYN-ACK. That goes to `send_ipv4_packet`, which loops back, which dispatches
+to `handle_tcp_packet`, which takes the lock on the socket table.
+
+It is a `spin::Mutex`. Non-reentrant. There is no second packet and no stack
+growth — one re-entry, and the boot thread spins on a lock it is itself holding,
+forever.
+
+You can see it in the log without knowing any of that. The failing serial output
+ends with twenty-two consecutive timer-interrupt lines and nothing else, for two
+hundred and thirty-four seconds, until the harness gives up. The CPU is alive.
+Interrupts are being delivered. The kernel is simply never going to do anything
+again.
+
+**That cycle has been there the whole time.** It was unreachable for exactly one
+reason: every packet the kernel built failed its own checksum test and got
+dropped at the door. The bug was load-bearing. Fixing it removed the only thing
+standing between this kernel and an infinite loop.
+
+I want to be precise about the shape, because it has happened repeatedly in this
+repository and I have now been on both ends of it.
+
+Earlier, `map_page_inner` was overwriting live page-table entries. Making it
+refuse a present leaf was correct — and it turned a silent corruption into an
+`Err` that the caller was discarding with `let _`, which leaked a frame on every
+concurrent double-fault. One fix, one new defect exposed, both real.
+
+This is the same, and worse, because the suppressed defect is a lock-ordering
+deadlock in the network stack rather than a leaked page. A wrong checksum was the
+only reason `handle_tcp_packet` had never been re-entered while the socket table
+was locked.
+
+### What I am not going to do about it
+
+**Revert the checksum fix.** It restores a defect in which this operating system
+cannot send a valid packet to anybody, including itself, in order to hide a
+different defect. That trade is exactly what the preceding eighty commits exist
+to undo.
+
+**Weaken the verifier.** Same reason, with extra steps.
+
+**Make the benchmark skip the live path.** Then the benchmark stops measuring the
+thing it is named after, and this document gains an eighth entry in its taxonomy
+of checks that cannot fail — authored deliberately, by me, to make a light turn
+green. No.
+
+The fix is a loopback path that cannot re-enter itself: queue the packet for the
+next poll rather than dispatching it from inside the send. Structural, not
+bounded — impossible rather than merely limited.
+
+There was also a question that changes the shape of the repair, and I have the
+answer now. **Has loopback ever worked at all?**
+
+No. Not once. The checksum arithmetic for the exact header that fixture emits was
+worked out by hand: `internet_checksum` returns `0xBBCF`, which verifies to
+`0x0000` when stored with the conversion and `0xEC13` without. So every locally
+built packet was dropped at `ipv4.rs:194` before reaching any handler, for the
+life of the code.
+
+Which makes this the tenth thing in this document found never to have worked, and
+means the repair is to make loopback function for the first time rather than to
+restore the accident that was standing in for it.
+
+But I need to correct something I wrote a paragraph ago, in the same breath.
+
+I said `tcp-roundtrip` had "been passing by some other route." True — and I then
+said out loud, to someone, that it had therefore been measuring nothing. That was
+wrong and I want it on the record next to the rest.
+
+The benchmark reports `established=8`, `server_rx=512`, `client_rx=512`, and
+those numbers are real. The fixture injects packets **directly** into
+`handle_tcp_packet` rather than putting them on the wire, so the TCP state
+machine genuinely was being exercised: eight connections, real transitions, real
+byte accounting. What was dead underneath it was the *transmit* path — the
+packets `send_tcp_packet` handed to `send_ipv4_packet` were discarded at the
+checksum, and the fixture never depended on them arriving.
+
+So: the measurements were honest, the plumbing under them was not, and I nearly
+filed a working test as a fake one because the distinction is two layers down.
+
+Which is the entire lesson of this document arriving one more time, at my
+expense, in the paragraph where I was explaining the lesson.
+
+I will know shortly. The kernel now has a way to tell me, which is new.
+
+## 364/364
+
+```
+[TEST] Suite All Registered Tests: 364/364 passed, 0 failed, 0 panicked
+[TEST] ALL TESTS PASSED
+```
+
+That is the first time this repository has ever produced those words.
+
+The workflow that prints them now reads twelve failures, eleven skips, and two
+successes. Before today the success column was zero, and it was not a matter of
+bad luck. It was structural: `kernel/seal-os` sits in the workspace `exclude`
+list, so `cargo test --workspace` never reached it and its sixty-five `#[test]`
+functions never compiled; and the job that boots the kernel and runs them gates on
+a green CI that had never, in the life of the project, existed.
+
+Getting here meant clearing eleven root causes, and the ordering was not
+negotiable. A failed gate skips everything behind it, so at any moment you can see
+exactly one of them:
+
+1. `cargo fmt` — two files never formatted, because never compiled
+2. `miri` — a `use std::f64;` shadowed the primitive, so the job had never compiled at all
+3. Atlas — the chart loader read a section header's fields at the wrong offsets, and had loaded zero charts since the day it was written
+4. the installer — `ManifoldFS::write` took an `offset` and ignored it, so the second user account destroyed the first
+5. the unsafe census — two scanners in the same binary, five thousand lines apart, disagreeing four ways
+6. language hygiene — a gate that reads the documentation and never the source
+7. the harness itself — `with_vfs` asserts, and the tests run before the filesystem exists
+8. a relocation test that expected the wrong number, with the correct version of the same arithmetic two lines above it
+9. hand-written assembly taking its arguments in the wrong registers for the target's ABI, returning through the wrong register for its float model
+10. a rank-1 tensor handed to something that requires a column vector
+11. me
+
+Number eleven deserves its place. I fixed the checksum — a real defect, seven
+sites, every packet this stack ever sent going out byte-swapped — and the kernel
+stopped booting. The wrong checksum had been the only thing preventing a
+loopback delivery from re-entering a lock its own caller was holding. And beneath
+*that*, loopback replies carried a source address of `0.0.0.0`, so they missed a
+flow index keyed on source and were dropped.
+
+Three defects in a stack. The top one was hiding the second, which was hiding the
+third, and none of them could be seen until the one above it was repaired.
+
+The tempting move was to revert. It would have taken ten seconds and restored a
+green pipeline — by restoring a state in which this operating system cannot send a
+valid packet to anything, including itself. I did not do that, and the refusal is
+the only part of this section I would defend as a principle rather than a
+consequence.
+
+### Postscript: 365, and the four-defect stack
+
+The section above was written at 364. The next run said 365, and the extra one is
+`udp::loopback_sendto_does_not_reenter_socket_lock`, which matters more than a
+single increment.
+
+Because it turned out the checksum fix had been holding down not one defect but
+three, and they had to come off in order.
+
+**One.** Every packet this stack sent went out byte-swapped, so peers dropped it
+and the kernel's own receive path dropped it too.
+
+**Two.** Fixing that woke a lock re-entry. `poll()` holds the socket table, sends
+a SYN-ACK, and the loopback branch dispatches straight back into the handler,
+which takes the same non-reentrant mutex. Self-deadlock at re-entry depth *one* —
+which is why the depth guard I had suggested as a fallback would have fixed
+precisely nothing, sitting as it would beneath any ceiling a counter could reject.
+
+**Three.** Fixing *that* still failed, because loopback replies carried a source
+address of `0.0.0.0`, so they missed a flow index keyed on source and were handed
+to the ARP path and dropped. `exact_flow=0 result=fail`, with the deadlock gone.
+
+**Four.** And the same pattern sat in UDP, at two sites — one reported, one not,
+and neither covered by any test. Its IPv6 leg had been deadlocked since the day it
+was written, with no checksum ever involved, because IPv6 has no header checksum
+to fail.
+
+Four defects, each one visible only after the one above it was repaired. The
+revert was available at every step and would have taken ten seconds. It was
+refused three times, and each refusal cost hours and bought a real bug.
+
+I do not think there is a general lesson in that beyond the obvious one, which is
+that a green pipeline and a working system are different things and this
+repository has spent its entire existence demonstrating the gap. But it is a
+pleasing shape: the document argues that fixing the visible defect reveals the
+next, and then the argument had to be made four more times on the author's own
+commits before it would let the build go green.
+
+### 370, and a network stack that works
+
+The count is 370 now. The five new ones are TCP resets, retransmission, and the
+receive window — and with them, this operating system can do a list of things it
+has never done:
+
+- send a packet whose checksum is correct
+- deliver a packet to itself, over TCP or UDP, without deadlocking
+- complete a three-way handshake over `127.0.0.1`
+- resolve an address by ARP
+- cache a DNS answer
+- notice that a connection was refused
+- stop retransmitting something that was already acknowledged
+- refuse a duplicate segment instead of appending it to the receive buffer twice
+- refuse a neighbour advertisement that carries no address
+
+Every one of those is a thing an operating system is generally assumed to do on
+the first day. This one has been shipping without them, through twenty-seven
+proof gates, a boot-milestone checker, and a benchmark suite that emitted
+`result=pass` the entire time.
+
+That is not because anybody was careless. It is because a network stack that
+cannot send a valid packet still boots, still passes every gate that greps a log
+line, and still reports `established=8 result=pass` from a fixture that injects
+its packets directly into the handler and never touches the wire.
+
+The failure mode of a network is silence, and silence is also what success looks
+like from the outside.
+
+### What the number is not
+
+364 is not coverage. It is the count of assertions that now execute on every boot,
+in a kernel of a hundred thousand lines. Most of this system is still untested.
+Eight of eleven surveyed networking defects are still open, including TCP never
+handling a reset. Eight of ten in the ML engine are still open. Three CI proof
+fields remain structurally incapable of failing, and I have left them that way
+deliberately, with a note, because narrowing them is a decision about what this
+project should enforce rather than a bug I get to fix on a Tuesday.
+
+What changed is not that the kernel is correct. It is that the kernel can now be
+asked.
+
+## Three Things Shaped Like Checks
+
+379/379. It was 364 that morning, 370 by lunch, and the nine assertions in
+between came from three defects that turned out to be the same defect wearing
+different hats.
+
+The theme, stated once so the rest of this section makes sense: **none of the
+three was a wrong function.** Each was code that had the shape of a check
+without the substance of one. A guard that cannot fire. A counter that
+increments while the state it guards proceeds regardless. A field parsed into a
+struct and never read again. If you skim these three diffs you will see
+nothing wrong, which is precisely the problem, and precisely why they survived
+this long.
+
+**One: the regime detector that could not report bad news.**
+
+`ml_engine/stratum.rs` classifies a training run as `wellfit`, `drifting`, or
+`collapsing` from topological signals — the shatter ratio of a minimum spanning
+tree, the loop score, the residual drift. My brief to the agent said the bug
+was NaN: that `shatter` could go NaN and every comparison against NaN is false,
+so every threshold would silently pass.
+
+The agent came back and told me I was wrong, which is the most useful thing an
+agent did all day.
+
+`shatter` cannot be NaN. `mst_edge_stats` only records an edge when
+`best_key.is_finite()`, so the maximum is never infinite and the ratio is never
+NaN. What actually happens is worse. Feed the detector a training run whose
+loss has diverged to 1e200 and *every pairwise distance overflows*. Prim's
+algorithm records no edges at all. The function returns `(0.0, 0.0)`. And a
+`raw_max` below `EPS_FLOOR` is indistinguishable from the one case the code
+does handle — a cloud where every point genuinely coincides — so control falls
+into the every-point-coincides branch and **fabricates** `shatter=1.000
+h0_death=0 loop=0`.
+
+Measured, before the fix, on a stream whose validation loss had gone to
+infinity:
+
+```
+C/report: regime=wellfit loop=0.0000 h0_death=0.0000 shatter=1.000 ...
+C/all-finite=true
+```
+
+Every signal finite. Every threshold passed. Regime: well fit. The model had
+exploded and the instrument reported a clean bill of health with no NaN
+anywhere for a NaN guard to catch. I had asked for a fix to the wrong bug, and
+the fix I asked for would have found nothing.
+
+The kernel now marks a cloud unmeasurable when its own radius is not finite,
+and refuses to compare a non-finite signal against a threshold at all. The
+signals stay NaN across the ABI on purpose rather than being clamped to
+something tidy. `regime=collapsing shatter=NaN` tells an operator "this was not
+measurable". `shatter=1.000` tells them a lie with a decimal point on it.
+
+There is a second half nobody would have found by reading the classifier.
+`set_field`, the calibration ABI, accepted any finite `f64` for all six knobs.
+`min_samples` is cast `as u64`. Hand it `1e300` and the cast saturates to
+18446744073709551615, and the detector waits for eighteen quintillion samples
+before it will classify anything ever again. One syscall, and the instrument is
+off for the lifetime of the machine, with no error, no counter, and no log
+line. Every knob is now bounded by the range of the statistic it is compared
+against.
+
+**Two: the leaf that was resident and also absent.**
+
+`ml_engine/foliation.rs` manages a pool of physical frames behind a tree of
+leaves. `admit` pops a slot, allocates a frame, and publishes the leaf. When
+the allocation fails it increments `frames_failed`, writes a plaque with
+`frame: None`, sets `leaves[leaf].slot` anyway — and returns `Ok(())`.
+
+So the leaf is resident and not resident at the same time, depending which
+function you ask. `leaf_resident` reads `slot != NONE` and says yes.
+`seq_frame` reads `plaques[slot].frame` and returns `None` — the same `None`
+that means *no such block exists*. Two functions, one leaf, opposite answers,
+and every frame counter stays perfectly balanced because `collapse` only frees
+when `frame.take()` yields `Some`. The books balance. The building is on fire.
+
+The counter-based checks could not see it. That is the whole lesson. A counter
+that only counts successful frees will never disagree with a counter that only
+counts successful allocations, no matter how wrong the state between them gets.
+
+The agent found a second instance I had not scoped: `teardown` frees every
+frame but clears neither the slot nor the plaque, so *after teardown* leaves
+still report resident with nothing behind them. Same shape, opposite direction.
+It fixed that one by deleting code and calling the existing `collapse`, which
+is the best kind of fix.
+
+And then it did the thing I have been trying to get agents to do all day. It
+wrote its assertion, mutated the code to break the fix, ran the assertion — and
+the assertion **passed**. Its test carried `frames_failed == 0`, a condition
+that holds under starvation whether the code is fixed or broken. It reported
+this in its own results, deleted the line, and reran until the test
+discriminated. An agent catching its own test being useless is worth more than
+an agent catching a bug.
+
+**Three: the checksum field that was parsed and thrown away.**
+
+Four network handlers. Four different flavours of not checking:
+
+| handler | what it does with the checksum |
+|---|---|
+| `tcp::handle_tcp_packet` | parses it into the struct, never reads the field |
+| `udp::handle_udp_packet` | it's in the type, nothing touches it |
+| `icmp::handle_icmp_packet` | indexes `[0]`, `[1]`, `[4..8]` — skips `[2..4]` entirely |
+| `ipv6::handle_icmpv6_packet` | same |
+
+The first one is my favourite. `TcpHeader::from_bytes` does real work to
+extract `u16::from_be_bytes([bytes[16], bytes[17]])`, stores it in a field, and
+no line of code anywhere ever reads that field. It is a variable that exists
+purely so that a reader will assume the check happens.
+
+The consequence for ICMPv6 is not academic. A corrupted Neighbor Advertisement
+went straight into the neighbor cache. That is a remote path to a wrong
+link-layer address — poison the cache and traffic goes to the wrong MAC. There
+is no authentication in NDP by design; the checksum is the only thing standing
+between the cache and whatever arrives on the wire, and it was not being
+consulted.
+
+Fixing it required unifying four private copies of the ICMPv6 pseudo-header
+builder, and unification exposed a fifth bug that had been sitting in plain
+sight: **one of the four applied `.to_be()` to the result and three did not.**
+Same field, same protocol, same file, two different byte orders. One of those
+senders had been emitting a wrong checksum every single time it ran. Duplicated
+code hid it perfectly — nothing in the system ever compared the four copies to
+each other, and fixing any one of them would have left the others wrong.
+
+The agent then stopped, and stopping was the right call. TCP and UDP need the
+*destination* address for their pseudo-headers, and `handle_tcp_packet(src,
+pkt)` is only handed the source. It could have guessed `local_ip()`. It
+explicitly refused, and gave the reason: QEMU slirp sends the DHCP offer to
+255.255.255.255 while `local_ip()` is still 0.0.0.0, so the checksum would fail
+and **DHCP would die at boot**. A security guard that bricks the network is not
+a security fix, it is the same self-inflicted outage I caused with the IPv4
+checksum earlier in this very README, and it recognised the shape from a
+sentence in its brief.
+
+It also corrected two more of my facts on the way out. I told it `icmp.rs`
+contained zero `unsafe` blocks; it contains two. Every agent this round found
+at least one thing I had stated confidently and wrong. The count of things I
+was wrong about is now large enough that I have stopped being embarrassed by it
+and started treating it as the point.
+
+**What the number actually says.**
+
+379 assertions execute on every boot, up from 364, and the nine new ones were
+mutation-tested: break the fix on purpose, confirm the test goes red. Sixteen
+mutations across the three units, sixteen kills, one of which was a test
+killing itself.
+
+What 379 does not say is that the kernel is correct. TCP and UDP still do not
+verify a checksum on receive. `referenced_evictions` still increments on a path
+`pick_victim` cannot select, which means that CI field proves nothing and I
+have left it that way with a note. `link_child` still returns an error it
+cannot return. The list of things I know are wrong is longer than the list of
+things I fixed, which is a healthier ratio than it sounds, because in the
+morning the list of things I *knew* was empty and the list of things that were
+wrong was exactly the same size as it is now.
+
+The instruments were the whole job. You cannot fix what the instrument reports
+as fine, and every one of these three defects was, in its own way, an
+instrument reporting fine.
+
+## 455, And A Shell You Can Actually Type Into
+
+364 in the morning. 455 by the afternoon. The number is not the point, but the
+shape of how it moved is.
+
+It did not move by writing 91 tests. It moved by finding nine test *groups* that
+had been sitting in the tree, fully written, never once executed — because
+`kernel/seal-os` is in the workspace `exclude` list, so `cargo test --workspace`
+walks straight past it, and every `#[test]` inside it compiles to nothing. TCP
+had seventeen. The `.eph` package parser had three. Each was written by someone
+who believed they were adding coverage, and each was, in the sense that a
+parachute in a box on the ground is technically a parachute.
+
+Four of TCP's seventeen were also *broken*, which is how you know nobody had
+ever run them. Not broken subtly. One pushed a socket into `TCP_SOCKETS` without
+indexing it, so the socket existed and could not be found. One left `remote_ip`
+at `0.0.0.0` while the segment arrived from `192.168.1.1`, so indexing filed it
+under an address no packet carries. One left `ack_num` at zero while the FIN
+carried sequence 500 — that test predates the RFC 793 sequence check by months
+and quietly rotted the day that check landed. And one had no bug at all: it
+inherited an ESTABLISHED socket from the test *before* it, on exactly the
+four-tuple its own SYN used, and lost the race to its own predecessor.
+
+The agent I sent after them was told my diagnosis. It applied my diagnosis to one
+test, showed the test still red, and went and found the other two causes. Then it
+reported that the file has seventeen tests and I had said sixteen.
+
+**The remote one.**
+
+While bounding the ephemeral port allocator — `NEXT_TCP_PORT`, a `u16` that
+started at 40000 and got `*p += 1` with nothing watching — the agent noticed the
+allocation inside `poll()` was dead. It computed a port, built a socket with it,
+and then immediately overwrote `local_port` with the destination port from the
+packet. The number was thrown away.
+
+The counter still moved.
+
+Once per SYN. From anywhere. A remote peer could walk that counter to 65535 and
+past it, with no local socket involved, no connection established, and nothing in
+any log. In release the wrap is silent and the counter lands on **zero** — not on
+the floor of the ephemeral range, because nothing had ever named a floor — and
+then walks up through 0, 1, 2, and starts handing out 22, 80 and 443 to outgoing
+connections. Under `overflow-checks` it just aborts the kernel.
+
+The fix that mattered was deleting four lines that did nothing.
+
+**A shell that composes.**
+
+Three commits took the shell from one-command-per-line to something you can
+actually work in:
+
+```
+OUT=hits.txt
+peek serial.log | grep -i 'error' | sort -u | wc -l > $OUT
+```
+
+Pipelines, `<` and `>` and `>>`, then `wc`, `head`, `tail`, `sort`, `uniq`, `tr`,
+`cat` and `grep -vinc`, then `NAME=value`, `$NAME`, `${NAME}`, `export`, `unset`,
+`env`, `set`. Every one of those went through the same drill: write the
+assertion, break the code on purpose, confirm the assertion goes red, and — the
+part that kept catching people — check that it goes red in the *registry* and not
+only in the host harness, because the registry is what CI runs and the harness is
+what makes you feel good.
+
+The variables agent ran thirty-four mutations and killed thirty-four. Then it
+volunteered that four of the kills came from the harness alone, that those four
+are precisely the ordering decisions the whole design rests on, and that the
+table must not be read as coverage it does not have. Nobody asked it that.
+
+Its three self-caught failures are my favourite thing in this README. All three
+were handbook assertions, and all three were substring accidents:
+
+- `book.contains("export")` passed — because the word **exported** appears on the
+  `env` line.
+- `book.contains("NAME=value")` passed — because the `export` help line has a
+  parenthetical `(NAME=value works)`.
+- `help_for("set")` only checked the page was not the string "No help available",
+  so the page could lose every sentence about listing variables and still pass.
+
+Three tests asserting the presence of *letters* rather than the presence of
+documentation. Delete the entire feature from the handbook and two of them stay
+green. This is the taxonomy from earlier in this file, reappearing in the one
+place I would have sworn it could not: a test whose subject is a string
+literal I wrote myself, ten minutes earlier.
+
+**And one I did.**
+
+`ipv4::transport_checksum_uses_the_delivered_destination` sends a broadcast
+datagram, then sends the same datagram checksummed against a different address
+and requires the second to be refused. Its guard checked that the two addresses
+differed:
+
+```rust
+test_assert!(dst != crate::net::local_ip(), "...proves nothing");
+```
+
+They differ. `dst` is `255.255.255.255` and `local_ip()` is `0.0.0.0`, because
+DHCP has not run at test time. The assertion passed and the test failed in CI,
+and it took me embarrassingly long to see why, given the answer is a property of
+the internet checksum I had written a commit message about ninety minutes
+earlier: one's complement addition with end-around carry makes `0xFFFF` an
+identity. `x + 0xFFFF` overflows to `x - 1`, and the carry adds one back. Adding
+`0x0000` is an identity too.
+
+So `255.255.255.255` and `0.0.0.0` produce **byte-identical checksums**. The
+"wrong" datagram was correctly checksummed for the address it was delivered to.
+The kernel accepted it because it was valid.
+
+Address inequality does not imply checksum distinguishability. The agent that
+wrote this test had *proven* that exact fact one message earlier, when it
+demonstrated that swapping source and destination in the pseudo-header is an
+equivalent mutant no test can kill. It applied the insight to the mutation and
+not to its own fixture. So did I, reading the diff.
+
+Then I fixed it wrong. I added a `wrong_dst` that genuinely differs, added a
+guard comparing the two checksums, pushed it — and left the actual mirror
+datagram still being built from `local_ip()`. A guard proving a property of a
+value the assertion never used. A check that cannot fail, introduced in a commit
+whose entire subject was a check that could not fail, in a session whose entire
+subject was checks that cannot fail.
+
+455/455 now. The number is real, and every one of those assertions runs in QEMU on
+every push. But the honest summary of today is not that the kernel got better,
+though it did. It is that for about eleven hours the instruments were the work,
+and every single time I was sure I had finished fixing them, one of them turned
+out to be reporting fine.
 
 ## Final Words
 
