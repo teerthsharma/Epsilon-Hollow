@@ -3,12 +3,31 @@
 
 //! TOPO-ASM integration — topological computation primitives in x86_64 assembly.
 //!
-//! Implements scalar (and AVX-512) versions of:
+//! Implements scalar versions of:
 //!   - L^∞ landscape distance: max_i |a\[i\] - b\[i\]|
 //!   - Betti accumulator: count finite birth/death pairs
 //!
-//! The AVX-512 path is compiled unconditionally but must only be called after
-//! a successful CPUID check (see `ml_engine::detect_avx512()`).
+//! # Calling convention
+//!
+//! `x86_64-unknown-uefi` is a Windows-like target: `extern "C"` here is the
+//! Win64 convention, so integer arguments arrive in RCX, RDX, R8, R9 — not in
+//! the System V RDI, RSI, RDX. The target also builds `-sse,+soft-float`, so an
+//! `extern "C" fn(..) -> f64` returns its bit pattern in RAX rather than in
+//! XMM0; the emitted code for a UEFI-target caller feeds the returned RAX
+//! straight into `__gtdf2`. Both routines below follow that convention, and
+//! `simd_landscape_distance` additionally leaves the result in XMM0 so it stays
+//! correct if the crate is ever built for a target with SSE enabled.
+//!
+//! # Removed AVX-512 path
+//!
+//! An AVX-512 variant used to live here. It is gone rather than repaired: the
+//! kernel never executes `xsetbv`, so XCR0 keeps whatever state mask the
+//! firmware left, and UEFI only guarantees the SSE state components. Issuing
+//! ZMM instructions with the AVX-512 state bits clear raises #UD, which this
+//! kernel cannot report. Its guard, `ml_engine::detect_avx512()`, reads CPUID
+//! feature bits only and checks neither OSXSAVE nor XCR0, so it cannot tell the
+//! difference. Restore the vector path only alongside XCR0 enablement and a
+//! boot proof from AVX-512 hardware.
 
 use core::arch::global_asm;
 
@@ -21,138 +40,60 @@ global_asm!(
     .global simd_landscape_distance
     .p2align 4
 simd_landscape_distance:
-    // rdi = a (f64*), rsi = b (f64*), rdx = len
-    test rdx, rdx
-    jz .Lzero_dist
+    // Win64: rcx = a (f64*), rdx = b (f64*), r8 = len.
+    // Returns max_i |a[i] - b[i]| in rax (soft-float f64) and in xmm0 (SSE f64).
+    xor rax, rax
+    xorpd xmm0, xmm0            // max_diff = +0.0 in both return registers
+    test r8, r8
+    jz .Ldist_done
 
-    xorpd xmm0, xmm0        // max_diff = 0.0
-    xor rcx, rcx
+    pcmpeqd xmm2, xmm2
+    psrlq xmm2, 1               // xmm2 = 0x7FFFFFFFFFFFFFFF, sign-clearing mask
+    xor r9, r9
 
 .Ldist_loop:
-    cmp rcx, rdx
-    jae .Ldist_done
+    movsd xmm1, [rcx + r9*8]
+    subsd xmm1, [rdx + r9*8]
+    andpd xmm1, xmm2            // |a[i] - b[i]|
+    maxsd xmm0, xmm1            // MAXSD yields its source when either is NaN,
+                                // so a NaN difference propagates instead of
+                                // reading as 0.0
+    inc r9
+    cmp r9, r8
+    jb .Ldist_loop
 
-    movsd xmm1, [rdi + rcx*8]
-    subsd xmm1, [rsi + rcx*8]
-    // abs(xmm1) via integer masking
-    movq rax, xmm1
-    shl rax, 1
-    shr rax, 1              // clear sign bit = abs for finite f64
-    movq xmm1, rax
-    ucomisd xmm0, xmm1
-    jbe .Ldist_next
-    movsd xmm0, xmm1
-
-.Ldist_next:
-    inc rcx
-    jmp .Ldist_loop
+    movq rax, xmm0
 
 .Ldist_done:
-    ret
-
-.Lzero_dist:
-    xorpd xmm0, xmm0
     ret
 
     .global simd_betti_accumulate
     .p2align 4
 simd_betti_accumulate:
-    // rdi = barcode ([birth: f64, death: f64]*)
-    // rsi = pairs
-    // dl  = dim (part of ABI; scalar count ignores it)
+    // Win64: rcx = barcode ([birth: f64, death: f64]*), rdx = pairs,
+    //        r8b = dim (part of the ABI; the scalar count ignores it).
+    // Returns the number of finite pairs in rax.
     xor rax, rax
-    xor rcx, rcx
-    test rsi, rsi
+    test rdx, rdx
     jz .Lbetti_done
+    xor r9, r9
 
 .Lbetti_loop:
-    cmp rcx, rsi
-    jae .Lbetti_done
-
-    mov r9, rcx
-    shl r9, 4
-    movsd xmm0, [rdi + r9]      // birth
-    movsd xmm1, [rdi + r9 + 8]  // death
-    ucomisd xmm0, xmm1
-    jae .Lbetti_next                // birth >= death -> infinite, skip
-
+    mov r10, r9
+    shl r10, 4
+    movsd xmm0, [rcx + r10]         // birth
+    movsd xmm1, [rcx + r10 + 8]     // death
+    ucomisd xmm1, xmm0
+    jbe .Lbetti_next                // death <= birth, or either is NaN, so the
+                                    // pair is not finite -> skip
     inc rax
 
 .Lbetti_next:
-    inc rcx
-    jmp .Lbetti_loop
+    inc r9
+    cmp r9, rdx
+    jb .Lbetti_loop
 
 .Lbetti_done:
-    ret
-"#
-);
-
-// ---------------------------------------------------------------------------
-// AVX-512 vectorized path (compiled unconditionally; runtime-guarded)
-// ---------------------------------------------------------------------------
-
-global_asm!(
-    r#"
-    .global simd_landscape_distance_avx512
-    .p2align 4
-simd_landscape_distance_avx512:
-    // rdi = a (f64*), rsi = b (f64*), rdx = len
-    test rdx, rdx
-    jz .Lzero_avx
-
-    // Build abs mask in zmm2
-    xor eax, eax
-    dec rax
-    shr rax, 1              // rax = 0x7FFFFFFFFFFFFFFF
-    movq xmm2, rax
-    vpbroadcastq zmm2, xmm2
-
-    vpxorq zmm0, zmm0, zmm0     // max_diff vector = 0
-
-    mov r8, rdx
-    and r8, ~7                  // r8 = len rounded down to multiple of 8
-    xor rcx, rcx
-
-.Lvec_loop:
-    cmp rcx, r8
-    jae .Lscalar_tail
-
-    vmovupd zmm3, [rdi + rcx*8]
-    vsubpd zmm3, zmm3, [rsi + rcx*8]
-    vpandq zmm3, zmm3, zmm2
-    vmaxpd zmm0, zmm0, zmm3
-
-    add rcx, 8
-    jmp .Lvec_loop
-
-.Lscalar_tail:
-    cmp rcx, rdx
-    jae .Lreduce
-
-    movsd xmm3, [rdi + rcx*8]
-    subsd xmm3, [rsi + rcx*8]
-    movq rax, xmm3
-    shl rax, 1
-    shr rax, 1
-    movq xmm3, rax
-    vmaxsd xmm0, xmm0, xmm3
-
-    inc rcx
-    jmp .Lscalar_tail
-
-.Lreduce:
-    // Horizontal max of zmm0 -> xmm0
-    vextractf64x4 ymm3, zmm0, 1
-    vmaxpd ymm0, ymm0, ymm3
-    vextractf128 xmm3, ymm0, 1
-    vmaxpd xmm0, xmm0, xmm3
-    movsd xmm3, xmm0
-    shufpd xmm0, xmm0, 1
-    maxsd xmm0, xmm3
-    ret
-
-.Lzero_avx:
-    vpxorq xmm0, xmm0, xmm0
     ret
 "#
 );
@@ -160,29 +101,25 @@ simd_landscape_distance_avx512:
 extern "C" {
     fn simd_landscape_distance(a: *const f64, b: *const f64, len: usize) -> f64;
     fn simd_betti_accumulate(barcode: *const f64, pairs: usize, dim: u8) -> u64;
-    fn simd_landscape_distance_avx512(a: *const f64, b: *const f64, len: usize) -> f64;
 }
 
 // ---------------------------------------------------------------------------
-// Rust wrappers with runtime dispatch
+// Rust wrappers
 // ---------------------------------------------------------------------------
 
 /// Compute the L^∞ distance between two f64 landscapes.
 ///
-/// Dispatches to AVX-512 if the CPU supports it, otherwise scalar assembly.
+/// Reads `min(a.len(), b.len())` elements; a length mismatch truncates rather
+/// than reading past the shorter slice.
 pub fn landscape_distance(a: &[f64], b: &[f64]) -> f64 {
     let len = a.len().min(b.len());
     if len == 0 {
         return 0.0;
     }
-    let avx512 = crate::ml_engine::detect_avx512();
-    unsafe {
-        if avx512 {
-            simd_landscape_distance_avx512(a.as_ptr(), b.as_ptr(), len)
-        } else {
-            simd_landscape_distance(a.as_ptr(), b.as_ptr(), len)
-        }
-    }
+    // SAFETY: `len` is the shorter of the two lengths and the callee reads
+    // exactly `len` f64 from each pointer, so every load is in bounds of a live
+    // slice. It touches no other memory and returns by value.
+    unsafe { simd_landscape_distance(a.as_ptr(), b.as_ptr(), len) }
 }
 
 /// Compute the L^∞ distance between two fixed-size 64-D landscapes.
@@ -200,8 +137,11 @@ pub fn betti_count(barcode: &[(f64, f64)], _dim: u8) -> u64 {
     if barcode.is_empty() {
         return 0;
     }
-    // Barcode is [(birth, death)]; we pass it as a flat f64 array.
+    // Barcode is [(birth, death)]; we pass it as a flat f64 array. The pair is
+    // two f64, so `(birth, death)` occupies 16 bytes with birth first.
     let flat = barcode.as_ptr() as *const f64;
+    // SAFETY: the callee reads exactly `barcode.len()` 16-byte pairs starting at
+    // the slice base, which is the slice's own extent, and writes nothing.
     unsafe { simd_betti_accumulate(flat, barcode.len(), _dim) }
 }
 
@@ -234,6 +174,19 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_distance_peak_at_end() -> TestResult {
+        let a = [0.0f64, 0.0, 0.0, 0.0];
+        let b = [1.0f64, 0.5, 2.0, 10.0];
+        let d = landscape_distance(&a, &b);
+        // The peak is the last element, so an accumulator that keeps the first
+        // candidate instead of the larger one, or a loop that stops short of
+        // the final index, cannot reach 10.0.
+        if (d - 10.0).abs() > 1e-12 {
+            return TestResult::Fail("Expected distance 10.0");
+        }
+        TestResult::Pass
+    }
+
     fn test_betti_count() -> TestResult {
         let barcode = [
             (0.0, 1.0), // finite -> count
@@ -247,9 +200,23 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_betti_count_rejects_nan() -> TestResult {
+        // A NaN endpoint orders against nothing, so it is not a finite pair.
+        let barcode = [(0.0f64, f64::NAN), (f64::NAN, 1.0f64)];
+        if betti_count(&barcode, 0) != 0 {
+            return TestResult::Fail("NaN endpoints must not count as finite");
+        }
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("topo_asm::distance_identity", test_distance_identity);
         crate::testing::register_test("topo_asm::distance_basic", test_distance_basic);
+        crate::testing::register_test("topo_asm::distance_peak_at_end", test_distance_peak_at_end);
         crate::testing::register_test("topo_asm::betti_count", test_betti_count);
+        crate::testing::register_test(
+            "topo_asm::betti_count_rejects_nan",
+            test_betti_count_rejects_nan,
+        );
     }
 }
