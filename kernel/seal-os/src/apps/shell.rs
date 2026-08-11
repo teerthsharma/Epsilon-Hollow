@@ -3,6 +3,7 @@
 
 //! SealShell - the human-friendly shell. Seal-native commands only.
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -27,6 +28,7 @@ pub struct Shell {
     calculator: Calculator,
     media_player: MediaPlayer,
     last_model: Option<Vec<u8>>,
+    vars: Vars,
 }
 
 /// Absolute path named by a shell argument, or `None` when the argument is
@@ -548,6 +550,245 @@ fn redirected_content(existing: Option<String>, produced: &str, append: bool) ->
     }
 }
 
+/// The shell's variables: name to value, with the flag `export` sets.
+///
+/// Ordered rather than hashed, so `set` and `env` list in name order without
+/// sorting anything and two runs of the same input print the same lines.
+type Vars = BTreeMap<String, (String, bool)>;
+
+/// Most variables the store holds, and the most bytes their names and values
+/// may total.
+///
+/// The kernel heap is fixed (`memory::heap_stats`) and a variable lives until
+/// the machine is reset, so an uncapped store is a way to exhaust the heap
+/// from the terminal. Both caps refuse the assignment rather than evicting
+/// something: a variable that quietly vanished would make every later `$NAME`
+/// expand to empty, which reads as a wrong answer instead of a full store.
+const MAX_VARS: usize = 64;
+const MAX_VAR_BYTES: usize = 4096;
+
+/// Whether `s` is a variable name: `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_var_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The name and the unexpanded value of an assignment statement, or `None`
+/// when `stmt` is not one and belongs on the normal command path.
+///
+/// The name is everything before the first `=`, so `A=b=c` gives `A` the value
+/// `b=c`. Anything that is not a name — `a-b=c`, `1a=c`, `=c`, `set k v` —
+/// is not an assignment at all and stays an ordinary command line, which is
+/// what makes `a-b=c` an unknown command rather than a variable no `$a-b`
+/// could ever name.
+fn parse_assignment(stmt: &str) -> Option<(&str, &str)> {
+    let (name, value) = stmt.split_once('=')?;
+    if !is_var_name(name) {
+        return None;
+    }
+    Some((name, value))
+}
+
+/// Bytes the store is holding: every name plus every value.
+fn var_bytes(vars: &Vars) -> usize {
+    vars.iter().map(|(k, (v, _))| k.len() + v.len()).sum()
+}
+
+/// Give `name` the value `value`, keeping whatever `export` flag it already
+/// had, or say why it cannot.
+///
+/// A value may not contain whitespace. This shell has no quoting (see the
+/// ceiling note on `Shell::run_line`), so `A=1 look` cannot be told apart from
+/// a value that happens to contain a space, and the two readings do opposite
+/// things: `sh` would set `A` for one command and run `look`, while taking the
+/// rest of the line as the value silently stores `1 look` and runs nothing.
+/// Refusing is the only answer that cannot do something the operator did not
+/// ask for, and it buys a second property the expander depends on — since no
+/// value holds a space, `$NAME` always expands to exactly one argument and
+/// expansion can never change how `Shell::dispatch` splits a line.
+fn set_var(vars: &mut Vars, name: &str, value: &str) -> Result<(), String> {
+    if !is_var_name(name) {
+        return Err(format!(
+            "seal: '{}' is not a variable name: a letter or '_' then letters, digits or '_'",
+            name
+        ));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "seal: {}=: a value may not contain a space — this shell has no quoting, so '{}=<value> <command>' cannot be told from one value",
+            name, name
+        ));
+    }
+    let prior = vars.get(name).map(|(v, e)| (v.len(), *e));
+    if prior.is_none() && vars.len() >= MAX_VARS {
+        return Err(format!(
+            "seal: {} variables is the limit; 'unset <name>' frees one",
+            MAX_VARS
+        ));
+    }
+    // Reassigning replaces the old value's bytes; a new name adds its own too.
+    let after = match prior {
+        Some((prior_len, _)) => var_bytes(vars) - prior_len + value.len(),
+        None => var_bytes(vars) + name.len() + value.len(),
+    };
+    if after > MAX_VAR_BYTES {
+        return Err(format!(
+            "seal: variables may total {} bytes; that assignment needs {}",
+            MAX_VAR_BYTES, after
+        ));
+    }
+    let exported = prior.map(|(_, e)| e).unwrap_or(false);
+    vars.insert(String::from(name), (String::from(value), exported));
+    Ok(())
+}
+
+/// `text` with every `$NAME` and `${NAME}` replaced by that variable's value,
+/// or the syntax error that stopped it.
+///
+/// A name that is not set expands to nothing. A `$` that no name follows is a
+/// literal `$`, which is what keeps `write price.txt $5` and `$?` — this shell
+/// has no exit status — the text they look like rather than silent empties.
+/// Inside braces there is no such reading: `${` must be closed and must hold a
+/// name, so `${A` and `${a-b}` are errors the operator sees.
+///
+/// One pass, left to right: what a variable expands to is copied to the output
+/// and never looked at again, so the recursion bound is exactly one
+/// substitution deep and no pair of variables can make this run twice over the
+/// same text. `A=$B` with `B=$A` terminates because each assignment expands
+/// its right-hand side once, when it is made.
+fn expand_vars(text: &str, vars: &Vars) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let braced = after.starts_with('{');
+        let (name, tail) = if braced {
+            match after[1..].find('}') {
+                Some(end) => (&after[1..1 + end], &after[end + 2..]),
+                None => {
+                    return Err(String::from(
+                        "seal: syntax error: '${' has no closing '}'",
+                    ))
+                }
+            }
+        } else {
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            (&after[..end], &after[end..])
+        };
+        if !is_var_name(name) {
+            if braced {
+                return Err(format!(
+                    "seal: syntax error: '${{{}}}' does not name a variable",
+                    name
+                ));
+            }
+            out.push('$');
+            rest = after;
+            continue;
+        }
+        if let Some((value, _)) = vars.get(name) {
+            out.push_str(value);
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// `text` expanded, refused when there is nothing left of it.
+///
+/// Used for a stage's command and for a redirection's file name, the two
+/// places where an empty string is not an empty argument but a missing one:
+/// `peek notes > $OUT` with `OUT` unset would otherwise create a file called
+/// `$OUT`, and `$CMD` alone would report an unknown command named nothing.
+fn expand_required(text: &str, vars: &Vars) -> Result<String, String> {
+    let expanded = expand_vars(text, vars)?;
+    if expanded.trim().is_empty() {
+        return Err(format!("seal: '{}' expanded to nothing", text.trim()));
+    }
+    Ok(expanded)
+}
+
+/// `export NAME` or `export NAME=value`: mark a variable for the environment,
+/// creating it empty if it does not exist yet.
+///
+/// Arguments reach this already expanded (`Shell::run_line`), and no value
+/// holds a space, so exactly one token is the whole of a well-formed argument
+/// and a second one is a mistake rather than a second name to export.
+///
+/// ponytail: the mark is a mark and nothing more — `env` reports the set and
+/// no command receives it. Seal OS commands are `Shell` methods rather than
+/// processes (see `Shell::dispatch`), so there is no environment block to put
+/// anything in; inventing one would mean a process boundary that does not
+/// exist. Upgrade path: when `run` or `install` spawns a real task, hand the
+/// exported pairs to whatever builds its address space.
+fn cmd_export(vars: &mut Vars, args: &str) -> String {
+    let mut tokens = args.split_whitespace();
+    let (name, value) = match (tokens.next(), tokens.next()) {
+        (Some(arg), None) => match parse_assignment(arg) {
+            Some((name, value)) => (name, Some(value)),
+            None => (arg, None),
+        },
+        _ => return String::from("export: usage: export <NAME> or export <NAME>=<value>"),
+    };
+    if !is_var_name(name) {
+        return format!(
+            "export: '{}' is not a variable name: a letter or '_' then letters, digits or '_'",
+            name
+        );
+    }
+    if let Some(value) = value {
+        if let Err(e) = set_var(vars, name, value) {
+            return e;
+        }
+    } else if !vars.contains_key(name) {
+        if let Err(e) = set_var(vars, name, "") {
+            return e;
+        }
+    }
+    if let Some(entry) = vars.get_mut(name) {
+        entry.1 = true;
+    }
+    String::new()
+}
+
+/// `unset NAME`: forget a variable, whether or not it was set.
+fn cmd_unset(vars: &mut Vars, args: &str) -> String {
+    let mut tokens = args.split_whitespace();
+    let name = match (tokens.next(), tokens.next()) {
+        (Some(name), None) => name,
+        _ => return String::from("unset: usage: unset <NAME>"),
+    };
+    if !is_var_name(name) {
+        return format!(
+            "unset: '{}' is not a variable name: a letter or '_' then letters, digits or '_'",
+            name
+        );
+    }
+    vars.remove(name);
+    String::new()
+}
+
+/// Every variable as `NAME=value`, one per line in name order, or only those
+/// `export` marked.
+fn list_vars(vars: &Vars, exported_only: bool) -> String {
+    let mut out = String::new();
+    for (name, (value, exported)) in vars {
+        if exported_only && !exported {
+            continue;
+        }
+        out.push_str(&format!("{}={}\n", name, value));
+    }
+    if out.is_empty() {
+        return String::from("(none)");
+    }
+    out
+}
+
 impl Shell {
     pub fn new() -> Self {
         Self {
@@ -559,6 +800,7 @@ impl Shell {
             calculator: Calculator::new(),
             media_player: MediaPlayer::new(),
             last_model: None,
+            vars: Vars::new(),
         }
     }
 
@@ -576,8 +818,20 @@ impl Shell {
         }
     }
 
-    /// Run one command line: a pipeline of one or more stages, with optional
-    /// `< file` on the first and `> file` / `>> file` on the last.
+    /// Run one command line: an assignment, or a pipeline of one or more
+    /// stages with optional `< file` on the first and `> file` / `>> file` on
+    /// the last.
+    ///
+    /// `NAME=value` is a whole statement, tested before the line is split, so
+    /// an assignment is never a pipeline and its value may hold any character
+    /// at all. Everything else is split into stages first and expanded second,
+    /// each stage's command and each redirection's file name separately. That
+    /// order is what keeps a variable's contents data: a value holding `|`,
+    /// `<` or `>` arrives after the only place those are read as operators and
+    /// is passed to the command as text. Expanding first would let `V=a|b`
+    /// turn `grep $V` into two stages, which is a shell where no value can be
+    /// trusted to stay one argument — and with no quoting there would be no
+    /// way to ask for the literal.
     ///
     /// Nothing here can observe that a command failed. Every arm of
     /// `Shell::dispatch` returns a `String` whether it succeeded or not, so a
@@ -596,20 +850,36 @@ impl Shell {
     /// path: tokenize once into `Vec<String>` with `'`/`"` handling, split
     /// the pipeline on unquoted `|`, and hand each arm its argument vector.
     fn run_line(&mut self, input: &str) -> Result<String, String> {
+        if let Some((name, value)) = parse_assignment(input) {
+            let value = expand_vars(value, &self.vars)?;
+            set_var(&mut self.vars, name, &value)?;
+            return Ok(String::new());
+        }
+
         let stages = parse_line(input)?;
         let last = stages.len() - 1;
 
         let stdin = match stages[0].input {
-            Some(file) => self.read_stdin(file)?,
+            Some(file) => {
+                let file = expand_required(file, &self.vars)?;
+                self.read_stdin(&file)?
+            }
             None => String::new(),
         };
-        let redirect = stages[last].output;
-        let commands: Vec<&str> = stages.iter().map(|s| s.cmd).collect();
+        let redirect = match stages[last].output {
+            Some((file, append)) => Some((expand_required(file, &self.vars)?, append)),
+            None => None,
+        };
+        let expanded: Vec<String> = stages
+            .iter()
+            .map(|s| expand_required(s.cmd, &self.vars))
+            .collect::<Result<_, _>>()?;
+        let commands: Vec<&str> = expanded.iter().map(|s| s.as_str()).collect();
         let output = run_pipeline(&commands, stdin, |cmd, stdin| self.dispatch(cmd, stdin))?;
 
         match redirect {
             Some((file, append)) => {
-                self.write_redirect(file, &output, append)?;
+                self.write_redirect(&file, &output, append)?;
                 Ok(String::new())
             }
             None => Ok(output),
@@ -745,8 +1015,16 @@ impl Shell {
             // ML
             "ml" => self.cmd_ml(arg1, arg2),
 
+            // Variables. `NAME=value` itself is a statement, handled by
+            // `Shell::run_line` before the line is ever split into stages.
+            "export" => cmd_export(&mut self.vars, input.split_once(' ').map_or("", |x| x.1)),
+            "unset" => cmd_unset(&mut self.vars, input.split_once(' ').map_or("", |x| x.1)),
+            "env" => list_vars(&self.vars, true),
+
             // Settings
             "theme" => self.cmd_theme(arg1),
+            // A bare `set` lists the variables; with a key it is a setting.
+            "set" if arg1.is_empty() => list_vars(&self.vars, false),
             "set" => self.cmd_set(arg1, arg2),
 
             // Prefetch
@@ -2446,7 +2724,339 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A store holding `pairs`, in the order given.
+    fn vars_with(pairs: &[(&str, &str)]) -> Vars {
+        let mut vars = Vars::new();
+        for (name, value) in pairs {
+            let _ = set_var(&mut vars, name, value);
+        }
+        vars
+    }
+
+    /// `NAME=value` is an assignment; everything else is the command it looks
+    /// like. `a-b=c` cannot become a variable, because no `$a-b` could ever
+    /// name it back.
+    fn test_assignment_statements_are_recognized_and_others_fall_through() -> TestResult {
+        test_assert_eq!(parse_assignment("A=1"), Some(("A", "1")));
+        test_assert_eq!(parse_assignment("_x9=v"), Some(("_x9", "v")));
+        test_assert_eq!(parse_assignment("A="), Some(("A", "")));
+        // The first '=' ends the name, so the value may hold more of them.
+        test_assert_eq!(parse_assignment("A=b=c"), Some(("A", "b=c")));
+        // The statement is recognized before the line is split, so a value
+        // may hold what a pipeline would otherwise split on.
+        test_assert_eq!(parse_assignment("V=a|b"), Some(("V", "a|b")));
+        for line in [
+            "a-b=c", "1a=c", "=c", "look", "set k v", "A =1", "A B=c", "", "grep a=b c",
+        ] {
+            test_assert!(
+                parse_assignment(line).is_none(),
+                "only NAME=value is an assignment"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// `$NAME` and `${NAME}` are replaced by the value; an unset name is
+    /// replaced by nothing; a `$` no name follows is the character itself.
+    fn test_variables_expand_in_arguments() -> TestResult {
+        let vars = vars_with(&[("F", "notes"), ("EMPTY", "")]);
+        test_assert_eq!(
+            expand_vars("peek $F.txt", &vars).unwrap_or_default(),
+            "peek notes.txt"
+        );
+        test_assert_eq!(
+            expand_vars("peek ${F}.txt", &vars).unwrap_or_default(),
+            "peek notes.txt"
+        );
+        // Braces are what let a name touch name-shaped text after it.
+        test_assert_eq!(expand_vars("$F_v2", &vars).unwrap_or_default(), "");
+        test_assert_eq!(expand_vars("${F}_v2", &vars).unwrap_or_default(), "notes_v2");
+        // Unset and set-but-empty both leave the text around them alone.
+        test_assert_eq!(expand_vars("a${NOPE}b", &vars).unwrap_or_default(), "ab");
+        test_assert_eq!(expand_vars("a$EMPTY.b", &vars).unwrap_or_default(), "a.b");
+        test_assert_eq!(expand_vars("$F $F", &vars).unwrap_or_default(), "notes notes");
+        test_assert_eq!(
+            expand_vars("look | grep -i seal", &vars).unwrap_or_default(),
+            "look | grep -i seal"
+        );
+        // A '$' that names nothing is a literal '$'. This shell has no exit
+        // status, so `$?` stays the text it looks like: nothing is invented.
+        for text in ["$?", "$5", "cost $", "$ F", "$-", "$$"] {
+            test_assert_eq!(expand_vars(text, &vars).unwrap_or_default(), text);
+        }
+        TestResult::Pass
+    }
+
+    /// An unclosed or unnamed `${` is an error, and so is an expansion that
+    /// leaves nothing where a command or a file name has to be.
+    fn test_malformed_expansion_and_empty_result_are_refused() -> TestResult {
+        let vars = vars_with(&[("A", "1")]);
+        for text in ["peek ${A", "${", "${}", "${a-b}", "${1a}", "a ${A} ${B"] {
+            test_assert!(
+                expand_vars(text, &vars).is_err(),
+                "an unclosed or unnamed '${' must be refused"
+            );
+        }
+        test_assert_eq!(expand_vars("${A}", &vars).unwrap_or_default(), "1");
+        // `peek > $OUT` with OUT unset must not write a file called '$OUT',
+        // and `$CMD` alone must not report an unknown command named nothing.
+        test_assert!(expand_required("$NOPE", &vars).is_err());
+        test_assert!(expand_required("${NOPE}", &vars).is_err());
+        test_assert!(expand_required("", &vars).is_err());
+        test_assert_eq!(expand_required("${A}", &vars).unwrap_or_default(), "1");
+        TestResult::Pass
+    }
+
+    /// Expansion is one substitution deep: what a value expands to is copied
+    /// out and never scanned again, so no arrangement of variables can make it
+    /// run twice over the same text.
+    fn test_expansion_is_one_pass_and_terminates() -> TestResult {
+        // `D` holds a lone '$', so `X` ends up holding the two characters
+        // `$X` — a variable that names itself.
+        let mut vars = Vars::new();
+        let _ = set_var(&mut vars, "D", "$");
+        let x = expand_vars("${D}X", &vars).unwrap_or_default();
+        test_assert_eq!(x, "$X");
+        let _ = set_var(&mut vars, "X", &x);
+        test_assert_eq!(expand_vars("$X", &vars).unwrap_or_default(), "$X");
+        test_assert_eq!(expand_vars("[$X]", &vars).unwrap_or_default(), "[$X]");
+
+        // Two variables naming each other. Each right-hand side is expanded
+        // once, when the assignment is made, so neither holds a live
+        // reference to the other and the pair cannot chase itself.
+        let mut ab = Vars::new();
+        let b_value = expand_vars("$B", &ab).unwrap_or_default();
+        let _ = set_var(&mut ab, "A", &b_value);
+        let a_value = expand_vars("$A", &ab).unwrap_or_default();
+        let _ = set_var(&mut ab, "B", &a_value);
+        test_assert_eq!(list_vars(&ab, false), "A=\nB=\n");
+        test_assert_eq!(expand_vars("$A$B", &ab).unwrap_or_default(), "");
+        TestResult::Pass
+    }
+
+    /// The line is split into stages first and expanded second, so a value
+    /// holding `|`, `<` or `>` reaches the command as text. Expanding first
+    /// would make every value a possible operator, and with no quoting there
+    /// would be no way to ask for the literal.
+    fn test_expansion_happens_after_the_pipeline_split() -> TestResult {
+        let vars = vars_with(&[("V", "a|b"), ("R", ">stolen.txt")]);
+        let stages = match parse_line("peek f.txt | grep $V") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("the line must split into two stages"),
+        };
+        test_assert_eq!(stages.len(), 2);
+        let second = expand_vars(stages[1].cmd, &vars).unwrap_or_default();
+        test_assert_eq!(second, "grep a|b");
+        // The `|` inside the value is the pattern, not a third stage.
+        test_assert_eq!(filtered(&second, "a|b\nax\n"), "a|b\n");
+
+        let stage = match parse_stage("grep $R") {
+            Ok(s) => s,
+            Err(_) => return TestResult::Fail("a stage naming a variable must parse"),
+        };
+        test_assert!(
+            stage.output.is_none(),
+            "a value must not be able to become a redirection"
+        );
+        test_assert_eq!(
+            expand_vars(stage.cmd, &vars).unwrap_or_default(),
+            "grep >stolen.txt"
+        );
+        TestResult::Pass
+    }
+
+    /// A value may not contain whitespace. With no quoting, `A=1 look` cannot
+    /// be told from a value with a space in it, and the two readings do
+    /// opposite things, so the assignment is refused and nothing is stored.
+    fn test_a_value_may_not_hold_a_space() -> TestResult {
+        let mut vars = Vars::new();
+        for value in ["1 look", "a b", "x\ty", "trailing "] {
+            test_assert!(
+                set_var(&mut vars, "A", value).is_err(),
+                "a value with whitespace must be refused"
+            );
+        }
+        test_assert_eq!(list_vars(&vars, false), "(none)");
+        test_assert!(set_var(&mut vars, "A", "1").is_ok());
+        test_assert_eq!(list_vars(&vars, false), "A=1\n");
+        // The name is checked on the way in as well.
+        for name in ["a-b", "", "1a", "a b"] {
+            test_assert!(
+                set_var(&mut vars, name, "1").is_err(),
+                "only a variable name may be assigned to"
+            );
+        }
+        test_assert_eq!(list_vars(&vars, false), "A=1\n");
+        TestResult::Pass
+    }
+
+    /// `export` marks, `unset` forgets, `env` lists the marked set and `set`
+    /// lists all of it, both in name order.
+    fn test_export_marks_unset_removes_and_lists_stay_sorted() -> TestResult {
+        let mut vars = Vars::new();
+        test_assert_eq!(list_vars(&vars, false), "(none)");
+        test_assert_eq!(list_vars(&vars, true), "(none)");
+        for (name, value) in [("b", "2"), ("A", "1"), ("C", "3")] {
+            test_assert!(set_var(&mut vars, name, value).is_ok());
+        }
+        // Name order, not the order they were set in.
+        test_assert_eq!(list_vars(&vars, false), "A=1\nC=3\nb=2\n");
+        // Nothing is exported until `export` says so.
+        test_assert_eq!(list_vars(&vars, true), "(none)");
+        test_assert_eq!(cmd_export(&mut vars, "C"), "");
+        test_assert_eq!(cmd_export(&mut vars, "A"), "");
+        test_assert_eq!(list_vars(&vars, true), "A=1\nC=3\n");
+        // `export NAME=value` assigns and marks in one statement.
+        test_assert_eq!(cmd_export(&mut vars, "D=4"), "");
+        test_assert_eq!(list_vars(&vars, true), "A=1\nC=3\nD=4\n");
+        // Exporting a name that is not set yet creates it empty.
+        test_assert_eq!(cmd_export(&mut vars, "E"), "");
+        test_assert_eq!(list_vars(&vars, true), "A=1\nC=3\nD=4\nE=\n");
+        // Reassigning keeps the mark.
+        test_assert!(set_var(&mut vars, "A", "9").is_ok());
+        test_assert_eq!(list_vars(&vars, true), "A=9\nC=3\nD=4\nE=\n");
+        // `unset` takes the name and its mark together: setting it again
+        // starts unexported.
+        test_assert_eq!(cmd_unset(&mut vars, "C"), "");
+        test_assert!(set_var(&mut vars, "C", "3").is_ok());
+        test_assert_eq!(list_vars(&vars, true), "A=9\nD=4\nE=\n");
+        test_assert_eq!(list_vars(&vars, false), "A=9\nC=3\nD=4\nE=\nb=2\n");
+        // Unsetting something never set is not an error.
+        test_assert_eq!(cmd_unset(&mut vars, "Z"), "");
+        // A malformed argument is refused with a message and changes nothing.
+        for bad in ["", "a-b", "A B", "1a", "A=1 B=2"] {
+            test_assert!(
+                !cmd_export(&mut vars, bad).is_empty(),
+                "export must refuse a bad argument"
+            );
+            test_assert!(
+                !cmd_unset(&mut vars, bad).is_empty(),
+                "unset must refuse a bad argument"
+            );
+        }
+        test_assert_eq!(list_vars(&vars, false), "A=9\nC=3\nD=4\nE=\nb=2\n");
+        TestResult::Pass
+    }
+
+    /// The store is capped by count and by total bytes, and says so rather
+    /// than evicting: a variable that quietly vanished would make every later
+    /// `$NAME` expand to empty, which reads as a wrong answer.
+    fn test_the_variable_store_is_capped() -> TestResult {
+        let mut vars = Vars::new();
+        for i in 0..MAX_VARS {
+            test_assert!(
+                set_var(&mut vars, &format!("v{}", i), "x").is_ok(),
+                "a variable under the count cap must be accepted"
+            );
+        }
+        test_assert_eq!(vars.len(), MAX_VARS);
+        test_assert!(
+            set_var(&mut vars, "one_too_many", "x").is_err(),
+            "past the count cap must be refused"
+        );
+        test_assert!(!vars.contains_key("one_too_many"));
+        // A name already in the store is not a new one, so it still assigns.
+        test_assert!(set_var(&mut vars, "v0", "y").is_ok());
+
+        let mut big = Vars::new();
+        test_assert!(
+            set_var(&mut big, "a", &"y".repeat(MAX_VAR_BYTES)).is_err(),
+            "past the byte cap must be refused"
+        );
+        test_assert_eq!(list_vars(&big, false), "(none)");
+        test_assert!(
+            set_var(&mut big, "a", &"y".repeat(MAX_VAR_BYTES - 1)).is_ok(),
+            "exactly the byte cap must be allowed"
+        );
+        test_assert!(
+            set_var(&mut big, "b", "z").is_err(),
+            "one byte over the cap must be refused"
+        );
+        // Reassigning releases the old value's bytes rather than adding to
+        // them, or a store could fill up without ever growing.
+        test_assert!(set_var(&mut big, "a", "small").is_ok());
+        test_assert!(set_var(&mut big, "b", "z").is_ok());
+        TestResult::Pass
+    }
+
+    /// The handbook names the syntax, the three commands and both caps. A
+    /// feature no `help` mentions cannot be found.
+    fn test_handbook_documents_variables() -> TestResult {
+        let book = help::handbook();
+        // Each token is the distinctive part of one handbook line. A bare
+        // `export` would be satisfied by the word `exported` on the `env`
+        // line, and a bare `env` by `environment`, so both carry the space
+        // that only the command itself is followed by.
+        for token in [
+            "NAME=value",
+            "$NAME",
+            "${NAME}",
+            "export NAME",
+            "unset NAME",
+            "env ",
+        ] {
+            test_assert!(
+                book.contains(token),
+                "the handbook must document the variable syntax"
+            );
+        }
+        for topic in ["variables", "export", "unset", "env", "set"] {
+            test_assert!(
+                !help::help_for(topic).starts_with("No help available"),
+                "every variable command needs a help page"
+            );
+        }
+        let page = help::help_for("variables");
+        test_assert!(
+            page.contains("64") && page.contains("4096"),
+            "the caps belong in the handbook"
+        );
+        // `set` gained a second meaning, and a page that documents only the
+        // settings half hides it.
+        test_assert!(
+            help::help_for("set").contains("variable"),
+            "the 'set' page must say that a bare 'set' lists the variables"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "shell::assignment_statements_are_recognized_and_others_fall_through",
+            test_assignment_statements_are_recognized_and_others_fall_through,
+        );
+        crate::testing::register_test(
+            "shell::variables_expand_in_arguments",
+            test_variables_expand_in_arguments,
+        );
+        crate::testing::register_test(
+            "shell::malformed_expansion_and_empty_result_are_refused",
+            test_malformed_expansion_and_empty_result_are_refused,
+        );
+        crate::testing::register_test(
+            "shell::expansion_is_one_pass_and_terminates",
+            test_expansion_is_one_pass_and_terminates,
+        );
+        crate::testing::register_test(
+            "shell::expansion_happens_after_the_pipeline_split",
+            test_expansion_happens_after_the_pipeline_split,
+        );
+        crate::testing::register_test(
+            "shell::a_value_may_not_hold_a_space",
+            test_a_value_may_not_hold_a_space,
+        );
+        crate::testing::register_test(
+            "shell::export_marks_unset_removes_and_lists_stay_sorted",
+            test_export_marks_unset_removes_and_lists_stay_sorted,
+        );
+        crate::testing::register_test(
+            "shell::the_variable_store_is_capped",
+            test_the_variable_store_is_capped,
+        );
+        crate::testing::register_test(
+            "shell::handbook_documents_variables",
+            test_handbook_documents_variables,
+        );
         crate::testing::register_test(
             "shell::filter_table_routes_each_name",
             test_filter_table_routes_each_name,
