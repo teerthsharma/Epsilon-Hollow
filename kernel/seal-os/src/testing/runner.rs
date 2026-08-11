@@ -16,19 +16,37 @@ pub fn test_main() -> ! {
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
+    crate::fs::vfs::tests::register_all();
+    crate::fs::ext2::tests::register_all();
     crate::fs::parity::tests::register_all();
     crate::process::scheduler::tests::register_all();
+    crate::process::elf::tests::register_all();
     crate::security::tests::register_all();
     crate::syscall::table::tests::register_all();
     crate::atlas::tests::register_all();
     crate::bundle::tests::register_all();
+    crate::lang::tests::register_all();
+    crate::net::dns::tests::register_all();
+    crate::net::udp::tests::register_all();
     crate::pkg::channel::tests::register_all();
     crate::drivers::apic::tests::register_all();
+    crate::drivers::block::ahci::tests::register_all();
+    crate::drivers::block::virtio_blk::tests::register_all();
+    crate::drivers::block::ramdisk::tests::register_all();
+    crate::drivers::acpi::rsdp::tests::register_all();
+    crate::drivers::acpi::madt::tests::register_all();
+    crate::drivers::acpi::fadt::tests::register_all();
+    // Chains xhci::tests — see drivers/usb/mass_storage.rs.
+    crate::drivers::usb::mass_storage::tests::register_all();
     crate::drivers::gpu::gpu_bench::tests::register_all();
+    // Chains x509::tests and ecdhe::tests — see drivers/net/tls.rs.
+    crate::drivers::net::tls::tests::register_all();
     crate::cpu::tests::register_all();
     crate::sync::tests::register_all();
     crate::ml_engine::stratum::tests::register_all();
     crate::ml_engine::foliation::tests::register_all();
+    crate::ml_engine::topo_asm::tests::register_all();
+    crate::ml_engine::tests::register_all();
 
     run_all_tests_and_exit()
 }

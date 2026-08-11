@@ -113,20 +113,25 @@ impl Tensor {
         Self::new(&data, shape)
     }
 
-    /// Create a tensor with Xavier initialization
+    /// Create a tensor with Xavier initialization, using the historical
+    /// default seed. Kept for existing callers; delegates to
+    /// [`Tensor::kaiming_uniform_seeded`].
     pub fn kaiming_uniform(shape: &[usize]) -> Self {
+        Self::kaiming_uniform_seeded(shape, 42)
+    }
+
+    /// Create a tensor with Xavier initialization from an explicit seed, so
+    /// distinct layers don't draw from the same stream.
+    pub fn kaiming_uniform_seeded(shape: &[usize], seed: u64) -> Self {
         let total_size: usize = shape.iter().product();
         let fan_in = if shape.len() > 1 { shape[1] } else { 1 };
         let bound = sqrt(3.0 / fan_in as f64);
 
-        // Simple LCG for deterministic randomness in no_std
-        let mut rng = 42u64;
+        let mut rng = crate::ml::rng::Lcg::new(seed);
         let mut data: Vec<f64> = Vec::with_capacity(total_size);
 
         for _ in 0..total_size {
-            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let r = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-            data.push(r * bound);
+            data.push(rng.next_signed_f64() * bound);
         }
 
         Self::new(&data, shape)
@@ -346,5 +351,33 @@ impl Tensor {
         }
 
         Self::new(&result_data, &self.shape)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn different_seeds_produce_different_tensors() {
+        // Pre-fix, `kaiming_uniform` hardcoded `let mut rng = 42u64;` with no
+        // way to vary it, so every call produced the exact same tensor.
+        let a = Tensor::kaiming_uniform_seeded(&[4, 4], 1);
+        let b = Tensor::kaiming_uniform_seeded(&[4, 4], 2);
+        assert_ne!(a, b, "different seeds must produce different tensors");
+    }
+
+    #[test]
+    fn unseeded_entry_point_delegates_to_seed_42() {
+        // Pins only that `kaiming_uniform(shape)` routes to seed 42 under the
+        // current generator. It deliberately does NOT claim bit-compatibility
+        // with the pre-`Lcg` output: that stream used increment `1` and a
+        // full-width `u64 as f64` cast, where `Lcg` uses the Weyl increment and
+        // the top 53 bits. The values genuinely changed — for seed 42 the first
+        // draw moved from -0.019956656468772427 to 0.1364606532878152. Anything
+        // needing the old weights bit-for-bit must reconstruct that formula.
+        let default = Tensor::kaiming_uniform(&[4, 4]);
+        let seeded_42 = Tensor::kaiming_uniform_seeded(&[4, 4], 42);
+        assert_eq!(default, seeded_42);
     }
 }
