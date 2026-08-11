@@ -37,6 +37,7 @@ pub fn test_main() -> ! {
     crate::net::dns::tests::register_all();
     crate::net::udp::tests::register_all();
     crate::pkg::channel::tests::register_all();
+    crate::drivers::pci::tests::register_all();
     crate::drivers::apic::tests::register_all();
     crate::drivers::block::ahci::tests::register_all();
     crate::drivers::block::virtio_blk::tests::register_all();
