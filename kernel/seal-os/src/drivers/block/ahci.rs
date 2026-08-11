@@ -21,9 +21,12 @@ use super::{register_block_device, BlockDevice, BlockError};
 // ── HBA global registers ────────────────────────────────────────────────────
 /// Size of each per-slot DMA bounce buffer, in bytes.
 ///
-/// One page. Every transfer path is bounded by this: the non-NCQ paths clamp to
-/// it and the NCQ paths refuse past it. A transfer larger than one page must be
-/// split by the caller — see the `BlockDevice` impl.
+/// One page. The non-NCQ paths (`read_sectors`/`write_sectors`) split any
+/// transfer into `BOUNCE_BYTES` chunks and loop internally, so a request
+/// larger than one page still completes in full — no caller-side splitting
+/// needed. The NCQ paths refuse anything past one page outright instead of
+/// looping (see their doc comments); currently moot since `ncq_supported` is
+/// never set true, so they are unreachable.
 const BOUNCE_BYTES: usize = 4096;
 
 const HBA_CAP: u64 = 0x00;
@@ -344,50 +347,8 @@ impl AhciPort {
         buf: &mut [u8],
     ) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
-        if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
+        if bytes == 0 || bytes > BOUNCE_BYTES * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
-        }
-
-        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
-        let actual_bytes = core::cmp::min(bytes, 4096);
-
-        let mut retries = 0;
-        loop {
-            self.stop_port();
-            self.setup_command(
-                slot,
-                false,
-                self.buf_phys[slot as usize],
-                actual_bytes as u32,
-            );
-            self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, lba, (actual_bytes / 512) as u16);
-            self.start_port();
-
-            if self.send_command(slot).is_err() {
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::Timeout);
-                }
-                self.reset_port();
-                continue;
-            }
-
-            let tfd = self.read_port(PORT_TFD);
-            if tfd & (TFD_BSY | TFD_DRQ) != 0 {
-                let err = self.read_port(PORT_SERR);
-                if err != 0 {
-                    self.write_port(PORT_SERR, err); // Clear SERR
-                }
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::IoError);
-                }
-                self.reset_port();
-                continue;
-            }
-            break;
         }
 
         // Phase E: Aether-Link Prefetch Integration
@@ -403,12 +364,59 @@ impl AhciPort {
             );
         }
 
-        core::ptr::copy_nonoverlapping(
-            (*self.buf[slot as usize]).as_ptr(),
-            buf.as_mut_ptr(),
-            actual_bytes,
-        );
-        self.free_slot(slot);
+        // The per-slot bounce buffer is one page. A request bigger than that is
+        // split into BOUNCE_BYTES chunks and looped so the caller always gets
+        // every byte it asked for — see BOUNCE_BYTES's doc comment.
+        let mut done = 0usize;
+        let mut cur_lba = lba;
+        while done < bytes {
+            let chunk = core::cmp::min(bytes - done, BOUNCE_BYTES);
+            let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
+
+            let mut retries = 0;
+            loop {
+                self.stop_port();
+                self.setup_command(slot, false, self.buf_phys[slot as usize], chunk as u32);
+                self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, cur_lba, (chunk / 512) as u16);
+                self.start_port();
+
+                if self.send_command(slot).is_err() {
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::Timeout);
+                    }
+                    self.reset_port();
+                    continue;
+                }
+
+                let tfd = self.read_port(PORT_TFD);
+                if tfd & (TFD_BSY | TFD_DRQ) != 0 {
+                    let err = self.read_port(PORT_SERR);
+                    if err != 0 {
+                        self.write_port(PORT_SERR, err); // Clear SERR
+                    }
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::IoError);
+                    }
+                    self.reset_port();
+                    continue;
+                }
+                break;
+            }
+
+            core::ptr::copy_nonoverlapping(
+                (*self.buf[slot as usize]).as_ptr(),
+                buf.as_mut_ptr().add(done),
+                chunk,
+            );
+            self.free_slot(slot);
+
+            done += chunk;
+            cur_lba += (chunk / 512) as u64;
+        }
         Ok(())
     }
 
@@ -421,63 +429,62 @@ impl AhciPort {
     /// the command list or DMA buffers.
     pub unsafe fn write_sectors(&self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
-        if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
+        if bytes == 0 || bytes > BOUNCE_BYTES * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
-        let actual_bytes = core::cmp::min(bytes, 4096);
+        // See read_sectors: split into BOUNCE_BYTES chunks and loop rather than
+        // silently writing only the first page.
+        let mut done = 0usize;
+        let mut cur_lba = lba;
+        while done < bytes {
+            let chunk = core::cmp::min(bytes - done, BOUNCE_BYTES);
+            let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
-        core::ptr::copy_nonoverlapping(
-            buf.as_ptr(),
-            (*self.buf[slot as usize]).as_mut_ptr(),
-            actual_bytes,
-        );
-
-        let mut retries = 0;
-        loop {
-            self.stop_port();
-            self.setup_command(
-                slot,
-                true,
-                self.buf_phys[slot as usize],
-                actual_bytes as u32,
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr().add(done),
+                (*self.buf[slot as usize]).as_mut_ptr(),
+                chunk,
             );
-            self.fill_fis(
-                slot,
-                ATA_CMD_WRITE_DMA_EXT,
-                lba,
-                (actual_bytes / 512) as u16,
-            );
-            self.start_port();
 
-            if self.send_command(slot).is_err() {
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::Timeout);
-                }
-                self.reset_port();
-                continue;
-            }
+            let mut retries = 0;
+            loop {
+                self.stop_port();
+                self.setup_command(slot, true, self.buf_phys[slot as usize], chunk as u32);
+                self.fill_fis(slot, ATA_CMD_WRITE_DMA_EXT, cur_lba, (chunk / 512) as u16);
+                self.start_port();
 
-            let tfd = self.read_port(PORT_TFD);
-            if tfd & (TFD_BSY | TFD_DRQ) != 0 {
-                let err = self.read_port(PORT_SERR);
-                if err != 0 {
-                    self.write_port(PORT_SERR, err); // Clear SERR
+                if self.send_command(slot).is_err() {
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::Timeout);
+                    }
+                    self.reset_port();
+                    continue;
                 }
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::IoError);
+
+                let tfd = self.read_port(PORT_TFD);
+                if tfd & (TFD_BSY | TFD_DRQ) != 0 {
+                    let err = self.read_port(PORT_SERR);
+                    if err != 0 {
+                        self.write_port(PORT_SERR, err); // Clear SERR
+                    }
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::IoError);
+                    }
+                    self.reset_port();
+                    continue;
                 }
-                self.reset_port();
-                continue;
+                break;
             }
-            break;
+            self.free_slot(slot);
+
+            done += chunk;
+            cur_lba += (chunk / 512) as u64;
         }
-        self.free_slot(slot);
         Ok(())
     }
 
@@ -886,5 +893,69 @@ pub fn test_ahci() {
         Err(e) => {
             serial_println!("[test_ahci] Sector 0 read failed: {:?}", e);
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::drivers::block::{read_block, BOOT_DEV_NUM};
+    use crate::test_assert_eq;
+    use crate::testing::TestResult;
+
+    /// `read_sectors` used to accept requests up to `BOUNCE_BYTES * 32` bytes
+    /// (the old guard: `bytes > 4096 * 32`) but then did
+    /// `core::cmp::min(bytes, 4096)` and copied only that clamped amount into
+    /// the caller's buffer before returning `Ok(())` — silently leaving
+    /// everything past the first page as whatever the caller's buffer already
+    /// held. `fs::gpt::verify_gpt` hits exactly this: it reads the 128 x
+    /// 128-byte GPT entry array, 16384 bytes (32 sectors) in one `read_block`
+    /// call, and trusts the result as partition-table data.
+    ///
+    /// There is no in-tree AHCI mock — `AhciPort`'s fields are raw pointers
+    /// into DMA memory obtained from `alloc_frame()`, so a fake instance can't
+    /// be built without real (or QEMU-virtual) hardware. This test exercises
+    /// the real boot device instead: it reads 16 KiB (4 x `BOUNCE_BYTES`) from
+    /// LBA 0 in one call and compares it against the same range read back as
+    /// four separate one-page reads. Under the old clamp-and-return-Ok bug the
+    /// 16 KiB read left bytes 4096..16384 as the `0xAA` sentinel the buffer
+    /// was pre-filled with, so it disagreed with the piecewise reads (which
+    /// each fit in one page and were never truncated) unless the disk
+    /// genuinely contains 12 KiB of `0xAA` at that offset. Read-only, so this
+    /// is safe to run against the boot disk.
+    ///
+    /// STATIC ONLY: there is no QEMU in this environment, so this test is
+    /// type-checked (`cargo +nightly clippy --features test-mode`) but never
+    /// executed here. It runs for real only under `kernel-tests.yml`'s QEMU,
+    /// where `-machine q35`'s default `-drive` (no explicit `if=`) is exposed
+    /// through the ICH9 AHCI controller, and `drivers/block/ahci.rs::init` is
+    /// the only code in the kernel that registers `BOOT_DEV_NUM` (0x800).
+    fn test_large_read_matches_chunked_small_reads() -> TestResult {
+        const CHUNK: usize = BOUNCE_BYTES;
+        const CHUNKS: usize = 4; // 16 KiB, matching gpt.rs's entry-array read
+
+        let mut big = alloc::vec![0xAAu8; CHUNK * CHUNKS];
+        if read_block(BOOT_DEV_NUM, 0, &mut big).is_err() {
+            return TestResult::Fail("16 KiB read from boot device failed");
+        }
+
+        let mut stitched = alloc::vec![0u8; CHUNK * CHUNKS];
+        for i in 0..CHUNKS {
+            let lba = (i * CHUNK / 512) as u64;
+            let piece = &mut stitched[i * CHUNK..(i + 1) * CHUNK];
+            if read_block(BOOT_DEV_NUM, lba, piece).is_err() {
+                return TestResult::Fail("one-page read from boot device failed");
+            }
+        }
+
+        test_assert_eq!(big, stitched);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ahci::large_read_matches_chunked_small_reads",
+            test_large_read_matches_chunked_small_reads,
+        );
     }
 }
