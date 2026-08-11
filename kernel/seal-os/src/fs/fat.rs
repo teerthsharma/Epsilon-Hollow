@@ -249,6 +249,29 @@ impl FatFs {
         }
     }
 
+    /// Follows one link of a cluster chain while guarding against corruption.
+    ///
+    /// A well-formed chain references each of the filesystem's data clusters
+    /// at most once, so `self.clusters` is a hard upper bound on legitimate
+    /// chain length — revisiting a cluster (most commonly a cycle, e.g.
+    /// cluster 5 -> 6 -> 5 -> ...) can only happen on a corrupt on-disk FAT.
+    /// Every chain-walking loop in this file shares this one helper instead
+    /// of calling `next_cluster` directly, so the bound applies everywhere
+    /// uniformly. `steps` is threaded through by the caller so a walk that
+    /// spans multiple loops (e.g. a seek loop followed by a read loop over
+    /// the same chain) shares a single budget rather than resetting it.
+    fn next_cluster_bounded(
+        &self,
+        cluster: u32,
+        steps: &mut u32,
+    ) -> Result<Option<u32>, VfsError> {
+        *steps += 1;
+        if *steps > self.clusters {
+            return Err(VfsError::IoError);
+        }
+        self.next_cluster(cluster)
+    }
+
     fn read_file(&self, cluster: u32, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
         if buf.is_empty() || cluster < 2 {
             return Ok(0);
@@ -257,8 +280,9 @@ impl FatFs {
 
         let mut cluster = cluster;
         let mut skipped = 0u64;
+        let mut steps = 0u32;
         while skipped + cluster_size <= offset {
-            match self.next_cluster(cluster)? {
+            match self.next_cluster_bounded(cluster, &mut steps)? {
                 Some(next) => {
                     cluster = next;
                     skipped += cluster_size;
@@ -287,7 +311,7 @@ impl FatFs {
             sector_offset += to_copy;
 
             if sector_offset >= cluster_size as usize {
-                match self.next_cluster(cluster)? {
+                match self.next_cluster_bounded(cluster, &mut steps)? {
                     Some(next) => {
                         cluster = next;
                         sector_offset = 0;
@@ -478,8 +502,9 @@ impl FatFs {
 
     fn free_cluster_chain(&mut self, cluster: u32) -> Result<(), VfsError> {
         let mut c = cluster;
+        let mut steps = 0u32;
         while c >= 2 {
-            let next = self.next_cluster(c)?;
+            let next = self.next_cluster_bounded(c, &mut steps)?;
             self.write_fat_entry(c, 0)?;
             c = next.unwrap_or(0);
         }
@@ -498,8 +523,9 @@ impl FatFs {
         let cluster_size = (self.sectors_per_cluster as u64) * (self.bytes_per_sector as u64);
         let mut cluster = start_cluster;
         let mut skipped = 0u64;
+        let mut steps = 0u32;
         while skipped + cluster_size <= offset {
-            match self.next_cluster(cluster)? {
+            match self.next_cluster_bounded(cluster, &mut steps)? {
                 Some(next) => {
                     cluster = next;
                     skipped += cluster_size;
@@ -534,7 +560,7 @@ impl FatFs {
             sector_offset += to_copy;
 
             if sector_offset >= cluster_size as usize {
-                match self.next_cluster(cluster)? {
+                match self.next_cluster_bounded(cluster, &mut steps)? {
                     Some(next) => cluster = next,
                     None => {
                         let new_c = self.allocate_cluster()?;
@@ -564,6 +590,7 @@ impl FatFs {
             }
         } else {
             let mut c = cluster;
+            let mut steps = 0u32;
             loop {
                 let sector = self.cluster_to_sector(c);
                 for s in 0..self.sectors_per_cluster {
@@ -572,7 +599,7 @@ impl FatFs {
                         .map_err(|_| VfsError::IoError)?;
                     data.extend_from_slice(&buf);
                 }
-                match self.next_cluster(c)? {
+                match self.next_cluster_bounded(c, &mut steps)? {
                     Some(next) => c = next,
                     None => break,
                 }
@@ -595,6 +622,7 @@ impl FatFs {
             }
         } else {
             let mut c = cluster;
+            let mut steps = 0u32;
             let _cluster_size =
                 (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
             let mut offset = 0;
@@ -612,7 +640,7 @@ impl FatFs {
                     offset += self.bytes_per_sector as usize;
                 }
                 if offset < data.len() {
-                    match self.next_cluster(c)? {
+                    match self.next_cluster_bounded(c, &mut steps)? {
                         Some(next) => c = next,
                         None => {
                             let new_c = self.allocate_cluster()?;
@@ -710,7 +738,8 @@ impl FatFs {
             }
             let new_c = self.allocate_cluster()?;
             let mut tail = dir_cluster;
-            while let Some(next) = self.next_cluster(tail)? {
+            let mut steps = 0u32;
+            while let Some(next) = self.next_cluster_bounded(tail, &mut steps)? {
                 tail = next;
             }
             self.write_fat_entry(tail, new_c)?;
@@ -784,6 +813,7 @@ impl FatFs {
     fn read_dir_cluster(&self, cluster: u32) -> Result<Vec<FatDirEntry>, VfsError> {
         let mut data = Vec::new();
         let mut cluster = cluster;
+        let mut steps = 0u32;
         loop {
             let sector = self.cluster_to_sector(cluster);
             for s in 0..self.sectors_per_cluster {
@@ -792,7 +822,7 @@ impl FatFs {
                     .map_err(|_| VfsError::IoError)?;
                 data.extend_from_slice(&buf);
             }
-            match self.next_cluster(cluster)? {
+            match self.next_cluster_bounded(cluster, &mut steps)? {
                 Some(next) => cluster = next,
                 None => break,
             }
@@ -1222,3 +1252,138 @@ impl FileSystem for FatFs {
 //     if fat.mount().is_ok() {
 //         vfs.mount("/fat", Box::new(fat))?;
 //     }
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::drivers::block::{register_block_device, BlockDevice, BlockError};
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+    use alloc::boxed::Box;
+    use spin::Mutex;
+
+    /// Minimal in-memory block device. The chain-walk tests only care about
+    /// FAT-entry bytes, not a fully mountable image, so this stands in for
+    /// AHCI without building one.
+    struct TestDisk {
+        data: Mutex<Vec<u8>>,
+        sector_size: u64,
+    }
+
+    impl TestDisk {
+        fn new(sectors: usize, sector_size: usize) -> Self {
+            Self {
+                data: Mutex::new(alloc::vec![0u8; sectors * sector_size]),
+                sector_size: sector_size as u64,
+            }
+        }
+
+        /// Pokes a raw FAT16 entry directly into the backing bytes, i.e. sets
+        /// up the on-disk state a corrupt (or legitimate) chain would leave.
+        fn set_fat16_entry(&self, fat_start_lba: u64, cluster: u32, value: u16) {
+            let offset =
+                fat_start_lba as usize * self.sector_size as usize + cluster as usize * 2;
+            let mut data = self.data.lock();
+            data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    impl BlockDevice for TestDisk {
+        fn sector_size(&self) -> u64 {
+            self.sector_size
+        }
+        fn num_sectors(&self) -> u64 {
+            self.data.lock().len() as u64 / self.sector_size
+        }
+        fn read_sectors(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            let data = self.data.lock();
+            let start = (lba * self.sector_size) as usize;
+            let end = start + buf.len();
+            if end > data.len() {
+                return Err(BlockError::InvalidLba);
+            }
+            buf.copy_from_slice(&data[start..end]);
+            Ok(())
+        }
+        fn write_sectors(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+            let mut data = self.data.lock();
+            let start = (lba * self.sector_size) as usize;
+            let end = start + buf.len();
+            if end > data.len() {
+                return Err(BlockError::InvalidLba);
+            }
+            data[start..end].copy_from_slice(buf);
+            Ok(())
+        }
+        fn flush(&self) -> Result<(), BlockError> {
+            Ok(())
+        }
+    }
+
+    /// Builds a `FatFs` with hand-set FAT16 geometry over a fresh,
+    /// uniquely-numbered `TestDisk`, bypassing `mount()` (which needs a full
+    /// on-disk BPB) since these tests only exercise the cluster-chain walk.
+    /// Returns the disk too, so the caller can poke raw FAT entries.
+    fn make_fs(dev_num: u32) -> (FatFs, &'static TestDisk) {
+        let disk: &'static TestDisk = Box::leak(Box::new(TestDisk::new(16, 512)));
+        register_block_device(dev_num, disk);
+        let mut fs = FatFs::new(dev_num);
+        fs.fat_type = FatType::Fat16;
+        fs.fat_start = 1;
+        fs.bytes_per_sector = 512;
+        fs.sectors_per_cluster = 1;
+        fs.data_start = 2;
+        // Small on purpose: the cap under test is derived directly from this.
+        fs.clusters = 8;
+        (fs, disk)
+    }
+
+    fn test_cyclic_chain_fails_closed_instead_of_hanging() -> TestResult {
+        let (fs, disk) = make_fs(0xFA70);
+
+        // The exact defect from the bug report: cluster 5 points at 6 and
+        // cluster 6 points back at 5. `read_dir_raw` is a pure read walk (it
+        // never rewrites the FAT as it goes), so nothing about this loop
+        // self-heals — before the fix this alternates 5, 6, 5, 6... forever.
+        disk.set_fat16_entry(fs.fat_start, 5, 6);
+        disk.set_fat16_entry(fs.fat_start, 6, 5);
+
+        let result = fs.read_dir_raw(5);
+        test_assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "cyclic FAT chain must fail closed, not loop forever or truncate silently"
+        );
+        TestResult::Pass
+    }
+
+    fn test_valid_chain_within_cap_still_reads() -> TestResult {
+        let (fs, disk) = make_fs(0xFA71);
+
+        // 2 -> 3 -> 4 -> EOC: a legitimate 3-cluster chain, well under the
+        // 8-cluster cap. The bound must not reject real, non-corrupt chains.
+        disk.set_fat16_entry(fs.fat_start, 2, 3);
+        disk.set_fat16_entry(fs.fat_start, 3, 4);
+        disk.set_fat16_entry(fs.fat_start, 4, 0xFFFF);
+
+        let result = fs.read_dir_raw(2);
+        let data = match result {
+            Ok(d) => d,
+            Err(_) => return TestResult::Fail("valid chain within cap must not error"),
+        };
+        test_assert_eq!(data.len(), 3 * 512);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "fat::cyclic_chain_fails_closed_instead_of_hanging",
+            test_cyclic_chain_fails_closed_instead_of_hanging,
+        );
+        crate::testing::register_test(
+            "fat::valid_chain_within_cap_still_reads",
+            test_valid_chain_within_cap_still_reads,
+        );
+    }
+}
