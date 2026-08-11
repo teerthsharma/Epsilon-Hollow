@@ -1153,7 +1153,7 @@ impl FileSystem for ManifoldFS {
         Ok(len)
     }
 
-    fn write(&mut self, handle: VfsHandle, buf: &[u8], _offset: u64) -> Result<usize, VfsError> {
+    fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
         let old_inode = self
             .inodes
             .get(handle.inode)
@@ -1162,10 +1162,20 @@ impl FileSystem for ManifoldFS {
         if !matches!(old_inode.kind, InodeKind::File) {
             return Err(VfsError::InvalidOperation);
         }
+        // Write `buf` at `offset`, growing the file (zero-filling any gap) if
+        // `offset + buf.len()` exceeds the current length, exactly like
+        // `Ext2Fs::write` — the file is never truncated by a write, only
+        // extended. This keeps the two backends' offset semantics in sync;
+        // `read()` above already honors `offset`, so `write()` must too.
+        let off = offset as usize;
+        let end = off.saturating_add(buf.len());
         if let Some(inode) = self.inodes.get_mut(handle.inode) {
-            inode.payload = encoder::encode_data(buf);
-            inode.data = Vec::from(buf);
-            inode.metadata.original_size = buf.len() as u64;
+            if end > inode.data.len() {
+                inode.data.resize(end, 0);
+            }
+            inode.data[off..end].copy_from_slice(buf);
+            inode.payload = encoder::encode_data(&inode.data);
+            inode.metadata.original_size = inode.data.len() as u64;
             inode.metadata.modified_ms = now_ms();
         }
         let updated = self
@@ -1173,7 +1183,7 @@ impl FileSystem for ManifoldFS {
             .get(handle.inode)
             .cloned()
             .ok_or(VfsError::NotFound)?;
-        if let Err(_err) = self.store.write_inode(&updated, buf) {
+        if let Err(_err) = self.store.write_inode(&updated, &updated.data) {
             if self.store.is_mounted() {
                 if let Some(inode) = self.inodes.get_mut(handle.inode) {
                     *inode = old_inode;
@@ -1181,7 +1191,7 @@ impl FileSystem for ManifoldFS {
                 return Err(VfsError::IoError);
             }
         }
-        self.persist_raw_to_ext2(handle.inode, buf);
+        self.persist_raw_to_ext2(handle.inode, &updated.data);
         Ok(buf.len())
     }
 
@@ -1671,6 +1681,52 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `write` must honor `offset` (not silently truncate the file), the
+    /// same as `read` already does — see `FileSystem::write` on `ManifoldFS`.
+    fn test_write_honors_offset() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = fs.root_id();
+        let id = fs.store_text("f.txt", "0123456789", root).unwrap();
+        let handle = VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        };
+
+        // A write at offset 0 shorter than the existing file must not
+        // truncate the tail.
+        fs.write(handle, b"AB", 0).unwrap();
+        let mut buf = [0u8; 10];
+        let n = fs.read(handle, &mut buf, 0).unwrap();
+        test_assert_eq!(n, 10);
+        test_assert_eq!(&buf[..], b"AB23456789");
+
+        // Two sequential appends both survive.
+        let size1 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"CD", size1).unwrap();
+        let size2 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"EF", size2).unwrap();
+        let mut buf2 = [0u8; 14];
+        let n2 = fs.read(handle, &mut buf2, 0).unwrap();
+        test_assert_eq!(n2, 14);
+        test_assert_eq!(&buf2[..], b"AB23456789CDEF");
+
+        // A write past the current end zero-fills the gap, and a read back
+        // at that offset returns what was written.
+        let size3 = fs.inode(id).unwrap().data.len() as u64;
+        fs.write(handle, b"Z", size3 + 3).unwrap();
+        let data = fs.inode(id).unwrap().data.clone();
+        test_assert_eq!(data.len(), (size3 + 4) as usize);
+        test_assert_eq!(data[size3 as usize], 0);
+        test_assert_eq!(data[size3 as usize + 1], 0);
+        test_assert_eq!(data[size3 as usize + 2], 0);
+        let mut tail = [0u8; 1];
+        let nt = fs.read(handle, &mut tail, size3 + 3).unwrap();
+        test_assert_eq!(nt, 1);
+        test_assert_eq!(tail[0], b'Z');
+
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
         crate::testing::register_test(
@@ -1696,6 +1752,10 @@ pub mod tests {
         );
         crate::testing::register_test("filesystem::duplicate", test_duplicate);
         crate::testing::register_test("filesystem::teleport_errors", test_teleport_errors);
+        crate::testing::register_test(
+            "filesystem::write_honors_offset",
+            test_write_honors_offset,
+        );
     }
 }
 
