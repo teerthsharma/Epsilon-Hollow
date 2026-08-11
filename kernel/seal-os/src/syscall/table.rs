@@ -141,6 +141,7 @@ pub mod tests {
                     },
                     path: String::from("/tmp/defect_b_probe"),
                     offset: starting_offset,
+                    owner: crate::process::scheduler::current_task_id(),
                 },
             );
         }
@@ -182,6 +183,120 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Insert an entry owned by some task other than the caller and hand back
+    /// its fd number. Models the exact reachable situation: `NEXT_FD` is one
+    /// global monotonic counter, so every live fd is a small integer any task
+    /// can name from `rdi`.
+    fn plant_foreign_fd(fd: u64, offset: usize) {
+        let foreign = crate::process::scheduler::current_task_id().wrapping_add(1);
+        FILE_TABLE.lock().insert(
+            fd,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 0,
+                },
+                path: String::from("/etc/shadow"),
+                offset,
+                owner: foreign,
+            },
+        );
+    }
+
+    /// RED: `FILE_TABLE` is one map for the whole system and every arm turned
+    /// an fd number into an entry with a bare `table.get(&fd)`, consulting
+    /// nothing about the caller — so guessing a small integer handed a task
+    /// read, write, seek, ioctl and close on another task's open file. Every
+    /// one of those paths must now refuse, and refusing must leave the
+    /// victim's entry open with its cursor where it was.
+    fn test_fd_lookup_denies_another_tasks_descriptor() -> TestResult {
+        let fd = 90_211u64;
+        let offset = 7usize;
+        plant_foreign_fd(fd, offset);
+
+        test_assert_eq!(dispatch(SYS_LSEEK, fd, 4096, 0).code, -9); // EBADF
+        test_assert_eq!(crate::syscall::pipe::dispatch_dup(fd).code, -9);
+        test_assert_eq!(crate::syscall::ioctl::dispatch_ioctl(fd, 0, 0).code, -9);
+        test_assert_eq!(dispatch(SYS_CLOSE, fd, 0, 0).code, -9);
+
+        let survived = FILE_TABLE.lock().get(&fd).map(|e| e.offset);
+        test_assert_eq!(survived, Some(offset));
+
+        FILE_TABLE.lock().remove(&fd);
+        TestResult::Pass
+    }
+
+    /// RED: `dispatch_dup2` inserted at a caller-supplied fd number, replacing
+    /// whatever sat there. Aiming it at another task's fd closed that task's
+    /// file and left the attacker's handle under the victim's number.
+    fn test_dup2_refuses_to_clobber_another_tasks_descriptor() -> TestResult {
+        let mine = 90_212u64;
+        let theirs = 90_213u64;
+        let free = 90_214u64;
+        FILE_TABLE.lock().insert(
+            mine,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 1,
+                },
+                path: String::from("/tmp/mine"),
+                offset: 0,
+                owner: crate::process::scheduler::current_task_id(),
+            },
+        );
+        plant_foreign_fd(theirs, 7);
+
+        test_assert_eq!(
+            crate::syscall::pipe::dispatch_dup2(mine, theirs).code,
+            -9 // EBADF
+        );
+        let victim = FILE_TABLE.lock().get(&theirs).map(|e| e.handle.inode);
+        test_assert_eq!(victim, Some(0u64)); // still the victim's, not inode 1
+
+        // Positive control: an unoccupied target still works.
+        test_assert_eq!(
+            crate::syscall::pipe::dispatch_dup2(mine, free).code,
+            free as i64
+        );
+        let copied = FILE_TABLE.lock().get(&free).map(|e| e.handle.inode);
+        test_assert_eq!(copied, Some(1u64));
+
+        let mut table = FILE_TABLE.lock();
+        table.remove(&mine);
+        table.remove(&theirs);
+        table.remove(&free);
+        TestResult::Pass
+    }
+
+    /// The caller's own descriptor stays fully usable — the check denies other
+    /// tasks, not everyone. `test_main()` runs with no task current, so
+    /// `current_task_id()` is 0 for both the insert and the lookups here.
+    fn test_fd_lookup_permits_own_descriptor() -> TestResult {
+        let fd = 90_215u64;
+        FILE_TABLE.lock().insert(
+            fd,
+            FdEntry {
+                handle: crate::fs::vfs::VfsHandle {
+                    fs_idx: 0,
+                    inode: 2,
+                },
+                path: String::from("/tmp/own"),
+                offset: 0,
+                owner: crate::process::scheduler::current_task_id(),
+            },
+        );
+
+        test_assert_eq!(dispatch(SYS_LSEEK, fd, 4096, 0).code, 4096);
+        let duped = crate::syscall::pipe::dispatch_dup(fd);
+        test_assert!(duped.code >= 3, "dup of an owned fd must yield an fd");
+        test_assert_eq!(dispatch(SYS_CLOSE, fd, 0, 0).code, 0);
+        test_assert!(FILE_TABLE.lock().get(&fd).is_none());
+
+        FILE_TABLE.lock().remove(&(duped.code as u64));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("syscall::setuid_changes_uid", test_setuid_changes_uid);
         crate::testing::register_test("syscall::setgid_changes_gid", test_setgid_changes_gid);
@@ -204,6 +319,18 @@ pub mod tests {
         crate::testing::register_test(
             "syscall::empty_path_guard_shape",
             test_empty_path_guard_shape,
+        );
+        crate::testing::register_test(
+            "syscall::fd_lookup_denies_another_tasks_descriptor",
+            test_fd_lookup_denies_another_tasks_descriptor,
+        );
+        crate::testing::register_test(
+            "syscall::dup2_refuses_to_clobber_another_tasks_descriptor",
+            test_dup2_refuses_to_clobber_another_tasks_descriptor,
+        );
+        crate::testing::register_test(
+            "syscall::fd_lookup_permits_own_descriptor",
+            test_fd_lookup_permits_own_descriptor,
         );
     }
 }
@@ -289,10 +416,40 @@ pub(crate) struct FdEntry {
     #[allow(dead_code)] // REASON: path stored for future syscall debugging and fcntl(F_GETPATH)
     pub(crate) path: String,
     pub(crate) offset: usize,
+    /// Task id that opened this descriptor. Only that task may name it.
+    pub(crate) owner: u64,
 }
 
 pub(crate) static FILE_TABLE: Mutex<BTreeMap<u64, FdEntry>> = Mutex::new(BTreeMap::new());
 pub(crate) static NEXT_FD: AtomicU64 = AtomicU64::new(3); // 0=stdin, 1=stdout, 2=stderr
+
+/// Whether the task making the current syscall may name `entry`.
+///
+/// `FILE_TABLE` is one map for the whole system and `NEXT_FD` is one global
+/// monotonic counter, so fd numbers are unique system-wide — but uniqueness is
+/// not ownership. They are small sequential integers, so without this check any
+/// task can read, write, seek, ioctl or close another task's open file by
+/// guessing one. Every lookup routes through `fd_lookup`/`fd_lookup_mut` so the
+/// decision is made in exactly one place.
+///
+/// Fails closed: `current_task_id()` reports 0 when no task is current, and
+/// real ids start at 1 (`ManifoldScheduler::new()` sets `next_id: 1`), so a
+/// task can never match an entry opened in kernel context, and an entry whose
+/// owner has exited is named by nothing.
+fn fd_owned_by_caller(entry: &FdEntry) -> bool {
+    entry.owner == crate::process::scheduler::current_task_id()
+}
+
+/// Resolve `fd` to the calling task's entry, or `None` if it names nothing the
+/// caller owns. The only sanctioned way to turn an fd number into an entry.
+pub(crate) fn fd_lookup(table: &BTreeMap<u64, FdEntry>, fd: u64) -> Option<&FdEntry> {
+    table.get(&fd).filter(|e| fd_owned_by_caller(e))
+}
+
+/// Mutable counterpart of [`fd_lookup`], for the arms that advance a cursor.
+pub(crate) fn fd_lookup_mut(table: &mut BTreeMap<u64, FdEntry>, fd: u64) -> Option<&mut FdEntry> {
+    table.get_mut(&fd).filter(|e| fd_owned_by_caller(e))
+}
 
 /// Stdin ring buffer for keyboard input.
 const STDIN_BUF_SIZE: usize = 256;
@@ -485,7 +642,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             // 4096 bytes per call, same cap SYS_READ's file-fd branch uses;
             // a caller writing more just loops, same as a short read/write.
             let mut table = FILE_TABLE.lock();
-            if let Some(entry) = table.get_mut(&fd) {
+            if let Some(entry) = fd_lookup_mut(&mut table, fd) {
                 let mut buf = alloc::vec![0u8; len.min(4096)];
                 unsafe {
                     if crate::security::smap_smep::copy_from_user(&mut buf, buf_ptr).is_err() {
@@ -521,7 +678,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 return SyscallResult::ok(read_len as i64);
             }
             let table = FILE_TABLE.lock();
-            if let Some(entry) = table.get(&fd) {
+            if let Some(entry) = fd_lookup(&table, fd) {
                 let handle = entry.handle;
                 drop(table);
                 let mut buf = alloc::vec![0u8; len.min(4096)];
@@ -573,6 +730,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                             handle,
                             path: path.clone(),
                             offset: 0,
+                            owner: task_id,
                         },
                     );
                     SyscallResult::ok(fd as i64)
@@ -589,6 +747,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                                     handle,
                                     path: path.clone(),
                                     offset: 0,
+                                    owner: task_id,
                                 },
                             );
                             SyscallResult::ok(fd as i64)
@@ -603,7 +762,8 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_CLOSE => {
             let fd = arg0;
             let mut table = FILE_TABLE.lock();
-            if table.remove(&fd).is_some() {
+            if fd_lookup(&table, fd).is_some() {
+                table.remove(&fd);
                 SyscallResult::ok(0)
             } else {
                 SyscallResult::err(9) // EBADF
@@ -1196,7 +1356,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             let offset = arg1 as i64;
             let whence = arg2;
             let mut table = FILE_TABLE.lock();
-            if let Some(entry) = table.get_mut(&fd) {
+            if let Some(entry) = fd_lookup_mut(&mut table, fd) {
                 let new_offset = match whence {
                     0 => offset,                       // SEEK_SET
                     1 => entry.offset as i64 + offset, // SEEK_CUR
