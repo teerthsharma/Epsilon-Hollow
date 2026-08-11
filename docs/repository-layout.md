@@ -85,10 +85,10 @@ language; use this root site when the question is about the complete system.
 | `kernel/aether/aether-verified/lean` | Lean formalization and theorem modules; formal strength varies by theorem |
 | `docs/` | Root system, build, VM, theorem, security, design, and research documentation |
 | `docs/superpowers/plans` | Historical/active implementation plans, not runtime sources |
-| `tests/` | Host Python tests and GPU tests; do not confuse them with kernel integration tests |
+| `tests/` | Host Python tests and GPU tests, quarantined per `docs/HOST_LANGUAGE_QUARANTINE.md`; do not confuse them with kernel integration tests |
 | `experiments/` | Experimental material outside the stable kernel contract |
 | `infrastructure/` | Host orchestration, training, deployment, and tooling material |
-| `apps/` | The LAAMBA Governor application and its own Rust/TypeScript/Python surfaces |
+| `apps/` | The LAAMBA Governor application and its own Rust/TypeScript surfaces, plus host Python quarantined per `docs/HOST_LANGUAGE_QUARANTINE.md` |
 | `future/apeiron-runtime` | Future runtime/application tree excluded from the root workspace |
 
 ## Where to make a change

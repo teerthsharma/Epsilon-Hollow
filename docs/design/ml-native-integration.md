@@ -7,9 +7,9 @@ tests; everything else is a plan.
 ## The constraint that shapes everything
 
 PyTorch, TensorFlow and Triton cannot execute inside Seal OS. They require a
-libc, a CPython interpreter, and a vendor userspace driver stack. That is not a
-scoping preference, it is a dependency closure measured in tens of millions of
-lines, and no amount of kernel work changes it.
+libc, a host scripting interpreter, and a vendor userspace driver stack. That is
+not a scoping preference, it is a dependency closure measured in tens of millions
+of lines, and no amount of kernel work changes it.
 
 So "native integration" is defined here as: **Seal OS executes the model, and
 the frameworks become exporters and clients.** The kernel already owns the parts

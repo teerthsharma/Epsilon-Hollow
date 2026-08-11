@@ -728,7 +728,7 @@ To Linux, to Windows, to macOS, to Redox, to every kernel that has ever booted o
 
 A training run is not a noun. It is a **trajectory**. It has a direction, a curvature, a place it is going, and — this is the part every OS throws away — a *shape*. Two runs with identical RSS, identical page-fault counts, identical `%CPU`, identical wall time, and identical I/O profiles can be in completely different places: one is converging beautifully and one has been memorising its training set for forty minutes and is now actively getting worse. The kernel sees the same process. Two identical rows in `top`. One of them is on fire.
 
-And the kernel *could* know. That is the maddening part. The information required to distinguish those two runs is two floating-point numbers per step. Not the weights. Not the activations. Two `f64`s. Every framework on earth already computes them, prints them to a terminal nobody is watching, and throws them away. The kernel — the one component that outlives the run, owns the memory, owns the I/O queue, owns the scheduler, and is still standing when your Python process OOMs — is never told.
+And the kernel *could* know. That is the maddening part. The information required to distinguish those two runs is two floating-point numbers per step. Not the weights. Not the activations. Two `f64`s. Every framework on earth already computes them, prints them to a terminal nobody is watching, and throws them away. The kernel — the one component that outlives the run, owns the memory, owns the I/O queue, owns the scheduler, and is still standing when your training process OOMs — is never told.
 
 ### An analogy I am too pleased with
 
@@ -750,7 +750,7 @@ Here is what userspace **cannot** do, in order of how much I care:
 
 Correct. I cannot see the model. I have said this so many times in this README that I have considered making it a `<marquee>`.
 
-A `no_std` kernel cannot walk a userspace autograd graph. It cannot read your weight tensors, it cannot hook your backward pass, and any kernel that claims it can is either lying or has quietly redefined "kernel" to include a 400 MB Python runtime it links against. `stratum` observes **two scalars per step**, `(train_loss, val_loss)`, pushed across the Seal ABI by the training process itself.
+A `no_std` kernel cannot walk a userspace autograd graph. It cannot read your weight tensors, it cannot hook your backward pass, and any kernel that claims it can is either lying or has quietly redefined "kernel" to include a 400 MB host interpreter runtime it links against. `stratum` observes **two scalars per step**, `(train_loss, val_loss)`, pushed across the Seal ABI by the training process itself.
 
 That is a genuine limitation and it is also, annoyingly for the objection, *enough*. The claim is not "the kernel understands your model." The claim is:
 
@@ -1229,7 +1229,7 @@ Everything above is the pitch. This is the invoice. Nothing here is buried in a 
 
 **1. The kernel observes two scalars per step. That is the entire input.**
 
-`(train_loss, val_loss)`, `f64`, pushed by the training process across syscall 121. Not weights. Not activations. Not gradients. Not attention entropy, not per-layer norms, not anything else in the long list of things that would be genuinely useful. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to has either linked a Python runtime or is describing a research paper. Every signal `stratum` reports derives from those two numbers plus what the kernel already owns for that task — heap break, I/O prefetch state. I could have made the claim bigger. I preferred to make it true, and I want credit for how boring that decision was.
+`(train_loss, val_loss)`, `f64`, pushed by the training process across syscall 121. Not weights. Not activations. Not gradients. Not attention entropy, not per-layer norms, not anything else in the long list of things that would be genuinely useful. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to has either linked a host interpreter runtime or is describing a research paper. Every signal `stratum` reports derives from those two numbers plus what the kernel already owns for that task — heap break, I/O prefetch state. I could have made the claim bigger. I preferred to make it true, and I want credit for how boring that decision was.
 
 **2. `loop_score > 0` does NOT imply a fold.**
 

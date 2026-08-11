@@ -23,7 +23,7 @@ fictional executable.
 | `aether-lang` | Root stable workspace | Lexer, parser, AST, interpreter, bytecode/VM and callback contracts | Crate tests and the Seal OS Aether runtime probe |
 | `epsilon` / `epsilon-os` | Root stable workspace | Context-transfer research API and host/user-space runtime experiments | Crate APIs and tests; not a kernel capability by itself |
 | `aether-link` | Root stable workspace | I/O and prefetch research crate | Benchmarks and crate tests; no blanket hardware claim |
-| `kernel/epsilon/epsilon_core` | Host Python compatibility area | Legacy/reference shims during migration to Rust/Aether | Explicitly non-authoritative; see its README |
+| `kernel/epsilon/epsilon_core` | Host Python compatibility area, quarantined per `docs/HOST_LANGUAGE_QUARANTINE.md` | Legacy/reference shims during migration to Rust/Aether | Explicitly non-authoritative; see its README |
 | `future/` | Excluded research tree | Future APEIRON/runtime tracks | Roadmap unless a specific artifact is separately verified |
 
 ## Layered model
