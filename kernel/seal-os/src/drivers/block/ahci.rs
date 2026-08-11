@@ -355,6 +355,20 @@ impl AhciPort {
     // ------------------------------------------------------------------ public
     /// Read `count` sectors starting at `lba` into `buf`.
     ///
+    /// This path issues no prefetch and asks for no prediction. It used to
+    /// build a `fs::prefetch::PrefetchEngine` per call, record `lba` into it and
+    /// ask `should_prefetch(&[lba])`, which could not answer true: that
+    /// predicate needs two LBAs on either branch, the slice carried one, and an
+    /// engine constructed inside this function held only the LBA recorded one
+    /// line above. The decision was false on every call, so the
+    /// `[AHCI] Aether-Link suggests prefetching` line it guarded never printed
+    /// on any boot. Two things are missing, not one: a per-port engine that
+    /// carries history across requests, so the question is answerable, and
+    /// somewhere to queue the speculative read, so a true answer means
+    /// something — the deleted branch said as much itself, in a comment
+    /// deferring the queue to "a full implementation". Reinstating the call
+    /// without the queue would only put a serial write on the block read path.
+    ///
     /// # Safety
     /// `buf` must be large enough to hold `count * 512` bytes. `lba` must be
     /// within the valid range reported by the device. Concurrent access to the
@@ -369,19 +383,6 @@ impl AhciPort {
         let bytes = count as usize * 512;
         if bytes == 0 || bytes > BOUNCE_BYTES * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
-        }
-
-        // Phase E: Aether-Link Prefetch Integration
-        // We feed the LBA to the prefetch engine. In a real scenario, this would be a global/per-drive engine.
-        // For demonstration of Phase E completion, we instantiate and call it here.
-        let mut prefetch_engine = crate::fs::prefetch::PrefetchEngine::new_gaming();
-        prefetch_engine.record_lba(lba);
-        if prefetch_engine.should_prefetch(&[lba]) {
-            // In a full implementation, we would queue an async read for lba + count here.
-            crate::serial_println!(
-                "[AHCI] Aether-Link suggests prefetching LBA {}",
-                lba + count as u64
-            );
         }
 
         // The per-slot bounce buffer is one page. A request bigger than that is
@@ -980,5 +981,10 @@ pub mod tests {
             "ahci::large_read_matches_chunked_small_reads",
             test_large_read_matches_chunked_small_reads,
         );
+        // Chains prefetch::tests. `fs::prefetch` has no entry of its own in
+        // testing/runner.rs and this driver was its only caller in the tree —
+        // see the note on `read_sectors` — so its history invariant is
+        // registered from here, the same way mass_storage chains xhci.
+        crate::fs::prefetch::tests::register_all();
     }
 }
