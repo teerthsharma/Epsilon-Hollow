@@ -125,6 +125,26 @@ pub struct AhciHba {
 unsafe impl Send for AhciHba {}
 unsafe impl Sync for AhciHba {}
 
+/// The `(offset into the caller's buffer, LBA, chunk length)` steps a
+/// `bytes`-long transfer starting at `lba` is split into.
+///
+/// `bytes` is always a whole number of 512-byte sectors, since both callers
+/// derive it as `count * 512`. Every byte of the request appears in exactly one
+/// step and the steps are contiguous in both buffer offset and LBA, so a caller
+/// that runs the iterator to the end has moved all of `bytes` — the property
+/// `read_sectors`/`write_sectors` used to break by clamping the transfer to one
+/// page and still returning `Ok(())`.
+fn transfer_chunks(lba: u64, bytes: usize) -> impl Iterator<Item = (usize, u64, usize)> {
+    (0..bytes.div_ceil(BOUNCE_BYTES)).map(move |i| {
+        let done = i * BOUNCE_BYTES;
+        (
+            done,
+            lba + (done / 512) as u64,
+            core::cmp::min(bytes - done, BOUNCE_BYTES),
+        )
+    })
+}
+
 impl AhciPort {
     // ------------------------------------------------------------------ MMIO
     unsafe fn read_port(&self, offset: u64) -> u32 {
@@ -367,10 +387,7 @@ impl AhciPort {
         // The per-slot bounce buffer is one page. A request bigger than that is
         // split into BOUNCE_BYTES chunks and looped so the caller always gets
         // every byte it asked for — see BOUNCE_BYTES's doc comment.
-        let mut done = 0usize;
-        let mut cur_lba = lba;
-        while done < bytes {
-            let chunk = core::cmp::min(bytes - done, BOUNCE_BYTES);
+        for (done, cur_lba, chunk) in transfer_chunks(lba, bytes) {
             let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
             let mut retries = 0;
@@ -413,9 +430,6 @@ impl AhciPort {
                 chunk,
             );
             self.free_slot(slot);
-
-            done += chunk;
-            cur_lba += (chunk / 512) as u64;
         }
         Ok(())
     }
@@ -435,10 +449,7 @@ impl AhciPort {
 
         // See read_sectors: split into BOUNCE_BYTES chunks and loop rather than
         // silently writing only the first page.
-        let mut done = 0usize;
-        let mut cur_lba = lba;
-        while done < bytes {
-            let chunk = core::cmp::min(bytes - done, BOUNCE_BYTES);
+        for (done, cur_lba, chunk) in transfer_chunks(lba, bytes) {
             let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
             core::ptr::copy_nonoverlapping(
@@ -481,9 +492,6 @@ impl AhciPort {
                 break;
             }
             self.free_slot(slot);
-
-            done += chunk;
-            cur_lba += (chunk / 512) as u64;
         }
         Ok(())
     }
@@ -899,7 +907,6 @@ pub fn test_ahci() {
 #[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
-    use crate::drivers::block::{read_block, BOOT_DEV_NUM};
     use crate::test_assert_eq;
     use crate::testing::TestResult;
 
@@ -912,43 +919,59 @@ pub mod tests {
     /// 128-byte GPT entry array, 16384 bytes (32 sectors) in one `read_block`
     /// call, and trusts the result as partition-table data.
     ///
-    /// There is no in-tree AHCI mock — `AhciPort`'s fields are raw pointers
-    /// into DMA memory obtained from `alloc_frame()`, so a fake instance can't
-    /// be built without real (or QEMU-virtual) hardware. This test exercises
-    /// the real boot device instead: it reads 16 KiB (4 x `BOUNCE_BYTES`) from
-    /// LBA 0 in one call and compares it against the same range read back as
-    /// four separate one-page reads. Under the old clamp-and-return-Ok bug the
-    /// 16 KiB read left bytes 4096..16384 as the `0xAA` sentinel the buffer
-    /// was pre-filled with, so it disagreed with the piecewise reads (which
-    /// each fit in one page and were never truncated) unless the disk
-    /// genuinely contains 12 KiB of `0xAA` at that offset. Read-only, so this
-    /// is safe to run against the boot disk.
+    /// The property that keeps that from coming back is that one 16 KiB
+    /// request must move exactly the bytes four consecutive 4 KiB requests
+    /// would, in the same order and at the same LBAs. That is decided entirely
+    /// by `transfer_chunks`, which both non-NCQ paths drive, so this asserts it
+    /// there: the plan for 16 KiB from LBA 0 equals the four one-page plans
+    /// stitched together, every byte of the request is covered exactly once by
+    /// a chunk whose LBA follows from its offset, and a tail shorter than a
+    /// page is still its own chunk rather than being dropped.
     ///
-    /// STATIC ONLY: there is no QEMU in this environment, so this test is
-    /// type-checked (`cargo +nightly clippy --features test-mode`) but never
-    /// executed here. It runs for real only under `kernel-tests.yml`'s QEMU,
-    /// where `-machine q35`'s default `-drive` (no explicit `if=`) is exposed
-    /// through the ICH9 AHCI controller, and `drivers/block/ahci.rs::init` is
-    /// the only code in the kernel that registers `BOOT_DEV_NUM` (0x800).
+    /// It does not read the disk. This test used to issue the two `read_block`
+    /// calls against `BOOT_DEV_NUM` and compare the bytes, and that is why it
+    /// failed the first time the harness ever executed it (run 31460890060):
+    /// `test_main()` is called from `kernel_main` *before* `init_drivers()`,
+    /// so under `test-mode` nothing has enumerated PCI and `ahci::init` — the
+    /// only code that registers 0x800 — has never run. Both reads returned
+    /// `BlockError::NoDevice` without reaching a single line of transfer code.
+    /// Bringing the controller up from inside the test does not rescue it
+    /// either: `pci::enumerate` only probes function 0 of each device, and
+    /// `-machine q35`'s default `-drive` hangs off the ICH9 AHCI controller at
+    /// 00:1f.2, which that scan cannot see. Same reasoning as
+    /// `virtio_blk::tests`, which exercises `alloc_request_descs` rather than
+    /// `do_request` for want of a device to answer.
     fn test_large_read_matches_chunked_small_reads() -> TestResult {
         const CHUNK: usize = BOUNCE_BYTES;
         const CHUNKS: usize = 4; // 16 KiB, matching gpt.rs's entry-array read
 
-        let mut big = alloc::vec![0xAAu8; CHUNK * CHUNKS];
-        if read_block(BOOT_DEV_NUM, 0, &mut big).is_err() {
-            return TestResult::Fail("16 KiB read from boot device failed");
-        }
+        let big: Vec<_> = transfer_chunks(0, CHUNK * CHUNKS).collect();
 
-        let mut stitched = alloc::vec![0u8; CHUNK * CHUNKS];
+        let mut stitched: Vec<(usize, u64, usize)> = Vec::new();
         for i in 0..CHUNKS {
             let lba = (i * CHUNK / 512) as u64;
-            let piece = &mut stitched[i * CHUNK..(i + 1) * CHUNK];
-            if read_block(BOOT_DEV_NUM, lba, piece).is_err() {
-                return TestResult::Fail("one-page read from boot device failed");
-            }
+            stitched.extend(
+                transfer_chunks(lba, CHUNK).map(|(off, l, len)| (off + i * CHUNK, l, len)),
+            );
         }
-
         test_assert_eq!(big, stitched);
+
+        let mut covered = 0usize;
+        for (off, chunk_lba, len) in &big {
+            if *off != covered || *chunk_lba != (covered / 512) as u64 {
+                return TestResult::Fail("chunk is not the next contiguous piece");
+            }
+            covered += len;
+        }
+        test_assert_eq!(covered, CHUNK * CHUNKS);
+
+        // 9 sectors is one full page plus one sector: the tail must survive as
+        // its own chunk, at the LBA the first chunk left off at.
+        let tail: Vec<_> = transfer_chunks(7, 9 * 512).collect();
+        test_assert_eq!(
+            tail,
+            alloc::vec![(0, 7, BOUNCE_BYTES), (BOUNCE_BYTES, 15, 512)]
+        );
         TestResult::Pass
     }
 
