@@ -76,18 +76,26 @@ pub struct LoadedElf {
     pub dynamic: DynamicLinkInfo,
 }
 
+// `offset` in each reader below can be derived from an unvalidated header
+// field (`p_offset` is never bounded against the file length), so `offset + N`
+// is a real overflow site: it wraps to a small value in the release profile
+// and aborts the kernel outright in any profile with `overflow-checks` on.
+// `checked_add` makes both cases the same rejection.
 fn read_u16(data: &[u8], offset: usize) -> Result<u16, ElfError> {
-    let bytes = data.get(offset..offset + 2).ok_or(ElfError::TooSmall)?;
+    let end = offset.checked_add(2).ok_or(ElfError::TooSmall)?;
+    let bytes = data.get(offset..end).ok_or(ElfError::TooSmall)?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32(data: &[u8], offset: usize) -> Result<u32, ElfError> {
-    let bytes = data.get(offset..offset + 4).ok_or(ElfError::TooSmall)?;
+    let end = offset.checked_add(4).ok_or(ElfError::TooSmall)?;
+    let bytes = data.get(offset..end).ok_or(ElfError::TooSmall)?;
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn read_u64(data: &[u8], offset: usize) -> Result<u64, ElfError> {
-    let bytes = data.get(offset..offset + 8).ok_or(ElfError::TooSmall)?;
+    let end = offset.checked_add(8).ok_or(ElfError::TooSmall)?;
+    let bytes = data.get(offset..end).ok_or(ElfError::TooSmall)?;
     Ok(u64::from_le_bytes([
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ]))
@@ -626,7 +634,13 @@ fn parse_dynamic_link_info(
 
     if strtab != 0 && strsz != 0 {
         for off in needed_offsets {
-            let Some(file_off) = va_to_file_offset(headers, strtab + off) else {
+            // `strtab` (DT_STRTAB) and `off` (DT_NEEDED) are both raw file
+            // values, so their sum can wrap; a wrapped address would name a
+            // different segment than the string table.
+            let Some(name_va) = strtab.checked_add(off) else {
+                continue;
+            };
+            let Some((file_off, _)) = va_to_file_range(headers, name_va) else {
                 continue;
             };
             let max_len = strsz.saturating_sub(off) as usize;
@@ -641,6 +655,42 @@ fn parse_dynamic_link_info(
     Ok(info)
 }
 
+/// Locate the `DT_RELA` table and decide how many `Elf64_Rela` entries it may
+/// legitimately contain.
+///
+/// `rela_size` is `DT_RELASZ`, read verbatim out of the dynamic section of an
+/// attacker-supplied file, and it used to be the *only* thing deciding how
+/// many entries the relocation loop processed
+/// (`count = rela_size / rela_ent.max(24)`, up to `u64::MAX / 24`). Nothing
+/// tied it to how many entries the file could actually back. The loop did
+/// terminate — `read_u64` rejects the first offset that runs off the end of
+/// `elf_data` — but only at the end of the *file*, not at the end of the
+/// relocation table: with a table of ten entries in a segment of 0x100
+/// file-backed bytes and `DT_RELASZ = 0x1000`, the loader read 170 entries,
+/// applying 160 of them out of bytes that are not relocation entries at all
+/// (`.text`, string data, padding), and still reported the load as successful.
+///
+/// The bound is the one the file already states: the table lives at a virtual
+/// address inside some `PT_LOAD` segment, and it cannot extend past that
+/// segment's file-backed length. `va_to_file_range` returns exactly that
+/// remaining length alongside the file offset, so the check costs one
+/// comparison and no second scan. `DT_RELASZ` claiming more than the segment
+/// holds is a malformed file, so it is rejected outright rather than clamped
+/// — a truncated relocation table would leave the image half-relocated.
+fn relocation_table(
+    headers: &[ProgramHeader],
+    rela_addr: u64,
+    rela_size: u64,
+    rela_ent: u64,
+) -> Result<(usize, u64), ElfError> {
+    let (file_off, seg_avail) =
+        va_to_file_range(headers, rela_addr).ok_or(ElfError::TooSmall)?;
+    if rela_size > seg_avail {
+        return Err(ElfError::InvalidSegment);
+    }
+    Ok((file_off, rela_size / rela_ent.max(24)))
+}
+
 fn apply_relative_relocations(
     elf_data: &[u8],
     headers: &[ProgramHeader],
@@ -651,10 +701,12 @@ fn apply_relative_relocations(
     if dynamic.rela_addr == 0 || dynamic.rela_size == 0 {
         return Ok(());
     }
-    let Some(rela_file_off) = va_to_file_offset(headers, dynamic.rela_addr) else {
-        return Err(ElfError::TooSmall);
-    };
-    let count = dynamic.rela_size / dynamic.rela_ent.max(24);
+    let (rela_file_off, count) = relocation_table(
+        headers,
+        dynamic.rela_addr,
+        dynamic.rela_size,
+        dynamic.rela_ent,
+    )?;
     for i in 0..count {
         let off = rela_file_off + (i * dynamic.rela_ent) as usize;
         let r_offset = read_u64(elf_data, off)?;
@@ -687,12 +739,24 @@ fn apply_relative_relocations(
     Ok(())
 }
 
-fn va_to_file_offset(headers: &[ProgramHeader], va: u64) -> Option<usize> {
+/// File offset of `va`, plus the number of file-backed bytes that remain in
+/// the `PT_LOAD` segment containing it.
+///
+/// The second element is what bounds any table located by a virtual address:
+/// a table starting at `va` cannot be longer than the segment that holds it,
+/// however large the dynamic section claims it is.
+fn va_to_file_range(headers: &[ProgramHeader], va: u64) -> Option<(usize, u64)> {
     headers
         .iter()
         .filter(|ph| ph.p_type == PT_LOAD)
         .find(|ph| va >= ph.p_vaddr && va < ph.p_vaddr.saturating_add(ph.p_filesz))
-        .map(|ph| (ph.p_offset + (va - ph.p_vaddr)) as usize)
+        .map(|ph| {
+            let delta = va - ph.p_vaddr;
+            (
+                ph.p_offset.saturating_add(delta) as usize,
+                ph.p_filesz - delta,
+            )
+        })
 }
 
 fn read_c_string(bytes: &[u8]) -> Option<String> {
@@ -887,6 +951,64 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Defect: `DT_RELASZ` claiming a relocation table sixteen times larger
+    /// than the file-backed length of the segment that holds it. Before the
+    /// bound existed this produced `count = 170` against a ten-entry table
+    /// and the loader applied all 170, reporting success.
+    fn test_rejects_relasz_past_segment_end() -> TestResult {
+        let headers = [exec_header(0x2000, 0x100)];
+        let result = relocation_table(&headers, 0x2000, 0x1000, 24);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// The same check at its extreme: `DT_RELASZ = u64::MAX` asked for
+    /// 768614336404564650 entries.
+    fn test_rejects_relasz_u64_max() -> TestResult {
+        let headers = [exec_header(0x2000, 0x100)];
+        let result = relocation_table(&headers, 0x2000, u64::MAX, 24);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// Contrast: a table filling its segment exactly must be accepted, at the
+    /// entry count the segment can hold. `exec_header` puts the segment at
+    /// `p_offset == 0`, so the table's file offset is 0 and `0x100 / 24 == 10`.
+    ///
+    /// The second case starts the table 0x40 into the same segment: the
+    /// available length must shrink by that delta (`0xC0`, still room for the
+    /// requested `0x40`) and the file offset must grow by it.
+    fn test_accepts_relasz_filling_segment() -> TestResult {
+        let headers = [exec_header(0x2000, 0x100)];
+        test_assert_eq!(relocation_table(&headers, 0x2000, 0x100, 24), Ok((0, 10)));
+        test_assert_eq!(relocation_table(&headers, 0x2040, 0x40, 24), Ok((0x40, 2)));
+        test_assert_eq!(
+            relocation_table(&headers, 0x2040, 0xC1, 24),
+            Err(ElfError::InvalidSegment)
+        );
+        TestResult::Pass
+    }
+
+    /// A `DT_RELA` address in no `PT_LOAD` segment has no backing bytes at
+    /// all, so there is no length to bound against and the load fails.
+    fn test_rejects_rela_addr_outside_any_segment() -> TestResult {
+        let headers = [exec_header(0x2000, 0x100)];
+        let result = relocation_table(&headers, 0x9000, 24, 24);
+        test_assert_eq!(result, Err(ElfError::TooSmall));
+        TestResult::Pass
+    }
+
+    /// `p_offset` is never bounded against the file length, so a relocation
+    /// entry offset can reach the top of `usize`. `offset + N` inside the
+    /// readers must not be allowed to wrap past it.
+    fn test_read_helpers_reject_offset_overflow() -> TestResult {
+        let data = [0u8; 8];
+        test_assert_eq!(read_u16(&data, usize::MAX - 1), Err(ElfError::TooSmall));
+        test_assert_eq!(read_u32(&data, usize::MAX - 3), Err(ElfError::TooSmall));
+        test_assert_eq!(read_u64(&data, usize::MAX - 7), Err(ElfError::TooSmall));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "elf_loader::rejects_non_canonical_vaddr",
@@ -943,6 +1065,26 @@ pub mod tests {
         crate::testing::register_test(
             "elf_loader::rejects_entry_outside_any_segment",
             test_rejects_entry_outside_any_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_relasz_past_segment_end",
+            test_rejects_relasz_past_segment_end,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_relasz_u64_max",
+            test_rejects_relasz_u64_max,
+        );
+        crate::testing::register_test(
+            "elf_loader::accepts_relasz_filling_segment",
+            test_accepts_relasz_filling_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_rela_addr_outside_any_segment",
+            test_rejects_rela_addr_outside_any_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::read_helpers_reject_offset_overflow",
+            test_read_helpers_reject_offset_overflow,
         );
     }
 }
