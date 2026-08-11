@@ -9,12 +9,17 @@
 //! A resident-set size picked at build time is wrong for every workload except
 //! the one it was measured on. The quantity that actually predicts how much
 //! memory an inference guest wants is not its allocation rate and not its heap
-//! high-water mark — it is how many *separated regions* its accesses fall into.
-//! A guest whose accesses form one contiguous sweep wants one resident region
-//! however many pages it touches; a guest that alternates between k distant
-//! regions per phase wants k, and thrashes if it gets fewer.
+//! high-water mark — it is how its accesses fall into *separated regions*, and
+//! how wide those regions are. A guest that alternates between k distant
+//! regions per phase wants k of them resident and thrashes if it gets fewer; a
+//! guest sweeping one contiguous 8 GiB weight tensor wants a stripe of that
+//! tensor, and sizing it by the *number* of regions it has — one — is the
+//! defect this module shipped with in b14631c and the reason
+//! [`WorkingSet::Clustered`] carries `pages` beside `clusters`.
 //!
-//! That is an H₀ question, so it is answered with H₀.
+//! That is an H₀ question, so it is answered with H₀. The same MST cut that
+//! counts the regions also partitions the trace into them, and each part's own
+//! population and page span is read off that partition.
 //!
 //! # The embedding
 //!
@@ -22,10 +27,18 @@
 //! to `[0, 1]` over the observed range of the window, which is what makes the
 //! metric dimensionless: a page index runs to millions and a tick to 64, so an
 //! un-normalised Euclidean distance is a page-index distance with rounding
-//! noise attached. After rescaling, the summary is invariant under any affine
-//! relabelling of either axis — the same guest observed with a different page
-//! base or a different sampling cadence measures identically, which
+//! noise attached. After rescaling, the *shape* statistics are invariant under
+//! any affine relabelling of either axis — the same guest observed with a
+//! different page base or a different sampling cadence measures the same
+//! `clusters` and `separation`, which
 //! [`tests::test_summary_invariant_under_affine_page_relabel`] asserts.
+//!
+//! `pages` deliberately is not invariant, because it is not a shape: it is a
+//! quantity of memory, and a guest striding seven times as far over seven times
+//! as much of it wants seven times the stripe. It is therefore measured from
+//! the raw page indices rather than from the normalised cloud — mapping a
+//! `[0, 1]` span back through the observed range would only round-trip through
+//! floats an answer the integers already hold exactly.
 //!
 //! Time is in the embedding rather than projected out because a *phase* is what
 //! makes a region worth keeping resident. Two page regions touched in strict
@@ -61,8 +74,11 @@
 //! 1. **The cap is not negotiable.** [`Sandbox::cap`] is fixed at construction
 //!    and has no setter. [`size_envelope`] applies `min(cap)` last and
 //!    unconditionally, so no signal — including a malformed one with
-//!    `clusters == usize::MAX` — can raise the envelope past it. Inference may
-//!    narrow, never widen.
+//!    `clusters == usize::MAX` and `pages == u64::MAX` — can raise the envelope
+//!    past it. Inference may narrow, never widen. Extent makes this rule matter
+//!    more, not less: it multiplies page counts rather than region counts, so
+//!    every step of it saturates, a wrapped demand being one that arrives under
+//!    the cap and reads as the cap having held.
 //! 2. **Unmeasurable sizes to the floor**, and says so through the return type.
 //! 3. **Allocation failure is refusal.** [`Sandbox::start`] either obtains its
 //!    whole floor or hands back every frame it did obtain and refuses to run.
@@ -115,6 +131,23 @@ pub const MIN_SAMPLES: usize = 4;
 /// catastrophic: an unseparated reading grants none of it.
 pub const FRAMES_PER_REGION: usize = 4;
 
+/// Pages of measured region extent per resident frame.
+///
+/// The second calibration constant, and the one that decides how much of a
+/// large region the envelope promises to hold: 32 pages of region per 4 KiB
+/// frame is a 1/32 stripe, because the envelope confines a guest rather than
+/// promising it full residency.
+///
+/// Its magnitude is chosen against the trace window rather than against a
+/// workload. A region the window can cover densely — at most [`MAX_SAMPLES`]
+/// pages — asks for `64 / 32 = 2` frames, which is below [`FRAMES_PER_REGION`],
+/// so small regions keep exactly the count-driven sizing they had and only a
+/// region wider than `FRAMES_PER_REGION * PAGES_PER_GRANTED_FRAME` = 128 pages
+/// moves the envelope. That crossover is the knob: lower it to make the
+/// envelope track extent sooner, raise it to hold a thinner stripe of a large
+/// region.
+pub const PAGES_PER_GRANTED_FRAME: u64 = 32;
+
 /// Edge-spectrum gap ratio at which a split is fully trusted.
 ///
 /// A ratio of exactly 1 is no gap at all: the sorted MST edges are uniform and
@@ -153,7 +186,17 @@ pub enum WorkingSet {
     /// `clusters` single-linkage components at the most persistent cut, with
     /// `separation` the ratio between the first cut edge and the last kept
     /// edge. `separation >= 1` always; 1 means no gap was found.
-    Clustered { clusters: usize, separation: f64 },
+    ///
+    /// `pages` is how much *address range* those components cover: the sum,
+    /// over every component holding at least [`MIN_SAMPLES`] accesses, of that
+    /// component's own page span, in pages. `clusters` says how many regions
+    /// there are and `pages` says how big they are; sizing needs both, because
+    /// one 8 GiB tensor and one 8 KiB scratch buffer are both one region.
+    Clustered {
+        clusters: usize,
+        separation: f64,
+        pages: u64,
+    },
     /// No summary exists for this cloud. Callers must not substitute a default.
     Unmeasurable(Unmeasurable),
 }
@@ -197,8 +240,16 @@ pub fn summarize(samples: &[Access]) -> WorkingSet {
         cloud[i] = ManifoldPoint::new([x, y]);
     }
 
+    let mut tree = [MstEdge::NONE; MAX_SAMPLES];
+    let t = mst_edges(&cloud[..n], &mut tree);
     let mut edges = [0.0f64; MAX_SAMPLES];
-    let m = mst_edges(&cloud[..n], &mut edges);
+    let mut m = 0usize;
+    for edge in &tree[..t] {
+        if edge.len > 0.0 {
+            edges[m] = edge.len;
+            m += 1;
+        }
+    }
     let e = &mut edges[..m];
     e.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
@@ -211,11 +262,19 @@ pub fn summarize(samples: &[Access]) -> WorkingSet {
 
     // Largest ratio between consecutive sorted edges. Cutting between `e[i-1]`
     // and `e[i]` removes `m - i` edges, leaving `1 + m - i` components.
+    //
+    // The gap must clear `eps` in absolute terms as well as in ratio. A cloud
+    // sampled uniformly has a spectrum uniform to within rounding, so every
+    // ratio in it is `1 + O(ulp)` and the largest one lands wherever the last
+    // bit fell. b14631c tolerated that because a ratio that close to 1 grants
+    // nothing; the partition below cannot tolerate it, because a cut placed by
+    // rounding noise shreds one contiguous region into fragments and charges
+    // the guest for none of them.
     let eps = e[m - 1] * 1e-9;
     let mut separation = 1.0f64;
     let mut cut = m;
     for i in 1..m {
-        if e[i - 1] <= eps {
+        if e[i - 1] <= eps || e[i] - e[i - 1] <= eps {
             continue;
         }
         let ratio = e[i] / e[i - 1];
@@ -224,13 +283,101 @@ pub fn summarize(samples: &[Access]) -> WorkingSet {
             cut = i;
         }
     }
+
+    // Everything at or below the last kept edge stays connected, which is the
+    // same partition the cluster count is read off: `cut == m` keeps every
+    // edge and leaves one component.
     WorkingSet::Clustered {
         clusters: 1 + (m - cut),
         separation,
+        pages: measured_pages(s, &tree[..t], e[cut - 1]),
     }
 }
 
+/// Pages of address range the components at `threshold` actually cover.
+///
+/// Components are single-linkage at the same cut the caller read its cluster
+/// count off: two accesses are in one component when the MST path between them
+/// uses no edge longer than `threshold`.
+///
+/// A component's span is measured from the raw page indices in `samples`, not
+/// from the normalised cloud. The embedding divides both axes by their observed
+/// range to make the *shape* dimensionless, and multiplying a `[0, 1]` span
+/// back by `p_span` only feeds the page range through a float round trip that
+/// the integers already answer exactly.
+///
+/// A component holding fewer than [`MIN_SAMPLES`] accesses contributes nothing.
+/// Two or three touches are not a measurement of a region — they are the same
+/// state the whole cloud is refused for below `MIN_SAMPLES` — and the range
+/// they straddle is very often a hole rather than a region. Population is used
+/// as that admission gate and never as a multiplier, because [`MAX_SAMPLES`]
+/// truncation makes a component's sample count a biased proxy for its true
+/// traffic: a region touched steadily across a long run holds fewer of the last
+/// 64 accesses than one touched in a burst, and scaling extent by a count would
+/// shrink the steady region's envelope for being steady. What the gate does
+/// cost is a region whose share of the window falls below `MIN_SAMPLES`: it
+/// contributes no extent at all and falls back to the per-region grant, which
+/// is the floor-ward direction rule 2 already chose.
+fn measured_pages(samples: &[Access], tree: &[MstEdge], threshold: f64) -> u64 {
+    let n = samples.len();
+    let mut label = [0usize; MAX_SAMPLES];
+    for (i, l) in label.iter_mut().enumerate().take(n) {
+        *l = i;
+    }
+    for edge in tree {
+        if edge.len > threshold {
+            continue;
+        }
+        let (a, b) = (label[edge.a], label[edge.b]);
+        if a == b {
+            continue;
+        }
+        let (keep, merged) = if a < b { (a, b) } else { (b, a) };
+        for l in label[..n].iter_mut() {
+            if *l == merged {
+                *l = keep;
+            }
+        }
+    }
+
+    let mut pages = 0u64;
+    for c in 0..n {
+        if label[c] != c {
+            continue;
+        }
+        let mut pop = 0usize;
+        let (mut lo, mut hi) = (u64::MAX, 0u64);
+        for (i, a) in samples.iter().enumerate() {
+            if label[i] == c {
+                pop += 1;
+                lo = lo.min(a.page);
+                hi = hi.max(a.page);
+            }
+        }
+        if pop >= MIN_SAMPLES {
+            // Saturating throughout: a page index is a u64, so one component's
+            // span alone can reach u64::MAX, and a wrapped total is a large
+            // region reported as a small one.
+            pages = pages.saturating_add((hi - lo).saturating_add(1));
+        }
+    }
+    pages
+}
+
 /// Map a summary to a resident frame count within `[floor, cap]`.
+///
+/// Two demands, and the envelope is the larger:
+///
+/// * **How many regions there are**, weighted by how well separated they are.
+///   `separation` is confidence in the *cut*, so it weights the quantity the
+///   cut produced — the count — and nothing else.
+/// * **How much range those regions cover**, at one frame per
+///   [`PAGES_PER_GRANTED_FRAME`] pages. This one is not weighted by
+///   `separation`, and must not be: a single contiguous region has no gap in
+///   its spectrum to separate anything at, so its separation is exactly 1 and a
+///   weighted extent would be worth nothing. That is the b14631c defect in its
+///   deepest form — the 8 GiB tensor is *one* cluster with *no* separation, and
+///   every count-shaped term about it is 1.
 ///
 /// The cap wins, always and last. `floor` above `cap` is a malformed bound and
 /// yields `cap`, never something above it, so no argument ordering mistake at a
@@ -243,17 +390,20 @@ pub fn size_envelope(ws: &WorkingSet, floor: usize, cap: usize) -> usize {
         WorkingSet::Clustered {
             clusters,
             separation,
+            pages,
         } => {
             if !separation.is_finite() {
                 // A caller-supplied signal that is not a number is not evidence
-                // of demand; every comparison against it would be false.
+                // of demand; every comparison against it would be false. That
+                // disqualifies the whole summary, extent included: `pages` was
+                // measured off the same partition the ratio was read from.
                 floor
             } else {
                 let demand = clusters.saturating_mul(FRAMES_PER_REGION);
                 let confidence =
                     ((separation - 1.0) / (SEPARATION_FULL - 1.0)).clamp(0.0, 1.0);
                 let grant = (demand.saturating_sub(floor) as f64 * confidence) as usize;
-                floor.saturating_add(grant)
+                floor.saturating_add(grant).max(frames_for_pages(pages))
             }
         }
     };
@@ -261,13 +411,43 @@ pub fn size_envelope(ws: &WorkingSet, floor: usize, cap: usize) -> usize {
     want.min(cap)
 }
 
-/// Minimum spanning tree edge lengths by Prim's algorithm, O(n²).
+/// Frames a measured extent of `pages` pages asks for.
 ///
-/// Writes the positive finite edges to `out` and returns how many there were.
-/// Coincident points contribute a zero-length edge, which is dropped: they are
-/// the same position and merge into the same component at every scale. A cloud
-/// whose points all coincide therefore yields 0, which is the caller's signal
-/// that there is no scale to measure at.
+/// Rounds up, so a region measured at all asks for at least one frame, and
+/// saturates rather than truncating: `pages` is a u64 and the envelope is a
+/// usize, and a demand that wrapped on the way down would arrive *under* the
+/// cap and look like the cap had held.
+pub fn frames_for_pages(pages: u64) -> usize {
+    usize::try_from(pages.div_ceil(PAGES_PER_GRANTED_FRAME)).unwrap_or(usize::MAX)
+}
+
+/// One tree edge: its length and the two sample indices it joins.
+#[derive(Clone, Copy)]
+struct MstEdge {
+    len: f64,
+    a: usize,
+    b: usize,
+}
+
+impl MstEdge {
+    const NONE: Self = Self {
+        len: 0.0,
+        a: 0,
+        b: 0,
+    };
+}
+
+/// Minimum spanning tree by Prim's algorithm, O(n²).
+///
+/// Writes the finite edges to `out` and returns how many there were, endpoints
+/// included: the caller needs the tree itself, not just its spectrum, because
+/// the components the cut leaves are what carry a region's population and page
+/// span. Zero-length edges between coincident points are kept here and filtered
+/// out of the spectrum by the caller — the points are at the same position and
+/// belong to the same component at every scale, so dropping the edge would
+/// scatter them into components of one. A cloud whose points all coincide
+/// therefore yields no *positive* edge, which is the caller's signal that there
+/// is no scale to measure at.
 ///
 /// ponytail: a near-copy of the Prim loop in `ml_engine/stratum.rs`. That one
 /// is private, hard-typed to `ManifoldPoint<3>` and `STRATUM_WINDOW`, and
@@ -275,13 +455,14 @@ pub fn size_envelope(ws: &WorkingSet, floor: usize, cap: usize) -> usize {
 /// path is to lift one generic `mst_edges` into a shared geometry module and
 /// have `stratum` derive its two statistics from it; that is a two-file change
 /// and this module owns neither file today.
-fn mst_edges(pts: &[ManifoldPoint<2>], out: &mut [f64; MAX_SAMPLES]) -> usize {
+fn mst_edges(pts: &[ManifoldPoint<2>], out: &mut [MstEdge; MAX_SAMPLES]) -> usize {
     let n = pts.len();
     if n < 2 {
         return 0;
     }
     let mut included = [false; MAX_SAMPLES];
     let mut key = [f64::INFINITY; MAX_SAMPLES];
+    let mut parent = [usize::MAX; MAX_SAMPLES];
     let mut count = 0usize;
     key[0] = 0.0;
     for _ in 0..n {
@@ -297,8 +478,15 @@ fn mst_edges(pts: &[ManifoldPoint<2>], out: &mut [f64; MAX_SAMPLES]) -> usize {
             break;
         }
         included[best] = true;
-        if best_key.is_finite() && best_key > 0.0 {
-            out[count] = best_key;
+        // The root has no parent, and a point reached by no finite distance —
+        // every candidate distance was NaN — has none either. Neither is an
+        // edge, and neither joins anything to anything.
+        if best_key.is_finite() && parent[best] != usize::MAX {
+            out[count] = MstEdge {
+                len: best_key,
+                a: best,
+                b: parent[best],
+            };
             count += 1;
         }
         for i in 0..n {
@@ -306,6 +494,7 @@ fn mst_edges(pts: &[ManifoldPoint<2>], out: &mut [f64; MAX_SAMPLES]) -> usize {
                 let d = pts[best].distance(&pts[i]);
                 if d < key[i] {
                     key[i] = d;
+                    parent[i] = best;
                 }
             }
         }
@@ -646,6 +835,18 @@ pub mod tests {
         v
     }
 
+    /// One region read as a strided sweep: `n` accesses `stride` pages apart,
+    /// one per tick. The shape of a weight-tensor read — a single cluster whose
+    /// page range is far wider than the trace window can hold points for.
+    fn swept(n: usize, stride: u64) -> Vec<Access> {
+        (0..n)
+            .map(|i| Access {
+                tick: i as u64,
+                page: i as u64 * stride,
+            })
+            .collect()
+    }
+
     /// One region swept linearly: a uniform edge spectrum with no gap.
     fn sweep(n: usize) -> Vec<Access> {
         (0..n)
@@ -672,6 +873,7 @@ pub mod tests {
         let WorkingSet::Clustered {
             clusters,
             separation,
+            ..
         } = ws
         else {
             return TestResult::Fail("eight phase-local regions must be measurable");
@@ -695,9 +897,14 @@ pub mod tests {
         test_assert_eq!(size_envelope(&ws, 2, 10), 10);
 
         // No signal can raise it, including one no measurement could produce.
+        // Both demands are absurd here: extent multiplies larger numbers than
+        // counts do, so it is the likelier of the two to wrap under a profile
+        // with overflow checks off, and a wrapped demand arrives under the cap
+        // looking like the cap held.
         let absurd = WorkingSet::Clustered {
             clusters: usize::MAX,
             separation: 1e300,
+            pages: u64::MAX,
         };
         test_assert_eq!(size_envelope(&absurd, 4, 6), 6);
         // Nor can a malformed bound where the floor is above the cap.
@@ -746,10 +953,13 @@ pub mod tests {
             test_assert_eq!(size_envelope(&ws, 4, 40), 4);
         }
 
-        // A signal that is not a number is not evidence of demand either.
+        // A signal that is not a number is not evidence of demand either, and
+        // that disqualifies the extent it was measured alongside: 4096 pages
+        // would otherwise buy 128 frames.
         let nan = WorkingSet::Clustered {
             clusters: 16,
             separation: f64::NAN,
+            pages: 4096,
         };
         test_assert_eq!(size_envelope(&nan, 3, 40), 3);
 
@@ -893,7 +1103,7 @@ pub mod tests {
                 page: a.page * 7 + 1_000_000,
             })
             .collect();
-        let (WorkingSet::Clustered { clusters: ka, separation: sa }, WorkingSet::Clustered { clusters: kb, separation: sb }) =
+        let (WorkingSet::Clustered { clusters: ka, separation: sa, .. }, WorkingSet::Clustered { clusters: kb, separation: sb, .. }) =
             (summarize(&base), summarize(&relabelled))
         else {
             return TestResult::Fail("both fixtures must be measurable");
@@ -905,6 +1115,139 @@ pub mod tests {
             agrees,
             "separation must not depend on the page base or stride"
         );
+        TestResult::Pass
+    }
+
+    /// The defect b14631c named as its own ceiling: an inference guest with one
+    /// contiguous multi-gigabyte weight tensor reads as one cluster, and a
+    /// count-driven envelope hands it `FRAMES_PER_REGION` frames.
+    ///
+    /// The envelope must scale with the range the region covers. Nothing else
+    /// about the reading changes between the three tensors below — one cluster,
+    /// no separation — so a count-driven envelope returns the same number for
+    /// all three, and an extent-driven one returns three different ones in
+    /// proportion.
+    fn test_extent_sizes_one_large_region() -> TestResult {
+        // 8 GiB of weights is 2^21 pages. 64 retained accesses land one every
+        // 32_768 pages, spanning 63 * 32_768 + 1.
+        let tensor = swept(MAX_SAMPLES, 32_768);
+        let ws = summarize(&tensor);
+        let WorkingSet::Clustered { clusters, .. } = ws else {
+            return TestResult::Fail("a swept region must be measurable");
+        };
+        test_assert_eq!(clusters, 1);
+        test_assert_eq!(size_envelope(&ws, 2, 1 << 20), 64_513);
+
+        // Half the tensor, same one cluster, half the envelope.
+        let half = summarize(&swept(MAX_SAMPLES, 16_384));
+        test_assert!(matches!(half, WorkingSet::Clustered { clusters: 1, .. }));
+        test_assert_eq!(size_envelope(&half, 2, 1 << 20), 32_257);
+
+        // Extent is a page count, so a seven-fold page stride is a seven-fold
+        // envelope. Reading the span off the normalised coordinates instead of
+        // mapping it back through the observed range gives all three tensors
+        // the same span of 1.
+        let wide = summarize(&swept(MAX_SAMPLES, 7 * 32_768));
+        test_assert!(matches!(wide, WorkingSet::Clustered { clusters: 1, .. }));
+        test_assert_eq!(size_envelope(&wide, 2, 1 << 20), 451_585);
+
+        // Rule 1 at the new arithmetic: extent is demand, and demand does not
+        // outrank the cap.
+        test_assert_eq!(size_envelope(&ws, 2, 256), 256);
+        test_assert_eq!(size_envelope(&ws, 2, 3), 3);
+        test_assert_eq!(size_envelope(&wide, 2, 256), 256);
+
+        // Extent runs up against u64, and this profile has no overflow checks.
+        // A demand that wrapped would land under any cap and read as the cap
+        // holding, so the saturation is asserted where it is visible: against a
+        // cap nothing can reach.
+        let absurd = WorkingSet::Clustered {
+            clusters: usize::MAX,
+            separation: 1e300,
+            pages: u64::MAX,
+        };
+        test_assert_eq!(size_envelope(&absurd, 4, usize::MAX), usize::MAX);
+        test_assert_eq!(frames_for_pages(u64::MAX), 576_460_752_303_423_488);
+        // Extent alone, with a count that asks for nothing.
+        let vast = WorkingSet::Clustered {
+            clusters: 1,
+            separation: 1.0,
+            pages: u64::MAX,
+        };
+        test_assert_eq!(size_envelope(&vast, 4, usize::MAX), 576_460_752_303_423_488);
+        test_assert_eq!(size_envelope(&vast, 4, 9), 9);
+
+        // Saturation at the measurement, not only at the sizing: a guest that
+        // touches page 0 and page u64::MAX in one region spans u64::MAX + 1
+        // pages, which is not a u64. Wrapping there reports the largest region
+        // measurable as no region at all, and sends the envelope to the floor.
+        let mut everything = swept(MAX_SAMPLES, u64::MAX / MAX_SAMPLES as u64);
+        everything[MAX_SAMPLES - 1].page = u64::MAX;
+        let all = summarize(&everything);
+        test_assert!(matches!(all, WorkingSet::Clustered { clusters: 1, .. }));
+        test_assert_eq!(size_envelope(&all, 2, usize::MAX), 576_460_752_303_423_488);
+        test_assert_eq!(size_envelope(&all, 2, 1_000_000), 1_000_000);
+
+        // And through the live sandbox, where the guest touches the tensor.
+        let mut src = StubFrames::new(1024);
+        let Ok(mut sb) = Sandbox::new(policy(1 << 22, true), 2, 128) else {
+            return TestResult::Fail("bounds must be accepted");
+        };
+        test_assert_eq!(sb.start(&mut src), Ok(2));
+        for a in swept(MAX_SAMPLES, 32_768) {
+            test_assert!(sb.observe(a.page), "policy must admit the fixture");
+        }
+        test_assert_eq!(sb.reevaluate(&mut src), 128);
+        test_assert!(sb.resident() <= sb.cap(), "envelope exceeded its own cap");
+        sb.stop(&mut src);
+        TestResult::Pass
+    }
+
+    /// A cluster too thin to have measured a region buys no frames for the
+    /// range it happens to straddle.
+    ///
+    /// Three phases: 40 accesses over 39_937 pages, exactly `MIN_SAMPLES`
+    /// accesses over 3_073 pages, and `MIN_SAMPLES - 1` accesses straddling
+    /// 100_001 pages. The third is two or three stray touches, not a region,
+    /// and its span is charged to nobody.
+    fn test_thin_cluster_buys_no_extent() -> TestResult {
+        let mut v = Vec::new();
+        for i in 0..40u64 {
+            v.push(Access {
+                tick: i,
+                page: i * 1024,
+            });
+        }
+        for i in 0..MIN_SAMPLES as u64 {
+            v.push(Access {
+                tick: 50 + i,
+                page: 500_000 + i * 1024,
+            });
+        }
+        for i in 0..MIN_SAMPLES as u64 - 1 {
+            v.push(Access {
+                tick: 60 + i,
+                page: 900_000 + i * 50_000,
+            });
+        }
+        let ws = summarize(&v);
+        let WorkingSet::Clustered {
+            clusters,
+            separation,
+            pages,
+        } = ws
+        else {
+            return TestResult::Fail("three distant phases must be measurable");
+        };
+        test_assert_eq!(pages, 39_937 + 3_073);
+        test_assert_eq!(clusters, 3);
+        let well_separated = separation > SEPARATION_FULL;
+        test_assert!(well_separated, "distant phases must read as separated");
+
+        // 39_937 + 3_073 measured pages. The thin phase's 100_001 would take
+        // this to 4_375.
+        test_assert_eq!(size_envelope(&ws, 2, 1 << 20), 1_345);
+        test_assert_eq!(size_envelope(&ws, 2, 64), 64);
         TestResult::Pass
     }
 
@@ -926,6 +1269,14 @@ pub mod tests {
             test_shrink_spares_held_frames,
         );
         crate::testing::register_test("sandbox::policy_only_narrows", test_policy_only_narrows);
+        crate::testing::register_test(
+            "sandbox::extent_sizes_one_large_region",
+            test_extent_sizes_one_large_region,
+        );
+        crate::testing::register_test(
+            "sandbox::thin_cluster_buys_no_extent",
+            test_thin_cluster_buys_no_extent,
+        );
         crate::testing::register_test(
             "sandbox::summary_invariant_under_affine_page_relabel",
             test_summary_invariant_under_affine_page_relabel,
