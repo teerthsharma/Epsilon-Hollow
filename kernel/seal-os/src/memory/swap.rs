@@ -165,7 +165,12 @@ fn voronoi_cell_of_virt(virt: VirtAddr) -> u16 {
 // Helpers
 // ---------------------------------------------------------------------------
 
-unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) {
+/// # Errors
+/// Returns `Err` if `phys` lies above the identity map and the scratch
+/// mapping could not be established (out of physical frames for page-table
+/// allocation). On error nothing is copied and `out` is left untouched —
+/// callers must not treat the buffer as valid.
+unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) -> Result<(), virt::MapError> {
     let addr = phys.as_u64();
     if addr < virt::IDENTITY_MAP_SIZE {
         core::ptr::copy_nonoverlapping(addr as *const u8, out.as_mut_ptr(), 4096);
@@ -174,13 +179,19 @@ unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) {
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        let _ = virt::map_page(scratch, phys, flags);
+        virt::map_page(scratch, phys, flags)?;
         core::ptr::copy_nonoverlapping(scratch.as_u64() as *const u8, out.as_mut_ptr(), 4096);
         let _ = virt::unmap_page(scratch);
     }
+    Ok(())
 }
 
-unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) {
+/// # Errors
+/// Returns `Err` if `phys` lies above the identity map and the scratch
+/// mapping could not be established (out of physical frames for page-table
+/// allocation). On error nothing is copied to `phys` — the frame's contents
+/// are left whatever they were before the call.
+unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) -> Result<(), virt::MapError> {
     let addr = phys.as_u64();
     if addr < virt::IDENTITY_MAP_SIZE {
         core::ptr::copy_nonoverlapping(data.as_ptr(), addr as *mut u8, 4096);
@@ -188,10 +199,11 @@ unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) {
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        let _ = virt::map_page(scratch, phys, flags);
+        virt::map_page(scratch, phys, flags)?;
         core::ptr::copy_nonoverlapping(data.as_ptr(), scratch.as_u64() as *mut u8, 4096);
         let _ = virt::unmap_page(scratch);
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -271,9 +283,16 @@ pub unsafe fn swap_out_page(virt: VirtAddr) -> bool {
         None => return false,
     };
 
-    // Read page contents.
+    // Read page contents. On failure (scratch mapping couldn't be
+    // established — allocator at/near empty, exactly the condition that
+    // triggers swap-out) bail before anything is written to the swap file
+    // or the live mapping is touched; the page stays resident and this
+    // swap-out attempt degrades to a no-op rather than dereferencing an
+    // unmapped scratch page while `SWAP_STATE` is held.
     let mut page_data = [0u8; 4096];
-    read_phys_page(phys, &mut page_data);
+    if read_phys_page(phys, &mut page_data).is_err() {
+        return false;
+    }
 
     // Encode topologically.
     let seed = virt.as_u64().wrapping_mul(1103515245).wrapping_add(12345);
@@ -368,7 +387,15 @@ pub unsafe fn swap_in_page(virt: VirtAddr) -> bool {
     };
     drop(regions);
 
-    write_phys_page(frame, &page_data);
+    // On failure (scratch mapping couldn't be established) the freshly
+    // allocated frame never received the decoded page contents, so it must
+    // not be wired into the target address space — free it and degrade this
+    // swap-in to a no-op instead of dereferencing an unmapped scratch page
+    // while `SWAP_STATE` is held.
+    if write_phys_page(frame, &page_data).is_err() {
+        phys::free_frame(frame);
+        return false;
+    }
 
     let pml4 = &mut *(region.page_table as *mut x86_64::structures::paging::PageTable);
     if virt::map_page_to_pml4(virt, frame, region.flags, pml4).is_err() {
@@ -546,5 +573,59 @@ pub fn swap_out_daemon() {
         unsafe {
             swap_out_page(*v);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+
+    /// `write_phys_page` / `read_phys_page` now return `Result` instead of
+    /// silently discarding a failed scratch mapping. This exercises the `Ok`
+    /// path end to end — allocate a real frame, write a known pattern through
+    /// the new signature, read it back, and check both calls report success
+    /// and the bytes round-trip. It does not force the `Err` path (that needs
+    /// the physical allocator driven to empty, which isn't safe to simulate
+    /// inside a shared test-mode boot), but it does prove the refactor didn't
+    /// break the copy itself.
+    fn test_phys_page_round_trip_reports_ok() -> TestResult {
+        let Some(frame) = phys::alloc_frame() else {
+            return TestResult::Fail("no free frame available for round-trip test");
+        };
+
+        let mut data = [0u8; 4096];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = (i % 256) as u8;
+        }
+
+        let write_result = unsafe { write_phys_page(frame, &data) };
+        if write_result.is_err() {
+            unsafe { phys::free_frame(frame) };
+            return TestResult::Fail("write_phys_page returned Err for a freshly allocated frame");
+        }
+
+        let mut readback = [0u8; 4096];
+        let read_result = unsafe { read_phys_page(frame, &mut readback) };
+        unsafe { phys::free_frame(frame) };
+
+        if read_result.is_err() {
+            return TestResult::Fail("read_phys_page returned Err for a freshly written frame");
+        }
+        if readback != data {
+            return TestResult::Fail("round-tripped page contents did not match what was written");
+        }
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "swap::phys_page_round_trip_reports_ok",
+            test_phys_page_round_trip_reports_ok,
+        );
     }
 }
