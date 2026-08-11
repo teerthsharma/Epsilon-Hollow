@@ -176,7 +176,10 @@ impl AppState {
             }
             InputEvent::KeyRelease(_) => {}
             InputEvent::MouseMove { dx, dy } => {
-                compositor.mouse_move(dx, dy, 1024, 768);
+                // Cursor bounds come from the framebuffer the compositor last
+                // composed into. This call site has no framebuffer and must not
+                // guess one: the trailing arguments are ignored.
+                compositor.mouse_move(dx, dy, 0, 0);
                 self.route_mouse_move(compositor);
             }
             InputEvent::MouseButton { button: 0, pressed } => {
