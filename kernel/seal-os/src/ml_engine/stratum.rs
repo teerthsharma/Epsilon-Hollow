@@ -9,7 +9,8 @@
 //! of training states decomposes the same way: `underfit`, `wellfit` and
 //! `overfit` are open strata a run moves through, and `collapsing` is the
 //! singular stratum where the trajectory stops being a manifold at all. The
-//! detector assigns a stratum; the actuator pushes the run toward a better one.
+//! detector assigns a stratum; the controller names the way out of it (see
+//! [`FitAction`] for how far "names" goes — it is short of enforcement today).
 //! Distinct from `atlas`/`chart`/`germ`/`nerve` (code) and `bundle`/`section`
 //! (firmware).
 //!
@@ -82,11 +83,18 @@
 //! # What the kernel can actually observe
 //!
 //! Honestly: nothing about the model's weights. A `no_std` kernel cannot walk a
-//! userspace autograd graph. It observes what the training process pushes
-//! through the Seal ABI — two scalars per step, `(train_loss, val_loss)` — plus
-//! what the kernel already owns for that task (heap break, I/O prefetch state).
-//! Every signal below derives from those two scalars. Activation statistics and
-//! gradient structure are **not** observed; claiming otherwise would be a lie.
+//! userspace autograd graph. It observes exactly what the training process
+//! pushes through the Seal ABI — two scalars per step, `(train_loss, val_loss)`
+//! — and every signal below derives from those two. Nothing the kernel already
+//! owns for the task is read: not the heap break, not the I/O prefetch state.
+//! Activation statistics and gradient structure are **not** observed; claiming
+//! otherwise would be a lie.
+//!
+//! # What the kernel can actually do about it
+//!
+//! Report. [`FitAction`] is returned across the ABI in full and enforced in no
+//! part; each of its fields documents how far it reaches. A trainer that ignores
+//! the verdict is not slowed, capped or throttled by this module.
 //!
 //! # Streaming bound
 //!
@@ -321,28 +329,45 @@ impl FitCalibration {
 
 // ── Actuation ───────────────────────────────────────────────────────────────
 
-/// What the controller does about a regime.
+/// What the controller recommends about a regime.
 ///
-/// `prefetch_epsilon` and `clamp_heap` are **real kernel control**: the kernel
-/// owns both and [`apply_action`] enforces them. `reg_scale`, `lr_scale` and
-/// `batch_scale` are **advisory** — the kernel cannot reach into a userspace
-/// optimizer and change its regularisation coefficient, so it returns the
-/// recommendation across the ABI and the trainer chooses whether to honour it.
+/// **Every field is advisory today, and nothing here is enforced against a task
+/// that ignores it.** The kernel returns the whole action across the ABI and the
+/// trainer chooses what to honour. Three of the fields could never be anything
+/// else: a `no_std` kernel cannot reach into a userspace optimizer and change
+/// its regularisation coefficient, learning rate or batch size. The other two
+/// name kernel-owned quantities, and are documented per field with exactly how
+/// far they currently reach — which is short of enforcement in both cases.
 #[derive(Debug, Clone, Copy)]
 pub struct FitAction {
     /// Regime this action responds to.
     pub regime: Regime,
-    /// REAL. Prefetch decision threshold for model-training I/O.
+    /// Prefetch decision threshold recommended for model-training I/O.
     /// `should_prefetch` fires when `p_fetch > epsilon`, so *lower* is more
-    /// aggressive. Clamped to the engine's own [0.1, 0.9] range.
+    /// aggressive.
+    ///
+    /// [`apply_action`] publishes this kernel-side, clamped to the engine's own
+    /// [0.1, 0.9] range, and `PrefetchEngine::new_model_training` adopts it at
+    /// construction. **Nothing in this tree constructs that preset** — the AHCI
+    /// read path and the shell both build `new_gaming` — so the published value
+    /// currently reaches no I/O decision. Wiring a training read path to that
+    /// constructor is what would make this real; until then it is a
+    /// recommendation like the other four, one the kernel holds as well as
+    /// returns.
     pub prefetch_epsilon: f32,
-    /// REAL. Freeze the training task's heap break where it stands.
+    /// Recommendation that the training task stop growing its heap.
+    ///
+    /// **Not enforced.** The kernel has no heap ceiling to set: `dispatch_brk`
+    /// grows `brk_end` by request and consults no limit, and this kernel's
+    /// `setrlimit(RLIMIT_DATA, ..)` assigns `brk_end` rather than bounding it,
+    /// so there is no value of this flag that can refuse an allocation. Making
+    /// it real means giving `dispatch_brk` a per-task ceiling to check.
     pub clamp_heap: bool,
-    /// ADVISORY. Multiplier the trainer should apply to its regularisation term.
+    /// Multiplier the trainer should apply to its regularisation term.
     pub reg_scale: f64,
-    /// ADVISORY. Multiplier the trainer should apply to its learning rate.
+    /// Multiplier the trainer should apply to its learning rate.
     pub lr_scale: f64,
-    /// ADVISORY. Multiplier the trainer should apply to its batch size.
+    /// Multiplier the trainer should apply to its batch size.
     pub batch_scale: f64,
 }
 
@@ -389,25 +414,33 @@ pub fn plan_action(regime: Regime) -> FitAction {
     }
 }
 
-/// Prefetch threshold override published to the I/O path. `None` = engine default.
+/// Prefetch threshold published to the I/O path. `None` = engine default.
+///
+/// ponytail: one global rather than one per stream. With two workloads
+/// registered the later `SYS_FIT_REGIME` caller overwrites the earlier one's
+/// threshold, and [`unregister`] clears the value for both. Move it into
+/// [`FitStream`] and key [`training_prefetch_epsilon`] by task id when a second
+/// training workload can actually exist.
 static PREFETCH_OVERRIDE: Mutex<Option<f32>> = Mutex::new(None);
 
-/// Read by `PrefetchEngine::new_model_training`. Real coupling, one direction.
+/// The threshold last published by [`apply_action`], for a model-training
+/// prefetch engine to adopt at construction. `None` until a registered workload
+/// asks for one, and again once it unregisters.
 pub fn training_prefetch_epsilon() -> Option<f32> {
     *PREFETCH_OVERRIDE.lock()
 }
 
-/// Enforce the real knobs. Must be called from the training task's own context
-/// (the heap clamp applies to the current task).
+/// Publish the kernel-side half of an action: the prefetch threshold, clamped to
+/// the range `PrefetchEngine` itself holds `epsilon` in.
+///
+/// `clamp_heap` is not acted on, because there is nothing here to act on it
+/// with. This kernel has no heap ceiling: `dispatch_brk` grows `brk_end` on
+/// request and consults no limit, and `setrlimit(RLIMIT_DATA, ..)` assigns
+/// `brk_end` directly rather than bounding it — so the only thing this function
+/// could do with the flag is move the break, which is the opposite of freezing
+/// it. See [`FitAction`] for what each field is worth.
 pub fn apply_action(action: &FitAction) {
     *PREFETCH_OVERRIDE.lock() = Some(action.prefetch_epsilon.clamp(0.1, 0.9));
-    if action.clamp_heap {
-        // RLIMIT_DATA == 2 in this kernel's setrlimit encoding: it pins brk_end.
-        let brk = crate::process::scheduler::getrlimit(2);
-        if brk != 0 {
-            crate::process::scheduler::setrlimit(2, brk);
-        }
-    }
 }
 
 // ── Streaming state ─────────────────────────────────────────────────────────
@@ -819,8 +852,16 @@ pub fn register(handle: u64) -> u64 {
 }
 
 /// Drop a registered workload. Returns true if it existed.
+///
+/// Also drops the published prefetch threshold. A process that exits leaves no
+/// claim on kernel I/O behind it, and the threshold is one global — left set, it
+/// would steer every later model-training read for the rest of the boot.
 pub fn unregister(handle: u64) -> bool {
-    STREAMS.lock().remove(&handle).is_some()
+    let existed = STREAMS.lock().remove(&handle).is_some();
+    if existed {
+        *PREFETCH_OVERRIDE.lock() = None;
+    }
+    existed
 }
 
 /// Push one observation. Returns the last computed regime (O(1); signals are
@@ -1336,6 +1377,37 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The published prefetch threshold is a single global, so the workload that
+    /// asked for it has to take it away when it leaves. Otherwise the last
+    /// `SYS_FIT_REGIME` caller steers every later training read for the rest of
+    /// the boot, including after that process has exited.
+    fn test_unregister_clears_prefetch_override() -> TestResult {
+        let handle = 0xF17_0002;
+        register(handle);
+        apply_action(&plan_action(Regime::Collapsing));
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.9));
+        test_assert!(unregister(handle), "unregister must find the stream");
+        test_assert_eq!(training_prefetch_epsilon(), None);
+        TestResult::Pass
+    }
+
+    /// Publishing the threshold is the whole of what `apply_action` does, so the
+    /// range it promises the I/O engine has to hold for any action it is handed.
+    fn test_apply_action_clamps_published_epsilon() -> TestResult {
+        let handle = 0xF17_0003;
+        let mut action = plan_action(Regime::WellFit);
+        action.prefetch_epsilon = 5.0;
+        apply_action(&action);
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.9));
+        action.prefetch_epsilon = -1.0;
+        apply_action(&action);
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.1));
+        // Leave the global as this test found it.
+        register(handle);
+        unregister(handle);
+        TestResult::Pass
+    }
+
     fn test_proof_line_passes() -> TestResult {
         let line = stratum_proof_line();
         test_assert!(line.starts_with("[MLFIT] proof version=1"), "proof prefix");
@@ -1395,6 +1467,14 @@ pub mod tests {
         crate::testing::register_test(
             "stratum::calibration_knob_moves_boundary",
             test_calibration_knob_moves_boundary,
+        );
+        crate::testing::register_test(
+            "stratum::unregister_clears_prefetch_override",
+            test_unregister_clears_prefetch_override,
+        );
+        crate::testing::register_test(
+            "stratum::apply_action_clamps_published_epsilon",
+            test_apply_action_clamps_published_epsilon,
         );
         crate::testing::register_test("stratum::proof_line_passes", test_proof_line_passes);
         crate::testing::register_test("stratum::registry_roundtrip", test_registry_roundtrip);

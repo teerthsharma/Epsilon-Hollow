@@ -43,9 +43,15 @@ impl PrefetchEngine {
         Self::with_params(0.65, 0.05, [0.03, 0.08, 0.15], -0.02, PrefetchPreset::Hft)
     }
 
-    /// Model-training preset. Honours the `stratum` fit controller's live
-    /// prefetch threshold when a registered training workload has produced one:
-    /// this is the real (non-advisory) I/O knob the controller actuates.
+    /// Model-training preset. Adopts the `stratum` fit controller's published
+    /// prefetch threshold when a registered training workload has produced one.
+    ///
+    /// **Nothing in this tree calls this.** Every engine actually constructed is
+    /// [`PrefetchEngine::new_gaming`] — one per `read_sectors` in the AHCI driver
+    /// and one per `prefetch status` in the shell. So the threshold the
+    /// controller publishes reaches no I/O decision until a model-training read
+    /// path builds this preset, and `stratum`'s `prefetch_epsilon` is a
+    /// recommendation rather than kernel control until then.
     pub fn new_model_training() -> Self {
         let mut engine = Self::with_params(
             0.30,

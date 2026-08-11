@@ -1061,8 +1061,8 @@ And the actuation, with the honesty column that this README exists to carry:
 
 | Knob | Real or advisory | Why |
 |---|---|---|
-| `prefetch_epsilon` | **REAL** | the kernel owns the I/O prefetch engine; clamped to [0.1, 0.9] and read by `PrefetchEngine::new_model_training` |
-| `clamp_heap` | **REAL** | pins the training task's `brk_end` via `setrlimit`; only fires on `Collapsing` |
+| `prefetch_epsilon` | **published, not enforced** | clamped to [0.1, 0.9] and published for `PrefetchEngine::new_model_training` — which has zero call sites, so nothing reads it. Every engine actually constructed is `new_gaming`. |
+| `clamp_heap` | **removed** | it read `brk_end` and wrote the same value straight back. A provable no-op. And `dispatch_brk` consults no limit, so even a different value would not have clamped anything — `RLIMIT_DATA` does not exist in this tree. |
 | `reg_scale` | advisory | the kernel cannot reach into your optimizer's regularisation coefficient |
 | `lr_scale` | advisory | see above, with feeling |
 | `batch_scale` | advisory | see above, with more feeling |
