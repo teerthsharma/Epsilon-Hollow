@@ -58,13 +58,29 @@ pub fn mmap_user(pages: usize, flags: PageTableFlags, page_table: u64) -> Option
 
 /// Unmap `pages` pages starting at `start` and free backing frames.
 ///
+/// The lookup only matches a region registered under the *caller's own*
+/// page table. `REGIONS` is one global list shared by every process, and a
+/// region's `(start, pages)` pair is only unique within the address space
+/// that reserved it — two unrelated processes (or a COW-forked parent and
+/// child, which alias the same virtual addresses) can legitimately race the
+/// same key. Without the `page_table` check, a call in one address space
+/// could match another process's region, unmap and free frames out from
+/// under *that* process, while leaving the caller's own mapping at the same
+/// address untouched. A region owned by a different page table is refused
+/// (`false`) rather than acted on.
+///
 /// # Safety
 /// Caller must ensure the range matches a previously-mapped region.
 pub unsafe fn munmap_user(start: VirtAddr, pages: usize) -> bool {
+    let current_pt = x86_64::registers::control::Cr3::read()
+        .0
+        .start_address()
+        .as_u64();
+
     let mut regions = REGIONS.lock();
     let idx = regions
         .iter()
-        .position(|r| r.start == start && r.pages == pages);
+        .position(|r| r.start == start && r.pages == pages && r.page_table == current_pt);
     let idx = match idx {
         Some(i) => i,
         None => return false,
@@ -72,19 +88,14 @@ pub unsafe fn munmap_user(start: VirtAddr, pages: usize) -> bool {
     let region = regions.swap_remove(idx);
     drop(regions);
 
-    let current_pt = x86_64::registers::control::Cr3::read()
-        .0
-        .start_address()
-        .as_u64();
-
+    // `region.page_table == current_pt` is now guaranteed by the match
+    // above, so every unmap in this loop targets the caller's own live
+    // page table.
     for i in 0..pages {
         let v = VirtAddr::new(start.as_u64() + i as u64 * 4096);
-        let maybe_phys = if region.page_table == current_pt {
-            crate::memory::virt::unmap_page(v)
-        } else {
+        if let Some(frame) =
             crate::memory::virt::unmap_page_in_pml4(v, x86_64::PhysAddr::new(region.page_table))
-        };
-        if let Some(frame) = maybe_phys {
+        {
             crate::memory::phys::free_frame(frame);
         }
     }
@@ -118,13 +129,183 @@ pub fn handle_page_fault(fault_addr: VirtAddr) -> bool {
             unsafe {
                 core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
                 let pml4 = &mut *(current_pt as *mut PageTable);
-                // Ignore map errors — if the page table structure is broken
-                // the fault will recur and we'll return false next time.
-                let _ =
-                    crate::memory::virt::map_page_to_pml4(page_start, frame, region.flags, pml4);
+                // `map_page_inner` refuses to overwrite an already-present
+                // leaf instead of silently corrupting it (see
+                // `virt::map_page_inner`). That only happens here when
+                // another racing fault on this exact page already won and
+                // mapped it, so the page is present either way and retrying
+                // the faulting instruction below will succeed against the
+                // winner's mapping. This call's freshly allocated `frame`
+                // was never installed on that path, so it must be freed
+                // here or every losing racer leaks a frame.
+                if crate::memory::virt::map_page_to_pml4(page_start, frame, region.flags, pml4)
+                    .is_err()
+                {
+                    crate::memory::phys::free_frame(frame);
+                }
             }
             return true;
         }
     }
     false
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Defect regression: `munmap_user` must never act on a region owned by
+    /// a page table other than the caller's own. Before the `page_table`
+    /// check was added to the lookup, this call matched on `(start, pages)`
+    /// alone, removed the region from the shared global `REGIONS` list, and
+    /// then unmapped/freed frames through `foreign_pt` — corrupting a
+    /// different address space's mapping while leaving the caller's own
+    /// mapping (if any existed) untouched.
+    ///
+    /// `foreign_pt` is a zeroed `PageTable` living on this function's own
+    /// stack, never installed as anyone's CR3. It stands in for "some other
+    /// process's PML4": distinct from the real `current_pt`, and safe to
+    /// pass to `unmap_page_in_pml4` because every level is `is_unused()`, so
+    /// a walk into it (if the bug under test is still present) bottoms out
+    /// immediately instead of dereferencing unrelated memory.
+    fn test_munmap_user_refuses_foreign_page_table() -> TestResult {
+        let current_pt = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
+
+        let foreign_pml4 = PageTable::new();
+        let foreign_pt = &foreign_pml4 as *const PageTable as u64;
+        test_assert!(foreign_pt != current_pt);
+
+        // Deep into the user pml4 slot (index 253 of 0..256), never touched
+        // by boot-time identity mapping (pml4 index 0) or kernel mappings
+        // (indices 256..512), and distinct from every other scratch address
+        // used in this file's tests.
+        let start = VirtAddr::new(0x0000_7EFE_0000_0000);
+        let pages = 1;
+
+        REGIONS.lock().push(MmapRegion {
+            start,
+            pages,
+            flags: PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE,
+            page_table: foreign_pt,
+        });
+
+        let result = unsafe { munmap_user(start, pages) };
+
+        let still_present = REGIONS
+            .lock()
+            .iter()
+            .any(|r| r.start == start && r.pages == pages && r.page_table == foreign_pt);
+        // Clean up before asserting so a failure doesn't leave the phantom
+        // region behind for later tests.
+        REGIONS.lock().retain(|r| r.page_table != foreign_pt);
+
+        test_assert!(
+            !result,
+            "munmap_user must refuse a region owned by another page table"
+        );
+        test_assert!(
+            still_present,
+            "a refused region must not be removed from REGIONS"
+        );
+        TestResult::Pass
+    }
+
+    /// Companion to the refusal test above: the `page_table` guard must not
+    /// block a genuinely self-owned region, or `munmap_user` would be dead
+    /// on arrival for every legitimate caller.
+    fn test_munmap_user_accepts_own_page_table() -> TestResult {
+        let current_pt = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
+
+        let start = VirtAddr::new(0x0000_7EFD_0000_0000);
+        let pages = 1;
+
+        REGIONS.lock().push(MmapRegion {
+            start,
+            pages,
+            flags: PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE,
+            page_table: current_pt,
+        });
+
+        let result = unsafe { munmap_user(start, pages) };
+        test_assert!(
+            result,
+            "munmap_user must succeed for a region the caller's own page table registered"
+        );
+
+        let still_present = REGIONS
+            .lock()
+            .iter()
+            .any(|r| r.start == start && r.pages == pages);
+        test_assert!(!still_present, "a matched region must be removed from REGIONS");
+        TestResult::Pass
+    }
+
+    /// Defect regression: a losing racer in `handle_page_fault` must free
+    /// the frame it allocated when `map_page_to_pml4` refuses an
+    /// already-present leaf, instead of leaking it. Simulated here without
+    /// real concurrency by faulting the same fresh address twice: the first
+    /// call legitimately maps a frame, so the second call's mapping attempt
+    /// is guaranteed to hit the same "leaf already present" refusal a real
+    /// losing racer would hit.
+    fn test_handle_page_fault_frees_frame_on_map_failure() -> TestResult {
+        let current_pt = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
+
+        let start = VirtAddr::new(0x0000_7EFC_0000_0000);
+        let pages = 1;
+
+        REGIONS.lock().push(MmapRegion {
+            start,
+            pages,
+            flags: PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            page_table: current_pt,
+        });
+
+        let first = handle_page_fault(start);
+        let free_before_second = crate::memory::phys::free_count();
+        let second = handle_page_fault(start);
+        let free_after_second = crate::memory::phys::free_count();
+
+        // Cleanup regardless of outcome: drop the real mapping/frame this
+        // test installed and remove the synthetic region.
+        unsafe {
+            if let Some(phys) = crate::memory::virt::unmap_page(start) {
+                crate::memory::phys::free_frame(phys);
+            }
+        }
+        REGIONS.lock().retain(|r| r.start != start);
+
+        test_assert!(first, "first fault on a fresh mmap region must be handled");
+        test_assert!(
+            second,
+            "a fault on an already-mapped page must still be reported handled"
+        );
+        test_assert_eq!(free_before_second, free_after_second);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "mmap::munmap_user_refuses_foreign_page_table",
+            test_munmap_user_refuses_foreign_page_table,
+        );
+        crate::testing::register_test(
+            "mmap::munmap_user_accepts_own_page_table",
+            test_munmap_user_accepts_own_page_table,
+        );
+        crate::testing::register_test(
+            "mmap::handle_page_fault_frees_frame_on_map_failure",
+            test_handle_page_fault_frees_frame_on_map_failure,
+        );
+    }
 }

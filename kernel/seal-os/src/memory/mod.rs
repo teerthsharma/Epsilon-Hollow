@@ -96,5 +96,6 @@ pub mod tests {
         // contributing no assertions at all. Add a line here for each submodule
         // that gains a `tests::register_all`.
         super::virt::tests::register_all();
+        super::mmap::tests::register_all();
     }
 }
