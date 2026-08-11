@@ -24,6 +24,24 @@ pub fn handbook() -> String {
            rename <old> <n>  Rename a file/folder\n\
            info <file>       File details\n\
          \n\
+         Filters (read the pipeline, write the pipeline):\n\
+           grep [-cinv] <t>  Lines holding <t>; -v inverts, -i folds case,\n\
+                             -n numbers them, -c counts them\n\
+           wc [-l|-w|-c]     Lines, words, bytes\n\
+           head [-n <k>]     First <k> lines (10 by default)\n\
+           tail [-n <k>]     Last <k> lines (10 by default)\n\
+           sort [-r] [-u]    Sort lines; -r reverses, -u drops repeats\n\
+           uniq [-c]         Collapse adjacent equal lines; -c counts each\n\
+           tr <from> <to>    Replace one character with another\n\
+           cat [file]        A file, or the pipeline, unchanged\n\
+         \n\
+         Pipelines and redirection (help pipes):\n\
+           a | b | c         Run a, feed its output to b, then to c\n\
+           b < file          Read file as the first stage's input\n\
+           b > file          Write the last stage's output to file\n\
+           b >> file         Append it to file instead\n\
+           Example: peek notes.txt | grep -i seal | sort -u > hits.txt\n\
+         \n\
          Transfer:\n\
            copy <file>       Copy file to clipboard\n\
            paste             Paste here\n\
@@ -112,6 +130,33 @@ pub fn help_for(cmd: &str) -> String {
         ),
         "search" => String::from(
             "search <query>\n  Content-addressable search across ManifoldFS.\n  Encodes query as geometry and finds nearest files by\n  cosine similarity in the Voronoi index.",
+        ),
+        "grep" => String::from(
+            "grep [-c] [-i] [-n] [-v] <text>\n  Keep the lines of the pipeline that hold <text>.\n  -v keeps the lines that do not, -i ignores case,\n  -n prefixes each line with its number, -c reports how many.\n  <text> is matched literally; there are no regular expressions.\n  Example: peek notes.txt | grep -in seal",
+        ),
+        "wc" => String::from(
+            "wc [-l] [-w] [-c]\n  Count the pipeline: lines, words, then bytes.\n  A flag selects one count; with none, all three are printed.\n  Example: look | wc -l",
+        ),
+        "head" => String::from(
+            "head [-n <lines>]\n  The first <lines> lines of the pipeline, 10 by default.\n  A count that is zero, negative or not a number is refused.\n  Example: peek log.txt | head -n 3",
+        ),
+        "tail" => String::from(
+            "tail [-n <lines>]\n  The last <lines> lines of the pipeline, 10 by default.\n  A count that is zero, negative or not a number is refused.\n  Example: peek log.txt | tail -n 3",
+        ),
+        "sort" => String::from(
+            "sort [-r] [-u]\n  Sort the pipeline's lines in byte order.\n  -r reverses the order, -u drops repeated lines.\n  Every line comes out terminated, even if the input's last was not.\n  Example: look | sort -u",
+        ),
+        "uniq" => String::from(
+            "uniq [-c]\n  Collapse runs of identical neighbouring lines into one.\n  -c prefixes each with the length of its run.\n  Only neighbours: sort first to collapse every duplicate.\n  Example: peek words.txt | sort | uniq -c",
+        ),
+        "tr" => String::from(
+            "tr <from> <to>\n  Replace every <from> character in the pipeline with <to>.\n  One character each — no ranges (a-z) and no classes.\n  Example: peek data.csv | tr , ;",
+        ),
+        "cat" => String::from(
+            "cat [file]\n  With a file, print it, like 'peek'.\n  With none, pass the pipeline through unchanged, which is how\n  'cat < file | grep x' reads a file into a pipeline.",
+        ),
+        "pipes" | "pipe" | "redirect" | "redirection" => String::from(
+            "Pipelines and redirection\n  a | b | c    Run a, hand its output to b, then b's to c.\n  b < file     The first stage reads file as its input.\n  b > file     The last stage's output replaces file.\n  b >> file    The last stage's output is added to the end of file.\n  '<' is only allowed on the first stage and '>' on the last.\n  A stage handing on more than 65536 bytes stops the line.\n  There is no quoting, so | < > cannot appear inside an argument.\n  Example: peek notes.txt | grep -i seal | sort -u > hits.txt",
         ),
         "info" => String::from(
             "info <file>\n  Show detailed file information:\n  size, payload points, Voronoi cell, cluster ID, permissions.",
