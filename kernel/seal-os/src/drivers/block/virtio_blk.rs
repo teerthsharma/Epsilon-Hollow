@@ -90,12 +90,61 @@ impl SplitVirtqueue {
     pub fn free_desc(&mut self, idx: u16) {
         self.desc_avail[idx as usize] = true;
     }
+
+    /// Allocate the three descriptors one block request needs (request
+    /// header, data buffer, status byte). Either all three succeed, or every
+    /// descriptor already taken is freed before returning `None` —
+    /// `do_request` used to call `alloc_desc()` three times in a row with
+    /// `?` and leaked whichever descriptors it had already taken when a
+    /// later call failed, permanently wedging the queue whenever
+    /// `queue_size` was smaller than 3.
+    pub fn alloc_request_descs(&mut self) -> Option<(u16, u16, u16)> {
+        let req = self.alloc_desc()?;
+        let buf = match self.alloc_desc() {
+            Some(idx) => idx,
+            None => {
+                self.free_desc(req);
+                return None;
+            }
+        };
+        let stat = match self.alloc_desc() {
+            Some(idx) => idx,
+            None => {
+                self.free_desc(req);
+                self.free_desc(buf);
+                return None;
+            }
+        };
+        Some((req, buf, stat))
+    }
 }
 
 impl Default for SplitVirtqueue {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Minimum descriptors one in-flight block request needs: request header,
+/// data buffer, status byte (see `SplitVirtqueue::alloc_request_descs`). A
+/// device that reports fewer than this can never complete a single
+/// `do_request` call.
+const MIN_QUEUE_SIZE: u16 = 3;
+
+/// Validate a device-reported virtqueue size before it sizes any allocation
+/// or descriptor scan. Pulled out of `init_device` so it's testable without
+/// real MMIO/PCI hardware.
+fn validate_queue_size(q_size: u16) -> Result<(), &'static str> {
+    if q_size == 0 {
+        return Err("Queue 0 is unavailable");
+    }
+    if q_size < MIN_QUEUE_SIZE {
+        return Err("Queue size too small for a block request");
+    }
+    if q_size > 256 {
+        return Err("Queue size too large");
+    }
+    Ok(())
 }
 
 /// Virtio Block Device
@@ -205,12 +254,7 @@ impl VirtioBlk {
         // 4. Setup Queue 0
         self.write_u16(0x0E, 0); // Queue Select
         let q_size = self.read_u16(0x0C);
-        if q_size == 0 {
-            return Err("Queue 0 is unavailable");
-        }
-        if q_size > 256 {
-            return Err("Queue size too large");
-        }
+        validate_queue_size(q_size)?;
 
         // Allocate 3 contiguous pages (12KB) for split virtqueue components
         let layout = Layout::from_size_align(12288, 4096)
@@ -244,9 +288,8 @@ impl VirtioBlk {
         len: u32,
         is_write: bool,
     ) -> Result<(), &'static str> {
-        let req_idx = self.queue.alloc_desc().ok_or("No desc available")?;
-        let buf_idx = self.queue.alloc_desc().ok_or("No desc available")?;
-        let stat_idx = self.queue.alloc_desc().ok_or("No desc available")?;
+        let (req_idx, buf_idx, stat_idx) =
+            self.queue.alloc_request_descs().ok_or("No desc available")?;
 
         let mut req = VirtioBlkReq {
             type_: if is_write { 1 } else { 0 }, // VIRTIO_BLK_T_OUT or VIRTIO_BLK_T_IN
@@ -338,4 +381,76 @@ impl BlockDevice for VirtioBlk {
 /// Initialize the Virtio Block Driver
 pub fn init() {
     let _blk = VirtioBlk::discover_and_init();
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// Regression for the descriptor leak this module used to have:
+    /// `do_request` called `alloc_desc()` three times in a row with `?` and
+    /// never freed the descriptors it had already taken when a later call
+    /// failed. With `queue_size` below 3 that wedged the queue for the rest
+    /// of boot. This exercises the fix directly (`alloc_request_descs`),
+    /// since `do_request` itself needs real MMIO/DMA memory and a device to
+    /// answer the used ring — unreachable in this environment.
+    fn test_alloc_request_descs_rolls_back_on_partial_failure() -> TestResult {
+        let mut q = SplitVirtqueue::new();
+        q.queue_size = 2; // one short of the three a request needs
+
+        test_assert!(q.alloc_request_descs().is_none());
+
+        // The old bug left both slots permanently marked busy here. Both
+        // must still be available.
+        test_assert!(q.alloc_desc().is_some());
+        test_assert!(q.alloc_desc().is_some());
+        test_assert!(q.alloc_desc().is_none());
+        TestResult::Pass
+    }
+
+    /// With enough descriptors, all three are taken together and freeing
+    /// them returns the queue to its starting state.
+    fn test_alloc_request_descs_succeeds_with_three_slots() -> TestResult {
+        let mut q = SplitVirtqueue::new();
+        q.queue_size = 3;
+
+        let (req, buf, stat) = match q.alloc_request_descs() {
+            Some(t) => t,
+            None => return TestResult::Fail("expected Some with queue_size = 3"),
+        };
+        test_assert!(q.alloc_desc().is_none());
+
+        q.free_desc(req);
+        q.free_desc(buf);
+        q.free_desc(stat);
+        test_assert!(q.alloc_request_descs().is_some());
+        TestResult::Pass
+    }
+
+    /// A device-reported queue size below 3 is rejected before it ever
+    /// reaches `alloc_request_descs` — a request structurally needs 3
+    /// descriptors, so 1 or 2 can never complete one.
+    fn test_queue_size_floor() -> TestResult {
+        test_assert!(validate_queue_size(0).is_err());
+        test_assert!(validate_queue_size(1).is_err());
+        test_assert!(validate_queue_size(2).is_err());
+        test_assert!(validate_queue_size(3).is_ok());
+        test_assert!(validate_queue_size(256).is_ok());
+        test_assert!(validate_queue_size(257).is_err());
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "virtio_blk::alloc_request_descs_rolls_back_on_partial_failure",
+            test_alloc_request_descs_rolls_back_on_partial_failure,
+        );
+        crate::testing::register_test(
+            "virtio_blk::alloc_request_descs_succeeds_with_three_slots",
+            test_alloc_request_descs_succeeds_with_three_slots,
+        );
+        crate::testing::register_test("virtio_blk::queue_size_floor", test_queue_size_floor);
+    }
 }
