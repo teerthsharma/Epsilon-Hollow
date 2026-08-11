@@ -310,8 +310,17 @@ pub fn serialize_mlp(mlp: &MLP) -> Vec<u8> {
 }
 
 /// Deserialize an MLP from bytes.
+///
+/// Every count read out of the file (layer count, weight length, bias
+/// length) is untrusted — it comes straight from whatever `ml load <name>`
+/// read off disk. Each one is checked against the bytes actually remaining
+/// in `bytes` *before* it sizes a `Vec::with_capacity` or is used to index,
+/// mirroring the `at()`-style bounds checks in `atlas/relobj.rs`. This crate
+/// builds with `panic = "abort"` and defines no `#[alloc_error_handler]`, so
+/// an unchecked huge allocation or an out-of-bounds index would halt the
+/// kernel rather than just fail the load.
 pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
-    if &bytes[..8] != b"SEALML01" {
+    if bytes.len() < 8 || &bytes[..8] != b"SEALML01" {
         return Err(String::from("Invalid model magic bytes"));
     }
     let mut off = 8;
@@ -333,14 +342,36 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         let act_u8 = read_u8(bytes, &mut off).ok_or("Missing activation")?;
         let activation = activation_from_u8(act_u8).ok_or("Invalid activation")?;
 
-        // Weights
+        // Weights. `w_len` is a raw u32 off the file (up to ~4e9); each
+        // element is an 8-byte f64, so the buffer itself gives a hard,
+        // non-invented ceiling: it cannot hold more than
+        // `(bytes.len() - off) / 8` of them. Reject before `with_capacity`
+        // ever sees the untrusted count.
         let w_len = read_u32(bytes, &mut off).ok_or("Missing weights len")? as usize;
+        if w_len > bytes.len().saturating_sub(off) / 8 {
+            return Err(String::from("Weight count exceeds remaining model bytes"));
+        }
+        // The declared shape must exactly account for the weight buffer.
+        // This is also what `Tensor::from_vec` asserts internally (it
+        // panics — not `Result` — on a mismatch), and, since `w_len` is now
+        // bounded above, it caps `input_size * output_size` before
+        // `DenseLayer::new` does its own Xavier-init allocation of that size.
+        if input_size.checked_mul(output_size) != Some(w_len) {
+            return Err(String::from("Weight length does not match layer shape"));
+        }
         let mut w_data = Vec::with_capacity(w_len);
         for _ in 0..w_len {
             w_data.push(read_f64(bytes, &mut off).ok_or("Missing weight")?);
         }
-        // Biases
+        // Biases — same buffer-derived cap, and count must equal output_size
+        // (bias tensor shape is [output_size, 1]) for the same reason.
         let b_len = read_u32(bytes, &mut off).ok_or("Missing biases len")? as usize;
+        if b_len > bytes.len().saturating_sub(off) / 8 {
+            return Err(String::from("Bias count exceeds remaining model bytes"));
+        }
+        if b_len != output_size {
+            return Err(String::from("Bias length does not match layer shape"));
+        }
         let mut b_data = Vec::with_capacity(b_len);
         for _ in 0..b_len {
             b_data.push(read_f64(bytes, &mut off).ok_or("Missing bias")?);
@@ -472,4 +503,138 @@ pub fn demo_generate_text(seed: &str, length: usize) -> String {
     let mut chain = MarkovChain::new(3);
     chain.train(DEFAULT_CORPUS);
     chain.generate(seed, length)
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Defect A: the old code did `&bytes[..8]` with no length check first.
+    /// A 7-byte buffer indexed that way panics (abort, under `panic = "abort"`).
+    fn test_truncated_buffer_rejected() -> TestResult {
+        let bytes = [0x53u8, 0x45, 0x41, 0x4C, 0x4D, 0x4C, 0x30]; // "SEALML0", 7 bytes
+        test_assert!(bytes.len() < 8);
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a buffer shorter than the magic must be rejected, not panic"
+        );
+        TestResult::Pass
+    }
+
+    fn test_empty_buffer_rejected() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&[]).is_err(),
+            "an empty buffer must be rejected, not panic"
+        );
+        TestResult::Pass
+    }
+
+    fn test_bad_magic_rejected() -> TestResult {
+        let bytes = *b"NOTSEAL!";
+        test_assert!(deserialize_mlp(&bytes).is_err(), "wrong magic must be rejected");
+        TestResult::Pass
+    }
+
+    /// Defect B: `w_len` came straight off the file into
+    /// `Vec::with_capacity(w_len)` with no check against the buffer. A
+    /// header claiming ~4e9 weights with zero bytes left to back them must
+    /// be rejected before that allocation is attempted.
+    fn test_oversized_weight_len_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // output_size
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // w_len ~ 4e9, no data follows
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a weight length the buffer cannot hold must be rejected before allocating"
+        );
+        TestResult::Pass
+    }
+
+    /// Same class as Defect B, on the bias length.
+    fn test_oversized_bias_len_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // output_size
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // w_len = 1, matches shape
+        bytes.extend_from_slice(&0.0f64.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // b_len ~ 4e9, no data follows
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a bias length the buffer cannot hold must be rejected before allocating"
+        );
+        TestResult::Pass
+    }
+
+    /// Third site: `w_len` fitting the buffer is not enough — it must also
+    /// match `input_size * output_size`, or `Tensor::from_vec`'s internal
+    /// `assert_eq!` panics instead of this function returning `Err`.
+    fn test_mismatched_shape_rejected() -> TestResult {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"SEALML01");
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // n_layers
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // input_size
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // output_size (needs w_len == 4)
+        bytes.push(0); // activation = ReLU
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // w_len = 1, fits buffer but wrong shape
+        bytes.extend_from_slice(&0.0f64.to_le_bytes());
+        test_assert!(
+            deserialize_mlp(&bytes).is_err(),
+            "a weight length that fits the buffer but not the declared shape must be rejected"
+        );
+        TestResult::Pass
+    }
+
+    /// The fix must fail closed on garbage without breaking a real model.
+    fn test_valid_roundtrip_still_loads() -> TestResult {
+        let (_, bytes) = demo_train_mlp(1);
+        let mlp = deserialize_mlp(&bytes);
+        test_assert!(
+            mlp.is_ok(),
+            "a genuinely serialized model must still deserialize"
+        );
+        test_assert_eq!(mlp.unwrap().layers.len(), 2);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ml_engine::deserialize_truncated_buffer_rejected",
+            test_truncated_buffer_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_empty_buffer_rejected",
+            test_empty_buffer_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_bad_magic_rejected",
+            test_bad_magic_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_oversized_weight_len_rejected",
+            test_oversized_weight_len_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_oversized_bias_len_rejected",
+            test_oversized_bias_len_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_mismatched_shape_rejected",
+            test_mismatched_shape_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_valid_roundtrip_still_loads",
+            test_valid_roundtrip_still_loads,
+        );
+    }
 }
