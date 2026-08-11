@@ -11,7 +11,7 @@ use aether_core::tss::SphericalVoronoiIndex;
 use super::cursor;
 use super::event::MouseState;
 use super::taskbar;
-use super::window::{Window, WindowState};
+use super::window::{self, Window, WindowState};
 use crate::graphics::font;
 use crate::graphics::framebuffer::Framebuffer;
 use crate::wm::themes;
@@ -71,6 +71,34 @@ const TASKBAR_BTN_X0: u32 = 350;
 /// Columns held back at the right end of the taskbar for the clock and the
 /// power button. See `taskbar::power_button_rect`.
 const TASKBAR_BTN_RESERVED: u32 = 132;
+
+/// Interactive floor for an in-progress resize drag, in total window pixels.
+///
+/// Deliberately above [`window::MIN_WIDTH`] — that one is the floor
+/// `render_decorations` needs to keep its three button columns inside the
+/// buffer, this one is the smallest window a user should be able to drag
+/// themselves into. The assertions below fail the build if either value is
+/// edited to the point where the interactive floor stops satisfying the
+/// paintable one, which is the only way the two can disagree.
+const MIN_W: i64 = 100;
+/// Companion to [`MIN_W`]; see there.
+const MIN_H: i64 = 60;
+const _: () = assert!(MIN_W >= window::MIN_WIDTH as i64 && MIN_W <= window::MAX_WIDTH as i64);
+const _: () = assert!(MIN_H >= window::MIN_HEIGHT as i64 && MIN_H <= window::MAX_HEIGHT as i64);
+
+/// Point a window's backing buffer at its current dimensions.
+///
+/// The product is computed in `usize`. Three call sites here wrote
+/// `(width * height) as usize`, which is a `u32` multiply: the release profile
+/// carries no overflow checks, so a large enough window wrapped it to a short
+/// length while `blit_window` went on indexing `height * width` elements.
+fn fit_buffer(win: &mut Window) {
+    let needed = win.width as usize * win.height as usize;
+    if win.buffer.len() != needed {
+        let theme = themes::current_theme();
+        win.buffer.resize(needed, theme.bg);
+    }
+}
 
 pub struct Compositor {
     windows: Vec<Window>,
@@ -186,72 +214,74 @@ impl Compositor {
                 let old_w = self.windows[idx].width;
                 let old_h = self.windows[idx].height;
 
-                let mut new_x = old_x as i32;
-                let mut new_y = old_y as i32;
-                let mut new_w = old_w as i32;
-                let mut new_h = old_h as i32;
+                // The edge opposite the one being dragged does not move, so the
+                // whole new geometry is a function of the clamped cursor and
+                // that fixed edge — the same absolute derivation the drag path
+                // above uses, for the same reason. Applying `dx`/`dy` instead
+                // kept widening the window after `apply_move` had already
+                // pinned the cursor at the screen edge: the pointer stood still
+                // and the window still grew by a further 255 pixels per PS/2
+                // packet, each of which reallocated `width * height` u32s. A
+                // sustained right-edge drag on a 1024x768 screen requested more
+                // than 4 GiB by packet 9,883, which is allocation failure and
+                // therefore the machine, some 29,000 packets before the `u32`
+                // product could have wrapped.
+                //
+                // i64 throughout: `x + width` can exceed `u32::MAX`, because
+                // `Window::new` clamps dimensions but not position and
+                // `create_window` takes both from an unprivileged Aether script.
+                let mx = self.mouse.x as i64;
+                let my = self.mouse.y as i64;
+                let left = old_x as i64;
+                let top = old_y as i64;
+                let right = left + old_w as i64;
+                let bottom = top + old_h as i64;
 
-                match edge {
-                    ResizeEdge::Left => {
-                        new_x += dx;
-                        new_w -= dx;
+                let (mut new_x, mut new_w) = match edge {
+                    ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft => {
+                        (mx, right - mx)
                     }
-                    ResizeEdge::Right => {
-                        new_w += dx;
+                    ResizeEdge::Right | ResizeEdge::TopRight | ResizeEdge::BottomRight => {
+                        (left, mx - left + 1)
                     }
-                    ResizeEdge::Top => {
-                        new_y += dy;
-                        new_h -= dy;
+                    ResizeEdge::Top | ResizeEdge::Bottom => (left, old_w as i64),
+                };
+                let (mut new_y, mut new_h) = match edge {
+                    ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight => {
+                        (my, bottom - my)
                     }
-                    ResizeEdge::Bottom => {
-                        new_h += dy;
+                    ResizeEdge::Bottom | ResizeEdge::BottomLeft | ResizeEdge::BottomRight => {
+                        (top, my - top + 1)
                     }
-                    ResizeEdge::TopLeft => {
-                        new_x += dx;
-                        new_w -= dx;
-                        new_y += dy;
-                        new_h -= dy;
-                    }
-                    ResizeEdge::TopRight => {
-                        new_w += dx;
-                        new_y += dy;
-                        new_h -= dy;
-                    }
-                    ResizeEdge::BottomLeft => {
-                        new_x += dx;
-                        new_w -= dx;
-                        new_h += dy;
-                    }
-                    ResizeEdge::BottomRight => {
-                        new_w += dx;
-                        new_h += dy;
-                    }
-                }
+                    ResizeEdge::Left | ResizeEdge::Right => (top, old_h as i64),
+                };
 
-                const MIN_W: i32 = 100;
-                const MIN_H: i32 = 60;
-
-                if new_w < MIN_W {
-                    new_w = MIN_W;
+                // Both bounds come from `wm::window`, so the size a resize can
+                // reach and the size the constructor can hand out are one pair
+                // of numbers rather than two that drift apart.
+                let clamped_w = new_w.clamp(MIN_W, window::MAX_WIDTH as i64);
+                if clamped_w != new_w {
+                    new_w = clamped_w;
                     if matches!(
                         edge,
                         ResizeEdge::Left | ResizeEdge::TopLeft | ResizeEdge::BottomLeft
                     ) {
-                        new_x = (old_x + old_w) as i32 - MIN_W;
+                        new_x = right - new_w;
                     }
                 }
-                if new_h < MIN_H {
-                    new_h = MIN_H;
+                let clamped_h = new_h.clamp(MIN_H, window::MAX_HEIGHT as i64);
+                if clamped_h != new_h {
+                    new_h = clamped_h;
                     if matches!(
                         edge,
                         ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight
                     ) {
-                        new_y = (old_y + old_h) as i32 - MIN_H;
+                        new_y = bottom - new_h;
                     }
                 }
 
-                let new_win_x = new_x.max(0) as u32;
-                let new_win_y = new_y.max(0) as u32;
+                let new_win_x = new_x.clamp(0, u32::MAX as i64) as u32;
+                let new_win_y = new_y.clamp(0, u32::MAX as i64) as u32;
                 let new_win_w = new_w as u32;
                 let new_win_h = new_h as u32;
 
@@ -261,11 +291,7 @@ impl Compositor {
                 win.width = new_win_w;
                 win.height = new_win_h;
 
-                let needed = (win.width * win.height) as usize;
-                if win.buffer.len() != needed {
-                    let theme = themes::current_theme();
-                    win.buffer.resize(needed, theme.bg);
-                }
+                fit_buffer(win);
                 win.render_decorations();
                 win.dirty = true;
 
@@ -340,11 +366,7 @@ impl Compositor {
                     self.windows[idx].y = prev_y;
                     self.windows[idx].width = prev_w;
                     self.windows[idx].height = prev_h;
-                    let needed = (prev_w * prev_h) as usize;
-                    if self.windows[idx].buffer.len() != needed {
-                        let theme = themes::current_theme();
-                        self.windows[idx].buffer.resize(needed, theme.bg);
-                    }
+                    fit_buffer(&mut self.windows[idx]);
                     self.windows[idx].render_decorations();
                     self.mark_dirty(old_x, old_y, old_w, old_h);
                     self.mark_dirty(prev_x, prev_y, prev_w, prev_h);
@@ -363,11 +385,7 @@ impl Compositor {
                     self.windows[idx].y = 0;
                     self.windows[idx].width = self.screen_w;
                     self.windows[idx].height = self.screen_h.saturating_sub(taskbar_h);
-                    let needed = (self.windows[idx].width * self.windows[idx].height) as usize;
-                    if self.windows[idx].buffer.len() != needed {
-                        let theme = themes::current_theme();
-                        self.windows[idx].buffer.resize(needed, theme.bg);
-                    }
+                    fit_buffer(&mut self.windows[idx]);
                     self.windows[idx].render_decorations();
                     self.mark_dirty(prev_x, prev_y, prev_w, prev_h);
                     self.mark_dirty(0, 0, self.screen_w, self.screen_h.saturating_sub(taskbar_h));
@@ -968,7 +986,91 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `mouse_move` clamps the cursor to the screen and then, in the resize
+    /// path, applied the *unclamped* `dx` of the same packet to the width. Once
+    /// the pointer pinned at x=1023 the window went on growing 200 pixels per
+    /// packet with the pointer standing still, and the size could only be
+    /// walked back with an equal number of opposite packets. Every packet also
+    /// reallocated the buffer: a sustained drag at the PS/2 maximum of 255 per
+    /// packet requested 4 GiB by packet 9,883.
+    fn test_resize_tracks_the_clamped_cursor() -> TestResult {
+        let (_pixels, fb) = screen(1024, 768);
+        let mut comp = Compositor::new();
+        let id = comp.create_window("resize", 100, 100, 600, 400);
+        comp.compose_full(&fb);
+        // Window::new(600, 400) -> 604x426, so the right edge is at x=704 and
+        // its 4-pixel grab band is [700, 704).
+        test_assert_eq!(comp.window_mut(id).unwrap().width, 604);
+
+        move_to(&mut comp, 702, 300);
+        comp.mouse_click(true);
+        test_assert!(
+            comp.dragging_resize.is_some(),
+            "the right edge was not grabbed"
+        );
+
+        // Eight packets of +200. Only the first two move the cursor; it pins at
+        // 1023 and the remaining six are pointer-stationary.
+        for _ in 0..8 {
+            comp.mouse_move(200, 0, 0, 0);
+        }
+        test_assert_eq!(comp.mouse.x, 1023);
+        let win = comp.window_mut(id).unwrap();
+        test_assert_eq!(win.x, 100);
+        test_assert_eq!(win.width, 924); // right edge exactly under the cursor
+        test_assert_eq!(win.buffer.len(), (win.width as usize) * (win.height as usize));
+
+        // One opposite packet is enough to bring the edge back to the pointer.
+        comp.mouse_move(-500, 0, 0, 0);
+        test_assert_eq!(comp.mouse.x, 523);
+        test_assert_eq!(comp.window_mut(id).unwrap().width, 424);
+
+        // The floor still holds when the pointer crosses the fixed edge.
+        comp.mouse_move(-1000, 0, 0, 0);
+        test_assert_eq!(comp.mouse.x, 0);
+        let win = comp.window_mut(id).unwrap();
+        test_assert_eq!(win.x, 100);
+        test_assert_eq!(win.width, MIN_W as u32);
+        test_assert_eq!(win.buffer.len(), (win.width as usize) * (win.height as usize));
+        TestResult::Pass
+    }
+
+    /// `Window::new` clamps dimensions but not position, and `create_window`
+    /// takes both from an unprivileged Aether script, so `x + width` can land
+    /// near `u32::MAX`. A left-edge drag derives the width from that sum minus
+    /// the cursor, which is the one input the screen clamp does not bound — so
+    /// the resize has to fail closed against the same maximum the constructor
+    /// uses rather than hand a wrapped product to `Vec::resize`.
+    fn test_resize_clamps_to_the_window_maximum() -> TestResult {
+        let (_pixels, fb) = screen(1024, 768);
+        let mut comp = Compositor::new();
+        comp.compose_full(&fb);
+
+        let id = comp.create_window("far", u32::MAX - 1000, 100, 600, 400);
+        comp.dragging_resize = Some((id, ResizeEdge::Left));
+        comp.mouse_move(-2000, 0, 0, 0);
+        test_assert_eq!(comp.mouse.x, 0);
+
+        let win = comp.window_mut(id).unwrap();
+        test_assert_eq!(win.width, window::MAX_WIDTH);
+        test_assert_eq!(win.height, 426);
+        test_assert_eq!(win.buffer.len(), (win.width as usize) * (win.height as usize));
+        // The product the old code handed to `Vec::resize` as a u32.
+        test_assert!((win.width as u64) * (win.height as u64) <= u32::MAX as u64);
+        // The dragged edge moved; the opposite one did not.
+        test_assert_eq!(win.x + win.width, u32::MAX - 1000 + 604);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "compositor::resize_tracks_the_clamped_cursor",
+            test_resize_tracks_the_clamped_cursor,
+        );
+        crate::testing::register_test(
+            "compositor::resize_clamps_to_the_window_maximum",
+            test_resize_clamps_to_the_window_maximum,
+        );
         crate::testing::register_test(
             "compositor::taskbar_click_stops_where_the_row_stops",
             test_taskbar_click_stops_where_the_row_stops,
