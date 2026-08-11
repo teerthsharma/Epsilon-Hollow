@@ -5630,6 +5630,84 @@ lines removed.
 That is usually how it goes. The correct code was already there, twelve lines up,
 being ignored.
 
+## Checks That Cannot Fail: A Complete Taxonomy
+
+By this point in the document you have watched me discover, repeatedly, that
+something I believed was verifying my code was not. I have now found enough of
+them to sort them into kinds, which feels like progress and is actually just
+filing.
+
+Here is every distinct way a check in this repository has turned out to be
+incapable of failing. All seven were found in a single day. All seven were green.
+
+**1. The check that was commented out.** `test_mlp_xor` trained a neural network
+on XOR and then had `// assert!(result.final_loss < 0.1);`. It passed whether
+training converged, diverged, or produced NaN. Someone commented it out, presumably
+intending to come back.
+
+**2. The check whose subject was hardcoded.** One line below that, in the same
+test, `assert!(result.converged)` — where `fit()` sets `converged = true`
+unconditionally, under the comment `// Simple logic`. Two assertions, adjacent,
+neither capable of failing, for different reasons.
+
+**3. The check with the wrong expected value.** `atlas::relocation_arithmetic`
+expected `0xFFFF_FF00` where the ABI requires `0xFFFF_FEFC`. The addend was
+dropped. And the assertion two lines above it, testing a sibling relocation with
+the *same* addend, gets it right. One author, one sitting, honoured in one branch
+and forgotten in the next.
+
+**4. The check that measured a tautology.** The foliation proof reports
+`bounded=ok`, computed as `long_points <= STRATUM_WINDOW` — where the only code
+that increments `long_points` does so inside `if len < STRATUM_WINDOW`. It cannot
+exceed it. The documentation says this field reports failure "if the memory bound
+is exceeded." It is gated in CI.
+
+**5. The check whose failing state is unconstructible.** The same proof reports
+`referenced_evictions=0`. It is computed after `pick_victim` has already skipped
+every leaf with a non-zero refcount, and nothing mutates a refcount in between.
+Zero is not a measurement. It is the only value the expression can produce. Also
+gated in CI. There is a third one exactly like it.
+
+**6. The statistic computed and discarded.** Every boot, the unsafe-code audit
+emits `undocumented_permille=985` — the fraction of unsafe blocks with no safety
+comment, to a tenth of a percent. The checker compares four fields. That is not
+one of them. It appears in the checker's source exclusively inside test string
+literals. Nine hundred and eighty-five per mille, computed and binned, on every
+boot this kernel has ever performed.
+
+**7. The check that killed the machine before it could report.**
+`topo_asm::distance_basic` asserts a distance of 3.0 from a function that returns
+0.0 for every input — the comparison uses `jbe`, which skips the larger candidate,
+so an accumulator seeded at zero never moves. That test should fail loudly on every
+boot. It does not, because something in the same hand-written assembly takes the
+kernel down first, and a dead kernel prints no failures.
+
+That last one is my favourite and I want to be precise about why. **The test
+correctly detects the bug. The bug prevents the test from reporting it.** The suite
+runs 318 assertions, passes every one, and then goes quiet — no failure, no panic,
+no summary line — and because the harness never prints its verdict, the job that
+greps for that verdict fails with no explanation. Three separate mechanisms, each
+working exactly as designed, arranged in a sequence that produces silence.
+
+### The thing they have in common
+
+Not one of these is a mistake in the sense of someone doing arithmetic wrong. Every
+single one is a check whose *shape* is correct and whose *content* is empty. They
+read like verification. They occupy the place in the file where verification goes.
+They emit the strings verification emits.
+
+A gate is not evidence. A gate is a **claim** that evidence exists. The only way
+to find out is to make it fail on purpose and watch.
+
+I know that now because a smith working on filesystem ownership deliberately
+corrupted a journal entry to see whether any test would notice, none did, and
+that is how we learned the write-ahead log has never journalled anything — the
+`TOPJ` header and the journal entries are written to the same sectors, so nothing
+has ever parsed, and `replay_journal` has replayed nothing since the day it was
+written.
+
+It found that by breaking its own code on purpose. There is no other way.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
