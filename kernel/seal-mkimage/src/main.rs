@@ -9620,9 +9620,22 @@ fn check_o1_network(root: &Path) -> Result<(), String> {
         lookup_body,
         &["sockets.iter()", "for sock in"],
     )?;
-    if !lookup_body.contains("TCP_FLOW_INDEX.lock().lookup") || !lookup_body.contains(".get(idx)") {
+    // 36e389f made the socket table a slot map, so the direct index moved into
+    // the one-line `slot_sock` helper. Accept either shape, and check the
+    // helper itself below so the indirection cannot hide a scan.
+    let validates_by_index =
+        lookup_body.contains(".get(idx)") || lookup_body.contains("slot_sock(sockets, idx)");
+    if !lookup_body.contains("TCP_FLOW_INDEX.lock().lookup") || !validates_by_index {
         return Err(String::from(
             "lookup_exact_flow_index must use bounded index lookup plus direct socket-index validation",
+        ));
+    }
+
+    let slot_sock_body = extract_between(&text, "fn slot_sock", "fn slot_sock_mut")?;
+    reject_patterns("slot_sock", slot_sock_body, &["iter()", "for ", "while "])?;
+    if !slot_sock_body.contains("sockets.get(slot)") {
+        return Err(String::from(
+            "slot_sock must resolve a slot by direct index, since every demux lookup validates through it",
         ));
     }
 
@@ -9636,8 +9649,11 @@ fn check_o1_network(root: &Path) -> Result<(), String> {
         listener_lookup_body,
         &["sockets.iter()", "for sock in"],
     )?;
+    // Same slot-map indirection as `lookup_exact_flow_index`; `slot_sock` is
+    // checked once above for both sites.
     if !listener_lookup_body.contains("TCP_LISTENER_INDEX.lock().lookup")
-        || !listener_lookup_body.contains(".get(idx)")
+        || !(listener_lookup_body.contains(".get(idx)")
+            || listener_lookup_body.contains("slot_sock(sockets, idx)"))
     {
         return Err(String::from(
             "lookup_listener_index must use bounded index lookup plus direct socket-index validation",
