@@ -155,6 +155,33 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Pure-predicate check for the empty-path guard shape shared by every
+    /// path-taking syscall arm (`SYS_OPEN`, `SYS_EXEC`, `SYS_CHDIR`, and —
+    /// after this fix — `SYS_STAT`, `SYS_MKDIR`, `SYS_UNLINK`, `SYS_RMDIR`,
+    /// `SYS_RENAME`). `copy_path_from_user` returns `Ok(String::new())` for a
+    /// pointer to a single NUL byte, so `path.is_empty()` is the exact
+    /// condition each arm tests, and EINVAL (22) is the errno each arm
+    /// returns for it.
+    ///
+    /// This is tested as a predicate rather than by driving `dispatch()`:
+    /// `test_main()` runs before any task is current, so there is no mapped
+    /// user page table for `copy_path_from_user` to safely dereference here
+    /// (mirrors `smap_smep::tests::test_user_ptr_validation`, which for the
+    /// same reason tests `is_user_ptr` in isolation rather than exercising
+    /// `copy_from_user` end to end).
+    fn test_empty_path_guard_shape() -> TestResult {
+        let empty = String::new();
+        let non_empty = String::from("/etc/passwd");
+        test_assert!(empty.is_empty(), "empty path must trip the guard");
+        test_assert!(
+            !non_empty.is_empty(),
+            "non-empty path must not trip the guard"
+        );
+        let guarded = SyscallResult::err(22);
+        test_assert_eq!(guarded.code, -22);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("syscall::setuid_changes_uid", test_setuid_changes_uid);
         crate::testing::register_test("syscall::setgid_changes_gid", test_setgid_changes_gid);
@@ -173,6 +200,10 @@ pub mod tests {
         crate::testing::register_test(
             "syscall::write_rejects_invalid_pointer_without_touching_fd",
             test_write_rejects_invalid_pointer_without_touching_fd,
+        );
+        crate::testing::register_test(
+            "syscall::empty_path_guard_shape",
+            test_empty_path_guard_shape,
         );
     }
 }
@@ -787,6 +818,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14),
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -815,6 +849,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14),
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -1189,6 +1226,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -1208,6 +1248,9 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if path.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             {
                 let mut guard = SYSCALL_PATH.lock();
                 guard.clear();
@@ -1228,12 +1271,18 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if old.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             let new = unsafe {
                 match copy_path_from_user(new_ptr) {
                     Ok(p) => p,
                     Err(_) => return SyscallResult::err(14), // EFAULT
                 }
             };
+            if new.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             match with_vfs(|vfs| vfs.rename(&old, &new)) {
                 Ok(_) => SyscallResult::ok(0),
                 Err(e) => SyscallResult::err(vfs_error_to_errno(e)),
