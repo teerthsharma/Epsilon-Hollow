@@ -216,16 +216,327 @@ where
     Ok(buffer)
 }
 
-/// Lines of `stdin` containing `pattern`, each keeping its terminator.
-fn grep_lines(pattern: &str, stdin: &str) -> String {
+/// Lines `head` and `tail` take when no `-n` says otherwise.
+const DEFAULT_LINES: usize = 10;
+
+/// Leading single-letter flags of a filter's arguments, and the rest of the
+/// argument text.
+///
+/// The shell has no argv tokenizer — every command arm is built on
+/// `splitn(3, ' ')` (`Shell::dispatch`) and the ceiling note on
+/// `Shell::run_line` covers why adding one is a separate change — so each
+/// filter parses its own flags. Leading tokens beginning with `-` are flags,
+/// letters may be bundled (`-ru` is `-r -u`), and the first token that is not
+/// a flag ends them: the remainder comes back verbatim, inner spaces and all,
+/// so `grep two words` keeps its pattern.
+///
+/// A letter no filter here accepts is refused rather than ignored, because a
+/// dropped flag answers a different question than the one asked. A lone `-`,
+/// and a `-` before a digit, are not flags but the start of the remainder: so
+/// `grep -` searches for a hyphen, and `head -n -3` reports a bad line count
+/// rather than an unknown option.
+fn split_flags<'a>(cmd: &str, args: &'a str, allowed: &str) -> Result<(String, &'a str), String> {
+    let mut flags = String::new();
+    let mut rest = args.trim();
+    while let Some(token) = rest.split_whitespace().next() {
+        let after_dash = token.chars().nth(1);
+        if !token.starts_with('-') || matches!(after_dash, None | Some('0'..='9')) {
+            break;
+        }
+        for c in token.chars().skip(1) {
+            if !allowed.contains(c) {
+                return Err(format!(
+                    "{}: unknown option '-{}' (accepted: -{})",
+                    cmd, c, allowed
+                ));
+            }
+            flags.push(c);
+        }
+        rest = rest[token.len()..].trim_start();
+    }
+    Ok((flags, rest))
+}
+
+/// Lines of `stdin` matching `pattern`, each keeping its terminator.
+///
+/// Flags: `i` matches without regard to case, `v` keeps the lines that do not
+/// match, `n` prefixes each kept line with its 1-based number in the input,
+/// and `c` reports how many lines were kept instead of the lines themselves.
+///
+/// ponytail: `i` lowercases the pattern and every line it tests, one
+/// allocation per line. Upgrade path if a large stream ever makes that show
+/// up: compare `char` iterators with `to_lowercase` applied per character.
+fn grep_matches(flags: &str, pattern: &str, stdin: &str) -> String {
+    let fold = flags.contains('i');
+    let invert = flags.contains('v');
+    let needle = if fold {
+        pattern.to_lowercase()
+    } else {
+        String::from(pattern)
+    };
     let mut out = String::new();
-    for line in stdin.lines() {
-        if line.contains(pattern) {
+    let mut kept = 0usize;
+    for (i, line) in stdin.lines().enumerate() {
+        let hay = if fold {
+            line.to_lowercase()
+        } else {
+            String::from(line)
+        };
+        if hay.contains(&needle) == invert {
+            continue;
+        }
+        kept += 1;
+        if !flags.contains('c') {
+            if flags.contains('n') {
+                out.push_str(&format!("{}:", i + 1));
+            }
             out.push_str(line);
             out.push('\n');
         }
     }
+    if flags.contains('c') {
+        format!("{}\n", kept)
+    } else {
+        out
+    }
+}
+
+/// Lines, words and bytes of `stdin`, in that order, whichever of `l`, `w`
+/// and `c` are set — all three when none is.
+///
+/// A line is what `str::lines` yields, so a final line with no terminator
+/// still counts; a word is a run of non-whitespace; a byte is a byte.
+fn wc_counts(flags: &str, stdin: &str) -> String {
+    let all = flags.is_empty();
+    let mut fields: Vec<String> = Vec::new();
+    if all || flags.contains('l') {
+        fields.push(format!("{}", stdin.lines().count()));
+    }
+    if all || flags.contains('w') {
+        fields.push(format!("{}", stdin.split_whitespace().count()));
+    }
+    if all || flags.contains('c') {
+        fields.push(format!("{}", stdin.len()));
+    }
+    format!("{}\n", fields.join(" "))
+}
+
+/// The first `count` lines of `stdin`, or the last `count` when `from_end`,
+/// each terminated.
+fn take_lines(count: usize, from_end: bool, stdin: &str) -> String {
+    let lines: Vec<&str> = stdin.lines().collect();
+    let skip = if from_end {
+        lines.len().saturating_sub(count)
+    } else {
+        0
+    };
+    let mut out = String::new();
+    for line in lines.iter().skip(skip).take(count) {
+        out.push_str(line);
+        out.push('\n');
+    }
     out
+}
+
+/// The lines of `stdin` in byte order, each terminated; `unique` drops
+/// repeats, `reverse` turns the order around afterwards so `-ru` is the
+/// unique lines descending.
+///
+/// Every line comes back terminated whether or not the input ended in a
+/// newline, because the result is a list of lines and a filter downstream
+/// reading it with `str::lines` must see the same count. An empty stream has
+/// no lines and so produces nothing at all, not a blank line.
+fn sort_lines(reverse: bool, unique: bool, stdin: &str) -> String {
+    let mut lines: Vec<&str> = stdin.lines().collect();
+    lines.sort_unstable();
+    if unique {
+        lines.dedup();
+    }
+    if reverse {
+        lines.reverse();
+    }
+    let mut out = String::new();
+    for line in lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// `stdin` with each run of identical adjacent lines collapsed to one,
+/// prefixed by the length of the run when `with_count`.
+///
+/// Only adjacent lines: duplicates that are not neighbours both survive,
+/// which is what makes `sort | uniq` different from `uniq` alone.
+fn uniq_lines(with_count: bool, stdin: &str) -> String {
+    let mut out = String::new();
+    let mut run: Option<(&str, usize)> = None;
+    for line in stdin.lines() {
+        run = match run {
+            Some((prev, n)) if prev == line => Some((prev, n + 1)),
+            Some((prev, n)) => {
+                push_run(&mut out, prev, n, with_count);
+                Some((line, 1))
+            }
+            None => Some((line, 1)),
+        };
+    }
+    if let Some((prev, n)) = run {
+        push_run(&mut out, prev, n, with_count);
+    }
+    out
+}
+
+/// Emit one `uniq` run: the line, terminated, behind its count when asked.
+fn push_run(out: &mut String, line: &str, n: usize, with_count: bool) {
+    if with_count {
+        out.push_str(&format!("{} ", n));
+    }
+    out.push_str(line);
+    out.push('\n');
+}
+
+/// `stdin` with every `from` character replaced by `to`.
+///
+/// Characters, not lines: whatever the stream ended with, it still ends with.
+fn tr_chars(from: char, to: char, stdin: &str) -> String {
+    stdin
+        .chars()
+        .map(|c| if c == from { to } else { c })
+        .collect()
+}
+
+/// The single `char` of `s`, or `None` when it is not exactly one.
+fn one_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
+}
+
+/// Run the stage text `input` as a filter over `stdin`, or `None` when its
+/// command is not a filter.
+///
+/// Takes the whole stage text, splits the command from its arguments, and
+/// owns the table: all of it lives here rather than in `Shell::dispatch` so
+/// that the name-to-behaviour mapping and every filter's argument parsing are
+/// exercisable without building a `Shell` — which mounts, and on a blank disk
+/// formats, the AHCI block store. It is the same reason `parse_stage` and
+/// `run_pipeline` are free functions.
+///
+/// Everything after the first space is the argument text, verbatim, so a
+/// filter can be handed an argument containing spaces (`grep two words`).
+///
+/// A filter that cannot parse its arguments returns the message as its
+/// output. There is no exit status to fail with (see `Shell::run_line`), and
+/// a message on the terminal is what the operator needs; what it must never
+/// do is proceed on a guessed argument and report a confident wrong answer.
+fn run_filter(input: &str, stdin: &str) -> Option<String> {
+    let (cmd, args) = input.split_once(' ').unwrap_or((input, ""));
+    let result = match cmd {
+        "grep" => filter_grep(args, stdin),
+        "wc" => filter_wc(args, stdin),
+        "head" | "tail" => filter_head_tail(cmd, args, stdin),
+        "sort" => filter_sort(args, stdin),
+        "uniq" => filter_uniq(args, stdin),
+        "tr" => filter_tr(args, stdin),
+        // A named file is `Shell::cmd_peek`'s job, and needs the filesystem.
+        "cat" if args.trim().is_empty() => Ok(String::from(stdin)),
+        _ => return None,
+    };
+    Some(result.unwrap_or_else(|e| e))
+}
+
+fn filter_grep(args: &str, stdin: &str) -> Result<String, String> {
+    let (flags, pattern) = split_flags("grep", args, "cinv")?;
+    if pattern.is_empty() {
+        return Err(String::from(
+            "grep: what text? Usage: <command> | grep [-c] [-i] [-n] [-v] <text>",
+        ));
+    }
+    Ok(grep_matches(&flags, pattern, stdin))
+}
+
+fn filter_wc(args: &str, stdin: &str) -> Result<String, String> {
+    let (flags, rest) = split_flags("wc", args, "clw")?;
+    if !rest.is_empty() {
+        return Err(format!(
+            "wc: unexpected argument '{}'. Usage: <command> | wc [-l] [-w] [-c]",
+            rest
+        ));
+    }
+    Ok(wc_counts(&flags, stdin))
+}
+
+/// `head`/`tail`, which differ only in the end of the stream they keep.
+///
+/// A count that is zero, negative or not a number is refused: silently
+/// falling back to the default would print ten lines to someone who asked
+/// for something else.
+fn filter_head_tail(cmd: &str, args: &str, stdin: &str) -> Result<String, String> {
+    let (flags, rest) = split_flags(cmd, args, "n")?;
+    let count = if flags.contains('n') {
+        match rest.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            _ => {
+                return Err(format!(
+                    "{}: -n needs a line count of 1 or more, not '{}'",
+                    cmd, rest
+                ))
+            }
+        }
+    } else if rest.is_empty() {
+        DEFAULT_LINES
+    } else {
+        return Err(format!(
+            "{}: unexpected argument '{}'. Usage: <command> | {} [-n <lines>]",
+            cmd, rest, cmd
+        ));
+    };
+    Ok(take_lines(count, cmd == "tail", stdin))
+}
+
+fn filter_sort(args: &str, stdin: &str) -> Result<String, String> {
+    let (flags, rest) = split_flags("sort", args, "ru")?;
+    if !rest.is_empty() {
+        return Err(format!(
+            "sort: unexpected argument '{}'. Usage: <command> | sort [-r] [-u]",
+            rest
+        ));
+    }
+    Ok(sort_lines(flags.contains('r'), flags.contains('u'), stdin))
+}
+
+fn filter_uniq(args: &str, stdin: &str) -> Result<String, String> {
+    let (flags, rest) = split_flags("uniq", args, "c")?;
+    if !rest.is_empty() {
+        return Err(format!(
+            "uniq: unexpected argument '{}'. Usage: <command> | uniq [-c]",
+            rest
+        ));
+    }
+    Ok(uniq_lines(flags.contains('c'), stdin))
+}
+
+/// `tr <from> <to>`, one character to one character.
+///
+/// ponytail: no ranges (`a-z`) and no classes (`[:upper:]`), which is why
+/// both arguments are checked to be exactly one `char` rather than truncated
+/// — `tr a-z A-Z` asks for something this does not do and must say so instead
+/// of translating `a` to `A` and dropping the rest. Upgrade path: expand a
+/// `x-y` argument into a character set and map by position.
+fn filter_tr(args: &str, stdin: &str) -> Result<String, String> {
+    let mut parts = args.split_whitespace();
+    let from = parts.next().and_then(one_char);
+    let to = parts.next().and_then(one_char);
+    let extra = parts.next();
+    match (from, to, extra) {
+        (Some(from), Some(to), None) => Ok(tr_chars(from, to, stdin)),
+        _ => Err(String::from(
+            "tr: usage: <command> | tr <from> <to> — one character each, no ranges or classes",
+        )),
+    }
 }
 
 /// Bytes a redirection target must hold afterwards: `produced` alone for `>`,
@@ -389,14 +700,8 @@ impl Shell {
                 };
                 self.cmd_search(query)
             }
-            "grep" => {
-                let pattern = input.split_once(' ').map(|x| x.1.trim()).unwrap_or("");
-                if pattern.is_empty() {
-                    String::from("grep: what text? Usage: <command> | grep <text>")
-                } else {
-                    grep_lines(pattern, stdin)
-                }
-            }
+            // `cat` with no argument is the stdin filter, below.
+            "cat" if !arg1.is_empty() => self.cmd_peek(arg1),
             "info" => self.cmd_info(arg1),
             "seal" => self.cmd_seal(),
             "tasks" => self.cmd_tasks(),
@@ -471,7 +776,13 @@ impl Shell {
             "stop" => self.media_player.stop(),
             "formats" => MediaPlayer::supported_formats(),
 
-            _ => format!("seal: unknown command '{}' — type 'help' for the handbook", cmd),
+            // The stdin filters: `grep`, `wc`, `head`, `tail`, `sort`,
+            // `uniq`, `tr` and a bare `cat`. They need no `Shell`, so they
+            // live in `run_filter` where a test can reach them.
+            _ => match run_filter(input, stdin) {
+                Some(output) => output,
+                None => format!("seal: unknown command '{}' — type 'help' for the handbook", cmd),
+            },
         }
     }
 
@@ -1746,7 +2057,7 @@ pub mod tests {
     fn test_three_stage_pipeline_composes() -> TestResult {
         let text = "alpha.txt\nalpha.log\nbeta.log\nnotes\n";
         let filter = |cmd: &str, stdin: &str| {
-            grep_lines(cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
+            grep_matches("", cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
         };
         let out = run_pipeline(
             &["grep .", "grep alpha", "grep log"],
@@ -1772,7 +2083,7 @@ pub mod tests {
                 if cmd == "grep alpha" {
                     downstream_stdin = String::from(stdin);
                 }
-                grep_lines(cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
+                grep_matches("", cmd.split_once(' ').map(|x| x.1).unwrap_or(""), stdin)
             },
         );
         test_assert_eq!(out.unwrap_or_default(), "");
@@ -1919,7 +2230,263 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Five lines, one adjacent duplicate pair, mixed case, unsorted, and no
+    /// terminator on the last line: 5 lines, 5 words, 32 bytes.
+    const FRUIT: &str = "banana\napple\napple\nCherry\nbanana";
+
+    /// What the shell prints for the stage text `line` handed `stdin`, with a
+    /// command that is not a filter named rather than silently empty.
+    fn filtered(line: &str, stdin: &str) -> String {
+        run_filter(line, stdin).unwrap_or_else(|| String::from("<not a filter>"))
+    }
+
+    /// Every filter name reaches its own filter, and nothing else is one. A
+    /// table entry pointing at the wrong function — `head` at `tail`, `sort`
+    /// at `uniq` — shows up here as the neighbouring filter's answer.
+    fn test_filter_table_routes_each_name() -> TestResult {
+        test_assert_eq!(filtered("wc -l", FRUIT), "5\n");
+        // Everything after the first space is the argument text.
+        test_assert_eq!(filtered("wc  -l", FRUIT), "5\n");
+        test_assert_eq!(filtered("grep two words", "two words\nno\n"), "two words\n");
+        test_assert_eq!(filtered("head -n 1", FRUIT), "banana\n");
+        test_assert_eq!(filtered("tail -n 1", FRUIT), "banana\n");
+        test_assert_eq!(filtered("head -n 2", FRUIT), "banana\napple\n");
+        test_assert_eq!(filtered("tail -n 2", FRUIT), "Cherry\nbanana\n");
+        test_assert_eq!(filtered("sort -u", FRUIT), "Cherry\napple\nbanana\n");
+        test_assert_eq!(filtered("uniq", FRUIT), "banana\napple\nCherry\nbanana\n");
+        test_assert_eq!(filtered("grep Cherry", FRUIT), "Cherry\n");
+        test_assert_eq!(filtered("tr a X", "banana"), "bXnXnX");
+        // A bare `cat` is the pipeline unchanged; with a file it is `peek`,
+        // which needs the filesystem and so is not a filter.
+        test_assert_eq!(filtered("cat", FRUIT), FRUIT);
+        test_assert!(run_filter("cat notes.txt", FRUIT).is_none());
+        for line in ["look", "peek notes.txt", "write a b", "seal", "nosuchcmd", ""] {
+            test_assert!(
+                run_filter(line, FRUIT).is_none(),
+                "only the filters may claim a command name"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// `wc` counts lines, words and bytes, and a flag selects one of the
+    /// three. The three counts differ on this stream, so a count read from
+    /// the wrong one cannot pass.
+    fn test_wc_counts_lines_words_and_bytes() -> TestResult {
+        test_assert_eq!(filtered("wc", FRUIT), "5 5 32\n");
+        test_assert_eq!(filtered("wc -l", FRUIT), "5\n");
+        test_assert_eq!(filtered("wc -w", FRUIT), "5\n");
+        test_assert_eq!(filtered("wc -c", FRUIT), "32\n");
+        test_assert_eq!(filtered("wc", "one two three\n"), "1 3 14\n");
+        test_assert_eq!(filtered("wc", ""), "0 0 0\n");
+        test_assert_eq!(filtered("wc -lc", "ab\ncd\n"), "2 6\n");
+        TestResult::Pass
+    }
+
+    /// `head` and `tail` take opposite ends, default to ten lines, and never
+    /// invent lines the stream does not have.
+    fn test_head_and_tail_take_opposite_ends() -> TestResult {
+        test_assert_eq!(filtered("head -n 2", FRUIT), "banana\napple\n");
+        test_assert_eq!(filtered("tail -n 2", FRUIT), "Cherry\nbanana\n");
+        test_assert!(filtered("head -n 2", FRUIT) != filtered("tail -n 2", FRUIT));
+        // No -n is ten lines, which this five-line stream is inside of.
+        test_assert_eq!(filtered("head", FRUIT), "banana\napple\napple\nCherry\nbanana\n");
+        test_assert_eq!(filtered("tail", FRUIT), filtered("head", FRUIT));
+        test_assert_eq!(filtered("head -n 99", FRUIT), filtered("head", FRUIT));
+        test_assert_eq!(filtered("tail -n 99", FRUIT), filtered("head", FRUIT));
+        test_assert_eq!(filtered("head -n 3", ""), "");
+        // The default is ten, not the whole stream.
+        let eleven = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n";
+        test_assert_eq!(filtered("head", eleven), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        test_assert_eq!(filtered("tail", eleven), "2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n");
+        TestResult::Pass
+    }
+
+    /// A line count of zero, a negative one, a word, or a stray argument is
+    /// refused with a message. Falling back to the default would print ten
+    /// lines to an operator who asked for something else.
+    fn test_head_and_tail_refuse_a_bad_count() -> TestResult {
+        for cmd in ["head", "tail"] {
+            for args in ["-n 0", "-n -3", "-n two", "-n", "-n 2 extra", "3"] {
+                let out = filtered(&format!("{} {}", cmd, args), FRUIT);
+                test_assert!(
+                    out.starts_with(cmd) && !out.contains("banana"),
+                    "a bad count must be refused, not defaulted"
+                );
+            }
+        }
+        test_assert_eq!(
+            filtered("head -n 0", FRUIT),
+            "head: -n needs a line count of 1 or more, not '0'"
+        );
+        test_assert_eq!(
+            filtered("tail -n -3", FRUIT),
+            "tail: -n needs a line count of 1 or more, not '-3'"
+        );
+        TestResult::Pass
+    }
+
+    /// `sort` orders by byte, `-u` drops repeats, `-r` turns the result
+    /// around, and every line comes back terminated whether or not the input
+    /// ended in a newline. An empty stream has no lines, so it produces
+    /// nothing rather than a blank one.
+    fn test_sort_orders_dedups_and_reverses() -> TestResult {
+        test_assert_eq!(filtered("sort", FRUIT), "Cherry\napple\napple\nbanana\nbanana\n");
+        test_assert_eq!(filtered("sort -u", FRUIT), "Cherry\napple\nbanana\n");
+        test_assert_eq!(filtered("sort -r", FRUIT), "banana\nbanana\napple\napple\nCherry\n");
+        test_assert_eq!(filtered("sort -ru", FRUIT), "banana\napple\nCherry\n");
+        test_assert_eq!(filtered("sort -u -r", FRUIT), "banana\napple\nCherry\n");
+        // Unterminated in, terminated out; the line count is unchanged.
+        test_assert_eq!(filtered("sort", "b\na"), "a\nb\n");
+        test_assert_eq!(filtered("sort", "b\na\n"), "a\nb\n");
+        test_assert_eq!(filtered("wc -l", &filtered("sort", "b\na")), "2\n");
+        // Empty in, empty out — not "\n".
+        test_assert_eq!(filtered("sort", ""), "");
+        test_assert_eq!(filtered("sort -ru", ""), "");
+        TestResult::Pass
+    }
+
+    /// `uniq` collapses only neighbours, which is what makes `sort | uniq`
+    /// different from `uniq` alone, and `-c` reports the length of each run.
+    fn test_uniq_collapses_only_adjacent_duplicates() -> TestResult {
+        test_assert_eq!(filtered("uniq", FRUIT), "banana\napple\nCherry\nbanana\n");
+        test_assert_eq!(filtered("uniq -c", FRUIT), "1 banana\n2 apple\n1 Cherry\n1 banana\n");
+        // The two bananas are not neighbours until the stream is sorted.
+        let sorted = filtered("sort", FRUIT);
+        test_assert_eq!(filtered("uniq -c", &sorted), "1 Cherry\n2 apple\n2 banana\n");
+        test_assert_eq!(filtered("uniq", ""), "");
+        test_assert_eq!(filtered("uniq -c", "x\nx\nx\n"), "3 x\n");
+        TestResult::Pass
+    }
+
+    /// `grep` keeps its old behaviour, and each flag changes the answer:
+    /// `-v` inverts, `-i` folds case, `-n` numbers, `-c` counts.
+    fn test_grep_flags_invert_fold_number_and_count() -> TestResult {
+        // Unflagged, exactly what it did before the flags existed.
+        test_assert_eq!(filtered("grep banana", FRUIT), "banana\nbanana\n");
+        test_assert_eq!(grep_matches("", "banana", FRUIT), "banana\nbanana\n");
+        test_assert_eq!(filtered("grep cherry", FRUIT), "");
+        test_assert_eq!(filtered("grep -i cherry", FRUIT), "Cherry\n");
+        test_assert_eq!(filtered("grep -v banana", FRUIT), "apple\napple\nCherry\n");
+        test_assert_eq!(filtered("grep -n banana", FRUIT), "1:banana\n5:banana\n");
+        test_assert_eq!(filtered("grep -c banana", FRUIT), "2\n");
+        test_assert_eq!(filtered("grep -vc banana", FRUIT), "3\n");
+        test_assert_eq!(filtered("grep -cv banana", FRUIT), "3\n");
+        test_assert_eq!(filtered("grep -in CHERRY", FRUIT), "4:Cherry\n");
+        // The pattern keeps its spaces, and a missing one is refused.
+        test_assert_eq!(filtered("grep two words", "two words\nother\n"), "two words\n");
+        test_assert!(filtered("grep", FRUIT).starts_with("grep: what text?"));
+        test_assert!(filtered("grep -v", FRUIT).starts_with("grep: what text?"));
+        TestResult::Pass
+    }
+
+    /// `tr` replaces one character with one character and says so when asked
+    /// for a range or a class, rather than translating the first character of
+    /// each and dropping the rest.
+    fn test_tr_translates_one_character_and_refuses_ranges() -> TestResult {
+        test_assert_eq!(filtered("tr a X", "banana\napple\n"), "bXnXnX\nXpple\n");
+        test_assert_eq!(filtered("tr , ;", "a,b,c"), "a;b;c");
+        // Not a line filter: the stream ends the way it arrived.
+        test_assert_eq!(filtered("tr a X", "banana"), "bXnXnX");
+        for line in ["tr", "tr a", "tr a-z A-Z", "tr a X Y", "tr ab X"] {
+            test_assert!(
+                filtered(line, FRUIT).starts_with("tr: usage:"),
+                "tr must refuse anything that is not two single characters"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// A flag letter no filter accepts is refused rather than ignored: a
+    /// dropped flag answers a different question than the one asked. Bundled
+    /// flags are accepted, and a bare `-` is text, not a flag.
+    fn test_unknown_filter_flag_is_refused() -> TestResult {
+        for line in [
+            "wc -z",
+            "sort -x",
+            "uniq -q",
+            "head -k 2",
+            "grep -z text",
+            "sort -ruz",
+        ] {
+            let out = filtered(line, FRUIT);
+            test_assert!(
+                out.contains("unknown option") && !out.contains("banana"),
+                "an unknown flag must be refused, not ignored"
+            );
+        }
+        // A stray non-flag argument is refused too — these read stdin only.
+        test_assert!(filtered("wc file.txt", FRUIT).contains("unexpected argument"));
+        test_assert!(filtered("sort file.txt", FRUIT).contains("unexpected argument"));
+        test_assert!(filtered("uniq file.txt", FRUIT).contains("unexpected argument"));
+        // A lone '-' is a pattern, not a flag.
+        test_assert_eq!(filtered("grep -", "a-b\ncd\n"), "a-b\n");
+        TestResult::Pass
+    }
+
+    /// The handbook names every filter and both metacharacters, and each
+    /// filter has a page. A feature no `help` mentions cannot be found.
+    fn test_handbook_documents_the_filters_and_pipeline_syntax() -> TestResult {
+        let book = help::handbook();
+        for token in [
+            "grep", "wc", "head", "tail", "sort", "uniq", "cat", "tr", "a | b", "< file",
+            "> file", ">> file",
+        ] {
+            test_assert!(book.contains(token), "the handbook must name every filter");
+        }
+        for topic in [
+            "grep", "wc", "head", "tail", "sort", "uniq", "cat", "tr", "pipes", "redirection",
+        ] {
+            test_assert!(
+                !help::help_for(topic).starts_with("No help available"),
+                "every filter needs a help page"
+            );
+        }
+        test_assert!(help::help_for("nosuchcommand").starts_with("No help available"));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "shell::filter_table_routes_each_name",
+            test_filter_table_routes_each_name,
+        );
+        crate::testing::register_test(
+            "shell::wc_counts_lines_words_and_bytes",
+            test_wc_counts_lines_words_and_bytes,
+        );
+        crate::testing::register_test(
+            "shell::head_and_tail_take_opposite_ends",
+            test_head_and_tail_take_opposite_ends,
+        );
+        crate::testing::register_test(
+            "shell::head_and_tail_refuse_a_bad_count",
+            test_head_and_tail_refuse_a_bad_count,
+        );
+        crate::testing::register_test(
+            "shell::sort_orders_dedups_and_reverses",
+            test_sort_orders_dedups_and_reverses,
+        );
+        crate::testing::register_test(
+            "shell::uniq_collapses_only_adjacent_duplicates",
+            test_uniq_collapses_only_adjacent_duplicates,
+        );
+        crate::testing::register_test(
+            "shell::grep_flags_invert_fold_number_and_count",
+            test_grep_flags_invert_fold_number_and_count,
+        );
+        crate::testing::register_test(
+            "shell::tr_translates_one_character_and_refuses_ranges",
+            test_tr_translates_one_character_and_refuses_ranges,
+        );
+        crate::testing::register_test(
+            "shell::unknown_filter_flag_is_refused",
+            test_unknown_filter_flag_is_refused,
+        );
+        crate::testing::register_test(
+            "shell::handbook_documents_the_filters_and_pipeline_syntax",
+            test_handbook_documents_the_filters_and_pipeline_syntax,
+        );
         crate::testing::register_test(
             "shell::pipeline_forwards_each_stage_output_as_the_next_stdin",
             test_pipeline_forwards_each_stage_output_as_the_next_stdin,
