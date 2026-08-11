@@ -531,34 +531,18 @@ impl BlockStore {
         s
     }
 
-    pub fn mount_ahci() -> Result<Self, BlockError> {
-        let backend = AhciBackend;
-        let mut buf = [0u8; SECTOR_SIZE];
-        backend.read_sector(0, &mut buf)?;
-        if Superblock::from_bytes(&buf).is_none() {
-            let mut s = Self::new();
-            s.backend = Some(Box::new(backend));
-            s.format(1024 * 1024)?;
-            s.topo_journal = Some(TopologicalJournal::new());
-            return Ok(s);
-        }
-        let mut s = Self::new();
-        s.backend = Some(Box::new(backend));
-        s.read_superblock()?;
-        s.read_bitmap()?;
-        s.read_inode_table()?;
-        s.replay_journal()?;
-        if let Some(ref mut journal) = s.topo_journal {
-            if let Some(ref backend) = s.backend {
-                let sb = s.superblock.as_ref().ok_or(BlockError::NoDevice)?;
-                let _ = journal.replay(backend.as_ref(), sb.journal_start, sb.journal_blocks);
-            }
-        }
-        Ok(s)
-    }
-
-    pub fn try_mount_ahci() -> Result<Self, MountError> {
-        let backend = AhciBackend;
+    /// Mount an existing filesystem from `backend`, reading only.
+    ///
+    /// A superblock that is absent, carries foreign data, or announces a
+    /// version this build does not understand is refused with
+    /// `MountError::NoSuperblock`. Mounting never formats: a format erases the
+    /// superblock, the journal, and the free bitmap, so inferring one from an
+    /// unrecognised sector turns a recoverable fault — a transient read, a disk
+    /// holding somebody else's filesystem, a future on-disk version — into
+    /// unrecoverable data loss. The manifold region is provisioned deliberately
+    /// by the image builder (`kernel/seal-mkimage`, `create_manifold_superblock`),
+    /// which is the only caller that has established the device is blank.
+    fn mount_backend(backend: Box<dyn BlockStoreBackend>) -> Result<Self, MountError> {
         let mut buf = [0u8; SECTOR_SIZE];
         backend.read_sector(0, &mut buf).map_err(|e| match e {
             BlockError::NoDevice => MountError::NoDevice,
@@ -568,7 +552,7 @@ impl BlockStore {
             return Err(MountError::NoSuperblock);
         }
         let mut s = Self::new();
-        s.backend = Some(Box::new(backend));
+        s.backend = Some(backend);
         s.read_superblock().map_err(|_| MountError::NoSuperblock)?;
         s.read_bitmap().map_err(|_| MountError::NoSuperblock)?;
         s.read_inode_table().map_err(|_| MountError::NoSuperblock)?;
@@ -582,6 +566,17 @@ impl BlockStore {
             }
         }
         Ok(s)
+    }
+
+    pub fn mount_ahci() -> Result<Self, BlockError> {
+        Self::mount_backend(Box::new(AhciBackend)).map_err(|e| match e {
+            MountError::NoDevice => BlockError::NoDevice,
+            MountError::NoSuperblock => BlockError::IoError,
+        })
+    }
+
+    pub fn try_mount_ahci() -> Result<Self, MountError> {
+        Self::mount_backend(Box::new(AhciBackend))
     }
 
     pub fn format(&mut self, total_blocks: u64) -> Result<(), BlockError> {
@@ -1331,6 +1326,7 @@ pub mod tests {
     use super::*;
     use crate::testing::TestResult;
     use crate::{test_assert, test_assert_eq};
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     fn dummy_inode(id: u64, name: &str) -> Inode {
         Inode {
@@ -1495,8 +1491,108 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Backend that counts writes and hands back whatever sector 0 it was told
+    /// to hold, so a refused mount can be told from a mount that formatted.
+    struct RefusalProbe {
+        sector0: [u8; SECTOR_SIZE],
+        read_fails: bool,
+    }
+
+    static PROBE_WRITES: AtomicUsize = AtomicUsize::new(0);
+
+    impl BlockStoreBackend for RefusalProbe {
+        fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            if self.read_fails {
+                return Err(BlockError::IoError);
+            }
+            if buf.len() != SECTOR_SIZE {
+                return Err(BlockError::InvalidLba);
+            }
+            if lba == 0 {
+                buf.copy_from_slice(&self.sector0);
+            } else {
+                buf.fill(0);
+            }
+            Ok(())
+        }
+        fn write_sector(&self, _lba: u64, _buf: &[u8]) -> Result<(), BlockError> {
+            PROBE_WRITES.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// An unrecognised superblock must refuse the mount without writing. A
+    /// mount that refuses is recoverable; a mount that formats is not.
+    fn test_mount_refuses_unrecognised_superblock_without_writing() -> TestResult {
+        let blank = [0u8; SECTOR_SIZE];
+
+        let mut foreign = [0u8; SECTOR_SIZE];
+        for (i, b) in foreign.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+
+        let mut future = Superblock::new(1024 * 1024);
+        future.version = VERSION + 1;
+        let mut future_sector = [0u8; SECTOR_SIZE];
+        future_sector.copy_from_slice(future.as_bytes());
+
+        for (accepted, wrote, sector, read_fails) in [
+            (
+                "mount accepted a blank device",
+                "mount wrote to a blank device",
+                blank,
+                false,
+            ),
+            (
+                "mount accepted foreign data as a superblock",
+                "mount wrote over foreign data",
+                foreign,
+                false,
+            ),
+            (
+                "mount accepted a future on-disk version",
+                "mount wrote over a future on-disk version",
+                future_sector,
+                false,
+            ),
+            (
+                "mount accepted an unreadable device",
+                "mount wrote to a device it could not read",
+                blank,
+                true,
+            ),
+        ] {
+            PROBE_WRITES.store(0, Ordering::SeqCst);
+            let probe = RefusalProbe {
+                sector0: sector,
+                read_fails,
+            };
+            let mounted = BlockStore::mount_backend(Box::new(probe));
+            test_assert!(mounted.is_err(), accepted);
+            test_assert!(PROBE_WRITES.load(Ordering::SeqCst) == 0, wrote);
+        }
+
+        // A superblock this build does understand still mounts, and mounting it
+        // writes nothing.
+        PROBE_WRITES.store(0, Ordering::SeqCst);
+        let sb = Superblock::new(1024 * 1024);
+        let mut valid = [0u8; SECTOR_SIZE];
+        valid.copy_from_slice(sb.as_bytes());
+        let mounted = BlockStore::mount_backend(Box::new(RefusalProbe {
+            sector0: valid,
+            read_fails: false,
+        }));
+        test_assert!(mounted.is_ok(), "valid superblock should mount");
+        test_assert_eq!(PROBE_WRITES.load(Ordering::SeqCst), 0);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("block_store::roundtrip", test_roundtrip);
+        crate::testing::register_test(
+            "block_store::mount_refuses_unrecognised_superblock_without_writing",
+            test_mount_refuses_unrecognised_superblock_without_writing,
+        );
         crate::testing::register_test(
             "block_store::journal_sector_roundtrip",
             test_journal_sector_roundtrip,
