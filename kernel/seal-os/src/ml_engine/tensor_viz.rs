@@ -15,6 +15,34 @@ pub struct Tensor {
     pub data: Vec<f32>,
 }
 
+impl Tensor {
+    /// A tensor with no shape and no data. Every consumer already treats an
+    /// empty buffer as "nothing to draw", so this is the fail-closed result for
+    /// input that cannot be read as a rectangle.
+    pub fn empty() -> Self {
+        Tensor {
+            shape: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    /// True when `shape` describes exactly the buffer that backs it.
+    ///
+    /// Every index in this module that is computed from `shape` rather than
+    /// from `data.len()` is only sound while this holds, so it gates the one
+    /// entry point those indices live behind. The product is computed with
+    /// `checked_mul` so an overflowing shape cannot wrap into a value the
+    /// buffer appears to satisfy.
+    pub fn is_rectangular(&self) -> bool {
+        !self.shape.is_empty()
+            && self
+                .shape
+                .iter()
+                .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+                == Some(self.data.len())
+    }
+}
+
 /// A TopoMesh augmented with tensor metadata.
 pub struct TensorMesh {
     pub mesh: TopoMesh,
@@ -27,6 +55,17 @@ pub struct TensorMesh {
 // ---------------------------------------------------------------------------
 
 /// Parse a CSV string into a 2-D tensor.
+///
+/// The file content is attacker-chosen, so the shape is never widened past what
+/// the buffer actually holds. A row whose numeric field count disagrees with the
+/// first data row makes the whole file unreadable as a matrix, and the result is
+/// `Tensor::empty()` rather than a rectangle the buffer cannot fill. Padding the
+/// gap with zeros was rejected: `tensor info` reports min/max/mean and the
+/// renderer paints zero as break-even grey, so invented cells would be read as
+/// data. Refusing renders nothing, which is honest.
+///
+/// Lines with no numeric field at all — a text header, a blank line — are skipped
+/// and take no part in the row count, as before.
 pub fn parse_csv(data: &str) -> Tensor {
     let mut values = Vec::new();
     let mut rows = 0usize;
@@ -44,12 +83,21 @@ pub fn parse_csv(data: &str) -> Tensor {
                 line_cols += 1;
             }
         }
-        if line_cols > 0 {
-            cols = cols.max(line_cols);
-            rows += 1;
+        if line_cols == 0 {
+            continue;
         }
+        if rows == 0 {
+            cols = line_cols;
+        } else if line_cols != cols {
+            return Tensor::empty();
+        }
+        rows += 1;
     }
-    // NOTE: we trust well-formed CSV; rectangular padding not performed.
+    if rows == 0 || cols == 0 {
+        return Tensor::empty();
+    }
+    // `rows * cols == values.len()` by construction: every counted row pushed
+    // exactly `cols` values.
     Tensor {
         shape: vec![rows, cols],
         data: values,
@@ -65,8 +113,11 @@ pub fn parse_csv(data: &str) -> Tensor {
 /// * 1-D: X = index, Y = value, Z = 0
 /// * 2-D: X = column, Z = row, Y = value
 /// * 3-D+: X/Y/Z = first three dimension indices (value drives colour only)
+///
+/// A tensor whose shape does not match its buffer draws nothing: `Tensor` has
+/// public fields, so `parse_csv` is not the only way one can be built.
 pub fn tensor_to_point_cloud(tensor: &Tensor) -> Vec<[f32; 3]> {
-    if tensor.shape.is_empty() || tensor.data.is_empty() {
+    if tensor.data.is_empty() || !tensor.is_rectangular() {
         return Vec::new();
     }
 
@@ -387,4 +438,136 @@ pub fn render_tensor(tensor: &Tensor, camera: &Camera, target: &mut Window) {
     };
     crate::graphics::topo_render::set_camera(*camera);
     crate::graphics::topo_render::render_mesh(&tensor_mesh.mesh, target);
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Shape and buffer agree: the shape describes the buffer exactly, or there
+    /// is no shape and no buffer.
+    fn agrees(t: &Tensor) -> bool {
+        t.is_rectangular() || (t.shape.is_empty() && t.data.is_empty())
+    }
+
+    /// The named defect: `1,2,3\n4,5\n` used to give shape [2, 3] over a 5-value
+    /// buffer, so rendering read `data[5]`. Under `panic = "abort"` that is the
+    /// machine, and the file content is entirely attacker-chosen.
+    fn test_ragged_csv_refused() -> TestResult {
+        let t = parse_csv("1,2,3\n4,5\n");
+        test_assert!(agrees(&t), "ragged CSV produced a tensor that lies");
+        test_assert!(t.data.is_empty(), "ragged CSV must be refused, not padded");
+        test_assert!(tensor_to_point_cloud(&t).is_empty());
+        TestResult::Pass
+    }
+
+    /// Same defect through a different door: one non-numeric field shortens a row.
+    fn test_non_numeric_field_refused() -> TestResult {
+        let t = parse_csv("1,abc,3\n4,5,6\n");
+        test_assert!(agrees(&t));
+        test_assert!(t.data.is_empty());
+        let grown = parse_csv("1\n2,3\n4,5,6\n");
+        test_assert!(agrees(&grown));
+        test_assert!(grown.data.is_empty());
+        TestResult::Pass
+    }
+
+    /// A rectangular file is unchanged, header row still skipped.
+    fn test_well_formed_csv_unchanged() -> TestResult {
+        let t = parse_csv("1,2,3\n4,5,6\n");
+        test_assert_eq!(t.shape.len(), 2);
+        test_assert_eq!(t.shape[0], 2);
+        test_assert_eq!(t.shape[1], 3);
+        test_assert_eq!(t.data.len(), 6);
+        test_assert_eq!(tensor_to_point_cloud(&t).len(), 6);
+        let headed = parse_csv("date,open,close\n1,2,3\n4,5,6\n");
+        test_assert_eq!(headed.data.len(), 6);
+        test_assert_eq!(headed.shape[1], 3);
+        TestResult::Pass
+    }
+
+    /// Degenerate end of the same defect: nothing numeric anywhere.
+    fn test_degenerate_inputs_empty() -> TestResult {
+        for src in ["", "\n\n\n", "   \n\t\n", "a,b\nc,d\n", ",,,\n"] {
+            let t = parse_csv(src);
+            test_assert!(agrees(&t), "degenerate input produced a tensor that lies");
+            test_assert!(tensor_to_point_cloud(&t).is_empty());
+        }
+        TestResult::Pass
+    }
+
+    /// `Tensor` has public fields, so a shape that outruns its buffer can still
+    /// be built by hand. Every index computed from `shape` sits behind this gate.
+    fn test_overlong_shape_draws_nothing() -> TestResult {
+        let one_d = Tensor {
+            shape: vec![5],
+            data: vec![1.0, 2.0],
+        };
+        test_assert!(!one_d.is_rectangular());
+        test_assert!(tensor_to_point_cloud(&one_d).is_empty());
+
+        let two_d = Tensor {
+            shape: vec![3, 4],
+            data: vec![1.0, 2.0, 3.0],
+        };
+        test_assert!(!two_d.is_rectangular());
+        test_assert!(tensor_to_point_cloud(&two_d).is_empty());
+
+        // An overflowing product must not wrap into a value the buffer satisfies.
+        let overflow = Tensor {
+            shape: vec![usize::MAX, 4, 4],
+            data: vec![1.0, 2.0, 3.0, 4.0],
+        };
+        test_assert!(!overflow.is_rectangular());
+        test_assert!(tensor_to_point_cloud(&overflow).is_empty());
+        TestResult::Pass
+    }
+
+    /// Guards the `run_tensor_render_bench` gate in lib.rs against this change.
+    fn test_bench_fixture_shape() -> TestResult {
+        let mut csv = alloc::string::String::new();
+        for row in 0..32usize {
+            for col in 0..32usize {
+                csv.push((b'0' + ((row + col) % 10) as u8) as char);
+                if col + 1 < 32 {
+                    csv.push(',');
+                }
+            }
+            csv.push('\n');
+        }
+        let t = parse_csv(&csv);
+        test_assert_eq!(t.shape[0], 32);
+        test_assert_eq!(t.shape[1], 32);
+        test_assert_eq!(t.data.len(), 1024);
+        let points = tensor_to_point_cloud(&t);
+        test_assert_eq!(points.len(), 1024);
+        let mesh = point_cloud_to_mesh_grid(&points, &t.data, 32, 32);
+        test_assert_eq!(mesh.mesh.triangles.len(), 31 * 31 * 2);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("tensor_viz::ragged_csv_refused", test_ragged_csv_refused);
+        crate::testing::register_test(
+            "tensor_viz::non_numeric_field_refused",
+            test_non_numeric_field_refused,
+        );
+        crate::testing::register_test(
+            "tensor_viz::well_formed_csv_unchanged",
+            test_well_formed_csv_unchanged,
+        );
+        crate::testing::register_test(
+            "tensor_viz::degenerate_inputs_empty",
+            test_degenerate_inputs_empty,
+        );
+        crate::testing::register_test(
+            "tensor_viz::overlong_shape_draws_nothing",
+            test_overlong_shape_draws_nothing,
+        );
+        crate::testing::register_test("tensor_viz::bench_fixture_shape", test_bench_fixture_shape);
+    }
 }
