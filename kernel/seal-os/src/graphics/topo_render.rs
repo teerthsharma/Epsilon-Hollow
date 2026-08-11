@@ -45,6 +45,16 @@ pub struct RenderState {
     pub prev_lod_triangles: Option<Vec<[u32; 3]>>,
 }
 
+/// Side of the T1 screen-space Voronoi partition: the client area is split into
+/// `VORONOI_GRID * VORONOI_GRID` cells.
+///
+/// It is also the smallest client dimension the partition can be built for. Cell
+/// extents are `dimension / VORONOI_GRID`, and `render_mesh` then divides
+/// triangle bounds by those extents to find the cells a triangle touches. A
+/// client dimension below the grid side makes that extent zero, and an integer
+/// division by zero is a `#DE` fault on x86_64 — a hard stop, not a bad pixel.
+const VORONOI_GRID: u32 = 8;
+
 /// Screen-space Voronoi cell (8×8 grid = 64 cells)
 pub struct VoronoiCell {
     pub x: u16,
@@ -260,10 +270,18 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
         let mut depth_buffer = vec![f32::MAX; (cw * ch) as usize];
         let light = vec3_normalize(&[0.3, -0.5, -0.8]);
 
-        if quality >= 2 {
+        // The cell partition is a culling optimization, not a shading mode: it
+        // hands `rasterize_triangle` a smaller bounding box and the same
+        // `quality`, so it paints the same pixels the direct path below paints.
+        // A client area narrower or shorter than one cell therefore falls
+        // through rather than returning — the surface still renders, it just
+        // loses a partition that would hold at most one column or row anyway.
+        // `Window::new` does not enforce this: its floor is `MIN_HEIGHT`, which
+        // is a *zero*-height client area, so client heights 1..=7 reach here.
+        if quality >= 2 && cw >= VORONOI_GRID && ch >= VORONOI_GRID {
             let mut cells = build_voronoi_cells(cw, ch);
-            let cell_w = cw / 8;
-            let cell_h = ch / 8;
+            let cell_w = cw / VORONOI_GRID;
+            let cell_h = ch / VORONOI_GRID;
 
             for (tri_idx, tri) in visible_triangles.iter().enumerate() {
                 let p0 = projected[tri[0] as usize];
@@ -274,14 +292,15 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
                 let max_x = p0[0].max(p1[0]).max(p2[0]);
                 let max_y = p0[1].max(p1[1]).max(p2[1]);
 
-                let c0 = (min_x as u32 / cell_w).min(7) as usize;
-                let c1 = (max_x as u32 / cell_w).min(7) as usize;
-                let r0 = (min_y as u32 / cell_h).min(7) as usize;
-                let r1 = (max_y as u32 / cell_h).min(7) as usize;
+                let last = VORONOI_GRID - 1;
+                let c0 = (min_x as u32 / cell_w).min(last) as usize;
+                let c1 = (max_x as u32 / cell_w).min(last) as usize;
+                let r0 = (min_y as u32 / cell_h).min(last) as usize;
+                let r1 = (max_y as u32 / cell_h).min(last) as usize;
 
                 for row in r0..=r1 {
                     for col in c0..=c1 {
-                        let idx = row * 8 + col;
+                        let idx = row * VORONOI_GRID as usize + col;
                         cells[idx].triangle_indices.push(tri_idx);
                     }
                 }
@@ -409,12 +428,20 @@ pub fn backface_cull_hyperbolic(v0: &[f32; 4], v1: &[f32; 4], v2: &[f32; 4]) -> 
 // T1 — Voronoi spatial partition
 // ---------------------------------------------------------------------------
 
-fn build_voronoi_cells(screen_w: u32, screen_h: u32) -> [VoronoiCell; 64] {
-    let cell_w = screen_w / 8;
-    let cell_h = screen_h / 8;
+/// Partitions a client area into [`VORONOI_GRID`]² cells.
+///
+/// Both dimensions must be at least [`VORONOI_GRID`]; below that the cells
+/// collapse to zero extent and every divisor derived from them is zero. The one
+/// call site checks this before calling.
+fn build_voronoi_cells(
+    screen_w: u32,
+    screen_h: u32,
+) -> [VoronoiCell; (VORONOI_GRID * VORONOI_GRID) as usize] {
+    let cell_w = screen_w / VORONOI_GRID;
+    let cell_h = screen_h / VORONOI_GRID;
     core::array::from_fn(|idx| {
-        let row = idx / 8;
-        let col = idx % 8;
+        let row = idx / VORONOI_GRID as usize;
+        let col = idx % VORONOI_GRID as usize;
         VoronoiCell {
             x: (col as u32 * cell_w) as u16,
             y: (row as u32 * cell_h) as u16,
@@ -742,6 +769,13 @@ fn rasterize_triangle(
                     };
 
                     if quality >= 4 {
+                        // ponytail: len0/1/2 are zero for a zero-length edge.
+                        // These are f32 divisions, so the result is inf or NaN,
+                        // never a #DE, and the saturating float-to-int cast
+                        // below turns it into alpha 0. Ceiling: a degenerate
+                        // triangle renders fully transparent at quality 4
+                        // instead of being skipped. Upgrade by rejecting it
+                        // alongside the `area <= 0.0` test above.
                         let d0 = w0 / len0;
                         let d1 = w1 / len1;
                         let d2 = w2 / len2;
@@ -755,5 +789,129 @@ fn rasterize_triangle(
                 }
             }
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+    use crate::wm::window::{Window, BORDER_WIDTH, TITLE_BAR_HEIGHT};
+
+    const SENTINEL: u32 = 0x00FF_00FF;
+
+    /// One front-facing triangle spanning the view frustum, so any window large
+    /// enough to hold a pixel receives one.
+    fn one_triangle_mesh() -> TopoMesh {
+        TopoMesh {
+            vertices: vec![[-1.0, -1.0, 0.0], [0.0, 1.0, 0.0], [1.0, -1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            normals: Vec::new(),
+            spherical_embedding: Vec::new(),
+            bbox: BoundingBox {
+                min: [-1.0, -1.0, 0.0],
+                max: [1.0, 1.0, 0.0],
+            },
+            vertex_colors: Vec::new(),
+        }
+    }
+
+    fn quality_two_window(w: u32, h: u32) -> Window {
+        init();
+        with_render_state(|state| {
+            state.quality_level = 2;
+        });
+        set_camera(Camera {
+            position: [0.0, 0.0, 5.0],
+            look_at: [0.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            fov_deg: 60.0,
+            near: 0.1,
+            far: 100.0,
+        });
+        Window::new(700, "topo", 0, 0, w, h)
+    }
+
+    /// Fills the client area with [`SENTINEL`] and returns how many client
+    /// pixels differ from it — i.e. how many the renderer painted. Only client
+    /// pixels are counted, so a decoration colour cannot fake a pass.
+    fn fill_client(win: &mut Window) {
+        for y in 0..win.client_height() {
+            for x in 0..win.client_width() {
+                win.set_client_pixel(x, y, SENTINEL);
+            }
+        }
+    }
+
+    fn painted_client_pixels(win: &Window) -> usize {
+        let mut painted = 0;
+        for y in 0..win.client_height() {
+            for x in 0..win.client_width() {
+                let idx = ((y + TITLE_BAR_HEIGHT) * win.width + x + BORDER_WIDTH) as usize;
+                if win.buffer[idx] != SENTINEL {
+                    painted += 1;
+                }
+            }
+        }
+        painted
+    }
+
+    /// `Window::new`'s height floor is `MIN_HEIGHT`, which is a *zero*-height
+    /// client area, so a requested height of 1..=7 reaches `render_mesh` intact.
+    /// Those dimensions passed the `cw == 0 || ch == 0` guard and then computed
+    /// `ch / 8 == 0` as the divisor at the cell lookup: a `#DE` fault, which no
+    /// assertion can observe because the machine stops. Returning from the call
+    /// at all is the assertion.
+    fn test_client_area_below_one_cell_does_not_fault() -> TestResult {
+        let mesh = one_triangle_mesh();
+        for (w, h) in [(200, 1), (200, 7), (0, 0), (1, 1), (7, 7)] {
+            let mut win = quality_two_window(w, h);
+            test_assert!(win.client_height() < VORONOI_GRID);
+            render_mesh(&mesh, &mut win);
+        }
+        TestResult::Pass
+    }
+
+    /// The fallback must render, not skip: a surface below one cell still paints
+    /// the same pixels, because the cell partition only narrows the bounding box
+    /// handed to `rasterize_triangle` and passes the same `quality`.
+    fn test_below_one_cell_still_paints() -> TestResult {
+        let mesh = one_triangle_mesh();
+        // 200x4 client: below the grid on one axis, wide enough to hold the
+        // triangle's middle rows.
+        let mut win = quality_two_window(200, 4);
+        test_assert!(win.client_height() < VORONOI_GRID);
+        fill_client(&mut win);
+        render_mesh(&mesh, &mut win);
+        test_assert!(painted_client_pixels(&win) > 0);
+        TestResult::Pass
+    }
+
+    /// The ordinary path is untouched: a client area at or above the grid side
+    /// still takes the Voronoi partition and paints.
+    fn test_cell_path_still_paints() -> TestResult {
+        let mesh = one_triangle_mesh();
+        let mut win = quality_two_window(64, 48);
+        test_assert!(win.client_width() >= VORONOI_GRID && win.client_height() >= VORONOI_GRID);
+        fill_client(&mut win);
+        render_mesh(&mesh, &mut win);
+        test_assert!(painted_client_pixels(&win) > 0);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "graphics::topo_client_area_below_one_cell_does_not_fault",
+            test_client_area_below_one_cell_does_not_fault,
+        );
+        crate::testing::register_test(
+            "graphics::topo_below_one_cell_still_paints",
+            test_below_one_cell_still_paints,
+        );
+        crate::testing::register_test(
+            "graphics::topo_cell_path_still_paints",
+            test_cell_path_still_paints,
+        );
     }
 }
