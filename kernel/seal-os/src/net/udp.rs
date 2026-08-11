@@ -116,23 +116,32 @@ fn send_datagram(src_port: u16, buf: &[u8], dst_addr: crate::net::IpAddr, dst_po
     };
     match dst_addr {
         crate::net::IpAddr::V4(dst_addr) => {
-            let src_ip = crate::net::local_ip();
-            let mut pseudo = Vec::with_capacity(12 + UDP_HEADER_LEN + buf.len());
-            pseudo.extend_from_slice(&src_ip);
-            pseudo.extend_from_slice(&dst_addr);
-            pseudo.push(0);
-            pseudo.push(17);
-            pseudo.extend_from_slice(&length.to_be_bytes());
+            // The address `send_ipv4_packet` will stamp, which is 127.0.0.1 on
+            // the loopback branch and not `local_ip()`. See `ipv4::source_for`.
+            let src_ip = crate::net::ipv4::source_for(dst_addr);
+            let mut segment = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
             let hdr_bytes = unsafe {
                 core::slice::from_raw_parts(
                     &hdr as *const _ as *const u8,
                     core::mem::size_of::<UdpHeader>(),
                 )
             };
-            pseudo.extend_from_slice(hdr_bytes);
-            pseudo.extend_from_slice(buf);
+            segment.extend_from_slice(hdr_bytes);
+            segment.extend_from_slice(buf);
+            let cksum = crate::net::ipv4::transport_checksum(
+                crate::net::IpAddr::V4(src_ip),
+                crate::net::IpAddr::V4(dst_addr),
+                17,
+                &segment,
+            )
+            .unwrap_or(0);
             // Network order, like the three fields above: `hdr` is blitted raw.
-            hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
+            // RFC 768: a computed checksum of zero is transmitted as all ones,
+            // because zero is the encoding for "not computed". Over IPv6 that
+            // encoding is illegal outright (RFC 8200 8.1), so a datagram that
+            // happened to sum to zero would be discarded by any conforming
+            // receiver -- including this stack's own, over loopback.
+            hdr.checksum = if cksum == 0 { 0xFFFF } else { cksum }.to_be();
             let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
             let hdr_bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -145,25 +154,31 @@ fn send_datagram(src_port: u16, buf: &[u8], dst_addr: crate::net::IpAddr, dst_po
             crate::net::ipv4::send_ipv4_packet(dst_addr, 17, &pkt);
         }
         crate::net::IpAddr::V6(dst_addr) => {
+            // `send_ipv6_packet` stamps `local_ip_v6()` on every datagram, its
+            // `::1` branch included, so there is no `source_for` counterpart
+            // here: the address it will stamp is this one.
             let src_ip = crate::net::local_ip_v6();
-            let mut pseudo = Vec::with_capacity(40 + UDP_HEADER_LEN + buf.len());
-            pseudo.extend_from_slice(&src_ip);
-            pseudo.extend_from_slice(&dst_addr);
-            pseudo.extend_from_slice(&(length as u32).to_be_bytes());
-            pseudo.push(0);
-            pseudo.push(0);
-            pseudo.push(0);
-            pseudo.push(17);
+            let mut segment = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
             let hdr_bytes = unsafe {
                 core::slice::from_raw_parts(
                     &hdr as *const _ as *const u8,
                     core::mem::size_of::<UdpHeader>(),
                 )
             };
-            pseudo.extend_from_slice(hdr_bytes);
-            pseudo.extend_from_slice(buf);
+            segment.extend_from_slice(hdr_bytes);
+            segment.extend_from_slice(buf);
+            let cksum = crate::net::ipv4::transport_checksum(
+                crate::net::IpAddr::V6(src_ip),
+                crate::net::IpAddr::V6(dst_addr),
+                17,
+                &segment,
+            )
+            .unwrap_or(0);
             // Network order, like the three fields above: `hdr` is blitted raw.
-            hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
+            // Zero becomes all ones for the reason spelled out in the IPv4 arm,
+            // and here it is not a courtesy: RFC 8200 8.1 makes a zero field
+            // illegal, and `handle_udp_packet` below discards one.
+            hdr.checksum = if cksum == 0 { 0xFFFF } else { cksum }.to_be();
             let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
             let hdr_bytes = unsafe {
                 core::slice::from_raw_parts(
@@ -294,7 +309,11 @@ pub fn recv(idx: usize, buf: &mut [u8]) -> Option<usize> {
     recvfrom(idx, buf).map(|(len, _, _)| len)
 }
 
-pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
+/// `dst` is the destination the IP header carried, not necessarily this host's
+/// address: a DHCP offer arrives at 255.255.255.255 while `local_ip()` is still
+/// 0.0.0.0, and the sender summed that address. Substituting `local_ip()` here
+/// would refuse the offer and leave the kernel unaddressed at boot.
+pub fn handle_udp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: &[u8]) {
     if pkt.len() < UDP_HEADER_LEN {
         return;
     }
@@ -303,6 +322,36 @@ pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
     let src_port = u16::from_be(hdr.src_port);
     let length = u16::from_be(hdr.length) as usize;
     if length < UDP_HEADER_LEN || length > pkt.len() {
+        return;
+    }
+    // The checksum covers exactly `length` bytes, which is what the sender put
+    // in the pseudo-header. Anything past it is not part of the datagram.
+    //
+    // The two families differ and both rules are required. RFC 768: over IPv4
+    // the checksum is optional and an all-zero field means "not computed", so
+    // it must be accepted -- the field is summed like any other value
+    // otherwise, and a datagram almost never sums to zero, so verifying it
+    // uniformly would drop every sender that omits it. RFC 8200 section 8.1:
+    // over IPv6 there is no such encoding, a zero field is illegal, and the
+    // datagram is discarded -- IPv6 carries no header checksum, so accepting it
+    // would leave the datagram with no integrity check anywhere in the stack.
+    //
+    // The IPv6 rule is a discard in its own right, not a consequence of the
+    // sum: a zero field contributes nothing to the sum, so a datagram whose
+    // remaining words happen to add to all ones verifies with the field left at
+    // zero. Leaving that to the arithmetic admits one unchecked datagram in
+    // every 65536, which is exactly the traffic an attacker gets to choose.
+    let verified = match dst {
+        crate::net::IpAddr::V4(_) => {
+            hdr.checksum == 0
+                || crate::net::ipv4::transport_checksum(src, dst, 17, &pkt[..length]) == Some(0)
+        }
+        crate::net::IpAddr::V6(_) => {
+            hdr.checksum != 0
+                && crate::net::ipv4::transport_checksum(src, dst, 17, &pkt[..length]) == Some(0)
+        }
+    };
+    if !verified {
         return;
     }
     let payload = &pkt[UDP_HEADER_LEN..length];
@@ -559,7 +608,74 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RFC 768: a computed checksum of zero is transmitted as all ones, because
+    /// zero is the "not computed" encoding. Over IPv6 that encoding is illegal
+    /// (RFC 8200 section 8.1), so a datagram that happened to sum to zero and
+    /// was shipped with a zero field would be discarded by every conforming
+    /// receiver -- including `handle_udp_packet` itself, which is what this
+    /// drives it into over `::1`.
+    ///
+    /// The payload that produces that sum is searched for rather than
+    /// hard-coded: it depends on the ports and on `local_ip_v6()`, which DHCPv6
+    /// or a router advertisement can change. The search runs through
+    /// `ipv4::transport_checksum`, the same function the sender uses, so what it
+    /// finds is a payload the sender really does sum to zero.
+    fn test_zero_sum_datagram_transmitted_as_all_ones() -> TestResult {
+        const RX_PORT: u16 = 9005;
+        const TX_PORT: u16 = 9006;
+        let dst = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let src = crate::net::local_ip_v6();
+
+        let mut found: Option<[u8; 2]> = None;
+        for candidate in 0..=u16::MAX {
+            let payload = candidate.to_be_bytes();
+            let mut seg = Vec::with_capacity(UDP_HEADER_LEN + payload.len());
+            seg.extend_from_slice(&TX_PORT.to_be_bytes());
+            seg.extend_from_slice(&RX_PORT.to_be_bytes());
+            seg.extend_from_slice(&((UDP_HEADER_LEN + payload.len()) as u16).to_be_bytes());
+            seg.extend_from_slice(&[0, 0]);
+            seg.extend_from_slice(&payload);
+            if crate::net::ipv4::transport_checksum(
+                crate::net::IpAddr::V6(src),
+                crate::net::IpAddr::V6(dst),
+                17,
+                &seg,
+            ) == Some(0)
+            {
+                found = Some(payload);
+                break;
+            }
+        }
+        let Some(payload) = found else {
+            return TestResult::Fail(
+                "no two-byte payload sums to zero, so this exercises nothing -- the search, not the stack, is wrong",
+            );
+        };
+
+        let rx = socket();
+        bind(rx, RX_PORT);
+        let tx = socket();
+        bind(tx, TX_PORT);
+        sendto(tx, &payload, crate::net::IpAddr::V6(dst), RX_PORT);
+
+        let mut buf = [0u8; 8];
+        let got = recvfrom(rx, &mut buf);
+        test_assert!(
+            got.is_some(),
+            "a datagram whose checksum sums to zero was shipped with a zero field and refused over ::1 -- RFC 768 requires all ones"
+        );
+        test_assert!(
+            got.map(|(len, _, _)| buf[..len] == payload) == Some(true),
+            "the datagram delivered is not the one that was sent"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "udp::zero_sum_datagram_transmitted_as_all_ones",
+            test_zero_sum_datagram_transmitted_as_all_ones,
+        );
         crate::testing::register_test(
             "udp::fallback_prng_not_sequential",
             test_fallback_prng_not_sequential,

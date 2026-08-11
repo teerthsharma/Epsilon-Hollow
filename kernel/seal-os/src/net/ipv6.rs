@@ -124,8 +124,20 @@ pub fn handle_ipv6_packet(pkt: &[u8]) {
 
     match next_header {
         58 => handle_icmpv6_packet(src, dst, payload),
-        6 => crate::net::tcp::handle_tcp_packet(crate::net::IpAddr::V6(src), payload),
-        17 => crate::net::udp::handle_udp_packet(crate::net::IpAddr::V6(src), payload),
+        // Both addresses travel on for the same reason ICMPv6 needs them: RFC
+        // 8200 section 8.1 sums them into the pseudo-header, and IPv6 has no
+        // header checksum, so this is the only integrity check either transport
+        // gets.
+        6 => crate::net::tcp::handle_tcp_packet(
+            crate::net::IpAddr::V6(src),
+            crate::net::IpAddr::V6(dst),
+            payload,
+        ),
+        17 => crate::net::udp::handle_udp_packet(
+            crate::net::IpAddr::V6(src),
+            crate::net::IpAddr::V6(dst),
+            payload,
+        ),
         _ => {
             // Unknown IPv6 next-header; drop silently
         }
@@ -702,10 +714,261 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The IPv6 header a transport segment arrives in. There is no header
+    /// checksum to compute: that absence is exactly why RFC 8200 section 8.1
+    /// makes the transport checksum mandatory here.
+    fn ipv6_frame(src: [u8; 16], dst: [u8; 16], next_header: u8, segment: &[u8]) -> Vec<u8> {
+        let mut pkt = Vec::with_capacity(40 + segment.len());
+        pkt.extend_from_slice(&[0x60, 0, 0, 0]);
+        pkt.extend_from_slice(&(segment.len() as u16).to_be_bytes());
+        pkt.push(next_header);
+        pkt.push(64); // hop limit
+        pkt.extend_from_slice(&src);
+        pkt.extend_from_slice(&dst);
+        pkt.extend_from_slice(segment);
+        pkt
+    }
+
+    /// `segment` with its checksum field recomputed at `offset` over the RFC
+    /// 8200 pseudo-header, the way a sender computes it. Built here rather than
+    /// through `icmpv6_checksum_input`, which is fixed to next-header 58.
+    fn stamped_v6(
+        src: [u8; 16],
+        dst: [u8; 16],
+        next_header: u8,
+        offset: usize,
+        segment: &[u8],
+    ) -> Vec<u8> {
+        let mut seg = segment.to_vec();
+        seg[offset] = 0;
+        seg[offset + 1] = 0;
+        let mut p = Vec::with_capacity(40 + seg.len());
+        p.extend_from_slice(&src);
+        p.extend_from_slice(&dst);
+        p.extend_from_slice(&(seg.len() as u32).to_be_bytes());
+        p.push(0);
+        p.push(0);
+        p.push(0);
+        p.push(next_header);
+        p.extend_from_slice(&seg);
+        let ck = crate::net::ipv4::internet_checksum(&p);
+        seg[offset..offset + 2].copy_from_slice(&ck.to_be_bytes());
+        seg
+    }
+
+    fn udp_segment_v6(
+        src: [u8; 16],
+        dst: [u8; 16],
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut seg = Vec::with_capacity(8 + payload.len());
+        seg.extend_from_slice(&src_port.to_be_bytes());
+        seg.extend_from_slice(&dst_port.to_be_bytes());
+        seg.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+        seg.extend_from_slice(&[0, 0]);
+        seg.extend_from_slice(payload);
+        stamped_v6(src, dst, 17, 6, &seg)
+    }
+
+    /// IPv6 has no header checksum, so the transport checksum is the only
+    /// integrity check a UDP datagram or a TCP segment gets on this path --
+    /// and nothing read either field. A corrupted datagram was buffered and
+    /// handed to a reader verbatim.
+    ///
+    /// The datagram is checksummed first and corrupted afterwards; the control
+    /// is the same corrupted bytes with a checksum recomputed over them.
+    fn test_udp_checksum_verified_on_receive_v6() -> TestResult {
+        const PORT: u16 = 9110;
+        let src = target(0xE1);
+        let dst = crate::net::local_ip_v6();
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let mut corrupt = udp_segment_v6(src, dst, 40_010, PORT, b"payload");
+        corrupt[9] ^= 0x01; // one bit of the payload, checksum left stale
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &corrupt));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a UDP datagram over IPv6 whose checksum does not verify was delivered to a socket"
+        );
+
+        let repaired = stamped_v6(src, dst, 17, 6, &corrupt);
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &repaired));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_some(),
+            "the same datagram with a checksum matching its contents was not delivered"
+        );
+        TestResult::Pass
+    }
+
+    /// RFC 8200 section 8.1: unlike IPv4, a UDP datagram over IPv6 has no
+    /// "not computed" encoding -- a zero checksum field is illegal and the
+    /// datagram must be discarded. A receiver that shared one code path with
+    /// the IPv4 rule accepts these, and every unchecked datagram then arrives
+    /// with no integrity check anywhere in the stack behind it.
+    ///
+    /// The control is the same datagram with a real checksum, so this cannot be
+    /// satisfied by refusing IPv6 UDP altogether.
+    fn test_udp_zero_checksum_refused_over_ipv6() -> TestResult {
+        const PORT: u16 = 9111;
+        let src = target(0xE2);
+        let dst = crate::net::local_ip_v6();
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let mut seg = udp_segment_v6(src, dst, 40_011, PORT, b"unchecked");
+        seg[6] = 0;
+        seg[7] = 0;
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &seg));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a UDP datagram over IPv6 with a zero checksum was accepted -- RFC 8200 8.1 forbids the encoding"
+        );
+
+        // The case the arithmetic alone lets through: a zero field contributes
+        // nothing to the sum, so a datagram whose remaining words add to all
+        // ones verifies with the field left at zero. One datagram in 65536 has
+        // that shape and an attacker picks which one, so the refusal has to be
+        // a rule and not a by-product of the sum.
+        let mut coincidental = None;
+        for candidate in 0..=u16::MAX {
+            let payload = candidate.to_be_bytes();
+            let mut seg = Vec::with_capacity(10);
+            seg.extend_from_slice(&40_011u16.to_be_bytes());
+            seg.extend_from_slice(&PORT.to_be_bytes());
+            seg.extend_from_slice(&10u16.to_be_bytes());
+            seg.extend_from_slice(&[0, 0]);
+            seg.extend_from_slice(&payload);
+            if crate::net::ipv4::transport_checksum(
+                crate::net::IpAddr::V6(src),
+                crate::net::IpAddr::V6(dst),
+                17,
+                &seg,
+            ) == Some(0)
+            {
+                coincidental = Some(seg);
+                break;
+            }
+        }
+        let Some(coincidental) = coincidental else {
+            return TestResult::Fail(
+                "no datagram with a zero field sums to all ones, so the case this asserts on was never built",
+            );
+        };
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &coincidental));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a zero-checksum datagram whose words happen to sum to all ones was accepted -- the IPv6 refusal is falling out of the arithmetic instead of being a rule"
+        );
+
+        let good = stamped_v6(src, dst, 17, 6, &seg);
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &good));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_some(),
+            "the same datagram carrying a real checksum was refused"
+        );
+        TestResult::Pass
+    }
+
+    /// The TCP checksum is mandatory in both families, and the IPv6
+    /// pseudo-header differs from the IPv4 one in every field, so a verifier
+    /// that reached for the wrong shape here would refuse all IPv6 TCP. A SYN to
+    /// a listener is the observable: it is answered by creating a socket the
+    /// listener hands out.
+    fn test_tcp_checksum_verified_on_receive_v6() -> TestResult {
+        const PORT: u16 = 49_620;
+        let src = target(0xE3);
+        let dst = crate::net::local_ip_v6();
+        let listener = crate::net::tcp::socket();
+        crate::net::tcp::bind(listener, PORT);
+        crate::net::tcp::listen(listener);
+
+        let mut seg = Vec::with_capacity(20);
+        seg.extend_from_slice(&40_012u16.to_be_bytes());
+        seg.extend_from_slice(&PORT.to_be_bytes());
+        seg.extend_from_slice(&910u32.to_be_bytes()); // seq
+        seg.extend_from_slice(&0u32.to_be_bytes()); // ack
+        seg.extend_from_slice(&((5u16 << 12) | 0x02).to_be_bytes()); // SYN
+        seg.extend_from_slice(&65_535u16.to_be_bytes());
+        seg.extend_from_slice(&[0, 0]); // checksum
+        seg.extend_from_slice(&[0, 0]); // urgent
+        let mut corrupt = stamped_v6(src, dst, 6, 16, &seg);
+        corrupt[7] ^= 0x01; // one bit of the sequence, checksum left stale
+        handle_ipv6_packet(&ipv6_frame(src, dst, 6, &corrupt));
+        crate::net::tcp::poll();
+        test_assert!(
+            crate::net::tcp::accept(listener).is_none(),
+            "a TCP SYN over IPv6 whose checksum does not verify opened a connection"
+        );
+
+        let repaired = stamped_v6(src, dst, 6, 16, &corrupt);
+        handle_ipv6_packet(&ipv6_frame(src, dst, 6, &repaired));
+        crate::net::tcp::poll();
+        test_assert!(
+            crate::net::tcp::accept(listener).is_some(),
+            "the same SYN with a checksum matching its contents did not open a connection"
+        );
+        TestResult::Pass
+    }
+
+    /// The destination summed into the pseudo-header is the one the datagram
+    /// carried. A multicast destination is the case that separates it from
+    /// `local_ip_v6()`, and it is not hypothetical: it is where every Neighbor
+    /// Solicitation and every DHCPv6 message arrives.
+    fn test_transport_checksum_uses_the_delivered_destination_v6() -> TestResult {
+        const PORT: u16 = 9112;
+        let src = target(0xE4);
+        let dst = [
+            0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00, 0x02,
+        ];
+        test_assert!(
+            dst != crate::net::local_ip_v6(),
+            "the fixture destination equals the local address, so this proves nothing"
+        );
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let seg = udp_segment_v6(src, dst, 40_013, PORT, b"multicast");
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &seg));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_some(),
+            "a datagram checksummed against the address it was actually sent to was refused"
+        );
+
+        let wrong = udp_segment_v6(src, crate::net::local_ip_v6(), 40_013, PORT, b"multicast");
+        handle_ipv6_packet(&ipv6_frame(src, dst, 17, &wrong));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a datagram summed against an address other than the one it was sent to was accepted"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         // ICMPv4's own group is chained here rather than registered from
         // `testing::runner`, next to the ICMPv6 verification it mirrors.
         crate::net::icmp::tests::register_all();
+        crate::testing::register_test(
+            "ipv6::udp_checksum_verified_on_receive",
+            test_udp_checksum_verified_on_receive_v6,
+        );
+        crate::testing::register_test(
+            "ipv6::udp_zero_checksum_refused",
+            test_udp_zero_checksum_refused_over_ipv6,
+        );
+        crate::testing::register_test(
+            "ipv6::tcp_checksum_verified_on_receive",
+            test_tcp_checksum_verified_on_receive_v6,
+        );
+        crate::testing::register_test(
+            "ipv6::transport_checksum_uses_the_delivered_destination",
+            test_transport_checksum_uses_the_delivered_destination_v6,
+        );
         crate::testing::register_test(
             "ipv6::advert_verified_against_the_delivered_destination",
             test_advert_verified_against_the_delivered_destination,
