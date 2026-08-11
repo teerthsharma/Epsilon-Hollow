@@ -13,6 +13,7 @@ pub mod kpti;
 pub mod mac;
 pub mod manifold_acl;
 pub mod passwd;
+pub mod perm_field;
 pub mod retpoline;
 pub mod seccomp;
 pub mod shadow;
@@ -93,6 +94,7 @@ pub mod tests {
         super::smap_smep::tests::register_all();
         super::seccomp::tests::register_all();
         super::mac::tests::register_all();
+        super::perm_field::tests::register_all();
         super::retpoline::tests::register_all();
         super::audit::tests::register_all();
         super::kaslr::tests::register_all();
