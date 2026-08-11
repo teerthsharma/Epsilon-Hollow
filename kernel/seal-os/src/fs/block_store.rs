@@ -31,6 +31,15 @@ const INODE_NAME_OFFSET: usize = 90;
 const INODE_SIBLING_NEXT_OFFSET: usize = 224;
 const INODE_SIBLING_PREV_OFFSET: usize = 232;
 const INODE_DIR_FIRST_CHILD_OFFSET: usize = 240;
+// The owner occupies bytes the format has never written and has never read:
+// the last eight of the 256-byte inode record, and eight of the 282 that
+// trail the journal entry's checksum, four-byte aligned. A disk written by a
+// build that predates the owner holds zero there, and zero is root, so the
+// on-disk version stays at 1 and every existing filesystem still mounts.
+const INODE_UID_OFFSET: usize = 248;
+const INODE_GID_OFFSET: usize = 252;
+const JOURNAL_UID_OFFSET: usize = JOURNAL_CHECKSUM_OFFSET + 6;
+const JOURNAL_GID_OFFSET: usize = JOURNAL_UID_OFFSET + 4;
 
 fn put_u16(buf: &mut [u8], offset: usize, value: u16) {
     buf[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
@@ -236,11 +245,47 @@ struct JournalEntry {
     content_hash: u64,
     name_len: u16,
     name: [u8; 128],
+    uid: u32,
+    gid: u32,
     checksum: u32,
     _pad4: [u8; 282],
 }
 
 impl JournalEntry {
+    /// The write-ahead entry for a metadata update, describing `rec` exactly as
+    /// the inode table holds it. Every update entry is built here so that the
+    /// journal and the inode table cannot disagree about a field — including
+    /// the owner, which a remount replays over the table it just read.
+    fn update_for(seq: u64, rec: &InodeRecord) -> Self {
+        let mut entry = Self {
+            seq,
+            op: 1,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: rec.id,
+            parent: rec.parent,
+            kind: rec.kind,
+            _pad2: [0; 7],
+            data_lba: rec.data_lba,
+            data_blocks: rec.data_blocks,
+            voronoi_cell: rec.voronoi_cell,
+            original_size: rec.original_size,
+            permissions: rec.permissions,
+            _pad3: [0; 6],
+            created_ms: rec.created_ms,
+            modified_ms: rec.modified_ms,
+            content_hash: rec.content_hash,
+            name_len: rec.name_len,
+            name: rec.name,
+            uid: rec.uid,
+            gid: rec.gid,
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        entry.checksum = entry.checksum();
+        entry
+    }
+
     fn checksum(&self) -> u32 {
         let sector = self.encode_sector(0);
         Self::checksum_sector(&sector)
@@ -278,6 +323,8 @@ impl JournalEntry {
         put_u64(&mut sector, 88, self.content_hash);
         put_u16(&mut sector, 96, self.name_len);
         sector[JOURNAL_NAME_OFFSET..JOURNAL_NAME_OFFSET + 128].copy_from_slice(&self.name);
+        put_u32(&mut sector, JOURNAL_UID_OFFSET, self.uid);
+        put_u32(&mut sector, JOURNAL_GID_OFFSET, self.gid);
         put_u32(&mut sector, JOURNAL_CHECKSUM_OFFSET, checksum);
         sector
     }
@@ -317,6 +364,8 @@ impl JournalEntry {
             content_hash: get_u64(sector, 88)?,
             name_len: get_u16(sector, 96)?,
             name,
+            uid: get_u32(sector, JOURNAL_UID_OFFSET)?,
+            gid: get_u32(sector, JOURNAL_GID_OFFSET)?,
             checksum,
             _pad4: [0; 282],
         })
@@ -348,9 +397,15 @@ struct InodeRecord {
     sibling_next: u64,
     sibling_prev: u64,
     dir_first_child: u64,
+    uid: u32,
+    gid: u32,
 }
 
 impl InodeRecord {
+    /// Build a record from `ino`. The owner is set to root, because `Inode`
+    /// does not carry one: the record is where ownership lives, so a caller
+    /// rebuilding a record for a node that already has one must carry it over
+    /// from the old record — `BlockStore::write_inode` does.
     fn from_inode(ino: &Inode, data_lba: u64, data_blocks: u32) -> Self {
         let mut name = [0u8; 128];
         let name_bytes = ino.name.as_bytes();
@@ -380,6 +435,8 @@ impl InodeRecord {
             sibling_next: ino.sibling_next.unwrap_or(NONE_ID),
             sibling_prev: ino.sibling_prev.unwrap_or(NONE_ID),
             dir_first_child: ino.dir_first_child.unwrap_or(NONE_ID),
+            uid: 0,
+            gid: 0,
         }
     }
 
@@ -445,6 +502,8 @@ impl InodeRecord {
             INODE_DIR_FIRST_CHILD_OFFSET,
             self.dir_first_child,
         );
+        put_u32(&mut record, INODE_UID_OFFSET, self.uid);
+        put_u32(&mut record, INODE_GID_OFFSET, self.gid);
         record
     }
 
@@ -481,6 +540,8 @@ impl InodeRecord {
             sibling_next: get_u64(buf, INODE_SIBLING_NEXT_OFFSET)?,
             sibling_prev: get_u64(buf, INODE_SIBLING_PREV_OFFSET)?,
             dir_first_child: get_u64(buf, INODE_DIR_FIRST_CHILD_OFFSET)?,
+            uid: get_u32(buf, INODE_UID_OFFSET)?,
+            gid: get_u32(buf, INODE_GID_OFFSET)?,
         })
     }
 }
@@ -828,7 +889,12 @@ impl BlockStore {
                         dir_first_child: None,
                     };
 
-                    let record = InodeRecord::from_inode(&inode, entry.data_lba, entry.data_blocks);
+                    let mut record =
+                        InodeRecord::from_inode(&inode, entry.data_lba, entry.data_blocks);
+                    // The entry is the authority here: it is replayed over
+                    // whatever the inode table held, owner included.
+                    record.uid = entry.uid;
+                    record.gid = entry.gid;
                     self.inode_records.insert(entry.inode_id, record);
                     if entry.data_lba != 0 && entry.data_blocks > 0 {
                         let _ = self.read_data_extent(entry.data_lba, entry.data_blocks as usize);
@@ -979,44 +1045,20 @@ impl BlockStore {
 
         let mut record = InodeRecord::from_inode(inode, lba, blocks);
         record.original_size = original_size;
+        if let Some(old) = old_record {
+            // Ownership lives in the record, not in the inode, so rebuilding
+            // the record from the inode must carry the old owner over rather
+            // than quietly hand the node back to root.
+            record.uid = old.uid;
+            record.gid = old.gid;
+        }
         self.inode_records.insert(inode.id, record);
         self.deleted_inodes.retain(|&id| id != inode.id);
         self.mark_dirty_inode(inode.id);
 
         // WAL: write journal entry before metadata is durable.
         self.journal_seq += 1;
-        let mut name = [0u8; 128];
-        let name_bytes = inode.name.as_bytes();
-        let name_len = name_bytes.len().min(128);
-        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
-
-        let mut entry = JournalEntry {
-            seq: self.journal_seq,
-            op: 1,
-            committed: 0,
-            _pad1: [0; 6],
-            inode_id: inode.id,
-            parent: inode.parent,
-            kind: match inode.kind {
-                InodeKind::File => 0,
-                InodeKind::Directory => 1,
-            },
-            _pad2: [0; 7],
-            data_lba: lba,
-            data_blocks: blocks,
-            voronoi_cell: inode.voronoi_cell as u32,
-            original_size,
-            permissions: inode.metadata.permissions,
-            _pad3: [0; 6],
-            created_ms: inode.metadata.created_ms,
-            modified_ms: inode.metadata.modified_ms,
-            content_hash: inode.payload.content_hash,
-            name_len: name_len as u16,
-            name,
-            checksum: 0,
-            _pad4: [0; 282],
-        };
-        entry.checksum = entry.checksum();
+        let entry = JournalEntry::update_for(self.journal_seq, &record);
         self.write_journal_entry(&entry)?;
 
         Ok(())
@@ -1060,6 +1102,8 @@ impl BlockStore {
             content_hash: inode.payload.content_hash,
             name_len: name_len as u16,
             name,
+            uid: old.uid,
+            gid: old.gid,
             checksum: 0,
             _pad4: [0; 282],
         };
@@ -1086,46 +1130,57 @@ impl BlockStore {
         };
         let mut record = InodeRecord::from_inode(inode, old.data_lba, old.data_blocks);
         record.original_size = old.original_size;
+        record.uid = old.uid;
+        record.gid = old.gid;
         self.inode_records.insert(inode.id, record);
         self.deleted_inodes.retain(|&id| id != inode.id);
         self.mark_dirty_inode(inode.id);
 
         self.journal_seq += 1;
-        let mut name = [0u8; 128];
-        let name_bytes = inode.name.as_bytes();
-        let name_len = name_bytes.len().min(128);
-        name[..name_len].copy_from_slice(&name_bytes[..name_len]);
-
-        let mut entry = JournalEntry {
-            seq: self.journal_seq,
-            op: 1,
-            committed: 0,
-            _pad1: [0; 6],
-            inode_id: inode.id,
-            parent: inode.parent,
-            kind: match inode.kind {
-                InodeKind::File => 0,
-                InodeKind::Directory => 1,
-            },
-            _pad2: [0; 7],
-            data_lba: old.data_lba,
-            data_blocks: old.data_blocks,
-            voronoi_cell: inode.voronoi_cell as u32,
-            original_size: old.original_size,
-            permissions: inode.metadata.permissions,
-            _pad3: [0; 6],
-            created_ms: inode.metadata.created_ms,
-            modified_ms: inode.metadata.modified_ms,
-            content_hash: inode.payload.content_hash,
-            name_len: name_len as u16,
-            name,
-            checksum: 0,
-            _pad4: [0; 282],
-        };
-        entry.checksum = entry.checksum();
+        let entry = JournalEntry::update_for(self.journal_seq, &record);
         self.write_journal_entry(&entry)?;
 
         Ok(())
+    }
+
+    /// Ownership recorded on disk for `inode_id`, as `(uid, gid)`.
+    ///
+    /// A node no record covers, and a record written before the format carried
+    /// an owner, both read as root: those bytes are zero and zero is root. An
+    /// owner that cannot be read is root, never unowned and never world, so a
+    /// missing one narrows access rather than widening it.
+    pub fn record_owner(&self, inode_id: u64) -> (u32, u32) {
+        self.inode_records
+            .get(&inode_id)
+            .map_or((0, 0), |rec| (rec.uid, rec.gid))
+    }
+
+    /// Record `uid` and `gid` as the owner of `inode_id`, write-ahead first.
+    ///
+    /// The write-ahead entry is not optional: a remount reads the inode table
+    /// and then replays the journal over it, so an owner recorded only in the
+    /// table would be overwritten by the older owner the last entry carries.
+    pub fn set_record_owner(
+        &mut self,
+        inode_id: u64,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), BlockError> {
+        let Some(mut record) = self.inode_records.get(&inode_id).copied() else {
+            return if self.backend.is_none() {
+                Ok(())
+            } else {
+                Err(BlockError::InvalidLba)
+            };
+        };
+        record.uid = uid;
+        record.gid = gid;
+        self.inode_records.insert(inode_id, record);
+        self.mark_dirty_inode(inode_id);
+
+        self.journal_seq += 1;
+        let entry = JournalEntry::update_for(self.journal_seq, &record);
+        self.write_journal_entry(&entry)
     }
 
     pub fn read_data(&self, inode_id: u64) -> Option<(ManifoldPayload, Vec<u8>)> {
@@ -1387,6 +1442,8 @@ pub mod tests {
             content_hash: 0xAA55,
             name_len: 8,
             name: [0; 128],
+            uid: 0,
+            gid: 0,
             checksum: 0,
             _pad4: [0; 282],
         };
@@ -1488,6 +1545,173 @@ pub mod tests {
         };
         test_assert_eq!(inode.name, "cold");
         test_assert_eq!(inode.data, b"durable bytes");
+        TestResult::Pass
+    }
+
+    /// Ownership recorded on a node must still be on it after a remount, and a
+    /// node whose owner was never recorded must come back root-owned. Both the
+    /// inode table and the journal are exercised: `flush_all` makes the record
+    /// durable and commits the write-ahead entry, and the remount reads the
+    /// table and then replays the journal over it, so an owner that either half
+    /// drops is lost.
+    fn test_recorded_owner_survives_remount() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        let owned = dummy_inode(0x1_0000_0004, "owned");
+        let plain = dummy_inode(0x1_0000_0005, "plain");
+        if store.write_inode(&owned, b"owned bytes").is_err() {
+            return TestResult::Fail("write_inode failed for the owned node");
+        }
+        if store.write_inode(&plain, b"plain bytes").is_err() {
+            return TestResult::Fail("write_inode failed for the unowned node");
+        }
+
+        // Nothing has recorded an owner yet, so every node is root-owned.
+        test_assert_eq!(store.record_owner(owned.id), (0, 0));
+        if store.set_record_owner(owned.id, 1000, 1001).is_err() {
+            return TestResult::Fail("set_record_owner rejected a recorded inode");
+        }
+        test_assert_eq!(store.record_owner(owned.id), (1000, 1001));
+
+        // A later write of the same node must not drop the owner it carries.
+        if store.write_inode(&owned, b"owned bytes").is_err() {
+            return TestResult::Fail("rewrite of the owned node failed");
+        }
+        test_assert_eq!(store.record_owner(owned.id), (1000, 1001));
+
+        if store.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed");
+        }
+
+        let backend = store.backend.take();
+        let mut remounted = BlockStore::new();
+        remounted.backend = backend;
+        if remounted.read_superblock().is_err() {
+            return TestResult::Fail("remount read_superblock failed");
+        }
+        if remounted.read_bitmap().is_err() {
+            return TestResult::Fail("remount read_bitmap failed");
+        }
+        if remounted.read_inode_table().is_err() {
+            return TestResult::Fail("remount read_inode_table failed");
+        }
+        if remounted.replay_journal().is_err() {
+            return TestResult::Fail("remount replay_journal failed");
+        }
+
+        test_assert_eq!(remounted.record_owner(owned.id), (1000, 1001));
+        // A node nobody claimed reads as root, and so does an id no record
+        // holds: an absent owner is root, never unowned and never world.
+        test_assert_eq!(remounted.record_owner(plain.id), (0, 0));
+        test_assert_eq!(remounted.record_owner(0xDEAD_BEEF), (0, 0));
+
+        // Everything else about both nodes survived the remount untouched.
+        let inodes = remounted.load_inodes();
+        let Some(restored) = inodes.iter().find(|i| i.id == owned.id) else {
+            return TestResult::Fail("owned node missing after remount");
+        };
+        test_assert_eq!(restored.name, "owned");
+        test_assert_eq!(restored.data, b"owned bytes");
+        let Some(restored) = inodes.iter().find(|i| i.id == plain.id) else {
+            return TestResult::Fail("unowned node missing after remount");
+        };
+        test_assert_eq!(restored.name, "plain");
+        test_assert_eq!(restored.data, b"plain bytes");
+        TestResult::Pass
+    }
+
+    /// The owner occupies bytes that were dead in the format before it, so a
+    /// disk written by an older build reads back as root and every other field
+    /// keeps its offset. Recording an owner may change exactly the eight bytes
+    /// it lives in, and those eight must have been zero.
+    fn test_owner_occupies_only_previously_dead_bytes() -> TestResult {
+        let ino = dummy_inode(0x1_0000_0006, "legacy");
+        // Every byte of both owners is non-zero, so a byte-by-byte comparison
+        // sees the whole of each field rather than only its low half.
+        const UID: u32 = 0x0102_0304;
+        const GID: u32 = 0x0506_0708;
+
+        let unowned = InodeRecord::from_inode(&ino, 4096, 1);
+        let mut owned = unowned;
+        owned.uid = UID;
+        owned.gid = GID;
+        let (a, b) = (unowned.to_record(), owned.to_record());
+        let mut moved = 0;
+        for i in 0..INODE_RECORD_SIZE {
+            if a[i] != b[i] {
+                moved += 1;
+                test_assert_eq!(a[i], 0);
+            }
+        }
+        test_assert_eq!(moved, 8);
+
+        // The record an older build wrote — owner bytes zero — is root-owned,
+        // and one carrying an owner round-trips it exactly.
+        let Some(back) = InodeRecord::from_record(&a) else {
+            return TestResult::Fail("unowned record did not decode");
+        };
+        test_assert_eq!((back.uid, back.gid), (0, 0));
+        let Some(back) = InodeRecord::from_record(&b) else {
+            return TestResult::Fail("owned record did not decode");
+        };
+        test_assert_eq!((back.uid, back.gid), (UID, GID));
+        test_assert_eq!(back.id, ino.id);
+        test_assert_eq!(back.name_len, 6);
+        test_assert_eq!(back.data_lba, 4096);
+        test_assert_eq!(back.permissions, 0o644);
+        test_assert_eq!(back.dir_first_child, NONE_ID);
+
+        // Same for the journal entry, checksum held out of the comparison so
+        // only the owner bytes can differ.
+        let mut unowned = JournalEntry {
+            seq: 9,
+            op: 1,
+            committed: 0,
+            _pad1: [0; 6],
+            inode_id: ino.id,
+            parent: 0,
+            kind: 0,
+            _pad2: [0; 7],
+            data_lba: 4096,
+            data_blocks: 1,
+            voronoi_cell: 0,
+            original_size: 3,
+            permissions: 0o644,
+            _pad3: [0; 6],
+            created_ms: 0,
+            modified_ms: 0,
+            content_hash: 0,
+            name_len: 6,
+            name: [0; 128],
+            uid: 0,
+            gid: 0,
+            checksum: 0,
+            _pad4: [0; 282],
+        };
+        unowned.name[..6].copy_from_slice(b"legacy");
+        let mut owned = unowned;
+        owned.uid = UID;
+        owned.gid = GID;
+        let (a, b) = (unowned.encode_sector(0), owned.encode_sector(0));
+        let mut moved = 0;
+        for i in 0..SECTOR_SIZE {
+            if a[i] != b[i] {
+                moved += 1;
+                test_assert_eq!(a[i], 0);
+            }
+        }
+        test_assert_eq!(moved, 8);
+
+        owned.checksum = owned.checksum();
+        let Some(back) = JournalEntry::from_sector(&owned.to_sector()) else {
+            return TestResult::Fail("owned journal sector did not decode");
+        };
+        test_assert_eq!((back.uid, back.gid), (UID, GID));
+        test_assert_eq!(back.inode_id, ino.id);
+        test_assert_eq!(back.name_len, 6);
+        let Some(back) = JournalEntry::from_sector(&unowned.to_sector()) else {
+            return TestResult::Fail("unowned journal sector did not decode");
+        };
+        test_assert_eq!((back.uid, back.gid), (0, 0));
         TestResult::Pass
     }
 
@@ -1604,6 +1828,14 @@ pub mod tests {
         crate::testing::register_test(
             "block_store::cold_inode_table_load_restores_data_without_journal",
             test_cold_inode_table_load_restores_data_without_journal,
+        );
+        crate::testing::register_test(
+            "block_store::recorded_owner_survives_remount",
+            test_recorded_owner_survives_remount,
+        );
+        crate::testing::register_test(
+            "block_store::owner_occupies_only_previously_dead_bytes",
+            test_owner_occupies_only_previously_dead_bytes,
         );
     }
 }
