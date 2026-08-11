@@ -800,8 +800,13 @@ pub mod tests {
     fn test_unsafe_paths_refused() -> TestResult {
         for (path, what) in UNSAFE_PATHS {
             let eph = build_eph("pkg-mod-unsafe", "1.0.0", "", &[], &[(path, b"x")]);
+            // Either layer may refuse: `parse_eph` rejects a path that is not
+            // valid UTF-8 before the installer ever sees it, and the installer
+            // refuses the rest. What matters is that nothing is written, not
+            // which layer says so.
             match ManifoldPkg::new().install_bytes(&eph, None) {
-                Err(e) if e.starts_with("unsafe path") => {}
+                Err(e)
+                    if e.starts_with("unsafe path") || e == "parse error: BadPath" => {}
                 _ => return TestResult::Fail(what),
             }
         }
