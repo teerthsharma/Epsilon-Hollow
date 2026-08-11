@@ -29,22 +29,87 @@ pub struct MmapRegion {
 /// Global list of mmap regions.  `pub(super)` so `swap.rs` can iterate over them.
 pub(super) static REGIONS: Mutex<Vec<MmapRegion>> = Mutex::new(Vec::new());
 
+/// Lowest address the bump may hand out. 1 MiB, clear of the null page and the
+/// low-memory BIOS/UEFI areas.
+const USER_VIRT_BASE: u64 = 0x10_0000;
+
+/// Exclusive upper bound on the bump: stay well below the user-stack and
+/// kernel-half boundaries.
+const USER_VIRT_END: u64 = 0x0000_7FFF_0000_0000;
+
+/// Largest single reservation, in pages (1 GiB).
+///
+/// `mmap_user` backs nothing at reservation time — pages are faulted in
+/// lazily — so a reservation costs a caller no physical memory at all. Without
+/// a per-call bound, a handful of `SYS_MMAP` calls asking for terabytes each
+/// would consume the whole 128 TiB range at zero cost to the caller and, since
+/// the bump is global and nothing returns a range to it, leave every process on
+/// the machine permanently unable to `mmap` or grow its break. The bound does
+/// not remove that attack, it only prices it: exhausting the range now takes
+/// 131,072 successful reservations, each of which also pins an `MmapRegion` in
+/// `REGIONS`. Nothing in this kernel reserves anywhere near 1 GiB in one call.
+const MAX_RESERVATION_PAGES: usize = 1 << 18;
+
 /// User-space virtual bump allocator for mmap.
-/// Starts at 1 MiB to avoid the null-page and low-memory BIOS/UEFI areas.
-/// Grows upward; no holes are reclaimed in this minimal implementation.
-static USER_VIRT_BUMP: AtomicU64 = AtomicU64::new(0x10_0000);
+///
+/// One global counter, not one per address space, so two processes never see
+/// the same address even where they could. It only grows: `munmap_user` frees
+/// the physical frames but the virtual range is not returned here.
+///
+/// ponytail: no free list. A released range is consulted by nobody, because
+/// nothing can release one — `munmap_user` has no callers and no `SYS_MUNMAP`
+/// exists, so a free list would be unreachable code with an O(n) scan on the
+/// reservation path. Upgrade path, in order: wire `SYS_MUNMAP` in
+/// `syscall/table.rs`, then have `munmap_user` push `(start, pages)` onto a
+/// coalescing free list that `mmap_user` first-fits before advancing the bump.
+/// Note when doing so that the bump leaves no guard gap between reservations
+/// today — successive ranges are already exactly adjacent — so returning an
+/// exact range to a free list introduces no adjacency that does not already
+/// occur.
+static USER_VIRT_BUMP: AtomicU64 = AtomicU64::new(USER_VIRT_BASE);
 
 /// Reserve a contiguous virtual address range for the given page table.
 ///
 /// No physical frames are allocated — they are fetched on the first page fault.
+///
+/// Returns `None` for an empty or oversized request, and for any request the
+/// remaining range cannot satisfy. The bump only moves when a reservation
+/// succeeds: the range is bounds-checked before the compare-exchange commits
+/// it, so a refused call leaves the counter exactly where it was. Advancing
+/// first and checking afterwards — which is what a bare `fetch_add` does — let
+/// one refused request permanently consume address space it was never granted,
+/// and since `USER_VIRT_BUMP` is one global counter shared by every address
+/// space, that loss is not the caller's alone.
+///
+/// Every arithmetic step is checked. `pages` arrives from userspace by way of
+/// `len.div_ceil(4096)` in `SYS_MMAP`, so it reaches 2^52 for `len = u64::MAX`;
+/// `pages * 4096` then overflows, and the kernel's release profile leaves
+/// overflow checks off, so it wraps to 0. A zero-size reservation returns an
+/// address without reserving it and the next call hands the same address out
+/// again — two live regions at one address, which is worse than exhaustion.
+/// `pages == 0` (from `mmap(len = 0)`) produced the same duplicate.
 pub fn mmap_user(pages: usize, flags: PageTableFlags, page_table: u64) -> Option<VirtAddr> {
-    let size = pages as u64 * 4096;
-    let addr = USER_VIRT_BUMP.fetch_add(size, Ordering::SeqCst);
-
-    // Hard cap: stay well below the user-stack and kernel-half boundaries.
-    if addr + size > 0x0000_7FFF_0000_0000 {
+    if pages == 0 || pages > MAX_RESERVATION_PAGES {
         return None;
     }
+    let size = (pages as u64).checked_mul(4096)?;
+
+    // The range is computed and bounds-checked before the store is committed,
+    // so every rejection path returns without touching the counter. `fetch_add`
+    // cannot express that ordering; compare-exchange can. A lost race only
+    // re-reads the counter and retries, so the loop is bounded by contention,
+    // not by the size of the request.
+    let mut cur = USER_VIRT_BUMP.load(Ordering::SeqCst);
+    let addr = loop {
+        let end = cur.checked_add(size)?;
+        if end > USER_VIRT_END {
+            return None;
+        }
+        match USER_VIRT_BUMP.compare_exchange_weak(cur, end, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break cur,
+            Err(observed) => cur = observed,
+        }
+    };
 
     let virt = VirtAddr::new(addr);
     REGIONS.lock().push(MmapRegion {
@@ -294,7 +359,130 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Defect regression: a refused reservation must leave `USER_VIRT_BUMP`
+    /// exactly where it was.
+    ///
+    /// The old body called `fetch_add` first and bounds-checked the result
+    /// afterwards, with no rollback on the failing path. Because the counter is
+    /// one global shared by every address space, a single `SYS_MMAP` asking for
+    /// the whole 128 TiB range returned `ENOMEM` to its caller and left the bump
+    /// past the cap — after which every `mmap` and every `brk` growth in every
+    /// process failed permanently. One unprivileged syscall, system-wide, with
+    /// no way to undo it.
+    ///
+    /// The four requests below are the ones that reach the arithmetic from
+    /// userspace. `SYS_MMAP` computes `pages` as `len.div_ceil(4096)`, so
+    /// `len = u64::MAX` yields 2^52 pages; `2^52 * 4096` is exactly 2^64 and the
+    /// release profile sets no `overflow-checks`, so it wrapped to a zero-size
+    /// reservation that advanced nothing and handed the next caller the same
+    /// address. One page below that wrapped the sum to `2^64 - 4096`, driving
+    /// the bump backward below `USER_VIRT_BASE` while `addr + size` wrapped back
+    /// under the cap, so the check passed.
+    fn test_mmap_user_refuses_hostile_request_without_moving_bump() -> TestResult {
+        let current_pt = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
+        let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+
+        let before = USER_VIRT_BUMP.load(Ordering::SeqCst);
+
+        let empty = mmap_user(0, flags, current_pt);
+        let overflow = mmap_user(1usize << 52, flags, current_pt);
+        let backward = mmap_user((1usize << 52) - 1, flags, current_pt);
+        let whole_range = mmap_user((USER_VIRT_END / 4096) as usize, flags, current_pt);
+
+        let after = USER_VIRT_BUMP.load(Ordering::SeqCst);
+
+        // Any request that wrongly succeeded also left a region behind.
+        for start in [empty, overflow, backward, whole_range].into_iter().flatten() {
+            REGIONS.lock().retain(|r| r.start != start);
+        }
+
+        test_assert!(empty.is_none(), "a zero-page reservation must be refused");
+        test_assert!(
+            overflow.is_none(),
+            "a reservation whose byte size overflows must be refused"
+        );
+        test_assert!(
+            backward.is_none(),
+            "a reservation that would wrap the bump backward must be refused"
+        );
+        test_assert!(
+            whole_range.is_none(),
+            "a reservation spanning the whole user range must be refused"
+        );
+        test_assert_eq!(before, after);
+        TestResult::Pass
+    }
+
+    /// The property the bump exists to hold: an address it hands out never
+    /// overlaps a region that is already live.
+    ///
+    /// Snapshots every live region in the caller's own address space first, then
+    /// checks both fresh reservations against that snapshot and against each
+    /// other, byte-wise. Regions belonging to other page tables are excluded
+    /// because addresses in different address spaces are permitted to coincide.
+    /// Pre-fix, `mmap(len = 0)` and `mmap(len = u64::MAX)` both reserved zero
+    /// bytes, so the following call was handed an address inside the region the
+    /// previous call had just registered.
+    fn test_mmap_user_hands_out_disjoint_addresses() -> TestResult {
+        let current_pt = x86_64::registers::control::Cr3::read()
+            .0
+            .start_address()
+            .as_u64();
+        let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+
+        let live: Vec<(u64, u64)> = REGIONS
+            .lock()
+            .iter()
+            .filter(|r| r.page_table == current_pt)
+            .map(|r| (r.start.as_u64(), r.pages as u64 * 4096))
+            .collect();
+
+        let first = mmap_user(1, flags, current_pt);
+        let second = mmap_user(2, flags, current_pt);
+
+        // Release the regions before asserting. The bump itself cannot be
+        // rewound — nothing returns a range to it — so this test permanently
+        // consumes 12 KiB of the 128 TiB range each time it runs.
+        for start in [first, second].into_iter().flatten() {
+            REGIONS.lock().retain(|r| r.start != start);
+        }
+
+        let (a, b) = match (first, second) {
+            (Some(a), Some(b)) => (a.as_u64(), b.as_u64()),
+            _ => return TestResult::Fail("mmap_user must serve two small reservations"),
+        };
+
+        for (start, len) in [(a, 4096u64), (b, 8192u64)] {
+            test_assert!(
+                start >= USER_VIRT_BASE && start + len <= USER_VIRT_END,
+                "a reservation must land inside the user range"
+            );
+            for (other, other_len) in live.iter().copied() {
+                test_assert!(
+                    start >= other + other_len || other >= start + len,
+                    "a fresh reservation overlaps a region that was already live"
+                );
+            }
+        }
+        test_assert!(
+            b >= a + 4096,
+            "two successive reservations must not overlap each other"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "mmap::mmap_user_refuses_hostile_request_without_moving_bump",
+            test_mmap_user_refuses_hostile_request_without_moving_bump,
+        );
+        crate::testing::register_test(
+            "mmap::mmap_user_hands_out_disjoint_addresses",
+            test_mmap_user_hands_out_disjoint_addresses,
+        );
         crate::testing::register_test(
             "mmap::munmap_user_refuses_foreign_page_table",
             test_munmap_user_refuses_foreign_page_table,
