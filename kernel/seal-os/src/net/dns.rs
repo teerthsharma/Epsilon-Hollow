@@ -356,38 +356,34 @@ pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, dst_port: u16
     let qdcount = u16::from_be_bytes([pkt[4], pkt[5]]);
     let ancount = u16::from_be_bytes([pkt[6], pkt[7]]);
 
+    // Walk the record sections with `read_name`, which reports the offset
+    // just past a name: past the two pointer octets when the name ends in a
+    // compression pointer (RFC 1035 SS4.1.4), past the single zero octet when
+    // it ends in a root label. The two cases must not be conflated. The
+    // hand-rolled skip loops that used to live here consumed the pointer's
+    // two octets and *then* also tested for a trailing zero, so an answer
+    // whose owner name is the usual back-pointer to the question -- the form
+    // every real resolver emits -- had its TYPE field's high byte (0x00 for
+    // type A) swallowed as if it were a name terminator. The one-byte slip
+    // made TYPE read as 0x0100, so the A record was skipped and no legitimate
+    // answer was ever cached. A name `read_name` rejects fails closed here:
+    // the whole response is dropped rather than parsed from a guessed offset.
     let mut offset = 12;
     // Skip questions
     for _ in 0..qdcount {
-        while offset < pkt.len() && pkt[offset] != 0 {
-            if pkt[offset] & 0xC0 == 0xC0 {
-                offset += 2;
-                break;
-            }
-            offset += 1 + pkt[offset] as usize;
-        }
-        if offset < pkt.len() && pkt[offset] == 0 {
-            offset += 1;
-        }
-        offset += 4; // type + class
+        let Some((_, after_name)) = read_name(pkt, offset) else {
+            return;
+        };
+        offset = after_name + 4; // type + class
     }
 
     // Parse answers
     for _ in 0..ancount {
-        if offset + 10 > pkt.len() {
-            break;
-        }
         // Skip name
-        while offset < pkt.len() && pkt[offset] != 0 {
-            if pkt[offset] & 0xC0 == 0xC0 {
-                offset += 2;
-                break;
-            }
-            offset += 1 + pkt[offset] as usize;
-        }
-        if offset < pkt.len() && pkt[offset] == 0 {
-            offset += 1;
-        }
+        let Some((_, after_name)) = read_name(pkt, offset) else {
+            return;
+        };
+        offset = after_name;
         if offset + 10 > pkt.len() {
             break;
         }
@@ -671,6 +667,48 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Append `name` to `pkt` as literal length-prefixed labels ending in the
+    /// root label -- the uncompressed wire form, no compression pointer.
+    fn push_uncompressed_name(pkt: &mut Vec<u8>, name: &str) {
+        for label in name.split('.') {
+            pkt.push(label.len() as u8);
+            pkt.extend_from_slice(label.as_bytes());
+        }
+        pkt.push(0);
+    }
+
+    /// GREEN: an answer's owner name is not required to be a compression
+    /// pointer -- a server may repeat the name literally. The two forms end a
+    /// name with a different number of octets (two for a pointer, one for the
+    /// root label), so `build_dns_response`'s pointer fixture alone does not
+    /// cover this path. The A record must still be found at the right offset.
+    fn test_uncompressed_answer_name_accepted() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&0x1234u16.to_be_bytes()); // id
+        pkt.extend_from_slice(&0x8180u16.to_be_bytes()); // flags: response
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // qdcount
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // ancount
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // nscount
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // arcount
+        push_uncompressed_name(&mut pkt, "example.com"); // question name
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // qtype A
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // qclass IN
+        push_uncompressed_name(&mut pkt, "example.com"); // answer owner name
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // type A
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // class IN
+        pkt.extend_from_slice(&300u32.to_be_bytes()); // ttl
+        pkt.extend_from_slice(&0x0004u16.to_be_bytes()); // rdlen
+        pkt.extend_from_slice(&[93, 184, 216, 34]);
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &pkt);
+        test_assert_eq!(
+            CACHE.lock().get("example.com").map(|e| e.ip),
+            Some([93, 184, 216, 34])
+        );
+        TestResult::Pass
+    }
+
     /// DECOMPRESSION: a name whose only label is a compression pointer aimed
     /// at itself. Before the strict-decrease rule, a decoder that followed
     /// the pointer blindly would loop forever; `read_name` must reject it
@@ -805,6 +843,10 @@ pub mod tests {
         crate::testing::register_test(
             "dns::legit_response_accepted",
             test_legit_response_accepted,
+        );
+        crate::testing::register_test(
+            "dns::uncompressed_answer_name_accepted",
+            test_uncompressed_answer_name_accepted,
         );
         crate::testing::register_test(
             "dns::decompression_self_pointer_rejected",
