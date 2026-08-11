@@ -168,8 +168,13 @@ pub fn handle_ipv4_packet(pkt: &[u8]) {
         return;
     }
 
+    // `total_len` is attacker-controlled and needs a floor as well as a ceiling:
+    // it counts the header too, so anything below `ihl` would invert the payload
+    // slice below and panic. A remote peer computes a valid header checksum for
+    // free, so the checksum above is no barrier. Same shape as
+    // `ipv6::handle_ipv6_packet`, which bounds its length before slicing.
     let total_len = u16::from_be(hdr.total_len) as usize;
-    if total_len > pkt.len() {
+    if total_len < ihl || total_len > pkt.len() {
         return;
     }
 
@@ -184,5 +189,117 @@ pub fn handle_ipv4_packet(pkt: &[u8]) {
         _ => {
             // Unknown IPv4 protocol; drop silently
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// `kernel/seal-os` is excluded from the workspace, so `cargo test --workspace`
+// never builds this crate; these register into crate::testing::TEST_REGISTRY
+// and execute under QEMU via testing::runner::test_main(). See WIRING note on
+// `register_all` below -- runner.rs does not call it yet.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// Build an IPv4 frame with an attacker-chosen `ver_ihl` and `total_len`
+    /// and a header checksum that verifies. A remote peer computes this
+    /// checksum for free, so it gates nothing; the builder makes that explicit
+    /// rather than letting a test pass because the checksum guard rejected the
+    /// packet before it ever reached the code under test.
+    fn forged(ver_ihl: u8, total_len: u16, frame_len: usize) -> Vec<u8> {
+        let mut pkt = vec![0u8; frame_len];
+        pkt[0] = ver_ihl;
+        pkt[2..4].copy_from_slice(&total_len.to_be_bytes());
+        pkt[8] = 64; // ttl
+        pkt[9] = 17; // UDP
+        let ihl = (ver_ihl & 0x0F) as usize * 4;
+        let ck = internet_checksum(&pkt[..ihl]);
+        pkt[10..12].copy_from_slice(&ck.to_be_bytes());
+        pkt
+    }
+
+    /// `total_len` of 0 clears `total_len > pkt.len()` and used to produce
+    /// `&pkt[20..0]` -- a reversed slice range, which panics. With
+    /// `panic = "abort"` that is a remote kernel kill from one 60-byte frame,
+    /// the Ethernet minimum, reachable through both the Allow and Log firewall
+    /// verdicts in `net::mod::process_packet`. Reaching the assertion at all is
+    /// part of the proof.
+    fn test_total_len_zero_dropped() -> TestResult {
+        let pkt = forged(0x45, 0, 60);
+        test_assert!(
+            Ipv4Header::from_bytes(&pkt).is_some(),
+            "forged header does not pass version/IHL/checksum, so it never reaches the payload slice and proves nothing"
+        );
+        handle_ipv4_packet(&pkt);
+        TestResult::Pass
+    }
+
+    /// `total_len` counts the header, so any value below the header length
+    /// inverts the slice the same way. IHL 15 gives a 60-byte header against a
+    /// declared total of 20: `&pkt[60..20]`.
+    fn test_total_len_below_ihl_dropped() -> TestResult {
+        let pkt = forged(0x4F, 20, 60);
+        test_assert!(
+            Ipv4Header::from_bytes(&pkt).is_some(),
+            "forged header does not pass version/IHL/checksum, so it never reaches the payload slice and proves nothing"
+        );
+        handle_ipv4_packet(&pkt);
+        // One below the header length, the tightest failing case.
+        let pkt = forged(0x45, 19, 60);
+        handle_ipv4_packet(&pkt);
+        TestResult::Pass
+    }
+
+    /// Control on the accepting side of the new boundary, so the fix cannot
+    /// have passed by turning every packet into a drop. `total_len == ihl` is a
+    /// legal header-only datagram with an empty payload, and `total_len ==
+    /// pkt.len()` is the ordinary case; both must still slice and dispatch.
+    /// Both carry an all-zero UDP payload, which `handle_udp_packet` rejects on
+    /// its own length field, so nothing downstream is disturbed.
+    fn test_total_len_at_and_above_ihl_accepted() -> TestResult {
+        let header_only = forged(0x45, 20, 60);
+        test_assert!(
+            internet_checksum(&header_only[..20]) == 0,
+            "control packet checksum does not verify"
+        );
+        handle_ipv4_packet(&header_only);
+        let full = forged(0x45, 60, 60);
+        handle_ipv4_packet(&full);
+        TestResult::Pass
+    }
+
+    /// The upper bound the fix must not have disturbed: a `total_len` longer
+    /// than the frame is still a drop.
+    fn test_total_len_above_frame_dropped() -> TestResult {
+        let pkt = forged(0x45, 1500, 60);
+        test_assert!(
+            Ipv4Header::from_bytes(&pkt).is_some(),
+            "forged header does not pass version/IHL/checksum, so it never reaches the payload slice and proves nothing"
+        );
+        handle_ipv4_packet(&pkt);
+        TestResult::Pass
+    }
+
+    // WIRING: testing/runner.rs must call `crate::net::ipv4::tests::register_all()`
+    // for this group to execute; it is not registered there yet.
+    pub fn register_all() {
+        crate::testing::register_test("ipv4::total_len_zero_dropped", test_total_len_zero_dropped);
+        crate::testing::register_test(
+            "ipv4::total_len_below_ihl_dropped",
+            test_total_len_below_ihl_dropped,
+        );
+        crate::testing::register_test(
+            "ipv4::total_len_at_and_above_ihl_accepted",
+            test_total_len_at_and_above_ihl_accepted,
+        );
+        crate::testing::register_test(
+            "ipv4::total_len_above_frame_dropped",
+            test_total_len_above_frame_dropped,
+        );
     }
 }
