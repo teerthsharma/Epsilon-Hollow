@@ -61,10 +61,10 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 628
-justified 10
-unjustified 618
-files 85
+total 624
+justified 12
+unjustified 612
+files 84
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
 file atlas/mod.rs 2 0
@@ -111,7 +111,6 @@ file drivers/usb/xhci.rs 40 0
 file fs/block_store.rs 2 2
 file fs/ext2.rs 24 0
 file fs/fat.rs 6 0
-file fs/journal.rs 4 0
 file fs/parity.rs 1 0
 file graphics/console.rs 2 0
 file graphics/framebuffer.rs 9 0
@@ -122,7 +121,7 @@ file memory/pgtable_asm.rs 5 0
 file memory/swap.rs 5 0
 file memory/topo_ram.rs 2 0
 file memory/virt.rs 24 0
-file ml_engine/topo_asm.rs 2 0
+file ml_engine/topo_asm.rs 2 2
 file net/arp.rs 2 0
 file net/icmp.rs 2 0
 file net/ipv4.rs 4 0
