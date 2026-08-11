@@ -307,28 +307,69 @@ Other VM and real-hardware claims are gated targets, not blanket promises. It ha
 
 ---
 
-## The Gate That Is Currently Red
+## The Gate That Was Red, And The Four Nobody Has Ever Seen
 
 This section exists because a README that grades its own homework is worth nothing, and this one has a section further down titled *Negative Controls: A Proof That Cannot Fail Is Not A Proof*. Applying that standard to the README itself: a claim nobody rechecks is not a claim, it is set dressing.
 
-At `main`, the QEMU boot smoke job fails one gate:
+An earlier version of this section said the Atlas gate was red and promised it would be rewritten rather than deleted when it went green, because "we fixed it" is also a claim. It is green. Here are the receipts, including the part where this section's own diagnosis was wrong.
+
+### What it was
 
 ```
-[seal-audit] TLS PROOF OK: /tmp/seal-os.log
 [seal-audit] ATLAS PROOF FAIL: Atlas proof expected wx=text_rx_data_rw_nx, got wx=fail
 ```
 
-Read that carefully, because the failure is more interesting than a crash. The kernel **boots**. The VM proof passes. LAAMBA passes. TLS passes. The desktop pixel proof, the live input proof, and the proof-screen capture all pass. Then `atlas` grafts its fixture chart, tries to flip that chart's executable pages from `RW+NX` to `RX`, and reports that it could not.
+`wx=fail` reads as "write-xor-execute enforcement failed," and that is how it was investigated: page permissions, remapping, TLB coherency, the `ChartImage::seal` → `remap_region` → `unmap_page` + `map_page` chain. This section previously asserted, in as many words, that "the defect is not in atlas's parsing."
 
-`wx=fail` is the kernel telling you, unprompted, that the one property making runtime module loading safe is not holding right now. Write-xor-execute is not a nice-to-have in a subsystem whose entire job is mapping code supplied at runtime. The chain runs `ChartImage::seal` → `remap_region` → `unmap_page` + `map_page`, and `remap_region` returns `false` from one of exactly two lines.
+**That was exactly backwards.** The defect was entirely in atlas's parsing, and none of the permission machinery was ever reached.
 
-Two things worth saying plainly about this.
+`relobj::parse()` read `Elf64_Shdr` as though the 8-byte `sh_addr` field did not exist:
 
-**The gate did its job.** Nothing else caught it. Not clippy, which is clean. Not the workspace test suite, which is 440 green. Not a careful read of `atlas/`, which is genuinely one of the better-written subsystems in the tree — it caps every untrusted length before allocating, verifies its ed25519 signature before it trusts a single byte, and its own doc comment promises "nothing here panics on malformed input," which as far as anyone can tell is true. The defect is not in atlas's parsing. It is in what happens when it asks the memory subsystem to change permissions on pages that are already live. A boot proof found something no amount of reading found.
+```rust
+offset: rd_u64(bytes, base + 16)?,   // that is sh_addr — a relocatable object writes 0 here
+size:   rd_u64(bytes, base + 24)?,   // that is the real sh_offset
+```
 
-**It was red the whole time and nobody looked.** That is the part that stings. There is no clever story here. The signal was in GitHub Actions, freely available, and the work went on underneath it for a long stretch on the strength of "well, the local builds are clean." Local builds being clean is a statement about local builds.
+The true layout is `sh_name` 0, `sh_type` 4, `sh_flags` 8, **`sh_addr` 16**, `sh_offset` 24, `sh_size` 32, `sh_link` 40, `sh_info` 44, `sh_addralign` 48, `sh_entsize` 56. Every field from `sh_link` onward was read correctly, which is precisely why it survived from the subsystem's first commit — nine of eleven fields were right, and the two that were wrong were wrong by exactly one field width.
 
-If you are reading this section because you came to evaluate the project: this is what the honesty is for. The gate is red, it is named, the exact failing marker is quoted, the call chain is written down, and the fix is not in yet. When it goes green this section gets rewritten rather than deleted, because "we fixed it" is also a claim and claims get receipts.
+Consequence: `.symtab` was read with `size = 280`, which is that section's real file offset. `280 % 24 != 0`, so `parse()` rejected it as a malformed symbol table and returned `NoSymbolTable` — before `ChartImage::alloc`, before `seal()`, before any page-table code. **Atlas had never loaded a chart. Not once, in its entire existence.**
+
+### The evidence was printed on every boot and nobody read past the first field
+
+The same proof marker also said:
+
+```
+sections_placed=0 image_bytes=0 charts_before=0 charts_peak=0 charts_after=0
+init_code=0x8000000000000000
+```
+
+`charts_peak=0` means no chart was ever registered — valid signature, valid germ, irrelevant. `init_code` is `i64::MIN`, the sentinel for `graft()` returning `Err`. Both fields say the loader never reached the code everyone was theorising about. They were sitting in the same line as the `wx=fail` being quoted.
+
+Two things made that easy to miss, and both are now fixed:
+
+**A diagnostic that conflates two failures decides which wrong thing you investigate.** `Atlas::sealed()` returns `Option<bool>`; the call site did `.unwrap_or(false)`, so "chart absent" and "chart present but unsealed" both printed `wx=fail`. It now prints `absent`, `unsealed`, or `text_rx_data_rw_nx`. The gate is unchanged — the checker exact-matches the pass string — but a human reading the line now learns which half of the system to look at.
+
+**A lead that fits your hypothesis feels confirmed without being tested.** A scout had independently flagged that `map_page_inner` performs no TLB shootdown, unlike `unmap_page`. Real finding, correctly recorded, and completely unreachable in this path — `charts_peak=0` refuted it and had been printed all along.
+
+### What is red now, and the four gates nobody has ever seen
+
+```
+success  Verify Atlas chart graft proof
+success  Verify firmware bundle proof
+failure  Verify raw-block installer proof
+skipped  Verify FAT/ext2 parity proof
+skipped  Verify stratum fit-control proof
+skipped  Verify foliation KV cache policy proof
+skipped  Verify GCN ISA GPU bench proof
+```
+
+The installer gate fails on exactly one field, `auth_topo5000=0`, while everything around it passes — GPT written and CRC-verified on both copies, ext2 formatted and mounted with `.` and `..` present, all three refusal guards refusing correctly.
+
+It is worth knowing *why* that failure is new: it isn't. The gate runs sequentially, Atlas failed first, and every step after it was **skipped on every run since the subsystem was written**. The installer failure has always been there. So, presumably, has whatever is behind it.
+
+Which is the honest headline of this section. `stratum` and `foliation` are the two subsystems this README leads with — the ML gates, the ones the pitch rests on. **Their proof gates have never executed.** Not failed: never run. Nobody knows.
+
+That is what a red gate actually costs. Not one defect deferred — the entire depth of the pipeline past the first stop, invisible for as long as the first stop stands.
 
 ---
 
