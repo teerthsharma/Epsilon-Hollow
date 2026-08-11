@@ -5236,6 +5236,132 @@ lying to itself, and has done so with a straight face and a green checkmark.
 Option 3 is honest and enormous. Option 2 is honest and small. I know which one
 gets done first, and I know that is not the same as knowing which one is right.
 
+## Eleven Things Wrong With A Window Manager Nobody Had Read
+
+Someone read the whole window manager. All of it — 22 files, 5,699 lines across
+`wm/` and `graphics/` — in one sitting, with instructions to report only things
+they could name a trigger for.
+
+Eleven defects. Three missing capabilities. I want to walk through the ones that
+say something, because collectively they explain what a green CI gate is and is
+not.
+
+### First, what the green gate actually proves
+
+`Verify desktop compositor soak marker` has been passing for as long as it has
+existed. It runs `run_desktop_soak_probe`: twenty-four iterations of "render the
+desktop, mark the whole screen dirty, compose, blit," nudging the mouse a little
+every third frame, at whatever mode the firmware handed us.
+
+Its own output line contains `input_events=0`.
+
+So it proves the kernel survives redrawing itself twenty-four times. It proves
+nothing whatsoever about clicking, dragging, resizing, maximizing, the taskbar,
+menus, changing theme, the keyboard, any colour depth other than 32-bit, or any
+resolution other than 1024x768. The welcome screen auto-dismisses after 500
+ticks, so CI has never touched that screen's input path either.
+
+Every defect below lives in that gap. They did not survive because they were
+subtle. They survived because nothing ever asked.
+
+### The screen is 1024x768 and always has been
+
+`Compositor::screen_w` and `screen_h` are initialised to `1024` and `768`. The
+only thing that ever writes them is `mouse_move`. The only live caller of
+`mouse_move` passes `1024, 768` as literals.
+
+Every drawing function in the same file reads the real `fb.width` and
+`fb.height`.
+
+So on any machine whose firmware picks 1280x1024 — and mode selection scores
+purely on resolution, so plenty will — the cursor stops dead at x=1023, the power
+button is drawn somewhere it can never be reached, and maximizing a window makes
+it 1024 wide on a 1280-wide screen. On an 800x600 screen the cursor walks off the
+visible area entirely and disappears, because `put_pixel` quietly refuses to draw
+it, and clicks in the bottom 168 pixels are routed to taskbar logic operating on
+a taskbar that is drawn 168 pixels higher.
+
+The soak probe, incidentally, passes `fb.width` and `fb.height` correctly.
+Whoever wrote the probe knew. The knowledge just never made it four files over.
+
+### The power button has two different left edges
+
+It is drawn starting at `fb.width - 36`.
+
+It is hit-tested starting at `fb.width - 40`.
+
+Four columns of visible red button do nothing when clicked. Four columns of
+apparently-empty taskbar open the power menu. Both numbers are correct
+implementations of "near the right edge." Neither is aware the other exists.
+
+The power menu itself then opens anchored by its *left* edge to that button, and
+it is 150 pixels wide with about 40 pixels of screen remaining. You get `Shut`,
+`Rebo`, `Logo`. They are still clickable. You just have to know what they say.
+
+### The welcome screen wants you to right-click
+
+`welcome.rs` matches on mouse button `1`. The mouse driver emits `0` for left and
+`1` for right. All five other places in the codebase that handle a click read `0`.
+
+So on first boot, clicking "Get Started" does nothing. Clicking any of the four
+theme buttons does nothing. The wizard can be escaped with Enter, or by waiting
+500 ticks for it to give up on you.
+
+Right-clicking works perfectly. I did not design this. I could not have designed
+this.
+
+### The compositor's best feature has never run
+
+`Compositor::compose` implements damage tracking: it unions the dirty rectangles,
+clips to them, redraws only what changed, and skips frames adaptively. The module
+documentation advertises it. `Rect::union`, `Rect::intersects`, and `Rect::area`
+exist to support it.
+
+It has zero call sites. Everything calls `compose_full`, which redraws the entire
+screen. On every input event. Forever.
+
+And there is a second-order consequence I like very much. `themes::theme_changed()`
+is a flag, and it has exactly one consumer: a line inside `compose`. Since
+`compose` never runs, the flag is set and never read. So when you pick a theme in
+the welcome wizard, the desktop and taskbar change colour — they read the current
+theme every frame — while every window's title bar, border, and buttons stay in
+the old palette, because those are baked into the window's own buffer and only
+repainted when the window is focused, resized, or renamed.
+
+Your desktop is one theme. Your windows are another. Clicking each window fixes
+it, one at a time, which reads as a feature if you squint.
+
+### You can type into a window you cannot see
+
+`z_order` is assigned once, when a window is created, and never written again.
+The sort that determines paint order is stable, so paint order is permanently
+creation order.
+
+Clicking a window focuses it. Focus determines who receives keystrokes. It does
+not determine who is painted on top, because nothing does.
+
+So: boot, restore an app from the taskbar, click back to the terminal. The
+terminal has focus. The terminal receives every key you press. The other app is
+still painted over the top of it. You are typing into a window that is behind
+another window, and the only evidence that it is working is that the thing you
+can see is not changing.
+
+### And the one that actually kills the machine
+
+`render_decorations` computes its three title-bar button positions as `w - 20`,
+`w - 40`, and `w - 60`. These are unsigned. Release builds have no overflow
+checks. Nothing anywhere establishes a minimum window width.
+
+A script can ask for a window four pixels wide. `4 - 40` is not `-36`; it is
+`4294967260`. The loop that follows is not empty, and the first thing it does is
+index a 104-element buffer at offset 4294967276.
+
+`panic = "abort"`. No unwind. The machine stops.
+
+That one is being fixed as I write this, which is a sentence I can only publish
+because someone read all 5,699 lines instead of the 200 the failing test pointed
+at.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
