@@ -13,7 +13,9 @@
 //!    `entry=` lines).
 //! 2. monotonic `index_version` — an index older than the last accepted one is
 //!    a replay and is refused, which blocks the downgrade attack that
-//!    reintroduces a fixed package.
+//!    reintroduces a fixed package. The floor survives reboots: it is written
+//!    to [`FLOOR_PATH`] as a signed [`FLOOR_MAGIC`] record (see `load_floor`
+//!    for what a missing or unreadable one does).
 //! 3. SHA-256 of the fetched package bytes against the digest the signed index
 //!    carries for that entry, then the package's own ed25519 signature via the
 //!    existing [`super::ManifoldPkg::install_bytes`] path.
@@ -41,6 +43,33 @@ use sha2::{Digest, Sha256};
 use super::{hex32, hex64, parse_hex64, ManifoldPkg};
 
 const INDEX_MAGIC: &str = "EPHIDX2\n";
+
+/// Where the rollback floor is kept between boots.
+const FLOOR_PATH: &str = "/packages/.channel_floor";
+
+/// Framing of the on-disk floor record: `FLOOR_MAGIC` (8) then the floor as a
+/// big-endian `u64` (8), then ed25519 over those first 16 bytes (64). Fixed
+/// length on purpose — a short read is then a refusal rather than a parse, and
+/// rewriting the record can never leave a longer stale one behind it.
+const FLOOR_MAGIC: &[u8; 8] = b"EPHFLR1\0";
+const FLOOR_RECORD_LEN: usize = 80;
+
+/// Signing key for the floor record, distinct from both the channel index key
+/// and the package key because it authenticates something else entirely: the
+/// kernel's own note to its next boot. Nothing off the network is ever checked
+/// against it, and no floor record is ever checked against a channel key, so
+/// neither signature can be replayed as the other.
+///
+/// ponytail: the key ships in the boot image, so this stops an attacker who
+/// can write the data partition (`/packages` on ext2) without reading the
+/// image on the ESP — it does not stop one who has both. Closing that, and
+/// closing the delete-and-replay hole `load_floor` documents, needs monotonic
+/// storage the kernel does not have yet: a TPM NV counter or a UEFI
+/// authenticated variable.
+const FLOOR_RECORD_KEY: [u8; 32] = [
+    0xc2, 0x5b, 0x90, 0x3d, 0x17, 0xe8, 0x4a, 0x71, 0x06, 0xbd, 0xf3, 0x28, 0x5e, 0x94, 0x0c, 0xa7,
+    0x33, 0x6f, 0xd1, 0x82, 0x49, 0xab, 0x7c, 0x15, 0xe0, 0x38, 0x62, 0xcf, 0x9b, 0x24, 0x50, 0xd6,
+];
 
 /// Configured release channel endpoint. The fixture transport serves URLs under
 /// this prefix; the live probe attempts a real HTTPS fetch against it.
@@ -72,6 +101,9 @@ pub enum ChannelError {
     IndexSignatureInvalid,
     /// Offered index is not newer than the last accepted one — replay refused.
     IndexRollback { accepted: u64, offered: u64 },
+    /// The persisted rollback floor could not be read back or could not be
+    /// advanced. Nothing is installed while the floor is in doubt.
+    FloorUnavailable,
     /// Index carries no entry for the requested name/version.
     EntryNotFound,
     /// Fetched package length disagrees with the signed index.
@@ -94,6 +126,7 @@ impl ChannelError {
             ChannelError::IndexMalformed => "index_malformed",
             ChannelError::IndexSignatureInvalid => "index_signature_invalid",
             ChannelError::IndexRollback { .. } => "index_rollback",
+            ChannelError::FloorUnavailable => "floor_unavailable",
             ChannelError::EntryNotFound => "entry_not_found",
             ChannelError::SizeMismatch => "size_mismatch",
             ChannelError::DigestMismatch => "digest_mismatch",
@@ -200,9 +233,15 @@ pub struct ReleaseChannel {
     index_key: [u8; 32],
     package_key: [u8; 32],
     accepted_index_version: u64,
+    /// Where this channel's floor is persisted, or `None` for a channel whose
+    /// floor must not outlive it — see [`ReleaseChannel::ephemeral`].
+    floor_path: Option<&'static str>,
 }
 
 impl ReleaseChannel {
+    /// A channel whose rollback floor persists across boots. The floor is read
+    /// lazily on the first fetch, not here, so a channel can be constructed
+    /// before the VFS is up.
     pub fn new(endpoint: &str, index_key: [u8; 32], package_key: [u8; 32]) -> Self {
         let mut endpoint = String::from(endpoint);
         if !endpoint.ends_with('/') {
@@ -213,6 +252,21 @@ impl ReleaseChannel {
             index_key,
             package_key,
             accepted_index_version: 0,
+            floor_path: Some(FLOOR_PATH),
+        }
+    }
+
+    /// A channel whose floor lives and dies with the struct.
+    ///
+    /// This is for the fixture and self-proof channels only. They drive
+    /// deliberately arbitrary index versions (the boot proof replays v2 after
+    /// v3 on purpose), so persisting their floor would both wreck the proof on
+    /// the second boot and leave the shared floor sitting at a fixture's
+    /// version. Every channel that faces the network uses [`Self::new`].
+    pub fn ephemeral(endpoint: &str, index_key: [u8; 32], package_key: [u8; 32]) -> Self {
+        Self {
+            floor_path: None,
+            ..Self::new(endpoint, index_key, package_key)
         }
     }
 
@@ -230,17 +284,31 @@ impl ReleaseChannel {
 
     /// Fetch, verify, and accept the channel index. Advances the rollback floor
     /// only after both the signature and the monotonicity check pass.
+    ///
+    /// The floor compared against is the higher of this channel's own accepted
+    /// version and the one persisted on disk, so an index that is stale for
+    /// either reason is refused. The new floor is written *before* the index is
+    /// returned: an index that cannot have its floor recorded is refused
+    /// outright, because accepting it and losing the floor would let the very
+    /// package it replaces be served again on the next boot.
     pub fn fetch_index(
         &mut self,
         transport: &dyn ChannelTransport,
     ) -> Result<ReleaseIndex, ChannelError> {
         let raw = transport.fetch(&self.index_url())?;
         let index = parse_index(&raw, &self.index_key)?;
-        if index.index_version <= self.accepted_index_version {
+        let floor = match self.floor_path {
+            Some(path) => self.accepted_index_version.max(load_floor(path)?),
+            None => self.accepted_index_version,
+        };
+        if index.index_version <= floor {
             return Err(ChannelError::IndexRollback {
-                accepted: self.accepted_index_version,
+                accepted: floor,
                 offered: index.index_version,
             });
+        }
+        if let Some(path) = self.floor_path {
+            persist_floor(path, index.index_version)?;
         }
         self.accepted_index_version = index.index_version;
         Ok(index)
@@ -276,6 +344,82 @@ impl ReleaseChannel {
         pkg.install_bytes(&body, Some(&self.package_key))
             .map_err(|_| ChannelError::PackageRejected)
     }
+}
+
+/// Read the floor that survived the last boot.
+///
+/// Which way each failure falls, and why:
+///
+/// * **No record at all** — `Ok(0)`. No floor was ever established, so there is
+///   nothing to roll back below; refusing here would mean a freshly installed
+///   system could never accept a first index and the channel would be dead on
+///   arrival. This is also the state an attacker who can *delete* the file
+///   reaches, and no amount of signing fixes that — see [`FLOOR_RECORD_KEY`].
+/// * **A record that is short, misframed, or not signed by this kernel** —
+///   [`ChannelError::FloorUnavailable`], which refuses every install until the
+///   file is removed by hand. Treating a damaged record as zero is exactly the
+///   attack: it turns "I can flip one byte" into "the floor is gone".
+fn load_floor(path: &str) -> Result<u64, ChannelError> {
+    let mut record = [0u8; FLOOR_RECORD_LEN];
+    let read = crate::fs::vfs::with_vfs(|vfs| {
+        let handle = match vfs.lookup_follow(path) {
+            Ok(handle) => handle,
+            Err(crate::fs::vfs::VfsError::NotFound) => return Ok(None),
+            Err(_) => return Err(()),
+        };
+        vfs.read(handle, &mut record, 0).map(Some).map_err(|_| ())
+    })
+    .map_err(|_| ChannelError::FloorUnavailable)?;
+    let Some(read) = read else {
+        return Ok(0);
+    };
+    if read != FLOOR_RECORD_LEN || &record[..FLOOR_MAGIC.len()] != FLOOR_MAGIC {
+        return Err(ChannelError::FloorUnavailable);
+    }
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&record[16..]);
+    SigningKey::from_bytes(&FLOOR_RECORD_KEY)
+        .verifying_key()
+        .verify_strict(&record[..16], &Signature::from_bytes(&signature))
+        .map_err(|_| ChannelError::FloorUnavailable)?;
+    let mut floor = [0u8; 8];
+    floor.copy_from_slice(&record[8..16]);
+    Ok(u64::from_be_bytes(floor))
+}
+
+/// Move the persisted floor to `floor`.
+///
+/// The stored value is re-read and anything not strictly higher is a no-op, so
+/// the floor is monotonic as a property of the store itself rather than of
+/// whoever calls it. A record that fails to read back is *not* overwritten:
+/// `load_floor`'s error propagates, so a damaged floor is never silently
+/// replaced by a lower one.
+fn persist_floor(path: &str, floor: u64) -> Result<(), ChannelError> {
+    if floor <= load_floor(path)? {
+        return Ok(());
+    }
+    let mut record = [0u8; FLOOR_RECORD_LEN];
+    record[..FLOOR_MAGIC.len()].copy_from_slice(FLOOR_MAGIC);
+    record[8..16].copy_from_slice(&floor.to_be_bytes());
+    let signature = SigningKey::from_bytes(&FLOOR_RECORD_KEY).sign(&record[..16]);
+    record[16..].copy_from_slice(&signature.to_bytes());
+    crate::fs::vfs::with_vfs(|vfs| {
+        if let Some(slash) = path.rfind('/').filter(|slash| *slash > 0) {
+            let _ = vfs.mkdir(&path[..slash]);
+        }
+        let handle = match vfs.create(path) {
+            Ok(handle) => handle,
+            Err(crate::fs::vfs::VfsError::AlreadyExists) => {
+                vfs.lookup_follow(path).map_err(|_| ())?
+            }
+            Err(_) => return Err(()),
+        };
+        match vfs.write(handle, &record, 0) {
+            Ok(written) if written == FLOOR_RECORD_LEN => Ok(()),
+            _ => Err(()),
+        }
+    })
+    .map_err(|_| ChannelError::FloorUnavailable)
 }
 
 /// Parse and signature-verify an `EPHIDX2` index body.
@@ -380,8 +524,10 @@ pub fn fixture_transport(
 }
 
 /// A channel wired to the fixture index key and the boot proof package key.
+/// Deliberately [`ReleaseChannel::ephemeral`]: the fixtures replay old index
+/// versions on purpose, which must never touch the floor a real channel keeps.
 pub fn fixture_channel() -> ReleaseChannel {
-    ReleaseChannel::new(
+    ReleaseChannel::ephemeral(
         CHANNEL_ENDPOINT,
         channel_index_public_key(),
         super::proof_pkg_public_key(),
@@ -533,6 +679,230 @@ pub mod tests {
         super::super::build_proof_eph()
     }
 
+    /// A channel wired exactly like [`fixture_channel`] but keeping its floor
+    /// where a real channel keeps it: on disk.
+    fn persistent_channel() -> ReleaseChannel {
+        ReleaseChannel::new(
+            CHANNEL_ENDPOINT,
+            channel_index_public_key(),
+            super::super::proof_pkg_public_key(),
+        )
+    }
+
+    /// Return the persisted floor to "never established". This is also the one
+    /// move an attacker with delete access to the data partition has, so every
+    /// floor test starts from it and none depend on registration order.
+    fn clear_floor() {
+        let _ = crate::fs::vfs::with_vfs(|vfs| vfs.unlink(FLOOR_PATH));
+    }
+
+    /// The floor record exactly as it sits on disk. Empty when there is none.
+    fn read_floor_record() -> Vec<u8> {
+        crate::fs::vfs::with_vfs(|vfs| {
+            let handle = vfs.lookup_follow(FLOOR_PATH).ok()?;
+            let mut buf = alloc::vec![0u8; FLOOR_RECORD_LEN];
+            let read = vfs.read(handle, &mut buf, 0).ok()?;
+            buf.truncate(read);
+            Some(buf)
+        })
+        .unwrap_or_default()
+    }
+
+    /// Put attacker-chosen bytes where the floor record lives.
+    fn write_floor_record(bytes: &[u8]) {
+        crate::fs::vfs::with_vfs(|vfs| {
+            if let Ok(handle) = vfs.create(FLOOR_PATH).or_else(|_| vfs.lookup_follow(FLOOR_PATH)) {
+                let _ = vfs.write(handle, bytes, 0);
+            }
+        });
+    }
+
+    /// The floor exists to stop an old, validly signed release from being
+    /// served again. Keeping it in memory means a reboot re-opens the window,
+    /// so the attack is: accept v9, reboot, offer v8.
+    fn test_floor_survives_reboot() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut before_reboot = persistent_channel();
+        let newer = fixture_transport(&before_reboot, 9, NAME, VERSION, &package);
+        test_assert!(
+            before_reboot.fetch_index(&newer).is_ok(),
+            "v9 index must accept on a clean floor"
+        );
+        drop(before_reboot);
+
+        // Reboot: every field of the channel is rebuilt from nothing.
+        let mut after_reboot = persistent_channel();
+        let mut pkg = ManifoldPkg::new();
+        let before = pkg.package_count();
+        let older = fixture_transport(&after_reboot, 8, NAME, VERSION, &package);
+        match after_reboot.install_into(&mut pkg, &older, NAME, VERSION) {
+            Err(ChannelError::IndexRollback { accepted, offered }) => {
+                test_assert_eq!(accepted, 9);
+                test_assert_eq!(offered, 8);
+            }
+            _ => {
+                return TestResult::Fail(
+                    "a package below the persisted floor must be refused after a reboot",
+                )
+            }
+        }
+        test_assert_eq!(pkg.package_count(), before);
+        TestResult::Pass
+    }
+
+    /// Pin the boundary in both directions across a reboot: the version the
+    /// floor already accepted is refused, the next one up is not.
+    fn test_floor_boundary_exact() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut first = persistent_channel();
+        let at = fixture_transport(&first, 20, NAME, VERSION, &package);
+        test_assert!(
+            first.fetch_index(&at).is_ok(),
+            "v20 must accept on a clean floor"
+        );
+        drop(first);
+
+        let mut equal = persistent_channel();
+        let same = fixture_transport(&equal, 20, NAME, VERSION, &package);
+        match equal.fetch_index(&same) {
+            Err(ChannelError::IndexRollback { accepted, offered }) => {
+                test_assert_eq!(accepted, 20);
+                test_assert_eq!(offered, 20);
+            }
+            _ => {
+                return TestResult::Fail("an index exactly at the persisted floor must be refused")
+            }
+        }
+        drop(equal);
+
+        let mut above = persistent_channel();
+        let next = fixture_transport(&above, 21, NAME, VERSION, &package);
+        test_assert!(
+            above.fetch_index(&next).is_ok(),
+            "the first version above the persisted floor must still accept"
+        );
+        TestResult::Pass
+    }
+
+    /// A floor that was never established must not brick the channel: a fresh
+    /// system accepts its first index, and that acceptance is what closes the
+    /// window from the next boot on.
+    fn test_absent_floor_bootstraps_then_holds() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut fresh = persistent_channel();
+        let first = fixture_transport(&fresh, 1, NAME, VERSION, &package);
+        test_assert!(
+            fresh.fetch_index(&first).is_ok(),
+            "a system with no floor on disk must accept its first index"
+        );
+        drop(fresh);
+
+        let mut rebooted = persistent_channel();
+        let replay = fixture_transport(&rebooted, 1, NAME, VERSION, &package);
+        test_assert!(
+            matches!(
+                rebooted.fetch_index(&replay),
+                Err(ChannelError::IndexRollback { .. })
+            ),
+            "the bootstrapped floor must hold across the reboot"
+        );
+        TestResult::Pass
+    }
+
+    /// The floor lands on a filesystem an attacker may own. A record that does
+    /// not verify must refuse installs rather than reset the floor to zero —
+    /// the second is worth one byte flip to anyone holding an old release.
+    fn test_forged_floor_refused() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut established = persistent_channel();
+        let good = fixture_transport(&established, 30, NAME, VERSION, &package);
+        test_assert!(
+            established.fetch_index(&good).is_ok(),
+            "v30 must accept on a clean floor"
+        );
+        drop(established);
+
+        // Lower the floor in place, keeping the signature the kernel wrote.
+        let mut record = read_floor_record();
+        test_assert_eq!(record.len(), FLOOR_RECORD_LEN);
+        record[8..16].copy_from_slice(&5u64.to_be_bytes());
+        write_floor_record(&record);
+        let mut attacked = persistent_channel();
+        let mut pkg = ManifoldPkg::new();
+        let before = pkg.package_count();
+        let stale = fixture_transport(&attacked, 6, NAME, VERSION, &package);
+        test_assert_eq!(
+            attacked.install_into(&mut pkg, &stale, NAME, VERSION).err(),
+            Some(ChannelError::FloorUnavailable)
+        );
+        test_assert_eq!(pkg.package_count(), before);
+
+        // A record that is merely damaged fails the same way — and refuses a
+        // *newer* index too, which is what "fail closed" means here.
+        clear_floor();
+        write_floor_record(&[0xa5; FLOOR_RECORD_LEN]);
+        let mut damaged = persistent_channel();
+        let newer = fixture_transport(&damaged, 31, NAME, VERSION, &package);
+        test_assert_eq!(
+            damaged.fetch_index(&newer).err(),
+            Some(ChannelError::FloorUnavailable)
+        );
+
+        // So does one too short to be a record at all.
+        clear_floor();
+        write_floor_record(&record[..FLOOR_RECORD_LEN - 1]);
+        let mut truncated = persistent_channel();
+        let newer = fixture_transport(&truncated, 32, NAME, VERSION, &package);
+        test_assert_eq!(
+            truncated.fetch_index(&newer).err(),
+            Some(ChannelError::FloorUnavailable)
+        );
+        clear_floor();
+        TestResult::Pass
+    }
+
+    /// Nothing may lower the floor. The store enforces that itself, so a
+    /// caller asking to go backward is a no-op and not a downgrade.
+    fn test_floor_never_moves_backward() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut channel = persistent_channel();
+        let transport = fixture_transport(&channel, 40, NAME, VERSION, &package);
+        test_assert!(
+            channel.fetch_index(&transport).is_ok(),
+            "v40 must accept on a clean floor"
+        );
+        test_assert_eq!(persist_floor(FLOOR_PATH, 4), Ok(()));
+        test_assert_eq!(load_floor(FLOOR_PATH), Ok(40));
+        test_assert_eq!(persist_floor(FLOOR_PATH, 40), Ok(()));
+        test_assert_eq!(load_floor(FLOOR_PATH), Ok(40));
+        TestResult::Pass
+    }
+
+    /// The boot proof replays old index versions on purpose. If its fixture
+    /// channels shared the persisted floor they would leave it at a fixture's
+    /// version and then fail their own positive control on the next boot.
+    fn test_fixture_channel_leaves_floor_untouched() -> TestResult {
+        clear_floor();
+        let package = eph();
+        let mut fixture = fixture_channel();
+        let transport = fixture_transport(&fixture, 50, NAME, VERSION, &package);
+        test_assert!(
+            fixture.fetch_index(&transport).is_ok(),
+            "the fixture channel must still accept"
+        );
+        test_assert!(
+            read_floor_record().is_empty(),
+            "a fixture channel must not write the persisted floor"
+        );
+        test_assert_eq!(load_floor(FLOOR_PATH), Ok(0));
+        TestResult::Pass
+    }
+
     fn test_good_index_accepts() -> TestResult {
         let package = eph();
         let mut channel = fixture_channel();
@@ -648,6 +1018,21 @@ pub mod tests {
     }
 
     pub fn register_all() {
+        crate::testing::register_test("pkg::channel_floor_survives_reboot", test_floor_survives_reboot);
+        crate::testing::register_test("pkg::channel_floor_boundary_exact", test_floor_boundary_exact);
+        crate::testing::register_test(
+            "pkg::channel_absent_floor_bootstraps",
+            test_absent_floor_bootstraps_then_holds,
+        );
+        crate::testing::register_test("pkg::channel_forged_floor_refused", test_forged_floor_refused);
+        crate::testing::register_test(
+            "pkg::channel_floor_never_moves_backward",
+            test_floor_never_moves_backward,
+        );
+        crate::testing::register_test(
+            "pkg::channel_fixture_leaves_floor_untouched",
+            test_fixture_channel_leaves_floor_untouched,
+        );
         crate::testing::register_test("pkg::channel_good_index_accepts", test_good_index_accepts);
         crate::testing::register_test(
             "pkg::channel_tampered_index_refused",
