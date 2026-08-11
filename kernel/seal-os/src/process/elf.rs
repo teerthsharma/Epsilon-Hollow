@@ -31,6 +31,9 @@ pub enum ElfError {
     TooSmall,
     LoadFailed,
     MissingDependency,
+    /// A program-header field (address arithmetic or segment size) failed
+    /// validation before it could reach page-table or allocator code.
+    InvalidSegment,
 }
 
 #[derive(Clone, Copy)]
@@ -122,7 +125,12 @@ pub fn load(
     let base = if e_type == 3 { aslr_base } else { 0 };
     let dynamic = parse_dynamic_link_info(elf_data, &headers)?;
 
+    // Tracks every frame allocated below (PML4, segment pages, stack pages)
+    // and frees them all on any early return. See `LoadRollback` for why.
+    let mut rollback = LoadRollback::new();
+
     let pml4_frame = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
+    rollback.track(pml4_frame);
     let pml4 = unsafe { &mut *(pml4_frame.as_u64() as *mut PageTable) };
     pml4.zero();
 
@@ -134,7 +142,7 @@ pub fn load(
         }
     }
 
-    map_load_segments(elf_data, &headers, base, pml4)?;
+    map_load_segments(elf_data, &headers, base, pml4, &mut rollback)?;
     apply_relative_relocations(elf_data, &headers, &dynamic, base, pml4_frame.as_u64())?;
 
     const USER_STACK_PAGES: usize = 4;
@@ -143,6 +151,7 @@ pub fn load(
 
     for i in 0..USER_STACK_PAGES {
         let frame = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
+        rollback.track(frame);
         unsafe {
             core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
         }
@@ -161,7 +170,9 @@ pub fn load(
             )
             .is_err()
             {
-                crate::memory::phys::free_frame(frame);
+                // `frame` stays tracked in `rollback` — it is freed when
+                // `rollback` drops on this early return, same as every
+                // other frame allocated so far in this call.
                 return Err(ElfError::LoadFailed);
             }
         }
@@ -172,6 +183,9 @@ pub fn load(
     sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?;
     sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?;
     sp = push_stack_u64(sp, USER_STACK_TOP, top_frame, 0)?;
+
+    // Everything succeeded: the frames now belong to the new address space.
+    rollback.commit();
 
     Ok(LoadedElf {
         entry_point: entry + base,
@@ -196,8 +210,15 @@ pub fn load_shared_object(
     let headers = read_program_headers(elf_data)?;
     let dynamic = parse_dynamic_link_info(elf_data, &headers)?;
     let pml4 = unsafe { &mut *(page_table as *mut PageTable) };
-    map_load_segments(elf_data, &headers, aslr_base, pml4)?;
+
+    // `page_table` is owned by the caller (it already exists), so unlike
+    // `load()` this rollback never tracks a PML4 frame — only the segment
+    // frames this call allocates. On failure those are freed; on success
+    // they become part of the caller's live address space.
+    let mut rollback = LoadRollback::new();
+    map_load_segments(elf_data, &headers, aslr_base, pml4, &mut rollback)?;
     apply_relative_relocations(elf_data, &headers, &dynamic, aslr_base, page_table)?;
+    rollback.commit();
     Ok(dynamic)
 }
 
@@ -305,11 +326,95 @@ fn read_program_headers(elf_data: &[u8]) -> Result<Vec<ProgramHeader>, ElfError>
     Ok(headers)
 }
 
+/// Frees every physical frame it was told about, in reverse allocation
+/// order, unless [`commit`](Self::commit) is called first.
+///
+/// Mirrors `memory::virt::CowCloneRollback`. `load` and `load_shared_object`
+/// can fail after allocating the PML4 frame and/or any number of PT_LOAD
+/// segment/stack frames — OOM, a rejected mapping, a bad relocation — and
+/// every `?` after such an allocation used to return straight past it with
+/// no cleanup, leaking a physical frame per allocation on every failed exec
+/// of a malformed binary. Tracking each frame here and committing only on
+/// the single success path covers every current and future early return
+/// without hand-auditing each one.
+struct LoadRollback {
+    frames: Vec<PhysAddr>,
+    committed: bool,
+}
+
+impl LoadRollback {
+    fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            committed: false,
+        }
+    }
+
+    fn track(&mut self, frame: PhysAddr) {
+        self.frames.push(frame);
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for LoadRollback {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        for frame in self.frames.drain(..).rev() {
+            unsafe {
+                crate::memory::phys::free_frame(frame);
+            }
+        }
+    }
+}
+
+/// Validate a PT_LOAD segment's address range before it drives any page
+/// allocation or `VirtAddr` construction.
+///
+/// `p_vaddr`, `base`, and `p_memsz` are attacker-controlled: `p_vaddr` and
+/// `p_memsz` come straight from a program header in a binary passed to
+/// `spawn_user`/`exec`, and `base` is only trusted for ET_EXEC (0) — for
+/// ET_DYN it is ASLR-chosen but the *addition* still needs checking. Two
+/// separate hazards live in the two lines this replaces:
+///
+/// - `ph.p_vaddr + base` and `seg_start + ph.p_memsz` were plain `u64`
+///   additions that can wrap, and the result feeds `VirtAddr::new` (in the
+///   caller's page loop), which *panics* on a non-canonical address. This
+///   process runs with `panic = "abort"`, so a single malformed header
+///   would abort the whole kernel. `checked_add` plus `VirtAddr::try_new`
+///   turn that into a rejected load.
+/// - `p_memsz` had no upper bound, so a crafted segment could drive the
+///   per-page allocation loop to try to allocate most of physical RAM
+///   before any failure (including the leak in Defect B) was reached. The
+///   bound here is the allocator's own currently-free frame count
+///   (`memory::phys::free_count`) — a segment can never legitimately need
+///   more memory than the system currently has free, and checking this
+///   once up front turns a long allocate/zero/fail churn into a single
+///   rejection.
+fn validate_segment_range(p_vaddr: u64, base: u64, p_memsz: u64) -> Result<(u64, u64), ElfError> {
+    let max_bytes = (crate::memory::phys::free_count() as u64).saturating_mul(4096);
+    if p_memsz > max_bytes {
+        return Err(ElfError::InvalidSegment);
+    }
+    let seg_start = p_vaddr.checked_add(base).ok_or(ElfError::InvalidSegment)?;
+    let seg_end = seg_start
+        .checked_add(p_memsz)
+        .ok_or(ElfError::InvalidSegment)?;
+    VirtAddr::try_new(seg_start).map_err(|_| ElfError::InvalidSegment)?;
+    VirtAddr::try_new(seg_end).map_err(|_| ElfError::InvalidSegment)?;
+    Ok((seg_start, seg_end))
+}
+
 fn map_load_segments(
     elf_data: &[u8],
     headers: &[ProgramHeader],
     base: u64,
     pml4: &mut PageTable,
+    rollback: &mut LoadRollback,
 ) -> Result<(), ElfError> {
     for ph in headers {
         if ph.p_type != PT_LOAD {
@@ -324,14 +429,17 @@ fn map_load_segments(
             flags |= PageTableFlags::NO_EXECUTE;
         }
 
-        let seg_start = ph.p_vaddr + base;
-        let seg_end = seg_start + ph.p_memsz;
+        let (seg_start, seg_end) = validate_segment_range(ph.p_vaddr, base, ph.p_memsz)?;
+        let filesz_end = seg_start
+            .checked_add(ph.p_filesz)
+            .ok_or(ElfError::InvalidSegment)?;
         let first_page = seg_start / 4096;
         let last_page = seg_end.div_ceil(4096);
 
         for page in first_page..last_page {
             let page_virt = VirtAddr::new(page * 4096);
             let frame = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
+            rollback.track(frame);
             unsafe {
                 core::ptr::write_bytes(frame.as_u64() as *mut u8, 0, 4096);
             }
@@ -339,7 +447,7 @@ fn map_load_segments(
             let page_start = page * 4096;
             let page_end = page_start + 4096;
             let seg_page_start = seg_start.max(page_start);
-            let file_backed_end = (ph.p_vaddr + base + ph.p_filesz).min(page_end);
+            let file_backed_end = filesz_end.min(page_end);
             let seg_page_end = file_backed_end.min(seg_end);
             let len = seg_page_end.saturating_sub(seg_page_start);
 
@@ -367,7 +475,8 @@ fn map_load_segments(
 
             unsafe {
                 if crate::memory::virt::map_page_to_pml4(page_virt, frame, flags, pml4).is_err() {
-                    crate::memory::phys::free_frame(frame);
+                    // `frame` stays tracked in `rollback` — freed when the
+                    // caller's rollback drops on this early return.
                     return Err(ElfError::LoadFailed);
                 }
             }
@@ -464,7 +573,14 @@ fn apply_relative_relocations(
         if r_type != R_X86_64_RELATIVE {
             continue;
         }
-        let target = VirtAddr::new(base + r_offset);
+        // `r_offset` comes straight from an Elf64_Rela entry in the object
+        // (attacker-controlled, same as p_vaddr above): `base + r_offset`
+        // must not wrap, and the result must be canonical before it reaches
+        // `VirtAddr`, which panics on a non-canonical address.
+        let target_addr = base
+            .checked_add(r_offset)
+            .ok_or(ElfError::InvalidSegment)?;
+        let target = VirtAddr::try_new(target_addr).map_err(|_| ElfError::InvalidSegment)?;
         let value = base.wrapping_add(r_addend as u64);
         let phys = crate::memory::virt::translate_in_pml4(target, PhysAddr::new(pml4_phys))
             .ok_or(ElfError::LoadFailed)?;
@@ -502,4 +618,82 @@ fn push_stack_u64(sp: u64, stack_top: u64, top_frame: u64, val: u64) -> Result<u
         *((top_frame + offset) as *mut u64) = val;
     }
     Ok(sp)
+}
+
+// ---------------------------------------------------------------------------
+// Test-only helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Defect A, first site: `p_vaddr + base` landing one value past the top
+    /// of the canonical low half (0x0000_7FFF_FFFF_FFFF) used to panic
+    /// straight through to `VirtAddr::new` in `map_load_segments`. With
+    /// `base = 0`, `p_vaddr = 0x0000_8000_0000_0000` is exactly that value —
+    /// the smallest non-canonical `u64`. Must now be rejected, not panic.
+    fn test_rejects_non_canonical_vaddr() -> TestResult {
+        let result = validate_segment_range(0x0000_8000_0000_0000, 0, 4096);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// Defect C: `p_memsz` beyond the number of bytes the allocator could
+    /// ever hand out must be rejected before the per-page allocation loop
+    /// ever runs, not after churning through `alloc_frame` until it returns
+    /// `None`.
+    fn test_rejects_oversized_memsz() -> TestResult {
+        let free_bytes = (crate::memory::phys::free_count() as u64).saturating_mul(4096);
+        let oversized = free_bytes.saturating_add(4096 * 16);
+        let result = validate_segment_range(0x1000, 0, oversized);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// Contrast case: an ordinary in-range, canonical, small segment must
+    /// still validate — the checks above must not reject legitimate input.
+    fn test_accepts_sane_segment() -> TestResult {
+        let result = validate_segment_range(0x1000, 0, 4096);
+        test_assert_eq!(result, Ok((0x1000, 0x2000)));
+        TestResult::Pass
+    }
+
+    /// Defect B: a frame tracked in `LoadRollback` but never committed
+    /// (the shape every early-return failure path in `load` and
+    /// `load_shared_object` now takes) must be freed back to the allocator
+    /// when the rollback drops, not leaked.
+    fn test_uncommitted_rollback_frees_tracked_frames() -> TestResult {
+        let before = crate::memory::phys::free_count();
+        let frame = crate::memory::phys::alloc_frame();
+        test_assert!(frame.is_some(), "test needs at least one free frame");
+        {
+            let mut rollback = LoadRollback::new();
+            rollback.track(frame.unwrap());
+            // Dropped here without calling `commit()` — must free `frame`.
+        }
+        test_assert_eq!(crate::memory::phys::free_count(), before);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "elf_loader::rejects_non_canonical_vaddr",
+            test_rejects_non_canonical_vaddr,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_oversized_memsz",
+            test_rejects_oversized_memsz,
+        );
+        crate::testing::register_test(
+            "elf_loader::accepts_sane_segment",
+            test_accepts_sane_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::uncommitted_rollback_frees_tracked_frames",
+            test_uncommitted_rollback_frees_tracked_frames,
+        );
+    }
 }

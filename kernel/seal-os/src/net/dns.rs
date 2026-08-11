@@ -34,6 +34,14 @@ fn ticks() -> u64 {
 }
 
 static PENDING_QUERY: Mutex<Option<String>> = Mutex::new(None);
+// Transaction ID of the single outstanding query, matched against the
+// response's ID in `handle_dns_response` to reject off-path spoofed answers.
+static PENDING_QUERY_ID: Mutex<Option<u16>> = Mutex::new(None);
+// (address, port) the outstanding query was actually sent to -- recorded from
+// the same local values used for the `sendto` call, not re-read from
+// DNS_SERVER at receive time, so a `set_server` call racing with an in-flight
+// query can't shift what the response is checked against.
+static PENDING_QUERY_SERVER: Mutex<Option<(crate::net::IpAddr, u16)>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // NEW: Real DNS header and query structs with honest error handling.
@@ -115,6 +123,7 @@ pub fn resolve(name: &str) -> Result<Option<[u8; 4]>, &'static str> {
     let id = *qid;
     *qid = id.wrapping_add(1);
     drop(qid);
+    *PENDING_QUERY_ID.lock() = Some(id);
 
     let hdr = DnsHeader {
         id,
@@ -137,8 +146,11 @@ pub fn resolve(name: &str) -> Result<Option<[u8; 4]>, &'static str> {
     pkt.extend_from_slice(&[0x00, 0x01]); // class IN
 
     let server = *DNS_SERVER.lock();
+    let dst = crate::net::IpAddr::V4(server);
+    let dst_port = 53;
+    *PENDING_QUERY_SERVER.lock() = Some((dst, dst_port));
     let sock = crate::net::udp::socket();
-    crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4(server), 53);
+    crate::net::udp::sendto(sock, &pkt, dst, dst_port);
     Ok(None)
 }
 
@@ -161,6 +173,7 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
     let id = *qid;
     *qid = id.wrapping_add(1);
     drop(qid);
+    *PENDING_QUERY_ID.lock() = Some(id);
 
     let mut pkt = Vec::new();
     pkt.extend_from_slice(&id.to_be_bytes());
@@ -179,12 +192,72 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
     pkt.extend_from_slice(&[0x00, 0x01]); // class IN
 
     let server = *DNS_SERVER.lock();
+    let dst = crate::net::IpAddr::V4(server);
+    let dst_port = 53;
+    *PENDING_QUERY_SERVER.lock() = Some((dst, dst_port));
     let sock = crate::net::udp::socket();
-    crate::net::udp::sendto(sock, &pkt, crate::net::IpAddr::V4(server), 53);
+    crate::net::udp::sendto(sock, &pkt, dst, dst_port);
     None
 }
 
-pub fn handle_dns_response(pkt: &[u8]) {
+/// Decode a (possibly compressed) DNS name starting at `offset`.
+///
+/// Returns `(name, offset_immediately_after_the_name_in_this_message)`, or
+/// `None` on malformed input. Compression pointers (RFC 1035 SS4.1.4) are
+/// followed, but every pointer target must land strictly before the pointer
+/// itself; combined with a hard cap on the number of jumps, a pointer that
+/// targets itself or forms a cycle is rejected outright rather than merely
+/// bounded, so no packet can drive this into a long or infinite loop.
+fn read_name(pkt: &[u8], offset: usize) -> Option<(String, usize)> {
+    let mut name = String::new();
+    let mut pos = offset;
+    let mut end_pos: Option<usize> = None;
+    let mut jumps = 0u32;
+    loop {
+        if pos >= pkt.len() {
+            return None;
+        }
+        let len = pkt[pos];
+        if len == 0 {
+            if end_pos.is_none() {
+                end_pos = Some(pos + 1);
+            }
+            break;
+        }
+        if len & 0xC0 == 0xC0 {
+            if pos + 1 >= pkt.len() {
+                return None;
+            }
+            let target = (((len & 0x3F) as usize) << 8) | pkt[pos + 1] as usize;
+            if end_pos.is_none() {
+                end_pos = Some(pos + 2);
+            }
+            jumps += 1;
+            if jumps > 128 || target >= pos {
+                return None; // must strictly decrease -- rules out any loop
+            }
+            pos = target;
+            continue;
+        }
+        let label_len = len as usize;
+        let start = pos + 1;
+        let stop = start + label_len;
+        if stop > pkt.len() {
+            return None;
+        }
+        if !name.is_empty() {
+            name.push('.');
+        }
+        name.push_str(core::str::from_utf8(&pkt[start..stop]).ok()?);
+        pos = stop;
+    }
+    Some((name, end_pos.unwrap_or(pos)))
+}
+
+/// Handle an inbound UDP datagram from `src:src_port` that claims to be a DNS
+/// response. `src`/`src_port` come straight from the IP/UDP headers `udp.rs`
+/// already parsed for this packet -- see `handle_udp_packet` (udp.rs:207).
+pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, pkt: &[u8]) {
     if pkt.len() < 12 {
         return;
     }
@@ -192,6 +265,41 @@ pub fn handle_dns_response(pkt: &[u8]) {
     if flags & 0x8000 == 0 {
         return; // not a response
     }
+
+    // Reject any response whose transaction ID doesn't match the single
+    // outstanding query. A mismatch must not touch PENDING_QUERY /
+    // PENDING_QUERY_ID / PENDING_QUERY_SERVER -- dropping silently is the
+    // fail-closed behavior; clearing state on an unverified response would
+    // hand an attacker a denial-of-service primitive instead of a poisoning
+    // one.
+    let id = u16::from_be_bytes([pkt[0], pkt[1]]);
+    if *PENDING_QUERY_ID.lock() != Some(id) {
+        return;
+    }
+
+    // Reject any response that didn't come from the server the query was
+    // actually sent to, on the port it was sent to. Compared against the
+    // value `resolve`/`query` recorded at send time (PENDING_QUERY_SERVER),
+    // never re-derived from the current DNS_SERVER here.
+    if *PENDING_QUERY_SERVER.lock() != Some((src, src_port)) {
+        return;
+    }
+
+    // Reject any response whose echoed question doesn't name the host this
+    // ID's query actually asked about (cross-association guard for the
+    // single-slot PENDING_QUERY, and a third independent check beyond ID and
+    // source).
+    let matches_pending = match read_name(pkt, 12) {
+        Some((qname, _)) => PENDING_QUERY
+            .lock()
+            .as_deref()
+            .is_some_and(|expected| qname.eq_ignore_ascii_case(expected)),
+        None => false,
+    };
+    if !matches_pending {
+        return;
+    }
+
     let qdcount = u16::from_be_bytes([pkt[4], pkt[5]]);
     let ancount = u16::from_be_bytes([pkt[6], pkt[7]]);
 
@@ -252,6 +360,8 @@ pub fn handle_dns_response(pkt: &[u8]) {
                 .lock()
                 .take()
                 .unwrap_or_else(|| String::from("unknown"));
+            *PENDING_QUERY_ID.lock() = None;
+            *PENDING_QUERY_SERVER.lock() = None;
             let mut cache = CACHE.lock();
             if cache.len() >= 16 {
                 let first = cache.keys().next().cloned();
@@ -272,19 +382,32 @@ pub fn handle_dns_response(pkt: &[u8]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// `kernel/seal-os` is excluded from the workspace, so `cargo test --workspace`
+// never builds this crate; these register into crate::testing::TEST_REGISTRY
+// and execute under QEMU via testing::runner::test_main(). See WIRING note on
+// `register_all` below -- runner.rs does not call it yet.
+// ---------------------------------------------------------------------------
 
-    fn build_dns_response(hostname: &str, ip: [u8; 4], ttl: u32) -> Vec<u8> {
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// Build a well-formed DNS response: given `id`, answering `hostname`
+    /// with `ip`. Used both for legitimate-response acceptance and, with a
+    /// mismatched `id` or `hostname`, as the spoofed/off-path packet.
+    fn build_dns_response(id: u16, hostname: &str, ip: [u8; 4], ttl: u32) -> Vec<u8> {
         let mut pkt = Vec::new();
-        pkt.extend_from_slice(&0x1234u16.to_be_bytes()); // id
+        pkt.extend_from_slice(&id.to_be_bytes());
         pkt.extend_from_slice(&0x8180u16.to_be_bytes()); // flags: response
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // qdcount
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // ancount
         pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // nscount
         pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // arcount
-                                                         // question
+                                                          // question
         for label in hostname.split('.') {
             pkt.push(label.len() as u8);
             pkt.extend_from_slice(label.as_bytes());
@@ -292,7 +415,7 @@ mod tests {
         pkt.push(0);
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // type A
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // class IN
-                                                         // answer
+                                                          // answer
         pkt.push(0xC0);
         pkt.push(0x0C); // pointer to question name
         pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // type A
@@ -303,20 +426,162 @@ mod tests {
         pkt
     }
 
-    #[test]
-    fn test_dns_parse_a_record() {
-        let resp = build_dns_response("example.com", [93, 184, 216, 34], 300);
-        *PENDING_QUERY.lock() = Some(String::from("example.com"));
-        handle_dns_response(&resp);
-        let cache = CACHE.lock();
-        assert_eq!(
-            cache.get("example.com").map(|e| e.ip),
-            Some([93, 184, 216, 34])
-        );
+    /// The address/port `arm_pending` records as "where the query went",
+    /// matching `DNS_SERVER`'s default so tests don't depend on `set_server`.
+    const TEST_SERVER: crate::net::IpAddr = crate::net::IpAddr::V4([10, 0, 2, 3]);
+    const TEST_PORT: u16 = 53;
+
+    /// Arm a pending query the way `resolve`/`query` would on the send path,
+    /// without touching the network.
+    fn arm_pending(hostname: &str, id: u16) {
+        *PENDING_QUERY.lock() = Some(String::from(hostname));
+        *PENDING_QUERY_ID.lock() = Some(id);
+        *PENDING_QUERY_SERVER.lock() = Some((TEST_SERVER, TEST_PORT));
     }
 
-    #[test]
-    fn test_dns_cache_expiration() {
+    fn reset_state() {
+        *PENDING_QUERY.lock() = None;
+        *PENDING_QUERY_ID.lock() = None;
+        *PENDING_QUERY_SERVER.lock() = None;
+        CACHE.lock().clear();
+    }
+
+    /// RED: a response with the right hostname but the wrong transaction ID
+    /// (the off-path spoof: an attacker who cannot see the query ID) must be
+    /// dropped, and must not disturb the still-pending query.
+    fn test_wrong_id_rejected() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let spoofed = build_dns_response(0xBEEF, "example.com", [6, 6, 6, 6], 300);
+        handle_dns_response(TEST_SERVER, TEST_PORT, &spoofed);
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "response with mismatched transaction ID was accepted into the cache"
+        );
+        test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("example.com")));
+        test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x1234));
+        test_assert_eq!(*PENDING_QUERY_SERVER.lock(), Some((TEST_SERVER, TEST_PORT)));
+        TestResult::Pass
+    }
+
+    /// RED: a response with the right ID but a question section naming a
+    /// different host (the cross-association case: a second, unrelated
+    /// resolution's answer, or an off-path guess of the ID) must be dropped
+    /// without disturbing the pending query.
+    fn test_wrong_question_rejected() -> TestResult {
+        reset_state();
+        arm_pending("bank.example", 0x1234);
+        let spoofed = build_dns_response(0x1234, "evil.attacker.example", [6, 6, 6, 6], 300);
+        handle_dns_response(TEST_SERVER, TEST_PORT, &spoofed);
+        test_assert!(
+            CACHE.lock().get("bank.example").is_none(),
+            "response naming a different host than the pending query was accepted"
+        );
+        test_assert!(
+            CACHE.lock().get("evil.attacker.example").is_none(),
+            "response was cached under the attacker-supplied name"
+        );
+        test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("bank.example")));
+        TestResult::Pass
+    }
+
+    /// RED: a response with the right ID and the right question, but from a
+    /// source address that isn't the configured DNS server, must be dropped
+    /// without disturbing the pending query -- the off-path spoof scenario
+    /// where the attacker also happens to guess the ID.
+    fn test_wrong_source_address_rejected() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let spoofed = build_dns_response(0x1234, "example.com", [6, 6, 6, 6], 300);
+        let attacker = crate::net::IpAddr::V4([203, 0, 113, 66]); // not TEST_SERVER
+        handle_dns_response(attacker, TEST_PORT, &spoofed);
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "response from an unexpected source address was accepted into the cache"
+        );
+        test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("example.com")));
+        test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x1234));
+        test_assert_eq!(*PENDING_QUERY_SERVER.lock(), Some((TEST_SERVER, TEST_PORT)));
+        TestResult::Pass
+    }
+
+    /// RED: same as above but for the source port -- the right server IP
+    /// answering from an unexpected port must also be dropped.
+    fn test_wrong_source_port_rejected() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let spoofed = build_dns_response(0x1234, "example.com", [6, 6, 6, 6], 300);
+        handle_dns_response(TEST_SERVER, 9999, &spoofed); // right IP, wrong port
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "response from an unexpected source port was accepted into the cache"
+        );
+        test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("example.com")));
+        test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x1234));
+        test_assert_eq!(*PENDING_QUERY_SERVER.lock(), Some((TEST_SERVER, TEST_PORT)));
+        TestResult::Pass
+    }
+
+    /// GREEN: a response matching the outstanding ID, the source the query
+    /// was sent to, and the pending hostname is still accepted and cached,
+    /// and the pending state is cleared on acceptance.
+    fn test_legit_response_accepted() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let good = build_dns_response(0x1234, "example.com", [93, 184, 216, 34], 300);
+        handle_dns_response(TEST_SERVER, TEST_PORT, &good);
+        test_assert_eq!(
+            CACHE.lock().get("example.com").map(|e| e.ip),
+            Some([93, 184, 216, 34])
+        );
+        test_assert!(
+            PENDING_QUERY.lock().is_none(),
+            "pending query was not cleared on a validated accept"
+        );
+        test_assert!(
+            PENDING_QUERY_ID.lock().is_none(),
+            "pending query ID was not cleared on a validated accept"
+        );
+        test_assert!(
+            PENDING_QUERY_SERVER.lock().is_none(),
+            "pending query server was not cleared on a validated accept"
+        );
+        TestResult::Pass
+    }
+
+    /// DECOMPRESSION: a name whose only label is a compression pointer aimed
+    /// at itself. Before the strict-decrease rule, a decoder that followed
+    /// the pointer blindly would loop forever; `read_name` must reject it
+    /// and `handle_dns_response` must return instead of hanging the harness.
+    fn test_decompression_self_pointer_rejected() -> TestResult {
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&0x1234u16.to_be_bytes()); // id
+        pkt.extend_from_slice(&0x8180u16.to_be_bytes()); // flags: response
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // qdcount
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // ancount
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // nscount
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes()); // arcount
+        pkt.push(0xC0);
+        pkt.push(0x0C); // question name: pointer at offset 12, targeting offset 12 -- itself
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes());
+        test_assert!(
+            read_name(&pkt, 12).is_none(),
+            "self-referential compression pointer was decoded instead of rejected"
+        );
+
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        handle_dns_response(TEST_SERVER, TEST_PORT, &pkt); // must return promptly, not loop
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "malformed name was accepted as a match"
+        );
+        TestResult::Pass
+    }
+
+    fn test_dns_cache_expiration() -> TestResult {
+        reset_state();
         CACHE.lock().insert(
             String::from("old.com"),
             DnsCacheEntry {
@@ -324,12 +589,12 @@ mod tests {
                 expires_at: 0, // expired
             },
         );
-        let result = query("old.com");
-        assert!(result.is_none());
+        test_assert!(query("old.com").is_none());
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_dns_cache_hit() {
+    fn test_dns_cache_hit() -> TestResult {
+        reset_state();
         CACHE.lock().insert(
             String::from("fresh.com"),
             DnsCacheEntry {
@@ -337,12 +602,11 @@ mod tests {
                 expires_at: u64::MAX,
             },
         );
-        let result = query("fresh.com");
-        assert_eq!(result, Some([5, 6, 7, 8]));
+        test_assert_eq!(query("fresh.com"), Some([5, 6, 7, 8]));
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_dns_header_roundtrip() {
+    fn test_dns_header_roundtrip() -> TestResult {
         let hdr = DnsHeader {
             id: 0x1234,
             flags: 0x8180,
@@ -352,15 +616,46 @@ mod tests {
             arcount: 0,
         };
         let bytes = hdr.to_bytes();
-        let parsed = DnsHeader::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed, hdr);
-        assert!(parsed.is_response());
+        let Some(parsed) = DnsHeader::from_bytes(&bytes) else {
+            return TestResult::Fail("header failed to round-trip through from_bytes");
+        };
+        test_assert_eq!(parsed, hdr);
+        test_assert!(parsed.is_response(), "QR bit lost in round-trip");
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_dns_resolve_no_network() {
-        // In unit tests there is no real NIC, so resolve must fail honestly.
-        let result = resolve("example.com");
-        assert_eq!(result, Err("no network"));
+    fn test_dns_resolve_no_network() -> TestResult {
+        // The QEMU harness image boots with no NIC device attached, so
+        // `resolve` must fail honestly rather than silently hang.
+        test_assert_eq!(resolve("example.com"), Err("no network"));
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("dns::wrong_id_rejected", test_wrong_id_rejected);
+        crate::testing::register_test(
+            "dns::wrong_question_rejected",
+            test_wrong_question_rejected,
+        );
+        crate::testing::register_test(
+            "dns::wrong_source_address_rejected",
+            test_wrong_source_address_rejected,
+        );
+        crate::testing::register_test(
+            "dns::wrong_source_port_rejected",
+            test_wrong_source_port_rejected,
+        );
+        crate::testing::register_test(
+            "dns::legit_response_accepted",
+            test_legit_response_accepted,
+        );
+        crate::testing::register_test(
+            "dns::decompression_self_pointer_rejected",
+            test_decompression_self_pointer_rejected,
+        );
+        crate::testing::register_test("dns::cache_expiration", test_dns_cache_expiration);
+        crate::testing::register_test("dns::cache_hit", test_dns_cache_hit);
+        crate::testing::register_test("dns::header_roundtrip", test_dns_header_roundtrip);
+        crate::testing::register_test("dns::resolve_no_network", test_dns_resolve_no_network);
     }
 }

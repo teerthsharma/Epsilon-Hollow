@@ -222,7 +222,7 @@ pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
         return;
     }
     if src_port == 53 {
-        crate::net::dns::handle_dns_response(payload);
+        crate::net::dns::handle_dns_response(src, src_port, payload);
         return;
     }
     let mut sockets = UDP_SOCKETS.lock();
