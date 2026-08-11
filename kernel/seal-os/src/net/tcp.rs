@@ -363,7 +363,18 @@ impl TcpSocket {
 static TCP_SOCKETS: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
 static TCP_FLOW_INDEX: Mutex<TcpFlowIndex> = Mutex::new(TcpFlowIndex::new());
 static TCP_LISTENER_INDEX: Mutex<TcpListenerIndex> = Mutex::new(TcpListenerIndex::new());
-static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(40000);
+/// Lowest and highest port `socket` hands out, inclusive.
+///
+/// The counter is confined to this range and wraps from the ceiling back to the
+/// floor. It used to be a bare `*p += 1` on a `u16` starting at 40000, so
+/// allocation 25,536 left the range entirely: 65535 + 1 is 0 in release and an
+/// abort under `overflow-checks`, and the counter then walked 0, 1, 2 ... up
+/// through the well-known range -- handing out 22, 80 and 443 to outgoing
+/// connections, and colliding with any listener bound there.
+const EPHEMERAL_PORT_MIN: u16 = 40_000;
+const EPHEMERAL_PORT_MAX: u16 = u16::MAX;
+
+static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(EPHEMERAL_PORT_MIN);
 static PENDING_SYN_QUEUE: Mutex<Vec<(u16, crate::net::IpAddr, u16, u32)>> = Mutex::new(Vec::new());
 
 /// Segments TCP has built but not yet handed to the IP layer.
@@ -969,16 +980,61 @@ pub fn reset_for_benchmark() {
     TCP_LISTENER_INDEX.lock().clear();
     PENDING_SYN_QUEUE.lock().clear();
     TCP_TX_QUEUE.lock().clear();
-    *NEXT_TCP_PORT.lock() = 40000;
+    *NEXT_TCP_PORT.lock() = EPHEMERAL_PORT_MIN;
 }
 
+/// The handle `socket` returns when it could not allocate one.
+///
+/// No `Vec` can hold `usize::MAX` elements, so this indexes nothing: `bind`,
+/// `listen`, `accept`, `connect`, `send`, `recv` and `close` all resolve
+/// through `get`/`get_mut` and do nothing with it, and `state` reports
+/// `Closed`. A caller that never checks therefore fails closed -- its
+/// connection simply never establishes -- and one that wants to say why can
+/// compare against this.
+pub const TCP_SOCKET_NONE: usize = usize::MAX;
+
+/// The next free port in `EPHEMERAL_PORT_MIN..=EPHEMERAL_PORT_MAX`, or `None`
+/// if every port in that range is held by a socket in `sockets`.
+///
+/// A wrapped counter eventually names a port that is still in use, and nothing
+/// else refuses one: `bind` writes any port over a socket's own, both indexes
+/// happily hold two sockets on one local port, and the exact-flow lookup then
+/// resolves a segment to whichever of them was indexed last. So the counter
+/// skips what is taken -- the same "free port" test `packet_fixture_proof`
+/// already applies before it seizes one.
+///
+/// The search is bounded by the width of the range, so a full table returns
+/// rather than spinning. The counter is left one past the port handed out,
+/// which is why an exhausted range still leaves it inside the range.
+///
+/// ponytail: the in-use test is a linear scan and the caller holds
+/// `TCP_SOCKETS` across it, so allocation is O(sockets) per candidate on a
+/// table that holds single digits in every observed exchange -- the same
+/// ceiling `packet_fixture_proof`'s own port search carries. A port bitmap if a
+/// host ever holds thousands of sockets.
+fn alloc_ephemeral_port(sockets: &[TcpSocket]) -> Option<u16> {
+    let mut p = NEXT_TCP_PORT.lock();
+    for _ in 0..=(EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) {
+        let port = *p;
+        // `port + 1` cannot overflow: the branch above takes the ceiling, and
+        // the ceiling is the largest port there is.
+        *p = if port == EPHEMERAL_PORT_MAX {
+            EPHEMERAL_PORT_MIN
+        } else {
+            port + 1
+        };
+        if !sockets.iter().any(|sock| sock.local_port == port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
+/// Open an unbound socket, or `TCP_SOCKET_NONE` if no ephemeral port is free.
 pub fn socket() -> usize {
     let mut sockets = TCP_SOCKETS.lock();
-    let port = {
-        let mut p = NEXT_TCP_PORT.lock();
-        let port = *p;
-        *p += 1;
-        port
+    let Some(port) = alloc_ephemeral_port(&sockets) else {
+        return TCP_SOCKET_NONE;
     };
     let idx = sockets.len();
     sockets.push(TcpSocket::new(port));
@@ -1531,15 +1587,13 @@ pub fn poll() {
         let mut sockets = TCP_SOCKETS.lock();
         let listener_idx = lookup_listener_index(&sockets, dst_port).socket_idx;
         if let Some(listener_idx) = listener_idx {
-            let new_port = {
-                let mut p = NEXT_TCP_PORT.lock();
-                let port = *p;
-                *p += 1;
-                port
-            };
+            // An accepted socket answers on the port the segment was addressed
+            // to, so it needs no ephemeral port. It used to take one anyway and
+            // overwrite it on the next line: the number went nowhere, but the
+            // counter moved once per SYN a remote peer sent, which is how a
+            // peer that never opened a connection here drove it to its ceiling.
             let new_idx = sockets.len();
-            let mut new_sock = TcpSocket::new(new_port);
-            new_sock.local_port = dst_port;
+            let mut new_sock = TcpSocket::new(dst_port);
             new_sock.remote_ip = remote_ip;
             new_sock.remote_port = remote_port;
             new_sock.state = TcpState::SynReceived;
@@ -1784,7 +1838,7 @@ pub mod tests {
         TCP_LISTENER_INDEX.lock().clear();
         PENDING_SYN_QUEUE.lock().clear();
         TCP_TX_QUEUE.lock().clear();
-        *NEXT_TCP_PORT.lock() = 40000;
+        *NEXT_TCP_PORT.lock() = EPHEMERAL_PORT_MIN;
     }
 
     /// Push an already-configured socket and index its flow, the way `socket`
@@ -2437,6 +2491,153 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The local port `idx` was given, or 0 if it names no socket.
+    fn local_port_of(idx: usize) -> u16 {
+        TCP_SOCKETS.lock().get(idx).map_or(0, |sock| sock.local_port)
+    }
+
+    /// Whether two sockets in the table share a local port.
+    fn any_duplicate_local_port() -> bool {
+        let sockets = TCP_SOCKETS.lock();
+        sockets
+            .iter()
+            .enumerate()
+            .any(|(i, a)| sockets[i + 1..].iter().any(|b| b.local_port == a.local_port))
+    }
+
+    /// The counter used to be a bare `*p += 1` on a `u16` that started at 40000,
+    /// so the 25,536th allocation left the range: silently 0, 1, 2 ... in
+    /// release, and an abort under `overflow-checks`. Ports 0-1023 are the
+    /// well-known range, so the wrap walked the allocator straight through 22,
+    /// 80 and 443.
+    ///
+    /// The boundaries are written as literals here on purpose. An assertion
+    /// spelled with the constants it is guarding moves whenever they do, and
+    /// then nothing at all is pinned.
+    fn ephemeral_ports_wrap_inside_the_range() -> TestResult {
+        reset_tcp_for_test();
+        *NEXT_TCP_PORT.lock() = 65_534;
+
+        let a = socket();
+        let b = socket();
+        let c = socket();
+        let d = socket();
+
+        test_assert!(
+            local_port_of(a) == 65_534,
+            "the allocator did not hand out the port the counter was left at"
+        );
+        test_assert!(
+            local_port_of(b) == 65_535,
+            "the allocator stopped short of the top of the ephemeral range"
+        );
+        test_assert!(
+            local_port_of(c) == 40_000,
+            "the counter did not wrap to the floor of the ephemeral range"
+        );
+        test_assert!(
+            local_port_of(d) == 40_001,
+            "the counter did not carry on from the floor after wrapping"
+        );
+        let sockets = TCP_SOCKETS.lock();
+        test_assert!(
+            sockets.iter().all(|sock| sock.local_port >= 40_000),
+            "an allocated port landed below the ephemeral floor -- 0-1023 is the well-known range"
+        );
+        TestResult::Pass
+    }
+
+    /// A wrapped counter names ports that are still held. Nothing anywhere
+    /// checked: `socket` handed out whatever the counter said and `bind` writes
+    /// any port at all over it, so two live sockets could sit on one local port
+    /// and a segment for either one resolved to whichever the index held.
+    fn ephemeral_allocator_skips_a_port_already_in_use() -> TestResult {
+        reset_tcp_for_test();
+
+        let held = socket();
+        test_assert!(
+            local_port_of(held) == 40_000,
+            "the first allocation is not the floor of the ephemeral range"
+        );
+        // Moves a live socket onto the port the counter is about to reach.
+        bind(held, 40_001);
+
+        let next = socket();
+        test_assert!(
+            local_port_of(next) == 40_002,
+            "the allocator handed out a port a live socket already holds"
+        );
+        test_assert!(
+            !any_duplicate_local_port(),
+            "two sockets share a local port"
+        );
+        TestResult::Pass
+    }
+
+    /// The skip has to walk a run of taken ports and still land on the first
+    /// free one, not give up at the first collision and not run off the end of
+    /// the range.
+    ///
+    /// 512 consecutive ports rather than the whole 25,536: the in-use test is a
+    /// scan of the socket table, so filling the range costs its square, which
+    /// is minutes of QEMU. Exhaustion of the full range is proved on the host
+    /// harness instead.
+    fn ephemeral_allocator_walks_a_run_of_taken_ports() -> TestResult {
+        reset_tcp_for_test();
+        const RUN: u16 = 512;
+        {
+            let mut sockets = TCP_SOCKETS.lock();
+            for port in 40_000..40_000 + RUN {
+                sockets.push(TcpSocket::new(port));
+            }
+        }
+
+        let idx = socket();
+
+        test_assert!(
+            idx != TCP_SOCKET_NONE,
+            "the allocator gave up while the range still had free ports"
+        );
+        test_assert!(
+            local_port_of(idx) == 40_000 + RUN,
+            "the allocator did not land on the first free port after the run"
+        );
+        test_assert!(
+            !any_duplicate_local_port(),
+            "two sockets share a local port"
+        );
+        TestResult::Pass
+    }
+
+    /// `poll` allocated an ephemeral port for every accepted socket and then
+    /// overwrote it with the listener's port on the next line, so the number
+    /// was never used -- but the counter moved, and it moved once per SYN a
+    /// remote peer sent. Reaching the overflow needed no local socket at all.
+    fn accepting_a_connection_consumes_no_ephemeral_port() -> TestResult {
+        reset_tcp_for_test();
+        let listener = socket();
+        bind(listener, 8080);
+        listen(listener);
+
+        let before = *NEXT_TCP_PORT.lock();
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_SYN, 500, 0, 8080));
+        poll();
+        let after = *NEXT_TCP_PORT.lock();
+
+        test_assert!(
+            after == before,
+            "accepting a connection burned an ephemeral port: a remote peer drives the counter"
+        );
+        let Some(accepted) = accept(listener) else {
+            return TestResult::Fail("a SYN to a listening port produced nothing to accept");
+        };
+        test_assert!(
+            local_port_of(accepted) == 8080,
+            "the accepted socket is not on the port the segment was addressed to"
+        );
+        TestResult::Pass
+    }
+
     /// The SYN-RECEIVED arm compares `seq` against `ack_num`; the ESTABLISHED
     /// arm did not, so a duplicate retransmission appended its payload twice and
     /// anything that knew the four-tuple could inject at any sequence at all.
@@ -2527,6 +2728,22 @@ pub mod tests {
         crate::testing::register_test(
             "tcp::established_accepts_only_the_next_expected_sequence",
             established_accepts_only_the_next_expected_sequence,
+        );
+        crate::testing::register_test(
+            "tcp::ephemeral_ports_wrap_inside_the_range",
+            ephemeral_ports_wrap_inside_the_range,
+        );
+        crate::testing::register_test(
+            "tcp::ephemeral_allocator_skips_a_port_already_in_use",
+            ephemeral_allocator_skips_a_port_already_in_use,
+        );
+        crate::testing::register_test(
+            "tcp::ephemeral_allocator_walks_a_run_of_taken_ports",
+            ephemeral_allocator_walks_a_run_of_taken_ports,
+        );
+        crate::testing::register_test(
+            "tcp::accepting_a_connection_consumes_no_ephemeral_port",
+            accepting_a_connection_consumes_no_ephemeral_port,
         );
     }
 }
