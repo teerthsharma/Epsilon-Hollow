@@ -97,5 +97,6 @@ pub mod tests {
         // that gains a `tests::register_all`.
         super::virt::tests::register_all();
         super::mmap::tests::register_all();
+        super::swap::tests::register_all();
     }
 }

@@ -476,47 +476,100 @@ pub fn swap_fragmentation_entropy() -> f32 {
 }
 
 /// Compact the swap file when fragmentation entropy exceeds threshold (T3).
-pub fn compact() {
+///
+/// Returns `true` if the swap file was fully compacted (or was below the
+/// entropy threshold and needed no work), `false` if a swap-file read or write
+/// failed part way through and compaction stopped early.
+///
+/// Compaction relocates swap entries towards slot 0, and every relocation is
+/// destructive: the slot an entry vacates is added back to the free list and
+/// will be overwritten by the next `swap_out_page`. So an entry's index may
+/// only be republished at its new slot once the bytes are known to have
+/// arrived there. A failed relocation therefore stops the compaction: the
+/// entry being moved, and every entry after it, keeps its original slot index,
+/// where its bytes are still intact. Nothing that has already been copied is at
+/// risk — relocations run in ascending slot order and always move an entry
+/// downwards, so the destination of the failing write is always a slot whose
+/// former occupant has already been copied elsewhere.
+///
+/// The alternative — publishing the new index and hoping — loses the page
+/// outright: the source slot is freed and reused while the index points at a
+/// destination that was never written, so `swap_in_page` decodes whatever
+/// bytes happen to be there (`TopoSwapEntry::from_bytes` only checks length)
+/// and maps that garbage into the faulting process.
+#[must_use]
+pub fn compact() -> bool {
     let mut guard = SWAP_STATE.lock();
     let state = match guard.as_mut() {
         Some(s) => s,
-        None => return,
+        None => return false,
     };
     let entropy = swap_fragmentation_entropy_inner(state);
     if entropy <= SWAP_FRAGMENTATION_THRESHOLD {
-        return;
+        return true;
     }
 
     let mut new_slots: Vec<Option<SwapSlot>> = Vec::with_capacity(state.slots.len());
     let mut new_index: BTreeMap<VirtAddr, usize> = BTreeMap::new();
     let mut moved = 0usize;
+    let mut stopped_at: Option<usize> = None;
 
     for (old_idx, slot) in state.slots.iter().enumerate() {
-        if let Some(s) = slot {
-            let new_idx = new_slots.len();
-            new_slots.push(Some(SwapSlot {
-                virt: s.virt,
-                cell: s.cell,
-            }));
-            new_index.insert(s.virt, new_idx);
+        let Some(s) = slot else { continue };
+        let new_idx = new_slots.len();
 
-            if new_idx != old_idx {
-                let old_offset = old_idx as u64 * SWAP_ENTRY_SIZE as u64;
-                let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
-                let mut buf = vec![0; SWAP_ENTRY_SIZE];
-                let read =
-                    with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
-                if read == SWAP_ENTRY_SIZE {
-                    let _ = with_vfs(|vfs| vfs.write(state.handle, &buf, new_offset));
-                }
-                moved += 1;
+        if new_idx != old_idx {
+            let old_offset = old_idx as u64 * SWAP_ENTRY_SIZE as u64;
+            let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
+            let mut buf = vec![0; SWAP_ENTRY_SIZE];
+            let read = with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
+            if read != SWAP_ENTRY_SIZE {
+                stopped_at = Some(old_idx);
+                break;
+            }
+            let written = with_vfs(|vfs| vfs.write(state.handle, &buf, new_offset)).unwrap_or(0);
+            if written != buf.len() {
+                stopped_at = Some(old_idx);
+                break;
+            }
+            moved += 1;
+        }
+
+        new_slots.push(Some(SwapSlot {
+            virt: s.virt,
+            cell: s.cell,
+        }));
+        new_index.insert(s.virt, new_idx);
+    }
+
+    if let Some(stop) = stopped_at {
+        // Entries from `stop` onwards were never copied: keep them at the slot
+        // that still holds their bytes.
+        new_slots.resize_with(state.slots.len(), || None);
+        for (old_idx, slot) in state.slots.iter().enumerate().skip(stop) {
+            if let Some(s) = slot {
+                new_slots[old_idx] = Some(SwapSlot {
+                    virt: s.virt,
+                    cell: s.cell,
+                });
+                new_index.insert(s.virt, old_idx);
             }
         }
     }
 
     state.slots = new_slots;
     state.index = new_index;
+    // Rebuild rather than clear: a stopped compaction leaves the vacated slots
+    // between the compacted prefix and the untouched tail as holes, and a hole
+    // that is not in the free list is never reused, so the swap file would grow
+    // without bound. A complete compaction has no holes and this yields the
+    // empty free list it always did.
     state.free_list.clear();
+    for (i, slot) in state.slots.iter().enumerate() {
+        if slot.is_none() {
+            state.free_list.push(i);
+        }
+    }
     for cell in state.cell_index.iter_mut() {
         cell.clear();
     }
@@ -526,11 +579,22 @@ pub fn compact() {
         }
     }
 
+    if let Some(stop) = stopped_at {
+        crate::serial_println!(
+            "[SWAP/T3] Compaction stopped at slot {} after {} pages (swap I/O failed), entropy={:.2}",
+            stop,
+            moved,
+            entropy
+        );
+        return false;
+    }
+
     crate::serial_println!(
         "[SWAP/T3] Compacted {} pages, entropy={:.2}",
         moved,
         entropy
     );
+    true
 }
 
 // ---------------------------------------------------------------------------
