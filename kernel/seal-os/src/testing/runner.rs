@@ -42,6 +42,7 @@ pub fn test_main() -> ! {
     crate::net::ipv6::tests::register_all();
     crate::net::icmp::tests::register_all();
     crate::pkg::channel::tests::register_all();
+    crate::pkg::format::tests::register_all();
     crate::drivers::pci::tests::register_all();
     crate::drivers::apic::tests::register_all();
     crate::drivers::block::ahci::tests::register_all();

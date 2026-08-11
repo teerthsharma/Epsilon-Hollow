@@ -165,7 +165,7 @@ fn parse_manifest(bytes: &[u8]) -> Result<PackageManifest, EphError> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "test-mode")]
+#[cfg(any(test, feature = "test-mode"))]
 pub mod tests {
     use super::*;
     use crate::test_assert_eq;
@@ -245,6 +245,50 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A package cut short must be refused, not partially accepted. Two cut
+    /// points, one per bounds check: inside the final section's data (the
+    /// declared `file_data_len` runs past the buffer) and inside the fixed
+    /// header (the declared `manifest_len` plus signature plus trailer runs
+    /// past the buffer).
+    fn test_truncated_rejects() -> TestResult {
+        let mut mid_section = build_test_eph();
+        let end = mid_section.len();
+        mid_section.truncate(end - 7); // drops "END\0" and 3 bytes of "world"
+        test_assert_eq!(parse_eph(&mid_section).err(), Some(EphError::ShortRead));
+
+        let mut mid_header = build_test_eph();
+        mid_header.truncate(20); // 8-byte header parsed, manifest runs past it
+        test_assert_eq!(parse_eph(&mid_header).err(), Some(EphError::ShortRead));
+        TestResult::Pass
+    }
+
+    /// Every length in a `.eph` is attacker-controlled. A package that claims
+    /// a manifest, a path or a file longer than the buffer holding it must be
+    /// refused by a bounds check, never turned into an out-of-range slice or
+    /// a wrapped offset.
+    fn test_hostile_lengths_rejected() -> TestResult {
+        let pristine = build_test_eph();
+        // The first section header sits after the 8-byte fixed header, the
+        // manifest and the 64-byte signature.
+        let section = 8
+            + u32::from_be_bytes([pristine[4], pristine[5], pristine[6], pristine[7]]) as usize
+            + 64;
+
+        let mut huge_manifest = build_test_eph();
+        huge_manifest[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        test_assert_eq!(parse_eph(&huge_manifest).err(), Some(EphError::ShortRead));
+
+        let mut huge_path = build_test_eph();
+        huge_path[section..section + 2].copy_from_slice(&u16::MAX.to_be_bytes());
+        test_assert_eq!(parse_eph(&huge_path).err(), Some(EphError::ShortRead));
+
+        let mut huge_file = build_test_eph();
+        let len_at = section + 2 + 5; // past path_len and the 5-byte path
+        huge_file[len_at..len_at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        test_assert_eq!(parse_eph(&huge_file).err(), Some(EphError::ShortRead));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("pkg::format::parse_eph_basic", test_parse_eph_basic);
         crate::testing::register_test("pkg::format::bad_magic", test_bad_magic);
@@ -256,6 +300,11 @@ pub mod tests {
         crate::testing::register_test(
             "pkg::format::trailing_garbage_after_trailer_rejects",
             test_trailing_garbage_after_trailer_rejects,
+        );
+        crate::testing::register_test("pkg::format::truncated_rejects", test_truncated_rejects);
+        crate::testing::register_test(
+            "pkg::format::hostile_lengths_rejected",
+            test_hostile_lengths_rejected,
         );
     }
 }
