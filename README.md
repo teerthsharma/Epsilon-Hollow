@@ -5689,6 +5689,55 @@ no summary line — and because the harness never prints its verdict, the job th
 greps for that verdict fails with no explanation. Three separate mechanisms, each
 working exactly as designed, arranged in a sequence that produces silence.
 
+### Epilogue to case 7, four hours later
+
+The test was right the whole time.
+
+`topo_asm::distance_basic` asserted a distance of 3.0. The function returned 0.0.
+The test would have caught it on the first boot it was allowed to run.
+
+What killed the kernel was not the arithmetic. It was that **every hand-written
+assembly block in that module took its arguments in System V registers, on a
+target whose ABI is Win64.** `rustc --print target-spec-json --target
+x86_64-unknown-uefi` says `"entry-abi": "win64"` — arguments arrive in `rcx`,
+`rdx`, `r8`. The code read `rdi`, which held whatever the caller happened to leave
+there, and used it as a load base. The loop bound came from `rdx`, which under the
+real ABI holds the *second pointer*. So it swept memory from a garbage address for
+something like a hundred million iterations until it walked out of the mapping.
+
+That was proved by lifting the assembly verbatim into a host binary and watching
+it fault on the first call — `STATUS_ACCESS_VIOLATION`, printing its "about to
+call" line and nothing after, which is precisely the shape of the serial log. Feed
+the identical bytes System V registers and the crash disappears.
+
+There was a second one nobody had suspected. The kernel builds `+soft-float`.
+Compiling a caller with `--emit asm` shows it reading `%rax` and calling
+`__gtdf2`, the software floating-point comparison. The old code returned its
+result in `xmm0`. Garbage even on the paths that didn't fault.
+
+And `simd_betti_accumulate` had the identical fatal ABI bug, sitting quietly
+beside it, unnoticed by everyone including the survey that found the first one.
+
+The AVX-512 path was deleted rather than repaired: `git grep xsetbv` finds nothing
+in this kernel, so XCR0 is never enabled, so executing a ZMM instruction there is
+`#UD` — the same silent death, waiting for the first machine that reported the
+CPUID bit.
+
+The result, on the first run that contained the fix:
+
+```
+TEST_PASS: topo_asm::distance_identity
+TEST_PASS: topo_asm::distance_basic
+TEST_PASS: topo_asm::distance_peak_at_end
+TEST_PASS: topo_asm::betti_count
+TEST_PASS: topo_asm::betti_count_rejects_nan
+```
+
+359 assertions passing, zero failures.
+
+**The test had been correct, and armed, and pointed directly at the defect, for
+the entire life of the function.** It simply lived inside the blast radius.
+
 ### The thing they have in common
 
 Not one of these is a mistake in the sense of someone doing arithmetic wrong. Every
