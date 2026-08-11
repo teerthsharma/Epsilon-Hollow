@@ -120,9 +120,10 @@ pub fn handle_ipv6_packet(pkt: &[u8]) {
     let payload = &pkt[40..40 + payload_len];
     let next_header = hdr.next_header;
     let src = hdr.src;
+    let dst = hdr.dst;
 
     match next_header {
-        58 => handle_icmpv6_packet(src, payload),
+        58 => handle_icmpv6_packet(src, dst, payload),
         6 => crate::net::tcp::handle_tcp_packet(crate::net::IpAddr::V6(src), payload),
         17 => crate::net::udp::handle_udp_packet(crate::net::IpAddr::V6(src), payload),
         _ => {
@@ -149,6 +150,31 @@ struct Icmpv6Echo {
     seq: u16,
 }
 
+/// The RFC 8200 section 8.1 pseudo-header for an ICMPv6 message, followed by
+/// the message itself: the byte string whose one's-complement sum is the
+/// checksum RFC 4443 section 2.3 requires.
+///
+/// Unlike ICMPv4 (`icmp::handle_icmp_packet`) the addresses are part of the
+/// sum, so a receiver needs both ends of the IPv6 header to check it -- which
+/// is why `handle_icmpv6_packet` takes a destination as well as a source.
+///
+/// Every site that produces or checks an ICMPv6 checksum builds its input
+/// here. Four senders each assembled their own copy of these 40 bytes, and a
+/// verifier that assembled a fifth could disagree with any of them and reject
+/// this stack's own traffic.
+fn icmpv6_checksum_input(src: [u8; 16], dst: [u8; 16], msg: &[u8]) -> Vec<u8> {
+    let mut pseudo = Vec::with_capacity(40 + msg.len());
+    pseudo.extend_from_slice(&src);
+    pseudo.extend_from_slice(&dst);
+    pseudo.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    pseudo.push(0);
+    pseudo.push(0);
+    pseudo.push(0);
+    pseudo.push(58);
+    pseudo.extend_from_slice(msg);
+    pseudo
+}
+
 pub fn send_icmpv6_echo_request(dst: [u8; 16], seq: u16) {
     let src = crate::net::local_ip_v6();
     let mut pkt = Icmpv6Echo {
@@ -158,19 +184,11 @@ pub fn send_icmpv6_echo_request(dst: [u8; 16], seq: u16) {
         id: 0x1234_u16.to_be(),
         seq: seq.to_be(),
     };
-    let mut pseudo = Vec::with_capacity(40 + 8);
-    pseudo.extend_from_slice(&src);
-    pseudo.extend_from_slice(&dst);
-    pseudo.extend_from_slice(&8u32.to_be_bytes());
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(58);
     let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
-    pseudo.extend_from_slice(bytes);
+    let cksum = crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, bytes));
     // Network order, like `id` and `seq` above: this struct is blitted raw.
     // The three explicit-shift sites below already write network order.
-    pkt.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
+    pkt.checksum = cksum.to_be();
     let bytes = unsafe { core::slice::from_raw_parts(&pkt as *const _ as *const u8, 8) };
     send_ipv6_packet(dst, 58, bytes);
 }
@@ -185,16 +203,7 @@ fn send_icmpv6_echo_reply(dst: [u8; 16], id: u16, seq: u16, data: &[u8]) {
     buf.extend_from_slice(&id.to_be_bytes());
     buf.extend_from_slice(&seq.to_be_bytes());
     buf.extend_from_slice(data);
-    let mut pseudo = Vec::with_capacity(40 + buf.len());
-    pseudo.extend_from_slice(&src);
-    pseudo.extend_from_slice(&dst);
-    pseudo.extend_from_slice(&((buf.len()) as u32).to_be_bytes());
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(58);
-    pseudo.extend_from_slice(&buf);
-    let checksum = crate::net::ipv4::internet_checksum(&pseudo);
+    let checksum = crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, &buf));
     buf[2] = (checksum >> 8) as u8;
     buf[3] = (checksum & 0xFF) as u8;
     send_ipv6_packet(dst, 58, &buf);
@@ -219,16 +228,7 @@ fn send_neighbor_advertisement(target: [u8; 16], dst: [u8; 16]) {
         buf.push(0);
     }
 
-    let mut pseudo = Vec::with_capacity(40 + buf.len());
-    pseudo.extend_from_slice(&src);
-    pseudo.extend_from_slice(&dst);
-    pseudo.extend_from_slice(&((buf.len()) as u32).to_be_bytes());
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(58);
-    pseudo.extend_from_slice(&buf);
-    let checksum = crate::net::ipv4::internet_checksum(&pseudo);
+    let checksum = crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, &buf));
     buf[2] = (checksum >> 8) as u8;
     buf[3] = (checksum & 0xFF) as u8;
     send_ipv6_packet(dst, 58, &buf);
@@ -320,16 +320,7 @@ fn send_neighbor_solicitation(target: [u8; 16]) -> Result<(), &'static str> {
         buf.push(0);
     }
 
-    let mut pseudo = Vec::with_capacity(40 + buf.len());
-    pseudo.extend_from_slice(&src);
-    pseudo.extend_from_slice(&dst);
-    pseudo.extend_from_slice(&((buf.len()) as u32).to_be_bytes());
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(0);
-    pseudo.push(58);
-    pseudo.extend_from_slice(&buf);
-    let checksum = crate::net::ipv4::internet_checksum(&pseudo);
+    let checksum = crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, &buf));
     buf[2] = (checksum >> 8) as u8;
     buf[3] = (checksum & 0xFF) as u8;
 
@@ -345,8 +336,21 @@ fn send_neighbor_solicitation(target: [u8; 16]) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn handle_icmpv6_packet(src: [u8; 16], pkt: &[u8]) {
+/// `dst` is the destination of the IPv6 header this message arrived in, not
+/// necessarily this host's address: a Neighbor Solicitation arrives at a
+/// solicited-node multicast address, and the sender summed that address, so
+/// substituting `local_ip_v6()` here would reject every solicitation.
+pub fn handle_icmpv6_packet(src: [u8; 16], dst: [u8; 16], pkt: &[u8]) {
     if pkt.len() < 8 {
+        return;
+    }
+    // RFC 4443 section 2.3: the checksum covers the IPv6 pseudo-header as well
+    // as the message, and it is mandatory -- IPv6 has no header checksum of its
+    // own, so this is the only integrity check anything in this file gets.
+    // Unlike UDP over IPv4 there is no "not computed" encoding: a zero field is
+    // summed like any other value and passes only if the message sums to zero
+    // with it.
+    if crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, pkt)) != 0 {
         return;
     }
     let icmptype = pkt[0];
@@ -441,11 +445,14 @@ pub mod tests {
     /// and the 16-byte target. With `opt` it carries a target link-layer
     /// address option (type 2, length 1); without it the message is the
     /// 24-byte minimum, which is what the length guard admits.
+    ///
+    /// The checksum is left zero here and stamped by `checksummed`, which is
+    /// the only thing that knows the addresses it has to be summed against.
     fn advert(flags: u8, target: [u8; 16], opt: Option<[u8; 6]>) -> Vec<u8> {
         let mut pkt = Vec::with_capacity(32);
         pkt.push(ICMPV6_NEIGHBOR_ADVERT);
         pkt.push(0); // code
-        pkt.push(0); // checksum: not verified on receive
+        pkt.push(0); // checksum, stamped by `checksummed`
         pkt.push(0);
         pkt.push(flags);
         pkt.push(0); // reserved
@@ -466,6 +473,32 @@ pub mod tests {
         [0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, n]
     }
 
+    /// Stamp the RFC 4443 checksum a real sender would have computed, then hand
+    /// the message to the receive path addressed to this host, the way
+    /// `handle_ipv6_packet` does. Every case below goes through here so that
+    /// what they assert stays a statement about the NDP rules and not about the
+    /// checksum -- except `advert_with_bad_checksum_not_cached`, which corrupts
+    /// the message afterwards on purpose.
+    fn deliver(src: [u8; 16], pkt: &[u8]) {
+        let dst = crate::net::local_ip_v6();
+        handle_icmpv6_packet(src, dst, &checksummed(src, dst, pkt));
+    }
+
+    /// `pkt` with the checksum field filled in, exactly as
+    /// `send_neighbor_advertisement` fills it. The field is cleared first, so a
+    /// message that already carries one -- a corrupted message being repaired --
+    /// is summed the way a sender would sum it rather than over its own stale
+    /// checksum.
+    fn checksummed(src: [u8; 16], dst: [u8; 16], pkt: &[u8]) -> Vec<u8> {
+        let mut pkt = pkt.to_vec();
+        pkt[2] = 0;
+        pkt[3] = 0;
+        let checksum = crate::net::ipv4::internet_checksum(&icmpv6_checksum_input(src, dst, &pkt));
+        pkt[2] = (checksum >> 8) as u8;
+        pkt[3] = (checksum & 0xFF) as u8;
+        pkt
+    }
+
     /// Reads the cache directly rather than through `ndp_lookup`, which emits a
     /// solicitation on a miss.
     fn cached(ip: [u8; 16]) -> Option<[u8; 6]> {
@@ -483,7 +516,7 @@ pub mod tests {
     fn test_advert_without_option_not_cached() -> TestResult {
         let t = target(0x11);
         let src = target(0xEE);
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, None));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, t, None));
         test_assert!(
             cached(t).is_none(),
             "a 24-byte Neighbor Advertisement with no link-layer option was cached"
@@ -496,7 +529,7 @@ pub mod tests {
     fn test_advert_with_option_cached() -> TestResult {
         let t = target(0x12);
         let src = target(0xEE);
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
         test_assert!(
             cached(t) == Some(MAC_A),
             "a Neighbor Advertisement carrying a link-layer option did not resolve"
@@ -511,10 +544,10 @@ pub mod tests {
     fn test_unsolicited_advert_does_not_overwrite() -> TestResult {
         let t = target(0x13);
         let src = target(0xEE);
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
         test_assert!(cached(t) == Some(MAC_A), "setup advertisement did not cache");
 
-        handle_icmpv6_packet(src, &advert(F_OVERRIDE, t, Some(MAC_B)));
+        deliver(src, &advert(F_OVERRIDE, t, Some(MAC_B)));
         test_assert!(
             cached(t) == Some(MAC_A),
             "an unsolicited Neighbor Advertisement replaced a resolved entry"
@@ -522,13 +555,13 @@ pub mod tests {
 
         // RFC 4861 7.2.5: with Override clear, a cached address that differs
         // is kept whatever else the advertisement claims.
-        handle_icmpv6_packet(src, &advert(F_SOLICITED, t, Some(MAC_B)));
+        deliver(src, &advert(F_SOLICITED, t, Some(MAC_B)));
         test_assert!(
             cached(t) == Some(MAC_A),
             "an advertisement without Override replaced a resolved entry"
         );
 
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_B)));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_B)));
         test_assert!(
             cached(t) == Some(MAC_B),
             "a solicited Override advertisement failed to update a resolved entry"
@@ -543,7 +576,7 @@ pub mod tests {
         let src = target(0xEE);
 
         let zero = target(0x14);
-        handle_icmpv6_packet(
+        deliver(
             src,
             &advert(F_SOLICITED | F_OVERRIDE, zero, Some([0u8; 6])),
         );
@@ -553,7 +586,7 @@ pub mod tests {
         );
 
         let bcast = target(0x15);
-        handle_icmpv6_packet(
+        deliver(
             src,
             &advert(F_SOLICITED | F_OVERRIDE, bcast, Some([0xFF; 6])),
         );
@@ -565,14 +598,14 @@ pub mod tests {
         let mcast = [
             0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
         ];
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, mcast, Some(MAC_A)));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, mcast, Some(MAC_A)));
         test_assert!(
             cached(mcast).is_none(),
             "a multicast target address was cached as a neighbour"
         );
 
         let unspec = [0u8; 16];
-        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, unspec, Some(MAC_A)));
+        deliver(src, &advert(F_SOLICITED | F_OVERRIDE, unspec, Some(MAC_A)));
         test_assert!(
             cached(unspec).is_none(),
             "the unspecified target address was cached as a neighbour"
@@ -590,7 +623,7 @@ pub mod tests {
         let wrong_type = target(0x16);
         let mut pkt = advert(F_SOLICITED | F_OVERRIDE, wrong_type, Some(MAC_A));
         pkt[24] = 1; // source link-layer address, not the target's
-        handle_icmpv6_packet(src, &pkt);
+        deliver(src, &pkt);
         test_assert!(
             cached(wrong_type).is_none(),
             "an option that is not a target link-layer address was cached as one"
@@ -599,7 +632,7 @@ pub mod tests {
         let wrong_len = target(0x17);
         let mut pkt = advert(F_SOLICITED | F_OVERRIDE, wrong_len, Some(MAC_A));
         pkt[25] = 2; // claims 16 octets, of which only 8 arrived
-        handle_icmpv6_packet(src, &pkt);
+        deliver(src, &pkt);
         test_assert!(
             cached(wrong_len).is_none(),
             "a truncated link-layer option was cached from its first six bytes"
@@ -607,7 +640,80 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// IPv6 carries no header checksum, so RFC 4443's is the only integrity
+    /// check an ICMPv6 message gets. Without it a single flipped bit anywhere
+    /// in a Neighbor Advertisement -- including in the target address or the
+    /// link-layer option this stack then caches -- is taken at face value, and
+    /// `ndp_lookup` addresses every later frame with whatever it produced.
+    ///
+    /// The message is checksummed first and corrupted afterwards, so it fails
+    /// for exactly one reason: every other guard in the Neighbor Advertisement
+    /// arm still passes. The second half is the control -- the same message
+    /// checksummed after the corruption resolves normally -- so this cannot be
+    /// satisfied by a verifier that rejects everything.
+    fn test_advert_with_bad_checksum_not_cached() -> TestResult {
+        let src = target(0xEE);
+        let dst = crate::net::local_ip_v6();
+
+        let t = target(0x18);
+        let mut pkt = checksummed(src, dst, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        pkt[23] ^= 0x01; // last bit of the target address, checksum left stale
+        handle_icmpv6_packet(src, dst, &pkt);
+        test_assert!(
+            cached(target(0x19)).is_none(),
+            "a corrupted Neighbor Advertisement was cached under the address the flipped bit produced"
+        );
+        test_assert!(
+            cached(t).is_none(),
+            "a corrupted Neighbor Advertisement was cached under its original address"
+        );
+
+        deliver(src, &pkt);
+        test_assert!(
+            cached(target(0x19)) == Some(MAC_A),
+            "the same message with a checksum matching its contents did not resolve"
+        );
+        TestResult::Pass
+    }
+
+    /// The destination summed into the pseudo-header is the one the datagram
+    /// carried, not this host's address. They differ for every message sent to
+    /// a multicast group -- which is every Neighbor Solicitation, addressed to
+    /// a solicited-node address -- so a verifier that substituted
+    /// `local_ip_v6()` would verify this stack's loopback traffic and its own
+    /// unit tests and then refuse the whole of neighbour discovery on a real
+    /// link.
+    fn test_advert_verified_against_the_delivered_destination() -> TestResult {
+        let src = target(0xEE);
+        let t = target(0x1A);
+        let mcast = [
+            0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xFF, t[13], t[14], t[15],
+        ];
+        test_assert!(
+            mcast != crate::net::local_ip_v6(),
+            "the fixture destination equals the local address, so this proves nothing"
+        );
+        let pkt = checksummed(src, mcast, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        handle_icmpv6_packet(src, mcast, &pkt);
+        test_assert!(
+            cached(t) == Some(MAC_A),
+            "a message checksummed against the address it was actually sent to was rejected"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        // ICMPv4's own group is chained here rather than registered from
+        // `testing::runner`, next to the ICMPv6 verification it mirrors.
+        crate::net::icmp::tests::register_all();
+        crate::testing::register_test(
+            "ipv6::advert_verified_against_the_delivered_destination",
+            test_advert_verified_against_the_delivered_destination,
+        );
+        crate::testing::register_test(
+            "ipv6::advert_with_bad_checksum_not_cached",
+            test_advert_with_bad_checksum_not_cached,
+        );
         crate::testing::register_test(
             "ipv6::advert_without_option_not_cached",
             test_advert_without_option_not_cached,
