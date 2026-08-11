@@ -2,12 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 //! TLS-over-TCP socket — wraps TcpSocket with TlsSession encryption.
+//!
+//! [`TlsSocket::connect`] fails closed: it returns an error unless the peer
+//! authenticated over this handshake's transcript *as the hostname the caller
+//! asked for*. There is no switch to skip that, because a chain replayed from
+//! an observed connection would pass any check that stops at chain
+//! validation, and a certificate the trust store issued for another name
+//! would pass any check that stops at the chain.
 
 use crate::drivers::net::tcp::TcpSocket;
-use crate::drivers::net::tls::{KeyExchange, TlsSession, TlsState};
+use crate::drivers::net::tls::{TlsSession, TlsState};
 use alloc::vec::Vec;
 
-/// Ticks spent waiting for the peer's Certificate message after ServerHello.
+/// Ticks spent waiting for the peer's Certificate, CertificateVerify, and
+/// Finished messages after ServerHello.
 const CERT_WAIT_TICKS: u64 = 1000;
 
 pub struct TlsSocket {
@@ -16,7 +24,6 @@ pub struct TlsSocket {
     rx_encrypted: Vec<u8>,
     rx_plaintext: Vec<u8>,
     connected: bool,
-    require_peer_auth: bool,
 }
 
 impl TlsSocket {
@@ -27,7 +34,6 @@ impl TlsSocket {
             rx_encrypted: Vec::new(),
             rx_plaintext: Vec::new(),
             connected: false,
-            require_peer_auth: true,
         }
     }
 
@@ -35,22 +41,37 @@ impl TlsSocket {
         self.tls.set_psk(psk);
     }
 
-    /// Allow an ECDHE connection whose peer presented no valid certificate.
-    ///
-    /// Off by default. Turning it on gives an unauthenticated, trivially
-    /// man-in-the-middleable channel; it exists only for bring-up against a
-    /// peer with no PKI.
-    pub fn set_require_peer_auth(&mut self, require: bool) {
-        self.require_peer_auth = require;
-    }
-
     /// Whether the peer's certificate chain validated against the embedded
-    /// trust store.
+    /// trust store. Chain validity alone is *not* authentication — see
+    /// [`Self::peer_authenticated`].
     pub fn peer_verified(&self) -> bool {
         self.tls.peer_verified()
     }
 
-    pub fn connect(&mut self, ip: crate::net::IpAddr, port: u16) -> Result<(), &'static str> {
+    /// Whether the peer proved possession of its key over this handshake.
+    pub fn peer_authenticated(&self) -> bool {
+        self.tls.peer_authenticated()
+    }
+
+    /// Connect to `hostname` at `ip`:`port` and authenticate the peer as that
+    /// hostname.
+    ///
+    /// A caller holding only an address is refused: RFC 6125 §6.4 forbids
+    /// matching an IP literal against a certificate's dNSNames, and accepting
+    /// one as a name would mean any trust-store-issued certificate
+    /// authenticates the connection. Reaching a host by address needs an
+    /// iPAddress SubjectAltName, which [`crate::drivers::net::x509`] parses
+    /// past but does not surface.
+    pub fn connect(
+        &mut self,
+        ip: crate::net::IpAddr,
+        port: u16,
+        hostname: &str,
+    ) -> Result<(), &'static str> {
+        if hostname.is_empty() || is_ip_literal(hostname) {
+            return Err("TLS needs a hostname to authenticate the peer as");
+        }
+        self.tls.set_hostname(hostname);
         self.tcp.connect(ip, port);
 
         let start = crate::drivers::interrupts::ticks();
@@ -88,10 +109,10 @@ impl TlsSocket {
             crate::net::poll();
         }
 
-        // Read the peer's Certificate message and validate it against the
-        // embedded trust store before any application data moves.
+        // Read the peer's Certificate, CertificateVerify, and Finished, and
+        // require all three to check out before any application data moves.
         let cert_start = crate::drivers::interrupts::ticks();
-        while !self.tls.peer_verified()
+        while !self.tls.peer_authenticated()
             && crate::drivers::interrupts::ticks().wrapping_sub(cert_start) < CERT_WAIT_TICKS
         {
             let n = self.tcp.recv(&mut buf);
@@ -104,22 +125,19 @@ impl TlsSocket {
                 let Some(record) = Self::pop_record(&mut self.rx_encrypted) else {
                     break;
                 };
-                if record.len() > 5
-                    && record[5] == 0x0b
-                    && self.tls.handle_certificate(&record[5..]).is_err()
-                {
-                    return Err("TLS peer certificate rejected");
+                if self.tls.handle_handshake_record(&record[5..]).is_err() {
+                    return Err("TLS peer authentication failed");
                 }
             }
             crate::net::tcp::poll();
             crate::net::poll();
         }
 
-        if self.require_peer_auth
-            && self.tls.key_exchange() == KeyExchange::Ecdhe
-            && !self.tls.peer_verified()
-        {
-            return Err("TLS peer presented no valid certificate chain");
+        // Fail closed. A validated chain is public data and proves nothing on
+        // its own; without a CertificateVerify and Finished over this
+        // transcript there is no authenticated peer to talk to.
+        if !self.tls.peer_authenticated() {
+            return Err("TLS peer did not authenticate");
         }
 
         self.connected = true;
@@ -198,4 +216,15 @@ impl Default for TlsSocket {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Whether `host` is an IP address literal rather than a DNS name.
+///
+/// IPv6 literals carry a colon; an IPv4 literal is digits and dots only. Both
+/// are refused by [`TlsSocket::connect`] rather than matched against a
+/// dNSName, which RFC 6125 §6.4 forbids. The empty string is not a literal —
+/// it is not a name either, and `connect` rejects it on its own.
+fn is_ip_literal(host: &str) -> bool {
+    host.contains(':')
+        || (!host.is_empty() && host.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
 }

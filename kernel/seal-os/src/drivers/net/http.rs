@@ -193,9 +193,13 @@ impl HttpClient {
         Self::parse_response(&response)
     }
 
+    /// The peer is authenticated as `parsed.host`, the name in the URL, not
+    /// merely as a holder of a trust-store-issued certificate. An `https://`
+    /// URL written with an address literal has no name to authenticate and is
+    /// refused by [`crate::drivers::net::tls_socket::TlsSocket::connect`].
     fn get_https(&self, parsed: &ParsedUrl, ip: [u8; 4]) -> Result<HttpResponse, String> {
         let mut tls = crate::drivers::net::tls_socket::TlsSocket::new();
-        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port) {
+        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port, &parsed.host) {
             return Err(format!("TLS connect failed: {}", e));
         }
 
@@ -247,7 +251,7 @@ impl HttpClient {
         body: &[u8],
     ) -> Result<HttpResponse, String> {
         let mut tls = crate::drivers::net::tls_socket::TlsSocket::new();
-        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port) {
+        if let Err(e) = tls.connect(crate::net::IpAddr::V4(ip), parsed.port, &parsed.host) {
             return Err(format!("TLS connect failed: {}", e));
         }
 

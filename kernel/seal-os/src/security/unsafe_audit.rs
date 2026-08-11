@@ -10,10 +10,13 @@
 //! host-side image gate re-scans the source tree and compares.
 //!
 //! The scan rule lives in [`scan_source`] and is the single definition both
-//! sides must implement: a site is any occurrence of the block-opening token
-//! (the `unsafe` keyword followed by a space and a brace), and it is justified
-//! when `SAFETY:` appears on that line or anywhere in the contiguous run of
-//! `//` comment lines directly above it.
+//! sides must implement: a site is any occurrence of a block-opening token —
+//! the `unsafe` keyword followed by a brace, with or without a space between
+//! them — and it is justified when `SAFETY:` appears on that line or anywhere
+//! in the contiguous run of `//` comment lines directly above it. Declarations
+//! (`unsafe fn`, `unsafe impl`, `unsafe trait`, `unsafe extern`) are not sites
+//! on either side: they declare unsafety rather than perform it, and counting
+//! them would change what the gate measures.
 //!
 //! The measured result is unflattering and is reported as measured: the
 //! overwhelming majority of `unsafe` blocks in this kernel have no written
@@ -28,6 +31,13 @@ const FIXTURE: &str = include_str!("../../tests/unsafe-audit.fixture");
 /// this file, which is itself scanned, does not add phantom sites to its own
 /// census.
 const BLOCK_TOKEN: &str = concat!("unsa", "fe {");
+
+/// The same token with no space before the brace. Valid Rust that opens a real
+/// block, and invisible to a scanner that only knows the spaced spelling. The
+/// tree carries none of these today because the `cargo fmt` gate rewrites them,
+/// but an audit that depends on a formatter having run first is not an audit.
+/// Split in two pieces for the same reason as [`BLOCK_TOKEN`].
+const BRACELESS_TOKEN: &str = concat!("unsa", "fe{");
 
 /// Totals recorded by the fixture.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -52,14 +62,18 @@ impl AuditTotals {
 
 /// Count unsafe-block sites and justified sites in one Rust source text.
 ///
-/// This is the normative scan rule. A host checker that disagrees with this
-/// function is measuring something else and the gate becomes meaningless.
+/// This is the normative scan rule, occurrence-counted rather than
+/// line-counted: two blocks on one line are two sites. A host checker that
+/// disagrees with this function is measuring something else and the gate
+/// becomes meaningless, so `scan_unsafe_source` in `seal-mkimage` counts the
+/// same two tokens the same way.
 pub fn scan_source(text: &str) -> (u64, u64) {
     let lines: alloc::vec::Vec<&str> = text.split('\n').collect();
     let mut total = 0u64;
     let mut justified = 0u64;
     for (i, line) in lines.iter().enumerate() {
-        let sites = line.matches(BLOCK_TOKEN).count() as u64;
+        let sites =
+            (line.matches(BLOCK_TOKEN).count() + line.matches(BRACELESS_TOKEN).count()) as u64;
         if sites == 0 {
             continue;
         }
@@ -188,6 +202,35 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A block spelled without the space before the brace is still a block.
+    /// The host checker counts it; a kernel rule that did not would make the
+    /// two sides measure different trees.
+    fn test_counts_braceless_block() -> TestResult {
+        let undocumented = alloc::format!(
+            "fn a() {{\n    // Bump the counter.\n    {} *p = 1; }}\n}}\n",
+            BRACELESS_TOKEN
+        );
+        let (total, justified) = scan_source(&undocumented);
+        test_assert_eq!(total, 1);
+        test_assert_eq!(justified, 0);
+        let documented = alloc::format!(
+            "fn a() {{\n    // SAFETY: the allocation outlives the block.\n    {} *p = 1; }}\n}}\n",
+            BRACELESS_TOKEN
+        );
+        let (total, justified) = scan_source(&documented);
+        test_assert_eq!(total, 1);
+        test_assert_eq!(justified, 1);
+        // Sites are occurrences, not lines: both spellings on one line are two.
+        let mixed = alloc::format!("{} }} {} }}\n", BLOCK_TOKEN, BRACELESS_TOKEN);
+        let (total, justified) = scan_source(&mixed);
+        test_assert_eq!(total, 2);
+        test_assert_eq!(justified, 0);
+        // Declarations stay uncounted in the braceless spelling too.
+        let (total, _) = scan_source("pub unsafe extern \"C\" fn f() {\n    let x = 1;\n}\n");
+        test_assert_eq!(total, 0);
+        TestResult::Pass
+    }
+
     /// The compiled-in fixture must be parseable and self-consistent.
     fn test_fixture_is_consistent() -> TestResult {
         let t = totals();
@@ -211,6 +254,10 @@ pub mod tests {
         crate::testing::register_test(
             "security::unsafe_audit_justified",
             test_accepts_justified_block,
+        );
+        crate::testing::register_test(
+            "security::unsafe_audit_braceless",
+            test_counts_braceless_block,
         );
         crate::testing::register_test("security::unsafe_audit_fixture", test_fixture_is_consistent);
     }

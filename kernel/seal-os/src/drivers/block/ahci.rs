@@ -21,9 +21,12 @@ use super::{register_block_device, BlockDevice, BlockError};
 // ── HBA global registers ────────────────────────────────────────────────────
 /// Size of each per-slot DMA bounce buffer, in bytes.
 ///
-/// One page. Every transfer path is bounded by this: the non-NCQ paths clamp to
-/// it and the NCQ paths refuse past it. A transfer larger than one page must be
-/// split by the caller — see the `BlockDevice` impl.
+/// One page. The non-NCQ paths (`read_sectors`/`write_sectors`) split any
+/// transfer into `BOUNCE_BYTES` chunks and loop internally, so a request
+/// larger than one page still completes in full — no caller-side splitting
+/// needed. The NCQ paths refuse anything past one page outright instead of
+/// looping (see their doc comments); currently moot since `ncq_supported` is
+/// never set true, so they are unreachable.
 const BOUNCE_BYTES: usize = 4096;
 
 const HBA_CAP: u64 = 0x00;
@@ -121,6 +124,26 @@ pub struct AhciHba {
 
 unsafe impl Send for AhciHba {}
 unsafe impl Sync for AhciHba {}
+
+/// The `(offset into the caller's buffer, LBA, chunk length)` steps a
+/// `bytes`-long transfer starting at `lba` is split into.
+///
+/// `bytes` is always a whole number of 512-byte sectors, since both callers
+/// derive it as `count * 512`. Every byte of the request appears in exactly one
+/// step and the steps are contiguous in both buffer offset and LBA, so a caller
+/// that runs the iterator to the end has moved all of `bytes` — the property
+/// `read_sectors`/`write_sectors` used to break by clamping the transfer to one
+/// page and still returning `Ok(())`.
+fn transfer_chunks(lba: u64, bytes: usize) -> impl Iterator<Item = (usize, u64, usize)> {
+    (0..bytes.div_ceil(BOUNCE_BYTES)).map(move |i| {
+        let done = i * BOUNCE_BYTES;
+        (
+            done,
+            lba + (done / 512) as u64,
+            core::cmp::min(bytes - done, BOUNCE_BYTES),
+        )
+    })
+}
 
 impl AhciPort {
     // ------------------------------------------------------------------ MMIO
@@ -332,6 +355,20 @@ impl AhciPort {
     // ------------------------------------------------------------------ public
     /// Read `count` sectors starting at `lba` into `buf`.
     ///
+    /// This path issues no prefetch and asks for no prediction. It used to
+    /// build a `fs::prefetch::PrefetchEngine` per call, record `lba` into it and
+    /// ask `should_prefetch(&[lba])`, which could not answer true: that
+    /// predicate needs two LBAs on either branch, the slice carried one, and an
+    /// engine constructed inside this function held only the LBA recorded one
+    /// line above. The decision was false on every call, so the
+    /// `[AHCI] Aether-Link suggests prefetching` line it guarded never printed
+    /// on any boot. Two things are missing, not one: a per-port engine that
+    /// carries history across requests, so the question is answerable, and
+    /// somewhere to queue the speculative read, so a true answer means
+    /// something — the deleted branch said as much itself, in a comment
+    /// deferring the queue to "a full implementation". Reinstating the call
+    /// without the queue would only put a serial write on the block read path.
+    ///
     /// # Safety
     /// `buf` must be large enough to hold `count * 512` bytes. `lba` must be
     /// within the valid range reported by the device. Concurrent access to the
@@ -344,71 +381,57 @@ impl AhciPort {
         buf: &mut [u8],
     ) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
-        if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
+        if bytes == 0 || bytes > BOUNCE_BYTES * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
-        let actual_bytes = core::cmp::min(bytes, 4096);
+        // The per-slot bounce buffer is one page. A request bigger than that is
+        // split into BOUNCE_BYTES chunks and looped so the caller always gets
+        // every byte it asked for — see BOUNCE_BYTES's doc comment.
+        for (done, cur_lba, chunk) in transfer_chunks(lba, bytes) {
+            let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
-        let mut retries = 0;
-        loop {
-            self.stop_port();
-            self.setup_command(
-                slot,
-                false,
-                self.buf_phys[slot as usize],
-                actual_bytes as u32,
-            );
-            self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, lba, (actual_bytes / 512) as u16);
-            self.start_port();
+            let mut retries = 0;
+            loop {
+                self.stop_port();
+                self.setup_command(slot, false, self.buf_phys[slot as usize], chunk as u32);
+                self.fill_fis(slot, ATA_CMD_READ_DMA_EXT, cur_lba, (chunk / 512) as u16);
+                self.start_port();
 
-            if self.send_command(slot).is_err() {
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::Timeout);
+                if self.send_command(slot).is_err() {
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::Timeout);
+                    }
+                    self.reset_port();
+                    continue;
                 }
-                self.reset_port();
-                continue;
+
+                let tfd = self.read_port(PORT_TFD);
+                if tfd & (TFD_BSY | TFD_DRQ) != 0 {
+                    let err = self.read_port(PORT_SERR);
+                    if err != 0 {
+                        self.write_port(PORT_SERR, err); // Clear SERR
+                    }
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::IoError);
+                    }
+                    self.reset_port();
+                    continue;
+                }
+                break;
             }
 
-            let tfd = self.read_port(PORT_TFD);
-            if tfd & (TFD_BSY | TFD_DRQ) != 0 {
-                let err = self.read_port(PORT_SERR);
-                if err != 0 {
-                    self.write_port(PORT_SERR, err); // Clear SERR
-                }
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::IoError);
-                }
-                self.reset_port();
-                continue;
-            }
-            break;
-        }
-
-        // Phase E: Aether-Link Prefetch Integration
-        // We feed the LBA to the prefetch engine. In a real scenario, this would be a global/per-drive engine.
-        // For demonstration of Phase E completion, we instantiate and call it here.
-        let mut prefetch_engine = crate::fs::prefetch::PrefetchEngine::new_gaming();
-        prefetch_engine.record_lba(lba);
-        if prefetch_engine.should_prefetch(&[lba]) {
-            // In a full implementation, we would queue an async read for lba + count here.
-            crate::serial_println!(
-                "[AHCI] Aether-Link suggests prefetching LBA {}",
-                lba + count as u64
+            core::ptr::copy_nonoverlapping(
+                (*self.buf[slot as usize]).as_ptr(),
+                buf.as_mut_ptr().add(done),
+                chunk,
             );
+            self.free_slot(slot);
         }
-
-        core::ptr::copy_nonoverlapping(
-            (*self.buf[slot as usize]).as_ptr(),
-            buf.as_mut_ptr(),
-            actual_bytes,
-        );
-        self.free_slot(slot);
         Ok(())
     }
 
@@ -421,63 +444,56 @@ impl AhciPort {
     /// the command list or DMA buffers.
     pub unsafe fn write_sectors(&self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let bytes = count as usize * 512;
-        if bytes == 0 || bytes > 4096 * 32 || buf.len() < bytes {
+        if bytes == 0 || bytes > BOUNCE_BYTES * 32 || buf.len() < bytes {
             return Err(BlockError::InvalidLba);
         }
 
-        let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
-        let actual_bytes = core::cmp::min(bytes, 4096);
+        // See read_sectors: split into BOUNCE_BYTES chunks and loop rather than
+        // silently writing only the first page.
+        for (done, cur_lba, chunk) in transfer_chunks(lba, bytes) {
+            let slot = self.find_free_slot().ok_or(BlockError::Busy)?;
 
-        core::ptr::copy_nonoverlapping(
-            buf.as_ptr(),
-            (*self.buf[slot as usize]).as_mut_ptr(),
-            actual_bytes,
-        );
-
-        let mut retries = 0;
-        loop {
-            self.stop_port();
-            self.setup_command(
-                slot,
-                true,
-                self.buf_phys[slot as usize],
-                actual_bytes as u32,
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr().add(done),
+                (*self.buf[slot as usize]).as_mut_ptr(),
+                chunk,
             );
-            self.fill_fis(
-                slot,
-                ATA_CMD_WRITE_DMA_EXT,
-                lba,
-                (actual_bytes / 512) as u16,
-            );
-            self.start_port();
 
-            if self.send_command(slot).is_err() {
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::Timeout);
-                }
-                self.reset_port();
-                continue;
-            }
+            let mut retries = 0;
+            loop {
+                self.stop_port();
+                self.setup_command(slot, true, self.buf_phys[slot as usize], chunk as u32);
+                self.fill_fis(slot, ATA_CMD_WRITE_DMA_EXT, cur_lba, (chunk / 512) as u16);
+                self.start_port();
 
-            let tfd = self.read_port(PORT_TFD);
-            if tfd & (TFD_BSY | TFD_DRQ) != 0 {
-                let err = self.read_port(PORT_SERR);
-                if err != 0 {
-                    self.write_port(PORT_SERR, err); // Clear SERR
+                if self.send_command(slot).is_err() {
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::Timeout);
+                    }
+                    self.reset_port();
+                    continue;
                 }
-                retries += 1;
-                if retries > 3 {
-                    self.free_slot(slot);
-                    return Err(BlockError::IoError);
+
+                let tfd = self.read_port(PORT_TFD);
+                if tfd & (TFD_BSY | TFD_DRQ) != 0 {
+                    let err = self.read_port(PORT_SERR);
+                    if err != 0 {
+                        self.write_port(PORT_SERR, err); // Clear SERR
+                    }
+                    retries += 1;
+                    if retries > 3 {
+                        self.free_slot(slot);
+                        return Err(BlockError::IoError);
+                    }
+                    self.reset_port();
+                    continue;
                 }
-                self.reset_port();
-                continue;
+                break;
             }
-            break;
+            self.free_slot(slot);
         }
-        self.free_slot(slot);
         Ok(())
     }
 
@@ -886,5 +902,89 @@ pub fn test_ahci() {
         Err(e) => {
             serial_println!("[test_ahci] Sector 0 read failed: {:?}", e);
         }
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert_eq;
+    use crate::testing::TestResult;
+
+    /// `read_sectors` used to accept requests up to `BOUNCE_BYTES * 32` bytes
+    /// (the old guard: `bytes > 4096 * 32`) but then did
+    /// `core::cmp::min(bytes, 4096)` and copied only that clamped amount into
+    /// the caller's buffer before returning `Ok(())` — silently leaving
+    /// everything past the first page as whatever the caller's buffer already
+    /// held. `fs::gpt::verify_gpt` hits exactly this: it reads the 128 x
+    /// 128-byte GPT entry array, 16384 bytes (32 sectors) in one `read_block`
+    /// call, and trusts the result as partition-table data.
+    ///
+    /// The property that keeps that from coming back is that one 16 KiB
+    /// request must move exactly the bytes four consecutive 4 KiB requests
+    /// would, in the same order and at the same LBAs. That is decided entirely
+    /// by `transfer_chunks`, which both non-NCQ paths drive, so this asserts it
+    /// there: the plan for 16 KiB from LBA 0 equals the four one-page plans
+    /// stitched together, every byte of the request is covered exactly once by
+    /// a chunk whose LBA follows from its offset, and a tail shorter than a
+    /// page is still its own chunk rather than being dropped.
+    ///
+    /// It does not read the disk. This test used to issue the two `read_block`
+    /// calls against `BOOT_DEV_NUM` and compare the bytes, and that is why it
+    /// failed the first time the harness ever executed it (run 31460890060):
+    /// `test_main()` is called from `kernel_main` *before* `init_drivers()`,
+    /// so under `test-mode` nothing has enumerated PCI and `ahci::init` — the
+    /// only code that registers 0x800 — has never run. Both reads returned
+    /// `BlockError::NoDevice` without reaching a single line of transfer code.
+    /// Bringing the controller up from inside the test does not rescue it
+    /// either: `pci::enumerate` only probes function 0 of each device, and
+    /// `-machine q35`'s default `-drive` hangs off the ICH9 AHCI controller at
+    /// 00:1f.2, which that scan cannot see. Same reasoning as
+    /// `virtio_blk::tests`, which exercises `alloc_request_descs` rather than
+    /// `do_request` for want of a device to answer.
+    fn test_large_read_matches_chunked_small_reads() -> TestResult {
+        const CHUNK: usize = BOUNCE_BYTES;
+        const CHUNKS: usize = 4; // 16 KiB, matching gpt.rs's entry-array read
+
+        let big: Vec<_> = transfer_chunks(0, CHUNK * CHUNKS).collect();
+
+        let mut stitched: Vec<(usize, u64, usize)> = Vec::new();
+        for i in 0..CHUNKS {
+            let lba = (i * CHUNK / 512) as u64;
+            stitched.extend(
+                transfer_chunks(lba, CHUNK).map(|(off, l, len)| (off + i * CHUNK, l, len)),
+            );
+        }
+        test_assert_eq!(big, stitched);
+
+        let mut covered = 0usize;
+        for (off, chunk_lba, len) in &big {
+            if *off != covered || *chunk_lba != (covered / 512) as u64 {
+                return TestResult::Fail("chunk is not the next contiguous piece");
+            }
+            covered += len;
+        }
+        test_assert_eq!(covered, CHUNK * CHUNKS);
+
+        // 9 sectors is one full page plus one sector: the tail must survive as
+        // its own chunk, at the LBA the first chunk left off at.
+        let tail: Vec<_> = transfer_chunks(7, 9 * 512).collect();
+        test_assert_eq!(
+            tail,
+            alloc::vec![(0, 7, BOUNCE_BYTES), (BOUNCE_BYTES, 15, 512)]
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ahci::large_read_matches_chunked_small_reads",
+            test_large_read_matches_chunked_small_reads,
+        );
+        // Chains prefetch::tests. `fs::prefetch` has no entry of its own in
+        // testing/runner.rs and this driver was its only caller in the tree —
+        // see the note on `read_sectors` — so its history invariant is
+        // registered from here, the same way mass_storage chains xhci.
+        crate::fs::prefetch::tests::register_all();
     }
 }

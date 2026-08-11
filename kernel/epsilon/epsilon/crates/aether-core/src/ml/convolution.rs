@@ -12,6 +12,7 @@
 #![allow(rustdoc::broken_intra_doc_links)]
 
 use crate::ml::neural::Activation;
+use crate::ml::rng::Lcg;
 use libm::sqrt;
 
 /// Maximum kernel size (e.g., 3x3, 5x5)
@@ -56,6 +57,7 @@ impl Conv2D {
         stride: usize,
         padding: usize,
         activation: Activation,
+        seed: Option<u64>,
     ) -> Self {
         let in_c = in_channels.min(MAX_CHANNELS_IN);
         let out_c = out_channels.min(MAX_CHANNELS_OUT);
@@ -66,15 +68,13 @@ impl Conv2D {
 
         let mut weights =
             [[[[0.0; MAX_KERNEL_SIZE]; MAX_KERNEL_SIZE]; MAX_CHANNELS_IN]; MAX_CHANNELS_OUT];
-        let mut rng = 42u64;
+        let mut rng = Lcg::new(seed.unwrap_or(42));
 
         for channel_out in weights.iter_mut().take(out_c) {
             for channel_in in channel_out.iter_mut().take(in_c) {
                 for row in channel_in.iter_mut().take(k_size) {
                     for val in row.iter_mut().take(k_size) {
-                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-                        let r = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-                        *val = r * scale;
+                        *val = rng.next_signed_f64() * scale;
                     }
                 }
             }
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_conv2d_initialization() {
-        let conv = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU);
+        let conv = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, None);
         assert_eq!(conv.weights.len(), MAX_CHANNELS_OUT); // Array size fixed
                                                           // Check params
         assert_eq!(conv.kernel_size, 3);
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_conv2d_forward_shape() {
-        let mut conv = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU);
+        let mut conv = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, None);
         let input = [[[0.5; MAX_IMG_DIM]; MAX_IMG_DIM]; MAX_CHANNELS_IN];
 
         // 10x10 input
@@ -177,5 +177,30 @@ mod tests {
 
         assert_eq!(h, 10);
         assert_eq!(w, 10);
+    }
+
+    #[test]
+    fn different_seeds_produce_different_weights() {
+        // Pre-fix, the seed was hardcoded to `42u64` with no parameter to
+        // vary it, so two Conv2D layers were always initialised identically.
+        // A network with two conv layers needs them to start decorrelated.
+        let a = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, Some(1));
+        let b = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, Some(2));
+        assert_ne!(
+            a.weights, b.weights,
+            "different seeds must produce different initial weights"
+        );
+    }
+
+    #[test]
+    fn none_seed_delegates_to_42() {
+        // Pins only that `None` routes to seed 42 under the current generator.
+        // It does NOT establish compatibility with the pre-`Lcg` stream — that
+        // used increment `1` and a full-width `u64 as f64` cast, so the weights
+        // this constructor produces did change. See the note on
+        // `Tensor::unseeded_entry_point_delegates_to_seed_42`.
+        let default = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, None);
+        let explicit_42 = Conv2D::new(1, 1, 3, 1, 1, Activation::ReLU, Some(42));
+        assert_eq!(default.weights, explicit_42.weights);
     }
 }

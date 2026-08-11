@@ -747,12 +747,21 @@ impl ManifoldScheduler {
             .unwrap_or(0)
     }
 
-    pub fn set_current_uid(&mut self, uid: u32) {
+    /// Write `uid` into the task the scheduler has made current.
+    ///
+    /// Returns `false` when there is no such task and the write was therefore
+    /// dropped. That is not an edge case: `current` is `None` for the whole of
+    /// boot (see `current_uid` below), so every caller that runs on the boot
+    /// thread gets `false` and keeps the identity it already had.
+    #[must_use = "a dropped identity write leaves the caller at its previous uid"]
+    pub fn set_current_uid(&mut self, uid: u32) -> bool {
         if let Some(idx) = self.current {
             if let Some(task) = self.slab.get_mut(idx) {
                 task.uid = uid;
+                return true;
             }
         }
+        false
     }
 
     pub fn current_gid(&self) -> u32 {
@@ -762,12 +771,17 @@ impl ManifoldScheduler {
             .unwrap_or(0)
     }
 
-    pub fn set_current_gid(&mut self, gid: u32) {
+    /// Write `gid` into the current task; `false` when the write was dropped.
+    /// Same `current`-is-`None` caveat as `set_current_uid`.
+    #[must_use = "a dropped identity write leaves the caller at its previous gid"]
+    pub fn set_current_gid(&mut self, gid: u32) -> bool {
         if let Some(idx) = self.current {
             if let Some(task) = self.slab.get_mut(idx) {
                 task.gid = gid;
+                return true;
             }
         }
+        false
     }
 
     pub fn current_euid(&self) -> u32 {
@@ -777,12 +791,17 @@ impl ManifoldScheduler {
             .unwrap_or(0)
     }
 
-    pub fn set_current_euid(&mut self, euid: u32) {
+    /// Write `euid` into the current task; `false` when the write was dropped.
+    /// Same `current`-is-`None` caveat as `set_current_uid`.
+    #[must_use = "a dropped identity write leaves the caller at its previous euid"]
+    pub fn set_current_euid(&mut self, euid: u32) -> bool {
         if let Some(idx) = self.current {
             if let Some(task) = self.slab.get_mut(idx) {
                 task.euid = euid;
+                return true;
             }
         }
+        false
     }
 
     pub fn current_egid(&self) -> u32 {
@@ -792,12 +811,17 @@ impl ManifoldScheduler {
             .unwrap_or(0)
     }
 
-    pub fn set_current_egid(&mut self, egid: u32) {
+    /// Write `egid` into the current task; `false` when the write was dropped.
+    /// Same `current`-is-`None` caveat as `set_current_uid`.
+    #[must_use = "a dropped identity write leaves the caller at its previous egid"]
+    pub fn set_current_egid(&mut self, egid: u32) -> bool {
         if let Some(idx) = self.current {
             if let Some(task) = self.slab.get_mut(idx) {
                 task.egid = egid;
+                return true;
             }
         }
+        false
     }
 
     pub fn current_groups(&self) -> Vec<u32> {
@@ -807,13 +831,18 @@ impl ManifoldScheduler {
             .unwrap_or_default()
     }
 
-    pub fn set_current_groups(&mut self, groups: &[u32]) {
+    /// Replace the current task's supplementary groups; `false` when the write
+    /// was dropped. Same `current`-is-`None` caveat as `set_current_uid`.
+    #[must_use = "a dropped identity write leaves the caller in its previous groups"]
+    pub fn set_current_groups(&mut self, groups: &[u32]) -> bool {
         if let Some(idx) = self.current {
             if let Some(task) = self.slab.get_mut(idx) {
                 task.groups.clear();
                 task.groups.extend_from_slice(groups);
+                return true;
             }
         }
+        false
     }
 
     pub fn current_page_table(&self) -> Option<u64> {
@@ -874,6 +903,46 @@ impl ManifoldScheduler {
         }
     }
 
+    /// Fork the current task: the kernel stack, the xsave area, a COW clone of
+    /// the page table, and the parent's credentials, cwd, brk and signal state.
+    ///
+    /// Two resources are deliberately not inherited, because neither can be
+    /// inherited from this module.
+    ///
+    /// **File descriptors.** `syscall::table::FILE_TABLE` is one
+    /// `BTreeMap<u64, FdEntry>` for the whole system, keyed by the fd number
+    /// alone, and `fd_lookup` resolves `fd` as `table.get(&fd)` filtered on
+    /// `entry.owner == current_task_id()`. Every number the parent holds is
+    /// therefore already taken, so an entry cloned from here would have to
+    /// carry a fresh number off `NEXT_FD` — which the child, resuming inside
+    /// the parent's code with the parent's integers, can never name. That is
+    /// not inheritance; it is an unnameable, unclosable entry left in a global
+    /// map for every child ever forked, so the child is left with none
+    /// instead. Real inheritance needs the table keyed by `(owner, fd)` so the
+    /// child's copy can keep the number, and that is `table.rs`'s to change.
+    /// Note also that `FdEntry` holds `offset` by value: duplicating one gives
+    /// the child an independent cursor, not the shared open-file description
+    /// POSIX specifies, which would need a refcounted description in
+    /// `table.rs` rather than a per-descriptor field.
+    ///
+    /// **mmap regions.** `clone_page_table_cow` aliases the parent's mapped
+    /// pages into the child's PML4, but `memory::mmap::REGIONS` gains no entry
+    /// under the child's page table, and both consumers of that list compare
+    /// `region.page_table` against a freshly read `Cr3`. So `munmap_user`
+    /// refuses the child's unmap of its own inherited pages, and
+    /// `handle_page_fault` declines to back a page the parent reserved but
+    /// never touched — that fault falls past the demand-paging arm in
+    /// `drivers::interrupts::page_fault_handler` to the hard-fault path.
+    /// `REGIONS` is `pub(super)` within `memory` and is not reachable here.
+    ///
+    /// ponytail: a forked child inherits no descriptors and no registered
+    /// regions. Upgrade path: `syscall::table::inherit_fds(parent_id,
+    /// child_id)` and `memory::mmap::inherit_regions(parent_pt, child_pt)`,
+    /// both invoked from the free `fork_current()` below *after* its scheduler
+    /// guard is dropped, and neither consulting the scheduler itself.
+    /// `fd_lookup` already takes `FILE_TABLE` and then `scheduler_lock`
+    /// (through `current_task_id`), so reaching either from in here, under the
+    /// guard, inverts that order on a non-reentrant `spin::Mutex`.
     pub fn fork_current(&mut self) -> Option<u64> {
         let idx = self.current?;
 
@@ -1406,7 +1475,47 @@ pub fn current_task_id() -> u64 {
     }
 }
 
+/// Report an identity write the scheduler had nowhere to put.
+///
+/// `set_current_uid` and the other identity setters write into the task the
+/// scheduler has made current. There is none during boot, so the write is
+/// dropped and the caller carries on believing the identity changed — which is
+/// how the uid established at login came to be discarded without a trace, and
+/// why `current_uid()` reports root to every MAC check for the rest of the
+/// boot. These wrappers return `()` to callers all over the kernel and cannot
+/// hand the failure back without changing every one of those call sites, so
+/// the loss is at least made audible here.
+fn report_dropped_identity_write(field: &str, value: u32) {
+    serial_println!(
+        "[scheduler] identity write dropped: {} = {} (no current task; identity unchanged)",
+        field,
+        value
+    );
+}
+
 /// Return the UID of the currently running task (0 if none).
+///
+/// "None" is the whole of boot. `ManifoldScheduler::current` is only ever
+/// assigned inside `schedule()`, and both entries into `schedule()`
+/// (`yield_current`, `scheduler_tick`) return early while
+/// `PerCpu::current_task` is null — which only that same assignment clears. So
+/// this reports 0, root, and every MAC check made from the boot thread compares
+/// against root and passes.
+///
+/// `security::passwd::boot_uid()` does hold the identity login established, and
+/// this deliberately does not fall back to it. `manifold_acl::check_access`
+/// runs on every `Vfs::lookup`/`read`/`write`, and `t5_check_distance` denies
+/// any uid past ~27 on a root-owned node that is not world-writable, while
+/// `ManifoldFS::stat` reports *every* node as uid 0 (fs/manifold_fs.rs, `uid:
+/// 0`). A fallback here would therefore deny every lookup on the root
+/// filesystem to a normal user, not just the `/root` the MAC policy names, and
+/// take the boot down with it.
+///
+/// ponytail: identity is reported as root because there is no task to hold it.
+/// Upgrade path, in order: give `ManifoldFS::stat` real per-node ownership so
+/// `t5_check_distance` stops treating every file as sensitive, then make
+/// `schedule()` reachable so the boot thread has a task at all, then let this
+/// read the login identity.
 pub fn current_uid() -> u32 {
     unsafe {
         let cpu = crate::cpu::this_cpu();
@@ -1416,11 +1525,17 @@ pub fn current_uid() -> u32 {
 }
 
 /// Set the UID of the currently running task.
+///
+/// Reports the write instead of discarding it when there is no current task;
+/// see `report_dropped_identity_write`.
 pub fn set_current_uid(uid: u32) {
-    unsafe {
+    let applied = unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.set_current_uid(uid);
+        cpu.scheduler.set_current_uid(uid)
+    };
+    if !applied {
+        report_dropped_identity_write("uid", uid);
     }
 }
 
@@ -1443,11 +1558,17 @@ pub fn governor_epsilon() -> f64 {
 }
 
 /// Set the GID of the currently running task.
+///
+/// Reports the write instead of discarding it when there is no current task;
+/// see `report_dropped_identity_write`.
 pub fn set_current_gid(gid: u32) {
-    unsafe {
+    let applied = unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.set_current_gid(gid);
+        cpu.scheduler.set_current_gid(gid)
+    };
+    if !applied {
+        report_dropped_identity_write("gid", gid);
     }
 }
 
@@ -1461,20 +1582,32 @@ pub fn current_groups() -> Vec<u32> {
 }
 
 /// Set the effective UID of the currently running task.
+///
+/// Reports the write instead of discarding it when there is no current task;
+/// see `report_dropped_identity_write`.
 pub fn set_current_euid(uid: u32) {
-    unsafe {
+    let applied = unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.set_current_euid(uid);
+        cpu.scheduler.set_current_euid(uid)
+    };
+    if !applied {
+        report_dropped_identity_write("euid", uid);
     }
 }
 
 /// Set the effective GID of the currently running task.
+///
+/// Reports the write instead of discarding it when there is no current task;
+/// see `report_dropped_identity_write`.
 pub fn set_current_egid(gid: u32) {
-    unsafe {
+    let applied = unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.set_current_egid(gid);
+        cpu.scheduler.set_current_egid(gid)
+    };
+    if !applied {
+        report_dropped_identity_write("egid", gid);
     }
 }
 
@@ -1497,11 +1630,18 @@ pub fn current_egid() -> u32 {
 }
 
 /// Set the supplementary groups of the currently running task.
+///
+/// Reports the write instead of discarding it when there is no current task;
+/// see `report_dropped_identity_write`. The reported value is the group count,
+/// since the list itself has no single number to name.
 pub fn set_current_groups(groups: &[u32]) {
-    unsafe {
+    let applied = unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.set_current_groups(groups);
+        cpu.scheduler.set_current_groups(groups)
+    };
+    if !applied {
+        report_dropped_identity_write("groups.len()", groups.len() as u32);
     }
 }
 

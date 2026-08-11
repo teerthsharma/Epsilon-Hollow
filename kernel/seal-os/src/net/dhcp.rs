@@ -277,8 +277,22 @@ pub fn handle_dhcp_packet(pkt: &[u8]) {
         }
         let len = pkt[i + 1] as usize;
         i += 2;
+        // The declared length must fit in the buffer...
         if i + len > pkt.len() {
-            break;
+            return;
+        }
+        // ...and it must match what the option actually is. Every option read
+        // below is a fixed width, so bounding only the declared length lets a
+        // short one (opt 53 len 0, opt 54 len 1) pass this guard and then index
+        // past the end of `pkt`. RFC 2132 fixes all five of these widths, so a
+        // mismatch is a malformed packet: drop it rather than parse part of it.
+        let bad_len = match opt {
+            53 => len != 1,
+            1 | 3 | 6 | 54 => len != 4,
+            _ => false,
+        };
+        if bad_len {
+            return;
         }
         match opt {
             53 => msg_type = pkt[i],
@@ -351,10 +365,175 @@ pub fn state() -> DhcpState {
     *DHCP_STATE.lock()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------
+// Tests -- the `register_all` group is run by the in-kernel harness
+// (crate::testing) under QEMU, not by `cargo test`: `kernel/seal-os` is
+// excluded from the workspace, so `cargo test --workspace` never builds this
+// crate. The `#[test]` functions below predate that harness and stay gated on
+// `cfg(test)`; they mutate global network state (local IP, subnet, gateway, DNS
+// server) and so must not be hoisted into the shared QEMU registry, where they
+// would run alongside net::dns's tests and change the values those assert on.
+// See WIRING note on `register_all` -- runner.rs does not call it yet.
+// ---------------------------------------------------------------------------
 
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// A BOOTREPLY that clears every gate in `handle_dhcp_packet` ahead of the
+    /// option loop -- length, `op == 2`, and the XID match -- so that a packet
+    /// built on it is guaranteed to actually reach the option parser rather
+    /// than being dropped early and passing a test vacuously.
+    fn reaches_option_loop(len: usize) -> Vec<u8> {
+        let mut pkt = vec![0u8; len];
+        pkt[0] = 2; // BOOTREPLY
+        pkt[1] = 1; // htype: Ethernet
+        pkt[2] = 6; // hlen
+        let xid = *XID.lock();
+        pkt[4..8].copy_from_slice(&xid.to_be_bytes());
+        pkt[236..240].copy_from_slice(&DHCP_MAGIC);
+        pkt
+    }
+
+    /// Every case below is a single unauthenticated UDP datagram to port 68,
+    /// which `net::udp::handle_udp_packet` routes straight into
+    /// `handle_dhcp_packet`. Before the length-consistency check each one
+    /// indexed past the end of `pkt`; under `panic = "abort"` that is a remote
+    /// kernel kill, so reaching the assertion at all is part of the proof.
+    /// The assertions then confirm the packet was dropped whole, with no
+    /// network state taken from it.
+    fn assert_dropped_intact(pkt: &[u8], what: &'static str) -> Option<TestResult> {
+        let state_before = state();
+        let ip_before = crate::net::local_ip();
+        handle_dhcp_packet(pkt);
+        if state() != state_before || crate::net::local_ip() != ip_before {
+            return Some(TestResult::Fail(what));
+        }
+        None
+    }
+
+    /// Option 53 declaring length 0 in a 242-byte payload. The old guard,
+    /// `i + len > pkt.len()`, read 242 + 0 > 242 -- false -- and the arm then
+    /// did `pkt[i]` with `i == 242` on a 242-byte slice.
+    fn test_option_53_zero_length_dropped() -> TestResult {
+        let mut pkt = reaches_option_loop(242);
+        pkt[240] = 53;
+        pkt[241] = 0;
+        test_assert!(
+            DhcpPacket::from_bytes(&pkt).is_some(),
+            "test packet is malformed ahead of the option loop; it would be dropped early and prove nothing"
+        );
+        if let Some(fail) = assert_dropped_intact(&pkt, "option 53 with length 0 altered DHCP state") {
+            return fail;
+        }
+        TestResult::Pass
+    }
+
+    /// Option 54 declaring length 1 in a 243-byte payload: the guard read
+    /// 243 > 243 -- false -- and the arm then did `&pkt[242..246]`.
+    fn test_option_54_short_length_dropped() -> TestResult {
+        let mut pkt = reaches_option_loop(243);
+        pkt[240] = 54;
+        pkt[241] = 1;
+        test_assert!(
+            DhcpPacket::from_bytes(&pkt).is_some(),
+            "test packet is malformed ahead of the option loop; it would be dropped early and prove nothing"
+        );
+        if let Some(fail) = assert_dropped_intact(&pkt, "option 54 with length 1 altered DHCP state") {
+            return fail;
+        }
+        TestResult::Pass
+    }
+
+    /// The same four-byte read pattern reached through option 6 (DNS server),
+    /// confirming the fix covers the whole class and not just option 54.
+    /// Options 1 and 3 share the arm shape byte for byte.
+    fn test_option_6_short_length_dropped() -> TestResult {
+        let mut pkt = reaches_option_loop(244);
+        pkt[240] = 6;
+        pkt[241] = 2;
+        test_assert!(
+            DhcpPacket::from_bytes(&pkt).is_some(),
+            "test packet is malformed ahead of the option loop; it would be dropped early and prove nothing"
+        );
+        if let Some(fail) = assert_dropped_intact(&pkt, "option 6 with length 2 altered DHCP state") {
+            return fail;
+        }
+        // Option 1 (subnet mask), same arm.
+        let mut pkt = reaches_option_loop(244);
+        pkt[240] = 1;
+        pkt[241] = 3;
+        if let Some(fail) = assert_dropped_intact(&pkt, "option 1 with length 3 altered DHCP state") {
+            return fail;
+        }
+        // Option 3 (router), same arm.
+        let mut pkt = reaches_option_loop(245);
+        pkt[240] = 3;
+        pkt[241] = 0;
+        if let Some(fail) = assert_dropped_intact(&pkt, "option 3 with length 0 altered DHCP state") {
+            return fail;
+        }
+        TestResult::Pass
+    }
+
+    /// An option whose declared length runs off the end of the buffer. This one
+    /// was already caught by the old bound, but it used to `break` and let the
+    /// half-parsed options collected so far configure the interface. Dropping
+    /// the packet whole is the fail-closed behaviour.
+    fn test_truncated_option_dropped() -> TestResult {
+        let mut pkt = reaches_option_loop(248);
+        pkt[240] = 54;
+        pkt[241] = 200; // runs far past 248
+        if let Some(fail) = assert_dropped_intact(&pkt, "truncated option altered DHCP state") {
+            return fail;
+        }
+        TestResult::Pass
+    }
+
+    /// Control: a well-formed option block must still be walked to its end
+    /// marker. Uses option 55 (parameter request list), which the client does
+    /// not consume, so no global state is touched either way -- this checks the
+    /// new length rule did not turn every packet into a drop.
+    fn test_wellformed_options_still_walked() -> TestResult {
+        let mut pkt = reaches_option_loop(300);
+        pkt[240] = 55;
+        pkt[241] = 4;
+        pkt[242..246].copy_from_slice(&[1, 3, 6, 15]);
+        pkt[246] = 255; // End
+        if let Some(fail) = assert_dropped_intact(&pkt, "well-formed option block altered DHCP state") {
+            return fail;
+        }
+        TestResult::Pass
+    }
+
+    // WIRING: testing/runner.rs must call `crate::net::dhcp::tests::register_all()`
+    // for this group to execute; it is not registered there yet.
+    pub fn register_all() {
+        crate::testing::register_test(
+            "dhcp::option_53_zero_length_dropped",
+            test_option_53_zero_length_dropped,
+        );
+        crate::testing::register_test(
+            "dhcp::option_54_short_length_dropped",
+            test_option_54_short_length_dropped,
+        );
+        crate::testing::register_test(
+            "dhcp::option_6_short_length_dropped",
+            test_option_6_short_length_dropped,
+        );
+        crate::testing::register_test(
+            "dhcp::truncated_option_dropped",
+            test_truncated_option_dropped,
+        );
+        crate::testing::register_test(
+            "dhcp::wellformed_options_still_walked",
+            test_wellformed_options_still_walked,
+        );
+    }
+
+    #[cfg(test)]
     fn build_dhcp_offer(yiaddr: [u8; 4], server_id: [u8; 4]) -> Vec<u8> {
         let mut pkt = vec![0u8; 300];
         pkt[0] = 2; // BOOTREPLY
@@ -376,6 +555,7 @@ mod tests {
         pkt
     }
 
+    #[cfg(test)]
     fn build_dhcp_ack(yiaddr: [u8; 4], subnet: [u8; 4], router: [u8; 4], dns: [u8; 4]) -> Vec<u8> {
         let mut pkt = vec![0u8; 300];
         pkt[0] = 2; // BOOTREPLY
@@ -405,6 +585,7 @@ mod tests {
         pkt
     }
 
+    #[cfg(test)]
     #[test]
     fn test_dhcp_state_transitions() {
         init();
@@ -431,6 +612,7 @@ mod tests {
         assert_eq!(crate::net::gateway(), [192, 168, 1, 1]);
     }
 
+    #[cfg(test)]
     #[test]
     fn test_dhcp_packet_parser() {
         let mut raw = vec![0u8; 300];
@@ -450,6 +632,7 @@ mod tests {
         assert_eq!(pkt.magic, DHCP_MAGIC);
     }
 
+    #[cfg(test)]
     #[test]
     fn test_dhcp_client_no_nic() {
         let mut client = DhcpClient::new();

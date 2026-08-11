@@ -29,9 +29,10 @@ pub struct PrefetchEngine {
     prefetch_hits: u64,
     prefetch_misses: u64,
     preset: PrefetchPreset,
+    /// The most recent [`PrefetchEngine::record_lba`] arguments, oldest first.
+    /// Only `history_len` entries are live.
     lba_history: [u64; 64],
     history_len: usize,
-    history_pos: usize,
 }
 
 impl PrefetchEngine {
@@ -43,9 +44,15 @@ impl PrefetchEngine {
         Self::with_params(0.65, 0.05, [0.03, 0.08, 0.15], -0.02, PrefetchPreset::Hft)
     }
 
-    /// Model-training preset. Honours the `stratum` fit controller's live
-    /// prefetch threshold when a registered training workload has produced one:
-    /// this is the real (non-advisory) I/O knob the controller actuates.
+    /// Model-training preset. Adopts the `stratum` fit controller's published
+    /// prefetch threshold when a registered training workload has produced one.
+    ///
+    /// **Nothing in this tree calls this.** Every engine actually constructed is
+    /// [`PrefetchEngine::new_gaming`] — one per `read_sectors` in the AHCI driver
+    /// and one per `prefetch status` in the shell. So the threshold the
+    /// controller publishes reaches no I/O decision until a model-training read
+    /// path builds this preset, and `stratum`'s `prefetch_epsilon` is a
+    /// recommendation rather than kernel control until then.
     pub fn new_model_training() -> Self {
         let mut engine = Self::with_params(
             0.30,
@@ -78,26 +85,53 @@ impl PrefetchEngine {
             preset,
             lba_history: [0; 64],
             history_len: 0,
-            history_pos: 0,
         }
     }
 
+    /// Append `lba` to the history, dropping the oldest entry once 64 are held.
+    ///
+    /// This shifts rather than writing into a ring, because everything
+    /// downstream of [`PrefetchEngine::current_stream`] reads the history as a
+    /// time series: `extract_telemetry` takes `delta` as `last - first` and
+    /// differences adjacent pairs. A ring hands back its backing array in slot
+    /// order, so past the 64th record a sequential scan arrived with a
+    /// fabricated backwards seam at the write position.
+    //
+    // ponytail: 512-byte shift per record once the history is full, which is
+    // fine while nothing calls this more than once per block request. A caller
+    // on a hot path wants the ring back plus a copy-out that rotates it into
+    // arrival order.
     pub fn record_lba(&mut self, lba: u64) {
-        self.lba_history[self.history_pos] = lba;
-        self.history_pos = (self.history_pos + 1) % 64;
-        if self.history_len < 64 {
+        if self.history_len == 64 {
+            self.lba_history.copy_within(1.., 0);
+            self.lba_history[63] = lba;
+        } else {
+            self.lba_history[self.history_len] = lba;
             self.history_len += 1;
         }
     }
 
     fn current_stream(&self) -> &[u64] {
-        if self.history_len < 64 {
-            &self.lba_history[..self.history_len]
-        } else {
-            &self.lba_history
-        }
+        &self.lba_history[..self.history_len]
     }
 
+    /// Decide whether the block after `lba_stream` is worth fetching early.
+    ///
+    /// Two LBAs are the floor, on either branch: a caller either passes a
+    /// stream of at least two, or passes fewer and falls back to at least two
+    /// it has recorded through [`PrefetchEngine::record_lba`]. Fewer than that
+    /// on both is not "no" — there is nothing to extrapolate from — but it is
+    /// counted as a miss and returned as `false`, so an engine asked too early
+    /// depresses its own [`PrefetchEngine::hit_ratio`].
+    ///
+    /// **No I/O path in this tree calls this.** The AHCI read path did, with a
+    /// fresh engine and a one-element slice, so it took neither branch and its
+    /// verdict was false on every call; that call is gone and the reasoning is
+    /// on `AhciPort::read_sectors`. The remaining constructor call, the shell's
+    /// `prefetch status`, builds an engine and reports its counters without
+    /// ever deciding, which is why that display always reads 0 decisions and a
+    /// 0% hit ratio. Reaching a real verdict needs an engine that outlives one
+    /// request.
     pub fn should_prefetch(&mut self, lba_stream: &[u64]) -> bool {
         self.cycles += 1;
 
@@ -158,6 +192,11 @@ impl PrefetchEngine {
         self.preset
     }
 
+    /// Bias towards prefetching for files over 100 MiB.
+    ///
+    /// Nothing calls this, so no file size has ever moved `epsilon`. Same
+    /// standing as [`PrefetchEngine::new_model_training`]: kept because it is
+    /// the ported aether-link surface, not because it is wired.
     pub fn large_file_hint(&mut self, size_bytes: u64) {
         if size_bytes > 100 * 1024 * 1024 {
             self.epsilon = self.epsilon.min(0.35);
@@ -266,3 +305,68 @@ fn fast_sigmoid(x: f32) -> f32 {
 }
 
 pub fn init() {}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert_eq;
+    use crate::testing::TestResult;
+    use alloc::vec::Vec;
+
+    /// `should_prefetch`'s two branches must decide on the same stream: passing
+    /// the LBAs explicitly and letting the engine fall back to the ones it
+    /// recorded are documented as the same thing, and the fallback is the only
+    /// branch a block driver can reach without keeping its own history.
+    ///
+    /// Past the 64th recorded LBA they were not the same thing.
+    /// `current_stream` returned the whole backing array once `history_len`
+    /// hit 64, and the array is in slot order, not arrival order: after 73
+    /// records it began at the 65th LBA, ran to the 73rd, then jumped back to
+    /// the 9th. Every consumer downstream reads it as a time series —
+    /// `extract_telemetry` takes `delta` as `last - first` and differences
+    /// adjacent pairs — so a strictly ascending sequential scan arrived as a
+    /// stream with one fabricated backwards seam, a negative `delta`, and a
+    /// variance dominated by a step the drive never made.
+    ///
+    /// 73 records rather than 65: it puts the seam in the middle, where a
+    /// rotation is distinguishable from an off-by-one at either end.
+    ///
+    /// This is the fallback branch only. No LBA stream reaches this engine from
+    /// any I/O path in the tree — see `should_prefetch`'s note — so the check
+    /// runs against the type directly, the same constraint that made
+    /// `ahci::large_read_matches_chunked_small_reads` test the chunk plan
+    /// instead of a device.
+    fn test_recorded_history_matches_explicit_stream() -> TestResult {
+        let scan: Vec<u64> = (0..73).map(|i| 100 + i * 8).collect();
+        let mut recorded = PrefetchEngine::new_gaming();
+        for &lba in &scan {
+            recorded.record_lba(lba);
+        }
+
+        // The newest 64, in the order the drive asked for them.
+        let expected = &scan[scan.len() - 64..];
+        test_assert_eq!(recorded.current_stream(), expected);
+
+        // Same engine parameters, same stream, so the fallback branch must
+        // reach the verdict the explicit branch reaches — and must move
+        // `epsilon` by the same amount getting there. Epsilon is the sharper of
+        // the two: it carries the whole telemetry vector, where the verdict is
+        // one threshold comparison that a wrong stream can still land on the
+        // right side of. Both are computed by the same code from the same
+        // input, so bitwise equality is the correct assertion.
+        let mut explicit = PrefetchEngine::new_gaming();
+        test_assert_eq!(
+            recorded.should_prefetch(&[]),
+            explicit.should_prefetch(expected)
+        );
+        test_assert_eq!(recorded.epsilon(), explicit.epsilon());
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "prefetch::recorded_history_matches_explicit_stream",
+            test_recorded_history_matches_explicit_stream,
+        );
+    }
+}

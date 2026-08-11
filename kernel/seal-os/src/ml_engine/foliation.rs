@@ -102,7 +102,9 @@ pub enum FoliationError {
     NoSuchSeq,
     /// Sequence reached its declared block budget.
     BudgetExceeded,
-    /// Every resident plaque is referenced; nothing may be collapsed.
+    /// Out of memory for a plaque: either every resident plaque is referenced
+    /// so nothing may be collapsed, or no physical frame could be obtained to
+    /// back the block. `frames_failed` separates the two after the fact.
     Exhausted,
     /// Leaf arena is full and no dead leaf could be reclaimed.
     LeafArenaFull,
@@ -153,7 +155,11 @@ impl Leaf {
 
 /// A resident KV block: one physical frame bound to one leaf.
 struct Plaque {
+    /// Owning leaf, or `NONE` when the slot is free.
     leaf: u16,
+    /// `Some` for every plaque with an owning leaf, and `None` only while the
+    /// slot sits on the free list. `admit` refuses rather than publish a leaf
+    /// it could not back, so residency implies a frame.
     frame: Option<PhysAddr>,
 }
 
@@ -325,6 +331,13 @@ impl Foliation {
 
     /// Append one token. Sealing a full block descends the foliation, which is
     /// where sharing happens.
+    ///
+    /// `fill` is strictly below `BLOCK_TOKENS` on entry and on every return,
+    /// including the error returns: a refused seal rolls the token back out of
+    /// the pending buffer. That invariant is what makes the `pending[fill]`
+    /// store below in range without a second bounds test, and it is the reason
+    /// a refusal cannot be converted into an out-of-range store by a caller
+    /// that retries.
     pub fn seq_append(&mut self, id: usize, token: u32) -> Result<u16, FoliationError> {
         if self.seqs.get(id).map(|s| s.active) != Some(true) {
             return Err(FoliationError::NoSuchSeq);
@@ -337,7 +350,15 @@ impl Foliation {
         self.seqs[id].pending[fill] = token;
         self.seqs[id].fill += 1;
         if self.seqs[id].fill as usize == BLOCK_TOKENS {
-            self.seal_block(id)?;
+            if let Err(e) = self.seal_block(id) {
+                // The block was not sealed, so this token was never committed.
+                // Restore the buffer to its state on entry and report the
+                // refusal: leaving `fill` at `BLOCK_TOKENS` would make the next
+                // append store one past the end of `pending`.
+                self.seqs[id].pending[fill] = 0;
+                self.seqs[id].fill = fill as u8;
+                return Err(e);
+            }
         }
         Ok(self.seqs[id].nblocks)
     }
@@ -455,13 +476,18 @@ impl Foliation {
 
     /// Release every plaque and return the frames. Used at teardown so the
     /// proof can show frames_freed == frames_backed.
+    ///
+    /// This is an elementary collapse of every resident leaf, not a shortcut
+    /// that only reclaims frames: dropping the frames while the leaves still
+    /// pointed at their slots would leave `leaf_resident` true for a block
+    /// `seq_frame` can no longer resolve, and would leave the pool reporting
+    /// itself full.
     pub fn teardown(&mut self) {
         for i in 0..self.plaques.len() {
-            if let Some(frame) = self.plaques[i].frame.take() {
-                topo_ram::free_frames(frame, 1);
-                self.stats.frames_freed += 1;
+            let leaf = self.plaques[i].leaf;
+            if leaf != NONE {
+                self.collapse(leaf);
             }
-            self.plaques[i].leaf = NONE;
         }
     }
 
@@ -477,6 +503,7 @@ impl Foliation {
         self.stats.descents += 1;
 
         let child = self.find_child(parent, key);
+        let fresh = child.is_none();
         let leaf = match child {
             Some(c) => c,
             None => {
@@ -488,7 +515,19 @@ impl Foliation {
 
         if self.leaves[leaf as usize].slot == NONE {
             // Leaf is modelled but its plaque was collapsed: re-admit.
-            self.admit(leaf)?;
+            if let Err(e) = self.admit(leaf) {
+                if fresh {
+                    // This seal invented the leaf and admission then failed, so
+                    // nothing references it. Retract it. Left linked it would
+                    // consume one of the parent's `MAX_CHILDREN` slots until an
+                    // arena GC happened to collect it, so a run of refused
+                    // appends would saturate the prefix's fan-out and turn a
+                    // transient refusal into a permanent one.
+                    self.unlink_child(parent, leaf);
+                    self.leaves[leaf as usize] = Leaf::blank();
+                }
+                return Err(e);
+            }
             self.seqs[id].admits += 1;
             self.stats.admits += 1;
         } else {
@@ -605,6 +644,12 @@ impl Foliation {
         Some(idx)
     }
 
+    /// Bind a plaque to `leaf`, evicting a free face first if the pool is full.
+    ///
+    /// Either the leaf comes out resident with a frame behind it, or nothing
+    /// about the leaf changes and the caller gets an error. There is no third
+    /// outcome, which is what keeps `leaf_resident` and `seq_frame` from
+    /// disagreeing.
     fn admit(&mut self, leaf: u16) -> Result<(), FoliationError> {
         if self.free_slots.is_empty() {
             let victim = match self.pick_victim() {
@@ -622,16 +667,31 @@ impl Foliation {
         }
         let slot = self.free_slots.pop().ok_or(FoliationError::Exhausted)?;
         let cell = (self.leaves[leaf as usize].key % 8) as usize;
-        let frame = match topo_ram::proof_hint(ZoneHint::Low, cell) {
+        let allocation = match topo_ram::proof_hint(ZoneHint::Low, cell) {
             Some(hint) => topo_ram::alloc_frames(1, ZoneHint::Low, Some(&hint)),
             None => topo_ram::alloc_frames(1, ZoneHint::Low, None),
         };
-        if frame.is_some() {
-            self.stats.frames_backed += 1;
-        } else {
-            self.stats.frames_failed += 1;
-        }
-        self.plaques[slot as usize] = Plaque { leaf, frame };
+        let frame = match allocation {
+            Some(f) => f,
+            None => {
+                // No physical memory behind this plaque, so the leaf must not
+                // become resident. Recording it as resident anyway would make
+                // `leaf_resident` report true while `seq_frame` returns `None`,
+                // and `None` is what a caller reads as "no such block": the
+                // append would succeed, every later lookup of that block would
+                // silently miss, and the pool slot would stay consumed until
+                // eviction. Refusing hands the slot back and reports out of
+                // memory, which the caller may retry.
+                self.stats.frames_failed += 1;
+                self.free_slots.push(slot);
+                return Err(FoliationError::Exhausted);
+            }
+        };
+        self.stats.frames_backed += 1;
+        self.plaques[slot as usize] = Plaque {
+            leaf,
+            frame: Some(frame),
+        };
         self.leaves[leaf as usize].slot = slot;
         let parent = self.leaves[leaf as usize].parent;
         if parent != NONE {
@@ -894,6 +954,30 @@ fn share_and_refcount_probe() -> (u64, u16, u64, bool) {
     (shared, refcount_after, survivors, identical)
 }
 
+/// Drive `seq_append` past its first refusal.
+///
+/// The loop deliberately does not stop at the first `Err`. A refusal is only
+/// worth anything if the sequence survives it, so every later append must be
+/// refused too — one absorbed token after a refusal means the buffer kept a
+/// token the cache never sealed. Returns `(refused_with, none_absorbed_after)`.
+fn refuse_and_continue(
+    fol: &mut Foliation,
+    id: usize,
+    base: u32,
+    tokens: usize,
+    expect: FoliationError,
+) -> (bool, bool) {
+    let mut refused = false;
+    let mut absorbed_after_refusal = false;
+    for j in 0..tokens {
+        match fol.seq_append(id, base + j as u32) {
+            Ok(_) => absorbed_after_refusal |= refused,
+            Err(e) => refused |= e == expect,
+        }
+    }
+    (refused, !absorbed_after_refusal)
+}
+
 /// Negative controls. Returns `(budget_refused, exhaustion_refused,
 /// referenced_free_refused)`.
 fn refusal_probe() -> (bool, bool, bool) {
@@ -901,15 +985,15 @@ fn refusal_probe() -> (bool, bool, bool) {
     let mut fol = Foliation::new(8, 32, 2, Policy::Foliation);
     let budget_refused = match fol.seq_create(2) {
         Ok(id) => {
-            let mut refused = false;
-            for j in 0..(3 * BLOCK_TOKENS) {
-                if fol.seq_append(id, 900 + j as u32) == Err(FoliationError::BudgetExceeded) {
-                    refused = true;
-                    break;
-                }
-            }
+            let (refused, held) = refuse_and_continue(
+                &mut fol,
+                id,
+                900,
+                3 * BLOCK_TOKENS,
+                FoliationError::BudgetExceeded,
+            );
             let _ = fol.seq_release(id);
-            refused
+            refused && held
         }
         Err(_) => false,
     };
@@ -920,15 +1004,15 @@ fn refusal_probe() -> (bool, bool, bool) {
     let mut fol = Foliation::new(3, 32, 2, Policy::Foliation);
     let exhaustion_refused = match fol.seq_create(MAX_SEQ_BLOCKS as u16) {
         Ok(id) => {
-            let mut refused = false;
-            for j in 0..(6 * BLOCK_TOKENS) {
-                if fol.seq_append(id, 4000 + j as u32) == Err(FoliationError::Exhausted) {
-                    refused = true;
-                    break;
-                }
-            }
+            let (refused, held) = refuse_and_continue(
+                &mut fol,
+                id,
+                4000,
+                6 * BLOCK_TOKENS,
+                FoliationError::Exhausted,
+            );
             let _ = fol.seq_release(id);
-            refused
+            refused && held
         }
         Err(_) => false,
     };
@@ -1303,6 +1387,179 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A refused seal must leave the sequence able to take the next append.
+    ///
+    /// Both refusal paths are driven past the first `Err`: capacity exhaustion,
+    /// and a prefix whose fan-out is saturated at the shipped ABI geometry. The
+    /// pending buffer holds `BLOCK_TOKENS` tokens, so a refusal that left it
+    /// full would make the next append store one past its end.
+    fn test_refused_seal_stays_appendable() -> TestResult {
+        // Exhaustion: three plaques, all referenced by the one live sequence,
+        // so the fourth seal has no free face to collapse.
+        let mut fol = Foliation::new(3, 32, 2, Policy::Foliation);
+        let id = fol.seq_create(MAX_SEQ_BLOCKS as u16).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        let mut first_refusal = usize::MAX;
+        for j in 0..(6 * BLOCK_TOKENS) {
+            match fol.seq_append(id, 4000 + j as u32) {
+                Ok(_) => test_assert!(
+                    first_refusal == usize::MAX,
+                    "a token was absorbed after the sequence had been refused"
+                ),
+                Err(e) => {
+                    test_assert!(e == FoliationError::Exhausted, "wrong refusal");
+                    if first_refusal == usize::MAX {
+                        first_refusal = j;
+                    }
+                }
+            }
+        }
+        test_assert_eq!(first_refusal, 4 * BLOCK_TOKENS - 1);
+        test_assert_eq!(fol.seq_counts(id).map(|c| c.0), Some(3u16));
+        let _ = fol.seq_release(id);
+        fol.teardown();
+
+        // Fan-out: saturate the root leaf's children at the shipped ABI
+        // geometry, where neither the pool nor the leaf arena is the binding
+        // constraint, then seal one more distinct block off the root.
+        let mut fol = Foliation::new(
+            ABI_POOL_BLOCKS,
+            ABI_LEAF_ARENA,
+            ABI_MAX_SEQS,
+            Policy::Foliation,
+        );
+        for round in 0..MAX_CHILDREN as u32 {
+            let sid = fol.seq_create(1).unwrap_or(usize::MAX);
+            test_assert!(sid != usize::MAX);
+            for j in 0..BLOCK_TOKENS {
+                let _ = fol.seq_append(sid, 60_000 + round * 100 + j as u32);
+            }
+            let _ = fol.seq_release(sid);
+        }
+        test_assert_eq!(fol.stats().children_full, 0);
+        test_assert_eq!(fol.stats().descents, MAX_CHILDREN as u64);
+        let sid = fol.seq_create(1).unwrap_or(usize::MAX);
+        test_assert!(sid != usize::MAX);
+        let mut refusals = 0u64;
+        for j in 0..(2 * BLOCK_TOKENS) {
+            if let Err(e) = fol.seq_append(sid, 90_000 + j as u32) {
+                test_assert!(
+                    e == FoliationError::ChildrenFull,
+                    "wrong refusal at saturated fan-out"
+                );
+                refusals += 1;
+            }
+        }
+        // One refusal for the seal attempt, then one for every later token.
+        test_assert_eq!(refusals, BLOCK_TOKENS as u64 + 1);
+        test_assert_eq!(fol.stats().children_full, refusals);
+        test_assert_eq!(fol.seq_counts(sid).map(|c| c.0), Some(0u16));
+        let _ = fol.seq_release(sid);
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// A refused admission must not consume one of the prefix's child slots.
+    /// Otherwise repeated refusals ratchet the fan-out to `MAX_CHILDREN` and a
+    /// transient capacity refusal becomes a permanent one for that prefix.
+    fn test_refused_admission_leaves_no_leaf() -> TestResult {
+        let mut fol = Foliation::new(3, 64, 2, Policy::Foliation);
+        let id = fol.seq_create(MAX_SEQ_BLOCKS as u16).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        // Three blocks fill the pool and stay referenced; every seal after that
+        // is refused, each with a distinct key, so each would invent a leaf.
+        for j in 0..(3 * BLOCK_TOKENS) {
+            test_assert!(fol.seq_append(id, 7100 + j as u32).is_ok());
+        }
+        let held = fol.seq_leaf(id, 2).unwrap_or(NONE);
+        test_assert!(held != NONE);
+        for j in 0..(20 * BLOCK_TOKENS) {
+            let r = fol.seq_append(id, 7500 + j as u32);
+            if j < BLOCK_TOKENS - 1 {
+                // Still filling the buffer, so no seal is attempted yet.
+                test_assert!(r == Ok(3), "a partial block was refused");
+            } else {
+                test_assert!(
+                    r == Err(FoliationError::Exhausted),
+                    "refusal changed shape, so the refused leaves accumulated"
+                );
+            }
+        }
+        test_assert_eq!(fol.stats().children_full, 0);
+        test_assert_eq!(fol.stats().leaf_gc, 0);
+        test_assert_eq!(fol.seq_counts(id).map(|c| c.0), Some(3u16));
+        test_assert!(fol.leaf_resident(held), "a refused seal disturbed residency");
+        test_assert_eq!(fol.collapse_violations(), 0);
+        let _ = fol.seq_release(id);
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Residency and backing must agree for every block, at every point.
+    ///
+    /// `leaf_resident` reports on `slot`, `seq_frame` reports on the plaque's
+    /// frame, and a caller cannot tell `seq_frame`'s `None` from "no such
+    /// block". Any state where one says resident and the other says nothing is
+    /// a silent lookup miss on an append that returned `Ok`.
+    ///
+    /// The two ways to reach that state are an admission that could not obtain
+    /// a frame, and a teardown that returns frames without collapsing the
+    /// leaves that point at them. The first is asserted here through
+    /// `frames_backed == admits`, since an unbacked admission is exactly an
+    /// admission with no frame behind it; it cannot be provoked from inside the
+    /// kernel because that needs the physical allocator to fail on demand. The
+    /// second is driven directly.
+    fn test_residency_implies_backing() -> TestResult {
+        let mut fol = Foliation::new(6, 64, 4, Policy::Foliation);
+        let id = fol.seq_create(4).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(17_000, 3) {
+            let _ = fol.seq_append(id, t);
+        }
+        // Churn so plaques are evicted and re-admitted under the same leaves.
+        for k in 0..4u32 {
+            if let Ok(other) = fol.seq_create(2) {
+                for &t in &prefix_tokens(18_000 + k * 1000, 2) {
+                    let _ = fol.seq_append(other, t);
+                }
+                let _ = fol.seq_release(other);
+            }
+        }
+        let s = fol.stats();
+        test_assert!(
+            s.frames_backed == s.admits,
+            "an admission was published with no frame behind it"
+        );
+        let held: Vec<u16> = (0..3).filter_map(|i| fol.seq_leaf(id, i)).collect();
+        test_assert_eq!(held.len(), 3);
+        for (i, leaf) in held.iter().enumerate() {
+            test_assert!(
+                fol.leaf_resident(*leaf) == fol.seq_frame(id, i).is_some(),
+                "residency and the block table disagree about a block"
+            );
+        }
+
+        fol.teardown();
+        test_assert_eq!(fol.resident(), 0);
+        for (i, leaf) in held.iter().enumerate() {
+            test_assert!(
+                !fol.leaf_resident(*leaf),
+                "teardown returned the frame but left the leaf resident"
+            );
+            test_assert!(
+                fol.seq_frame(id, i).is_none(),
+                "a torn-down block still resolves to a frame"
+            );
+        }
+        let s = fol.stats();
+        test_assert!(
+            s.frames_freed == s.frames_backed,
+            "teardown did not return every frame"
+        );
+        let _ = fol.seq_release(id);
+        TestResult::Pass
+    }
+
     /// Policy comparison on one fixed trace. Asserts only what must hold
     /// structurally — the trace is identical across policies and the offline
     /// optimum dominates — never that the foliation policy wins.
@@ -1355,6 +1612,18 @@ pub mod tests {
             test_block_table_after_fragmentation,
         );
         crate::testing::register_test("foliation::refusals", test_refusals);
+        crate::testing::register_test(
+            "foliation::refused_seal_stays_appendable",
+            test_refused_seal_stays_appendable,
+        );
+        crate::testing::register_test(
+            "foliation::refused_admission_leaves_no_leaf",
+            test_refused_admission_leaves_no_leaf,
+        );
+        crate::testing::register_test(
+            "foliation::residency_implies_backing",
+            test_residency_implies_backing,
+        );
         crate::testing::register_test(
             "foliation::policy_vs_lru_on_fixed_trace",
             test_policy_vs_lru_on_fixed_trace,

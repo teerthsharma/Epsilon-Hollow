@@ -79,17 +79,32 @@ fn current_lapic_id() -> u32 {
 /// Caller must ensure `madt_phys` points to a valid MADT in identity-mapped memory.
 pub unsafe fn parse_madt(madt_phys: u64) {
     let madt = madt_phys as *const Madt;
-    let header = unsafe { core::ptr::addr_of!((*madt).header).read_unaligned() };
+    // Borrow the header in place rather than copying it out: `is_valid`'s
+    // checksum walk and length ceiling are computed relative to `self`'s own
+    // address, which must be the table's real physical location. A
+    // `read_unaligned()` copy onto the stack (the old code) would checksum
+    // stack garbage instead of the actual MADT bytes. `SdtHeader` is
+    // `#[repr(C, packed)]` (align 1), so dereferencing this raw pointer to
+    // form a reference is sound regardless of `madt_phys`'s alignment.
+    let header = unsafe { &*core::ptr::addr_of!((*madt).header) };
     if !header.is_valid() {
+        crate::serial_println!(
+            "[ACPI/MADT] MADT header at {:#X} failed validation (bad length or checksum), aborting parse",
+            madt_phys
+        );
         return;
     }
+    let header_length = unsafe { core::ptr::addr_of!(header.length).read_unaligned() } as u64;
 
     let this_lapic = current_lapic_id();
     let mut ids: [u32; MAX_CPUS] = [0; MAX_CPUS];
     let mut count = 0;
 
     let entries_start = madt_phys + core::mem::size_of::<Madt>() as u64;
-    let entries_end = madt_phys + header.length as u64;
+    // `header_length` is now bounded by `is_valid` (floor: size_of::<SdtHeader>(),
+    // ceiling: MAX_TABLE_LEN and the identity-mapped region — see rsdp.rs),
+    // so this can no longer wander past mapped memory.
+    let entries_end = madt_phys + header_length;
     let mut offset = entries_start;
 
     while offset < entries_end {
@@ -207,4 +222,139 @@ pub fn ap_apic_ids() -> &'static [u32] {
 /// Physical base address of the first I/O APIC.
 pub fn ioapic_base() -> u64 {
     IOAPIC_BASE.load(Ordering::SeqCst)
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// A synthetic MADT with exactly one Local APIC entry immediately after
+    /// the fixed `Madt` header — real memory, laid out exactly like a real
+    /// table, so `parse_madt` (which takes a raw physical-style address) can
+    /// run against it unmodified.
+    #[repr(C, packed)]
+    struct TestMadtOneEntry {
+        madt: Madt,
+        entry: LocalApicEntry,
+    }
+
+    /// Recompute the header checksum over exactly `len` bytes (matching what
+    /// `SdtHeader::is_valid` will checksum once `length` is set to `len`).
+    fn fix_checksum(buf: &mut TestMadtOneEntry, len: usize) {
+        unsafe {
+            core::ptr::addr_of_mut!(buf.madt.header.checksum).write_unaligned(0);
+            let bytes = core::slice::from_raw_parts(buf as *const _ as *const u8, len);
+            let sum = bytes.iter().fold(0u8, |s, &b| s.wrapping_add(b));
+            core::ptr::addr_of_mut!(buf.madt.header.checksum)
+                .write_unaligned(0u8.wrapping_sub(sum));
+        }
+    }
+
+    fn build_test_madt(declared_length: u32, apic_id: u8) -> TestMadtOneEntry {
+        let mut m = TestMadtOneEntry {
+            madt: Madt {
+                header: SdtHeader {
+                    signature: *b"APIC",
+                    length: declared_length,
+                    revision: 4,
+                    checksum: 0,
+                    oem_id: *b"SEALOS",
+                    oem_table_id: *b"TESTMADT",
+                    oem_revision: 1,
+                    creator_id: 0,
+                    creator_revision: 1,
+                },
+                local_apic_addr: 0xFEE0_0000,
+                flags: 0,
+            },
+            entry: LocalApicEntry {
+                header: MadtEntryHeader {
+                    entry_type: 0,
+                    length: core::mem::size_of::<LocalApicEntry>() as u8,
+                },
+                acpi_processor_id: 0,
+                apic_id,
+                flags: 1, // enabled
+            },
+        };
+        fix_checksum(&mut m, declared_length as usize);
+        m
+    }
+
+    /// RED (was): `header` was `read_unaligned()`-copied onto the stack,
+    /// then `header.is_valid()` checksummed `header.length` bytes starting
+    /// at *that stack copy's* address — reading past its 36 real bytes into
+    /// unrelated stack memory instead of the table. GREEN: `header` now
+    /// borrows `(*madt).header` in place (see `parse_madt` above), so the
+    /// checksum below is computed over the real table and a corrupted byte
+    /// is reliably caught.
+    fn test_madt_bad_checksum_rejected() -> TestResult {
+        let mut table = build_test_madt(core::mem::size_of::<TestMadtOneEntry>() as u32, 0xAA);
+        // Corrupt one byte after the checksum was already made self-consistent.
+        unsafe {
+            core::ptr::addr_of_mut!(table.madt.header.checksum).write_unaligned(
+                core::ptr::addr_of!(table.madt.header.checksum)
+                    .read_unaligned()
+                    .wrapping_add(1),
+            );
+        }
+        let before = cpu_count();
+        unsafe {
+            parse_madt(&table as *const _ as u64);
+        }
+        // A rejected header must leave the previously-discovered CPU set
+        // untouched — `parse_madt` returns before storing anything.
+        test_assert_eq!(cpu_count(), before);
+        TestResult::Pass
+    }
+
+    /// RED (was): `entries_end = madt_phys + header.length as u64` trusted
+    /// an unvalidated `length`; here `length` is deliberately short (covers
+    /// only the fixed `Madt` header, 44 bytes) while a real, well-formed
+    /// Local APIC entry (apic_id 0xAA, enabled) sits in memory immediately
+    /// after it. GREEN: the entry walk bounds every read against
+    /// `entries_end`, so an entry beyond the declared length is never read.
+    fn test_madt_entries_beyond_length_not_parsed() -> TestResult {
+        let table = build_test_madt(core::mem::size_of::<Madt>() as u32, 0xAA);
+        unsafe {
+            parse_madt(&table as *const _ as u64);
+        }
+        test_assert_eq!(cpu_count(), 0);
+        test_assert!(
+            !apic_ids().contains(&0xAA),
+            "entry beyond declared MADT length was parsed"
+        );
+        TestResult::Pass
+    }
+
+    /// Positive control for the two tests above: the exact same entry
+    /// bytes, but with `length` correctly covering them, must be parsed.
+    /// Without this, `test_madt_entries_beyond_length_not_parsed` could pass
+    /// vacuously (e.g. if entry parsing were silently broken).
+    fn test_madt_entry_within_length_is_parsed() -> TestResult {
+        let table = build_test_madt(core::mem::size_of::<TestMadtOneEntry>() as u32, 0xAA);
+        unsafe {
+            parse_madt(&table as *const _ as u64);
+        }
+        test_assert_eq!(cpu_count(), 1);
+        test_assert!(
+            apic_ids().contains(&0xAA),
+            "in-bounds entry was not parsed"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("acpi::madt::bad_checksum_rejected", test_madt_bad_checksum_rejected);
+        crate::testing::register_test(
+            "acpi::madt::entries_beyond_length_not_parsed",
+            test_madt_entries_beyond_length_not_parsed,
+        );
+        crate::testing::register_test(
+            "acpi::madt::entry_within_length_is_parsed",
+            test_madt_entry_within_length_is_parsed,
+        );
+    }
 }

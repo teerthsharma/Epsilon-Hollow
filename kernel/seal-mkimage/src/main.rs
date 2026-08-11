@@ -212,11 +212,13 @@ fn main() {
         return;
     }
     if args.get(1).map(|s| s.as_str()) == Some("--unsafe-inventory") {
+        let as_fixture = args.iter().any(|a| a == "--fixture");
         let root = args
             .get(2)
+            .filter(|a| !a.starts_with("--"))
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        unsafe_inventory(&root).unwrap_or_else(|e| {
+        unsafe_inventory(&root, as_fixture).unwrap_or_else(|e| {
             eprintln!("[seal-audit] UNSAFE INVENTORY FAIL: {e}");
             std::process::exit(1);
         });
@@ -2072,6 +2074,12 @@ fn check_security_features_text(text: &str) -> Result<(), String> {
 /// add phantom sites to any census that scans it.
 const UNSAFE_BLOCK_TOKEN: &str = concat!("unsa", "fe {");
 
+/// The same token with no space before the brace. Valid Rust that opens a real
+/// block, and invisible to a scanner that only knows the spaced spelling. The
+/// tree carries none of these today because the `cargo fmt` gate rewrites them,
+/// but an audit that depends on a formatter having run first is not an audit.
+const UNSAFE_BRACELESS_TOKEN: &str = concat!("unsa", "fe{");
+
 #[derive(Default)]
 struct UnsafeAuditFixture {
     total: u64,
@@ -2126,14 +2134,24 @@ fn parse_unsafe_audit_fixture(text: &str) -> Result<UnsafeAuditFixture, String> 
     Ok(fixture)
 }
 
-/// Mirror of `seal_os::security::unsafe_audit::scan_source`. A host checker
-/// that disagrees with that function is measuring something else.
+/// Mirror of `seal_os::security::unsafe_audit::scan_source`, widened by the
+/// braceless `unsafe{` spelling that function does not recognise. A host
+/// checker that disagrees with that function is measuring something else; this
+/// one disagrees in the fail-closed direction only, by refusing to be blind to
+/// a block spelled without the space. Blocks are the whole scope: `unsafe fn`,
+/// `unsafe impl`, `unsafe trait` and `unsafe extern` declare unsafety rather
+/// than perform it and are not sites on either side.
+///
+/// This is the single scanner. `--unsafe-inventory` and `--check-unsafe-audit`
+/// both route through it, so an inventory the generator prints is a census the
+/// checker accepts by construction.
 fn scan_unsafe_source(text: &str) -> (u64, u64) {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut total = 0u64;
     let mut justified = 0u64;
     for (i, line) in lines.iter().enumerate() {
-        let sites = line.matches(UNSAFE_BLOCK_TOKEN).count() as u64;
+        let sites = (line.matches(UNSAFE_BLOCK_TOKEN).count()
+            + line.matches(UNSAFE_BRACELESS_TOKEN).count()) as u64;
         if sites == 0 {
             continue;
         }
@@ -2177,6 +2195,42 @@ fn scan_unsafe_tree(src_root: &Path) -> Result<BTreeMap<String, (u64, u64)>, Str
         scanned.insert(rel, (sites, justified));
     }
     Ok(scanned)
+}
+
+/// The fixture's row order: containing directory, then filename. Not full-path
+/// order — `drivers/apic.rs` precedes `drivers/acpi/madt.rs`.
+fn unsafe_fixture_row_key(rel: &str) -> (&str, &str) {
+    rel.rsplit_once('/').unwrap_or(("", rel))
+}
+
+/// Render `tests/unsafe-audit.fixture` for a scanned tree.
+///
+/// The comment header of `current` is carried over verbatim — regeneration
+/// records numbers, it does not rewrite the finding above them. Paths come from
+/// [`scan_unsafe_tree`], which has already normalised the host separator, so the
+/// rows are `/`-separated on Windows as well.
+fn unsafe_fixture_text(current: &str, scanned: &BTreeMap<String, (u64, u64)>) -> String {
+    let mut out = String::new();
+    for line in current.lines() {
+        if !line.starts_with('#') && !line.trim().is_empty() {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    let total: u64 = scanned.values().map(|&(sites, _)| sites).sum();
+    let justified: u64 = scanned.values().map(|&(_, justified)| justified).sum();
+    out.push_str(&format!(
+        "version 1\ntotal {total}\njustified {justified}\nunjustified {}\nfiles {}\n",
+        total - justified,
+        scanned.len()
+    ));
+    let mut rows: Vec<(&String, &(u64, u64))> = scanned.iter().collect();
+    rows.sort_by(|a, b| unsafe_fixture_row_key(a.0).cmp(&unsafe_fixture_row_key(b.0)));
+    for (rel, &(sites, justified)) in rows {
+        out.push_str(&format!("file {rel} {sites} {justified}\n"));
+    }
+    out
 }
 
 fn check_unsafe_audit(log_path: &Path, root: &Path) -> Result<(), String> {
@@ -4698,6 +4752,50 @@ impl AppState {
     }
 
     #[test]
+    fn language_hygiene_allows_only_quarantine_cited_host_language_lines() {
+        let root = unique_temp_dir("language-hygiene-quarantine");
+        let docs = root.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(
+            docs.join("layout.md"),
+            "| `tests/` | Host Python tests; quarantined host surface, see `docs/HOST_LANGUAGE_QUARANTINE.md` |\n| `build/` | The kernel image is produced by a Python build script |\n",
+        )
+        .unwrap();
+
+        let err = check_language_hygiene(&root).unwrap_err();
+        assert!(
+            err.contains("layout.md:2"),
+            "host-language line without a quarantine citation must still be reported: {err}"
+        );
+        assert!(
+            !err.contains("layout.md:1"),
+            "line citing the quarantine policy documents a quarantined surface: {err}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn language_hygiene_quarantine_citation_does_not_cover_neighbouring_lines() {
+        let root = unique_temp_dir("language-hygiene-quarantine-negative");
+        let workflows = root.join(".github").join("workflows");
+        fs::create_dir_all(&workflows).unwrap();
+        fs::write(
+            workflows.join("ci.yml"),
+            "# policy: docs/HOST_LANGUAGE_QUARANTINE.md\n      - run: python3 scripts/build_image.py\n",
+        )
+        .unwrap();
+
+        let err = check_language_hygiene(&root).unwrap_err();
+        assert!(
+            err.contains("ci.yml:2"),
+            "a build step running a host interpreter must fail even one line below a citation: {err}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sha256_matches_known_answer() {
         assert_eq!(
             sha256_hex(b"abc"),
@@ -6557,10 +6655,113 @@ fn panic(info: &PanicInfo) -> ! {
                 continue;
             }
             let text = fs::read_to_string(&path).expect("read source");
-            token_total += text.matches(UNSAFE_BLOCK_TOKEN).count() as u64;
+            token_total += (text.matches(UNSAFE_BLOCK_TOKEN).count()
+                + text.matches(UNSAFE_BRACELESS_TOKEN).count()) as u64;
         }
         assert_eq!(scanned_total, token_total);
         assert!(scanned_total > 0, "no unsafe blocks found under {}", src.display());
+    }
+
+    /// `unsafe{` with no space between keyword and brace is valid Rust and opens
+    /// a real block. The tree has none today only because the `cargo fmt` gate
+    /// rewrites it, and an audit that depends on a formatter running first is
+    /// not an audit.
+    #[test]
+    fn unsafe_audit_scan_counts_the_braceless_block_token() {
+        let braceless = concat!("unsa", "fe{");
+        let unjustified = format!("fn a() {{\n    // Bump it.\n    {braceless} *p = 1; }}\n}}\n");
+        assert_eq!(scan_unsafe_source(&unjustified), (1, 0));
+
+        let justified = format!("// SAFETY: the pointer outlives the block.\n{braceless} *p = 1; }}\n");
+        assert_eq!(scan_unsafe_source(&justified), (1, 1));
+
+        // Both spellings on one line are two distinct sites.
+        let mixed = format!("{UNSAFE_BLOCK_TOKEN} }} {braceless} }}\n");
+        assert_eq!(scan_unsafe_source(&mixed), (2, 0));
+
+        // Declarations stay out of scope in either spelling.
+        assert_eq!(scan_unsafe_source("pub unsafe fn f() {\n}\n"), (0, 0));
+    }
+
+    /// The proof line the kernel emits for a given fixture: same fields, same
+    /// order as `seal_os::security::unsafe_audit::unsafe_audit_proof_line`,
+    /// which derives every one of them from the compiled-in fixture text.
+    fn unsafe_proof_line(fixture_text: &str) -> String {
+        let t = parse_unsafe_audit_fixture(fixture_text).expect("parse fixture totals");
+        format!(
+            "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version=1 blocks={} justified={} unjustified={} files={} undocumented_permille={} rule=safety-comment-above-block result=pass\n",
+            t.total,
+            t.justified,
+            t.unjustified,
+            t.files,
+            t.unjustified * 1000 / t.total
+        )
+    }
+
+    /// `--check-unsafe-audit` needs a QEMU serial log, so CI only learns that
+    /// the checked-in fixture has drifted from the tree after a full boot. The
+    /// fixture-vs-tree half of that gate needs no QEMU and runs here.
+    #[test]
+    fn checked_in_unsafe_fixture_matches_the_live_tree() {
+        let seal_os = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root")
+            .join("kernel")
+            .join("seal-os");
+        if !seal_os.join("src").is_dir() {
+            return;
+        }
+        let fixture_text = fs::read_to_string(seal_os.join("tests").join("unsafe-audit.fixture"))
+            .expect("read checked-in fixture");
+        let scanned = scan_unsafe_tree(&seal_os.join("src")).expect("scan seal-os src");
+
+        check_unsafe_audit_text(&unsafe_proof_line(&fixture_text), &fixture_text, &scanned)
+            .expect("checked-in fixture must match a fresh scan of kernel/seal-os/src");
+
+        // Negative control: a fixture one block short of the tree must fail, and
+        // the failure must name the drift.
+        let t = parse_unsafe_audit_fixture(&fixture_text).expect("parse fixture totals");
+        let stale = fixture_text
+            .replace(
+                &format!("total {}", t.total),
+                &format!("total {}", t.total - 1),
+            )
+            .replace(
+                &format!("unjustified {}", t.unjustified),
+                &format!("unjustified {}", t.unjustified - 1),
+            );
+        let err = check_unsafe_audit_text(&unsafe_proof_line(&stale), &stale, &scanned)
+            .expect_err("a fixture that under-counts the tree must fail the gate");
+        assert!(err.contains("re-scan counts"), "{err}");
+    }
+
+    /// `--unsafe-inventory --fixture` writes the file `--check-unsafe-audit`
+    /// reads. Byte equality with the checked-in copy is the whole point: one
+    /// scanner, so the generator cannot emit a census the checker rejects.
+    #[test]
+    fn generated_unsafe_fixture_is_byte_identical_to_the_checked_in_one() {
+        let seal_os = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("repo root")
+            .join("kernel")
+            .join("seal-os");
+        if !seal_os.join("src").is_dir() {
+            return;
+        }
+        let fixture_text = fs::read_to_string(seal_os.join("tests").join("unsafe-audit.fixture"))
+            .expect("read checked-in fixture");
+        let scanned = scan_unsafe_tree(&seal_os.join("src")).expect("scan seal-os src");
+        let generated = unsafe_fixture_text(&fixture_text, &scanned);
+
+        // Windows hands the walker `\` separators; the fixture format is `/`.
+        for row in generated.lines().filter(|l| l.starts_with("file ")) {
+            assert!(!row.contains('\\'), "fixture rows must be '/'-separated: {row}");
+        }
+        check_unsafe_audit_text(&unsafe_proof_line(&generated), &generated, &scanned)
+            .expect("the generator's own output must satisfy the checker");
+        assert_eq!(generated, fixture_text);
     }
 
     #[test]
@@ -6763,7 +6964,7 @@ fn cmd_packages(&self) -> String {
     String::new()
 }
 "#;
-        let pkg = "parse_eph(data); verify_signature(&pkg, key); self.install_file";
+        let pkg = "parse_eph(data); verify_package_signature(&pkg, key); self.install_file";
         let carrier = r#"
 pub enum CarrierType { Aether, Rust, C, Js }
 impl CarrierType {
@@ -7392,20 +7593,31 @@ fn path_has_component(path: &Path, needle: &str) -> bool {
         .any(|component| component.as_os_str().to_string_lossy() == needle)
 }
 
-fn unsafe_inventory(root: &Path) -> Result<(), String> {
-    let src = root.join("kernel").join("seal-os").join("src");
-    let mut files = Vec::new();
-    collect_rs_files(&src, &mut files)?;
+/// Print the unsafe-block census of `kernel/seal-os/src`.
+///
+/// `as_fixture` emits `tests/unsafe-audit.fixture` verbatim on stdout, so the
+/// fixture is regenerated by the same scanner that validates it:
+/// `--unsafe-inventory . --fixture > kernel/seal-os/tests/unsafe-audit.fixture`.
+fn unsafe_inventory(root: &Path, as_fixture: bool) -> Result<(), String> {
+    let seal_os = root.join("kernel").join("seal-os");
+    let src = seal_os.join("src");
+    let scanned = scan_unsafe_tree(&src)?;
 
-    let mut total = 0usize;
-    for path in files {
-        let text =
+    if as_fixture {
+        let path = seal_os.join("tests").join("unsafe-audit.fixture");
+        let current =
             fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let count = text.lines().filter(|line| is_unsafe_site(line)).count();
-        if count > 0 {
-            total += count;
-            println!("[seal-audit] unsafe {count:>3} {}", path.display());
-        }
+        print!("{}", unsafe_fixture_text(&current, &scanned));
+        return Ok(());
+    }
+
+    // Scanned keys are already `/`-separated; normalise the prefix too rather
+    // than print `.\kernel\seal-os\src\drivers/acpi/madt.rs` on Windows.
+    let prefix = src.display().to_string().replace('\\', "/");
+    let mut total = 0u64;
+    for (rel, &(count, _)) in &scanned {
+        total += count;
+        println!("[seal-audit] unsafe {count:>3} {prefix}/{rel}");
     }
     println!("[seal-audit] unsafe total {total}");
     Ok(())
@@ -8080,6 +8292,25 @@ fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
         fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
     let carrier = fs::read_to_string(&carrier_path)
         .map_err(|e| format!("read {}: {e}", carrier_path.display()))?;
+    // The weak verifier deleted in this series signed neither the manifest
+    // description nor its dependencies, and separated no fields, so two
+    // different manifests could share one signature. Nothing else reads
+    // format.rs, so without this the function can be reintroduced silently.
+    let format_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("format.rs");
+    let format = fs::read_to_string(&format_path)
+        .map_err(|e| format!("read {}: {e}", format_path.display()))?;
+    if format.contains("fn verify_signature") {
+        return Err(
+            "pkg/format.rs reintroduces `fn verify_signature`; signature verification belongs \
+             in pkg/mod.rs::verify_package_signature, whose preimage covers every manifest field"
+                .to_string(),
+        );
+    }
     check_manifoldpkg_shell_contract_text(&shell, &pkg, &carrier)
 }
 
@@ -8102,7 +8333,14 @@ fn check_manifoldpkg_shell_contract_text(
             findings.push(format!("shell ManifoldPkg path missing `{needle}`"));
         }
     }
-    for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
+    // `verify_package_signature` replaced `format::verify_signature` in 8f0693c:
+    // the old preimage covered neither the manifest description nor its
+    // dependencies, and carried no length separators between fields.
+    for needle in [
+        "parse_eph(data)",
+        "verify_package_signature(&pkg, key)",
+        "self.install_file",
+    ] {
         if !pkg.contains(needle) {
             findings.push(format!("ManifoldPkg core missing `{needle}`"));
         }
@@ -9382,9 +9620,22 @@ fn check_o1_network(root: &Path) -> Result<(), String> {
         lookup_body,
         &["sockets.iter()", "for sock in"],
     )?;
-    if !lookup_body.contains("TCP_FLOW_INDEX.lock().lookup") || !lookup_body.contains(".get(idx)") {
+    // 36e389f made the socket table a slot map, so the direct index moved into
+    // the one-line `slot_sock` helper. Accept either shape, and check the
+    // helper itself below so the indirection cannot hide a scan.
+    let validates_by_index =
+        lookup_body.contains(".get(idx)") || lookup_body.contains("slot_sock(sockets, idx)");
+    if !lookup_body.contains("TCP_FLOW_INDEX.lock().lookup") || !validates_by_index {
         return Err(String::from(
             "lookup_exact_flow_index must use bounded index lookup plus direct socket-index validation",
+        ));
+    }
+
+    let slot_sock_body = extract_between(&text, "fn slot_sock", "fn slot_sock_mut")?;
+    reject_patterns("slot_sock", slot_sock_body, &["iter()", "for ", "while "])?;
+    if !slot_sock_body.contains("sockets.get(slot)") {
+        return Err(String::from(
+            "slot_sock must resolve a slot by direct index, since every demux lookup validates through it",
         ));
     }
 
@@ -9398,8 +9649,11 @@ fn check_o1_network(root: &Path) -> Result<(), String> {
         listener_lookup_body,
         &["sockets.iter()", "for sock in"],
     )?;
+    // Same slot-map indirection as `lookup_exact_flow_index`; `slot_sock` is
+    // checked once above for both sites.
     if !listener_lookup_body.contains("TCP_LISTENER_INDEX.lock().lookup")
-        || !listener_lookup_body.contains(".get(idx)")
+        || !(listener_lookup_body.contains(".get(idx)")
+            || listener_lookup_body.contains("slot_sock(sockets, idx)"))
     {
         return Err(String::from(
             "lookup_listener_index must use bounded index lookup plus direct socket-index validation",
@@ -9705,15 +9959,15 @@ fn language_line_allowed(line: &str) -> bool {
         || line.contains("python_runtime=0")
         || line.contains("without python")
         || line.contains("rejects python-backed")
+        // A line that cites the quarantine policy by path is documenting a
+        // legacy host surface that `docs/HOST_LANGUAGE_QUARANTINE.md` already
+        // declares out of the runtime, boot, build and proof paths. The marker
+        // is per line, so a build step that actually runs a host interpreter
+        // still fails even when the same file cites the policy elsewhere.
+        || line.contains("docs/host_language_quarantine.md")
 }
 
 fn strip_allowed_comment(line: &str) -> &str {
     line.split_once("//").map_or(line, |(code, _)| code)
 }
 
-fn is_unsafe_site(line: &str) -> bool {
-    line.contains("unsafe {")
-        || line.contains("unsafe{")
-        || line.contains("unsafe fn")
-        || line.contains("unsafe impl")
-}

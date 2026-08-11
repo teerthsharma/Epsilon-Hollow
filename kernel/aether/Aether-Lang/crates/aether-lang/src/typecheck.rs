@@ -19,7 +19,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::ast::*;
@@ -300,7 +300,10 @@ pub fn typecheck_program(program: &Program) -> Result<Type, TypeError> {
     let mut subst = Subst::new();
 
     // Pre-populate with known native function signatures
-    env.insert(String::from("print"), Type::Fun(vec![Type::Str], Box::new(Type::Unit)));
+    env.insert(
+        String::from("print"),
+        Type::Fun(vec![Type::Str], Box::new(Type::Unit)),
+    );
     env.insert(
         String::from("sin"),
         Type::Fun(vec![Type::Float], Box::new(Type::Float)),
@@ -436,5 +439,36 @@ fn ident_to_type(s: &str) -> Type {
         "str" | "string" => Type::Str,
         "unit" => Type::Unit,
         _ => Type::Var(s.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::Parser;
+
+    /// Wiring smoke test: a well-typed program infers cleanly end to end
+    /// through the real lexer/parser, not hand-built AST nodes.
+    #[test]
+    fn well_typed_program_infers_float() {
+        // A trailing `let` binds Unit (assignment, not the last value), so
+        // the final statement must be a bare expression to observe the type.
+        let mut parser = Parser::new("let x = 5.0~\nlet y = x + 2.0~\ny~\n");
+        let program = parser.parse().expect("program parses");
+        let ty = typecheck_program(&program).expect("program typechecks");
+        assert_eq!(ty, Type::Float);
+    }
+
+    /// Adding a bool to a float must fail unification rather than silently
+    /// coercing, proving `unify`'s occurs/mismatch path is actually reachable.
+    #[test]
+    fn mismatched_binary_op_is_a_unification_error() {
+        let mut parser = Parser::new("let x = 5.0~\nlet y = true~\nlet z = x + y~\n");
+        let program = parser.parse().expect("program parses");
+        let err = typecheck_program(&program).expect_err("bool + float must not typecheck");
+        assert!(matches!(
+            err,
+            TypeError::UnificationFail(Type::Bool, Type::Float)
+        ));
     }
 }

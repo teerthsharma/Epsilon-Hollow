@@ -13,11 +13,13 @@ pub mod kpti;
 pub mod mac;
 pub mod manifold_acl;
 pub mod passwd;
+pub mod perm_field;
 pub mod retpoline;
 pub mod seccomp;
 pub mod shadow;
 pub mod smap_smep;
 pub mod topcrypt_guard;
+pub mod topo_key;
 pub mod unsafe_audit;
 
 /// Initialize all security subsystems.
@@ -93,11 +95,13 @@ pub mod tests {
         super::smap_smep::tests::register_all();
         super::seccomp::tests::register_all();
         super::mac::tests::register_all();
+        super::perm_field::tests::register_all();
         super::retpoline::tests::register_all();
         super::audit::tests::register_all();
         super::kaslr::tests::register_all();
         super::features::tests::register_all();
         super::unsafe_audit::tests::register_all();
+        super::topo_key::tests::register_all();
         crate::testing::register_test("security::init", test_security_init_does_not_panic);
     }
 }

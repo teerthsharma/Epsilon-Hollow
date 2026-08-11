@@ -412,6 +412,25 @@ fn ok_fail(v: bool) -> &'static str {
     }
 }
 
+/// Render `Atlas::sealed`'s tri-state outcome for the boot proof line.
+///
+/// `None` means the chart never made it into the atlas at all — grafting was
+/// never attempted, or it ran and failed before the chart was registered.
+/// `Some(false)` means the chart *is* registered and its text half is still
+/// `RW+NX`, i.e. W^X enforcement itself is broken. Collapsing these two with
+/// `unwrap_or(false)` prints the same `wx=fail` for both, and a reader sees
+/// only the W^X story: that conflation sent a real investigation into page
+/// permissions and TLB shootdown for hours when the actual defect was
+/// `relobj::parse` failing to load a chart at all (fixed in `56dd589`), so
+/// `graft` never reached the mapping code this field is supposed to describe.
+fn wx_field(sealed: Option<bool>) -> &'static str {
+    match sealed {
+        Some(true) => "text_rx_data_rw_nx",
+        Some(false) => "unsealed",
+        None => "absent",
+    }
+}
+
 /// Graft the embedded proof chart, exercise every guard, and report what
 /// measurably happened as one line.
 pub fn module_proof_line() -> String {
@@ -473,7 +492,8 @@ pub fn module_proof_line() -> String {
         Err(_) => (i64::MIN, LoadReport::default()),
     };
     let graft_ok = init_code == fixture::PROOF_INIT_EXPECT;
-    let wx_sealed = atlas.sealed(fixture::PROOF_CHART_NAME).unwrap_or(false);
+    let wx_state = atlas.sealed(fixture::PROOF_CHART_NAME);
+    let wx_sealed = wx_state == Some(true);
 
     // --- refcount guard: explicit hold -------------------------------------
     let held = atlas.hold(fixture::PROOF_CHART_NAME).unwrap_or(0);
@@ -546,7 +566,7 @@ pub fn module_proof_line() -> String {
         report.reloc_plt32,
         report.reloc_32s,
         report.image_bytes,
-        if wx_sealed { "text_rx_data_rw_nx" } else { "fail" },
+        wx_field(wx_state),
         ok_fail(truncated_refused),
         ok_fail(unresolved_refused),
         ok_fail(bad_signature_refused),
@@ -682,6 +702,16 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_sealed_true_after_successful_graft() -> TestResult {
+        let (key, object, sig) = fixture_key();
+        let mut atlas = ATLAS.lock();
+        let _ = atlas.force_prune("t-sealed");
+        test_assert!(atlas.graft("t-sealed", &object, &sig, &key, &[]).is_ok());
+        test_assert_eq!(atlas.sealed("t-sealed"), Some(true));
+        test_assert!(atlas.prune("t-sealed").is_ok());
+        TestResult::Pass
+    }
+
     fn test_nerve_cycle_refused() -> TestResult {
         let (key, object, sig) = fixture_key();
         let mut atlas = ATLAS.lock();
@@ -711,6 +741,28 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_sealed_none_for_unknown_chart() -> TestResult {
+        let atlas = ATLAS.lock();
+        test_assert_eq!(atlas.sealed("t-does-not-exist"), None);
+        TestResult::Pass
+    }
+
+    /// `wx_field` is what turns `Atlas::sealed`'s `Option<bool>` into the
+    /// boot proof's `wx=` value. A chart absent from the atlas and a chart
+    /// present but still `RW+NX` must not print the same string — that
+    /// collapse is exactly what sent the original investigation into page
+    /// permissions instead of `relobj::parse`.
+    fn test_wx_field_distinguishes_absent_from_unsealed() -> TestResult {
+        test_assert_eq!(wx_field(None), "absent");
+        test_assert_eq!(wx_field(Some(false)), "unsealed");
+        test_assert_eq!(wx_field(Some(true)), "text_rx_data_rw_nx");
+        test_assert!(
+            wx_field(None) != wx_field(Some(false)),
+            "absent chart and present-but-unsealed chart must not share a wx= value"
+        );
+        TestResult::Pass
+    }
+
     fn test_relocation_arithmetic() -> TestResult {
         use relobj::{compute_reloc, RelocWrite};
         // S + A
@@ -728,7 +780,13 @@ pub mod tests {
             ),
             Ok(RelocWrite::W4(0xF7))
         );
-        // Negative displacement sign-extends.
+        // Negative displacement sign-extends. `R_X86_64_PLT32` is `L + A - P`
+        // in the psABI, and with no lazy-binding PLT the loader resolves `L` to
+        // the veneer address it just wrote, so the addend applies exactly as it
+        // does to `R_X86_64_PC32`: 0x1000 - 4 - 0x1100 = -0x104 = 0xFFFF_FEFC.
+        // Expecting 0xFFFF_FF00 here would be `S - P`, i.e. the addend silently
+        // dropped, which for the `call rel32` this patches lands 4 bytes past
+        // the callee entry.
         test_assert_eq!(
             compute_reloc(
                 relobj::R_X86_64_PLT32,
@@ -736,12 +794,26 @@ pub mod tests {
                 -4,
                 0xFFFF_9000_0000_1100
             ),
-            Ok(RelocWrite::W4(0xFFFF_FF00))
+            Ok(RelocWrite::W4(0xFFFF_FEFC))
         );
         // 32S truncates to a sign-extendable 32-bit value.
         test_assert_eq!(
             compute_reloc(relobj::R_X86_64_32S, 0x42, 0, 0),
             Ok(RelocWrite::W4(0x42))
+        );
+        // 32S is `S + A` too: the addend must survive this branch as well.
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x1_0000, -4, 0),
+            Ok(RelocWrite::W4(0xFFFC))
+        );
+        // The exact edge of the sign-extendable range, from both sides.
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x7FFF_FFFF, 0, 0),
+            Ok(RelocWrite::W4(0x7FFF_FFFF))
+        );
+        test_assert_eq!(
+            compute_reloc(relobj::R_X86_64_32S, 0x8000_0000, 0, 0),
+            Err(ObjError::RelocationOverflow)
         );
         // Out of +/-2 GiB must be refused, not silently wrapped.
         test_assert_eq!(
@@ -779,7 +851,19 @@ pub mod tests {
             "atlas::prune_while_referenced_refused",
             test_prune_while_referenced_refused,
         );
+        crate::testing::register_test(
+            "atlas::sealed_true_after_successful_graft",
+            test_sealed_true_after_successful_graft,
+        );
         crate::testing::register_test("atlas::nerve_cycle_refused", test_nerve_cycle_refused);
         crate::testing::register_test("atlas::relocation_arithmetic", test_relocation_arithmetic);
+        crate::testing::register_test(
+            "atlas::sealed_none_for_unknown_chart",
+            test_sealed_none_for_unknown_chart,
+        );
+        crate::testing::register_test(
+            "atlas::wx_field_distinguishes_absent_from_unsealed",
+            test_wx_field_distinguishes_absent_from_unsealed,
+        );
     }
 }

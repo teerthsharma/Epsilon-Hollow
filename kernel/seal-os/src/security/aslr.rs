@@ -9,7 +9,14 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Upper bound of user canonical address space.
-const USER_SPACE_TOP: u64 = 0x0000_7fff_ffff_ffff;
+///
+/// Shared with `process::elf`, which must reject any segment or relocation
+/// target above this line. A canonical-form check alone does not do that:
+/// x86_64 canonical form admits two disjoint ranges, and `VirtAddr::try_new`
+/// accepts the kernel half as readily as the user half. This constant is the
+/// single definition of the boundary — do not copy the literal, or the two
+/// copies can drift apart.
+pub(crate) const USER_SPACE_TOP: u64 = 0x0000_7fff_ffff_ffff;
 
 /// Minimum address for randomized mmap base (upper portion of user space).
 const MMAP_MIN: u64 = 0x0000_7f00_0000_0000;

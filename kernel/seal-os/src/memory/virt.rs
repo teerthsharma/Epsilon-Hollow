@@ -130,6 +130,24 @@ unsafe fn map_huge_page_2m(
 }
 
 /// Internal `map_page` that works on an arbitrary PML4.
+///
+/// Refuses to overwrite an already-present leaf entry (`Err(MapError)`)
+/// instead of silently replacing it. A silent overwrite would orphan the
+/// previously mapped frame — it is neither returned to the caller nor freed,
+/// so it becomes permanently unreachable and unfreeable — and could leave a
+/// stale, differently-permissioned translation cached in another CPU's TLB,
+/// since nothing here performs a shootdown.
+///
+/// Every caller that legitimately replaces a mapping already calls
+/// `unmap_page` / `unmap_page_in_pml4` first (which does perform the
+/// shootdown) and only then remaps the now-unused entry — see
+/// `atlas/relobj.rs::remap_region`. Every other caller allocates the frame it
+/// passes in immediately before this call and already frees that frame on
+/// any `Err`, so refusing here does not leak: it converts a silent
+/// page-table corruption into an ordinary, already-handled allocation
+/// failure. No TLB shootdown is added on the success path: a newly filled
+/// leaf entry was `is_unused()` immediately before, so no CPU can hold a
+/// cached translation for it to invalidate.
 unsafe fn map_page_inner(
     virt: VirtAddr,
     phys: PhysAddr,
@@ -144,6 +162,9 @@ unsafe fn map_page_inner(
     let pdpt = get_or_create_table(&mut pml4[pml4_idx])?;
     let pd = get_or_create_table(&mut pdpt[pdpt_idx])?;
     let pt = get_or_create_table(&mut pd[pd_idx])?;
+    if !pt[pt_idx].is_unused() {
+        return Err(MapError);
+    }
     pt[pt_idx].set_addr(phys, flags);
     Ok(())
 }
@@ -743,17 +764,98 @@ pub fn get_fs_base() -> u64 {
     unsafe { x86_64::registers::model_specific::Msr::new(0xC000_0100).read() }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
     use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
 
-    #[test]
-    fn test_alloc_virtual_pages() {
-        // These tests run on the host; the bump allocator is just a counter.
+    fn test_alloc_virtual_pages() -> TestResult {
+        // The bump allocator is just a counter, so this needs no hardware.
         let base = *VIRTUAL_BUMP.lock();
-        let v1 = alloc_virtual_pages(1, 1).unwrap();
-        assert_eq!(v1.as_u64(), base);
-        let v2 = alloc_virtual_pages(4, 2).unwrap();
-        assert!(v2.as_u64() >= base + 4096);
+        let v1 = match alloc_virtual_pages(1, 1) {
+            Some(v) => v,
+            None => return TestResult::Fail("alloc_virtual_pages(1, 1) returned None"),
+        };
+        test_assert_eq!(v1.as_u64(), base);
+        let v2 = match alloc_virtual_pages(4, 2) {
+            Some(v) => v,
+            None => return TestResult::Fail("alloc_virtual_pages(4, 2) returned None"),
+        };
+        test_assert!(v2.as_u64() >= base + 4096);
+        TestResult::Pass
+    }
+
+    /// Defect regression: a present leaf entry must never be silently
+    /// replaced. Before the guard in `map_page_inner`, this call succeeded
+    /// and clobbered `pt[0]` with `attacker_phys`, orphaning `original_phys`
+    /// (the concrete overlapping-`PT_LOAD` leak this guards against).
+    ///
+    /// The four `PageTable` locals are linked into a private PML4->PDPT->
+    /// PD->PT chain without touching the physical allocator: `PageTable` is
+    /// `#[repr(align(4096))]`, so each local's stack address is already
+    /// frame-aligned and satisfies `PageTableEntry::set_addr`'s alignment
+    /// assertion the same way a real physical frame address would.
+    fn test_map_page_inner_refuses_present_leaf() -> TestResult {
+        let mut pt = PageTable::new();
+        let mut pd = PageTable::new();
+        let mut pdpt = PageTable::new();
+        let mut pml4 = PageTable::new();
+
+        let link_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        pdpt[0].set_addr(PhysAddr::new(&pd as *const PageTable as u64), link_flags);
+        pd[0].set_addr(PhysAddr::new(&pt as *const PageTable as u64), link_flags);
+        pml4[0].set_addr(PhysAddr::new(&pdpt as *const PageTable as u64), link_flags);
+
+        let original_phys = PhysAddr::new(0x1000);
+        pt[0].set_addr(original_phys, link_flags);
+
+        let attacker_phys = PhysAddr::new(0x2000);
+        let result =
+            unsafe { map_page_inner(VirtAddr::new(0), attacker_phys, link_flags, &mut pml4) };
+
+        test_assert!(
+            result.is_err(),
+            "map_page_inner must refuse to overwrite a present leaf entry"
+        );
+        test_assert_eq!(pt[0].addr(), original_phys);
+        TestResult::Pass
+    }
+
+    /// The guard must not block a genuinely new mapping — otherwise every
+    /// ordinary caller (`heap.rs`, `elf.rs`, `mmap.rs`, `swap.rs`,
+    /// `drivers/interrupts.rs`) would start failing on its first page.
+    fn test_map_page_inner_maps_unused_leaf() -> TestResult {
+        let pt = PageTable::new();
+        let mut pd = PageTable::new();
+        let mut pdpt = PageTable::new();
+        let mut pml4 = PageTable::new();
+
+        let link_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        pdpt[0].set_addr(PhysAddr::new(&pd as *const PageTable as u64), link_flags);
+        pd[0].set_addr(PhysAddr::new(&pt as *const PageTable as u64), link_flags);
+        pml4[0].set_addr(PhysAddr::new(&pdpt as *const PageTable as u64), link_flags);
+
+        let phys = PhysAddr::new(0x3000);
+        let result = unsafe { map_page_inner(VirtAddr::new(0), phys, link_flags, &mut pml4) };
+
+        test_assert!(
+            result.is_ok(),
+            "map_page_inner must still map a genuinely unused leaf entry"
+        );
+        test_assert_eq!(pt[0].addr(), phys);
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("virt::alloc_virtual_pages", test_alloc_virtual_pages);
+        crate::testing::register_test(
+            "virt::map_page_inner_refuses_present_leaf",
+            test_map_page_inner_refuses_present_leaf,
+        );
+        crate::testing::register_test(
+            "virt::map_page_inner_maps_unused_leaf",
+            test_map_page_inner_maps_unused_leaf,
+        );
     }
 }

@@ -165,7 +165,12 @@ fn voronoi_cell_of_virt(virt: VirtAddr) -> u16 {
 // Helpers
 // ---------------------------------------------------------------------------
 
-unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) {
+/// # Errors
+/// Returns `Err` if `phys` lies above the identity map and the scratch
+/// mapping could not be established (out of physical frames for page-table
+/// allocation). On error nothing is copied and `out` is left untouched —
+/// callers must not treat the buffer as valid.
+unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) -> Result<(), virt::MapError> {
     let addr = phys.as_u64();
     if addr < virt::IDENTITY_MAP_SIZE {
         core::ptr::copy_nonoverlapping(addr as *const u8, out.as_mut_ptr(), 4096);
@@ -174,13 +179,19 @@ unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) {
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        let _ = virt::map_page(scratch, phys, flags);
+        virt::map_page(scratch, phys, flags)?;
         core::ptr::copy_nonoverlapping(scratch.as_u64() as *const u8, out.as_mut_ptr(), 4096);
         let _ = virt::unmap_page(scratch);
     }
+    Ok(())
 }
 
-unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) {
+/// # Errors
+/// Returns `Err` if `phys` lies above the identity map and the scratch
+/// mapping could not be established (out of physical frames for page-table
+/// allocation). On error nothing is copied to `phys` — the frame's contents
+/// are left whatever they were before the call.
+unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) -> Result<(), virt::MapError> {
     let addr = phys.as_u64();
     if addr < virt::IDENTITY_MAP_SIZE {
         core::ptr::copy_nonoverlapping(data.as_ptr(), addr as *mut u8, 4096);
@@ -188,10 +199,11 @@ unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) {
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
         let flags = x86_64::structures::paging::PageTableFlags::PRESENT
             | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        let _ = virt::map_page(scratch, phys, flags);
+        virt::map_page(scratch, phys, flags)?;
         core::ptr::copy_nonoverlapping(data.as_ptr(), scratch.as_u64() as *mut u8, 4096);
         let _ = virt::unmap_page(scratch);
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -271,9 +283,16 @@ pub unsafe fn swap_out_page(virt: VirtAddr) -> bool {
         None => return false,
     };
 
-    // Read page contents.
+    // Read page contents. On failure (scratch mapping couldn't be
+    // established — allocator at/near empty, exactly the condition that
+    // triggers swap-out) bail before anything is written to the swap file
+    // or the live mapping is touched; the page stays resident and this
+    // swap-out attempt degrades to a no-op rather than dereferencing an
+    // unmapped scratch page while `SWAP_STATE` is held.
     let mut page_data = [0u8; 4096];
-    read_phys_page(phys, &mut page_data);
+    if read_phys_page(phys, &mut page_data).is_err() {
+        return false;
+    }
 
     // Encode topologically.
     let seed = virt.as_u64().wrapping_mul(1103515245).wrapping_add(12345);
@@ -368,7 +387,15 @@ pub unsafe fn swap_in_page(virt: VirtAddr) -> bool {
     };
     drop(regions);
 
-    write_phys_page(frame, &page_data);
+    // On failure (scratch mapping couldn't be established) the freshly
+    // allocated frame never received the decoded page contents, so it must
+    // not be wired into the target address space — free it and degrade this
+    // swap-in to a no-op instead of dereferencing an unmapped scratch page
+    // while `SWAP_STATE` is held.
+    if write_phys_page(frame, &page_data).is_err() {
+        phys::free_frame(frame);
+        return false;
+    }
 
     let pml4 = &mut *(region.page_table as *mut x86_64::structures::paging::PageTable);
     if virt::map_page_to_pml4(virt, frame, region.flags, pml4).is_err() {
@@ -449,47 +476,100 @@ pub fn swap_fragmentation_entropy() -> f32 {
 }
 
 /// Compact the swap file when fragmentation entropy exceeds threshold (T3).
-pub fn compact() {
+///
+/// Returns `true` if the swap file was fully compacted (or was below the
+/// entropy threshold and needed no work), `false` if a swap-file read or write
+/// failed part way through and compaction stopped early.
+///
+/// Compaction relocates swap entries towards slot 0, and every relocation is
+/// destructive: the slot an entry vacates is added back to the free list and
+/// will be overwritten by the next `swap_out_page`. So an entry's index may
+/// only be republished at its new slot once the bytes are known to have
+/// arrived there. A failed relocation therefore stops the compaction: the
+/// entry being moved, and every entry after it, keeps its original slot index,
+/// where its bytes are still intact. Nothing that has already been copied is at
+/// risk — relocations run in ascending slot order and always move an entry
+/// downwards, so the destination of the failing write is always a slot whose
+/// former occupant has already been copied elsewhere.
+///
+/// The alternative — publishing the new index and hoping — loses the page
+/// outright: the source slot is freed and reused while the index points at a
+/// destination that was never written, so `swap_in_page` decodes whatever
+/// bytes happen to be there (`TopoSwapEntry::from_bytes` only checks length)
+/// and maps that garbage into the faulting process.
+#[must_use]
+pub fn compact() -> bool {
     let mut guard = SWAP_STATE.lock();
     let state = match guard.as_mut() {
         Some(s) => s,
-        None => return,
+        None => return false,
     };
     let entropy = swap_fragmentation_entropy_inner(state);
     if entropy <= SWAP_FRAGMENTATION_THRESHOLD {
-        return;
+        return true;
     }
 
     let mut new_slots: Vec<Option<SwapSlot>> = Vec::with_capacity(state.slots.len());
     let mut new_index: BTreeMap<VirtAddr, usize> = BTreeMap::new();
     let mut moved = 0usize;
+    let mut stopped_at: Option<usize> = None;
 
     for (old_idx, slot) in state.slots.iter().enumerate() {
-        if let Some(s) = slot {
-            let new_idx = new_slots.len();
-            new_slots.push(Some(SwapSlot {
-                virt: s.virt,
-                cell: s.cell,
-            }));
-            new_index.insert(s.virt, new_idx);
+        let Some(s) = slot else { continue };
+        let new_idx = new_slots.len();
 
-            if new_idx != old_idx {
-                let old_offset = old_idx as u64 * SWAP_ENTRY_SIZE as u64;
-                let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
-                let mut buf = vec![0; SWAP_ENTRY_SIZE];
-                let read =
-                    with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
-                if read == SWAP_ENTRY_SIZE {
-                    let _ = with_vfs(|vfs| vfs.write(state.handle, &buf, new_offset));
-                }
-                moved += 1;
+        if new_idx != old_idx {
+            let old_offset = old_idx as u64 * SWAP_ENTRY_SIZE as u64;
+            let new_offset = new_idx as u64 * SWAP_ENTRY_SIZE as u64;
+            let mut buf = vec![0; SWAP_ENTRY_SIZE];
+            let read = with_vfs(|vfs| vfs.read(state.handle, &mut buf, old_offset)).unwrap_or(0);
+            if read != SWAP_ENTRY_SIZE {
+                stopped_at = Some(old_idx);
+                break;
+            }
+            let written = with_vfs(|vfs| vfs.write(state.handle, &buf, new_offset)).unwrap_or(0);
+            if written != buf.len() {
+                stopped_at = Some(old_idx);
+                break;
+            }
+            moved += 1;
+        }
+
+        new_slots.push(Some(SwapSlot {
+            virt: s.virt,
+            cell: s.cell,
+        }));
+        new_index.insert(s.virt, new_idx);
+    }
+
+    if let Some(stop) = stopped_at {
+        // Entries from `stop` onwards were never copied: keep them at the slot
+        // that still holds their bytes.
+        new_slots.resize_with(state.slots.len(), || None);
+        for (old_idx, slot) in state.slots.iter().enumerate().skip(stop) {
+            if let Some(s) = slot {
+                new_slots[old_idx] = Some(SwapSlot {
+                    virt: s.virt,
+                    cell: s.cell,
+                });
+                new_index.insert(s.virt, old_idx);
             }
         }
     }
 
     state.slots = new_slots;
     state.index = new_index;
+    // Rebuild rather than clear: a stopped compaction leaves the vacated slots
+    // between the compacted prefix and the untouched tail as holes, and a hole
+    // that is not in the free list is never reused, so the swap file would grow
+    // without bound. A complete compaction has no holes and this yields the
+    // empty free list it always did.
     state.free_list.clear();
+    for (i, slot) in state.slots.iter().enumerate() {
+        if slot.is_none() {
+            state.free_list.push(i);
+        }
+    }
     for cell in state.cell_index.iter_mut() {
         cell.clear();
     }
@@ -499,11 +579,22 @@ pub fn compact() {
         }
     }
 
+    if let Some(stop) = stopped_at {
+        crate::serial_println!(
+            "[SWAP/T3] Compaction stopped at slot {} after {} pages (swap I/O failed), entropy={:.2}",
+            stop,
+            moved,
+            entropy
+        );
+        return false;
+    }
+
     crate::serial_println!(
         "[SWAP/T3] Compacted {} pages, entropy={:.2}",
         moved,
         entropy
     );
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -546,5 +637,59 @@ pub fn swap_out_daemon() {
         unsafe {
             swap_out_page(*v);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+
+    /// `write_phys_page` / `read_phys_page` now return `Result` instead of
+    /// silently discarding a failed scratch mapping. This exercises the `Ok`
+    /// path end to end — allocate a real frame, write a known pattern through
+    /// the new signature, read it back, and check both calls report success
+    /// and the bytes round-trip. It does not force the `Err` path (that needs
+    /// the physical allocator driven to empty, which isn't safe to simulate
+    /// inside a shared test-mode boot), but it does prove the refactor didn't
+    /// break the copy itself.
+    fn test_phys_page_round_trip_reports_ok() -> TestResult {
+        let Some(frame) = phys::alloc_frame() else {
+            return TestResult::Fail("no free frame available for round-trip test");
+        };
+
+        let mut data = [0u8; 4096];
+        for (i, b) in data.iter_mut().enumerate() {
+            *b = (i % 256) as u8;
+        }
+
+        let write_result = unsafe { write_phys_page(frame, &data) };
+        if write_result.is_err() {
+            unsafe { phys::free_frame(frame) };
+            return TestResult::Fail("write_phys_page returned Err for a freshly allocated frame");
+        }
+
+        let mut readback = [0u8; 4096];
+        let read_result = unsafe { read_phys_page(frame, &mut readback) };
+        unsafe { phys::free_frame(frame) };
+
+        if read_result.is_err() {
+            return TestResult::Fail("read_phys_page returned Err for a freshly written frame");
+        }
+        if readback != data {
+            return TestResult::Fail("round-tripped page contents did not match what was written");
+        }
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "swap::phys_page_round_trip_reports_ok",
+            test_phys_page_round_trip_reports_ok,
+        );
     }
 }

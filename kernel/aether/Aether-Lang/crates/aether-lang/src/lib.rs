@@ -45,6 +45,7 @@ pub mod bytecode;
 pub mod interpreter;
 pub mod lexer;
 pub mod parser;
+pub mod typecheck;
 pub mod vm;
 pub mod webgl_export;
 
