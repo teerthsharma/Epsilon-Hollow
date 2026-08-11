@@ -70,32 +70,70 @@ pub mod tests {
     // NOTE: `test_main()` runs before any task is ever made the scheduler's
     // `current` (see `ManifoldScheduler::new()`, `current: None`), so
     // `crate::process::scheduler::set_current_uid()`/`set_current_euid()` and
-    // friends silently no-op here and `current_euid()` always reads back the
-    // default 0. A dispatch()-level test therefore always takes the
-    // privileged (euid==0) branch and can't exercise *denial* — that rule is
-    // covered directly below via `credential_change_allowed`, which takes
-    // plain ids and has no scheduler dependency.
+    // friends no-op here and `current_euid()` always reads back the default 0.
+    // A dispatch()-level test therefore always takes the privileged (euid==0)
+    // branch and can't exercise *denial* — that rule is covered directly below
+    // via `credential_change_allowed`, which takes plain ids and has no
+    // scheduler dependency. What a dispatch()-level test does hold the identity
+    // arms to is that they report the dropped write instead of claiming it
+    // landed.
 
-    fn test_setuid_changes_uid() -> TestResult {
-        let current = crate::process::scheduler::current_uid();
-        let result = dispatch(SYS_SETUID, 42, 0, 0);
+    /// RED: this test asserted `result.code >= 0` — success — from a
+    /// `SYS_SETUID` whose write the scheduler had already thrown away, and so
+    /// asserted the defect itself. 67a5c1e made the setters return `bool`
+    /// because they no-op with no current task, which is every boot; the arm
+    /// kept answering `ok(0)` regardless. A task that asks to drop privilege,
+    /// is told 0, and keeps its old uid cannot detect that it is still root.
+    /// The half of the old assertion that was worth keeping — a euid=0 caller
+    /// is not *refused* — is asserted below as a positive control, and covered
+    /// without any scheduler by `test_credential_change_permits_root`.
+    fn test_setuid_reports_dropped_uid_write() -> TestResult {
+        let before = crate::process::scheduler::current_uid();
+        // Precondition, and the state of the machine for its whole uptime: no
+        // task holds identity, so the write below goes nowhere. If a scheduler
+        // bootstrap ever lands, this fires and the success case wants writing.
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
         test_assert!(
-            result.code >= 0,
-            "SYS_SETUID should still succeed for a privileged (euid=0) caller"
+            credential_change_allowed(42, before, crate::process::scheduler::current_euid()),
+            "positive control: uid 42 is permitted here, so the code below is the dropped write and not EPERM"
         );
-        // Restore best-effort
-        dispatch(SYS_SETUID, current as u64, 0, 0);
+        test_assert_eq!(dispatch(SYS_SETUID, 42, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_uid(), before);
+        test_assert_eq!(crate::process::scheduler::current_euid(), before);
         TestResult::Pass
     }
 
-    fn test_setgid_changes_gid() -> TestResult {
-        let current = crate::process::scheduler::current_gid();
-        let result = dispatch(SYS_SETGID, 99, 0, 0);
+    /// Same defect, same shape, on the gid side. See above.
+    fn test_setgid_reports_dropped_gid_write() -> TestResult {
+        let before = crate::process::scheduler::current_gid();
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
         test_assert!(
-            result.code >= 0,
-            "SYS_SETGID should still succeed for a privileged (euid=0) caller"
+            credential_change_allowed(99, before, crate::process::scheduler::current_egid()),
+            "positive control: gid 99 is permitted here, so the code below is the dropped write and not EPERM"
         );
-        dispatch(SYS_SETGID, current as u64, 0, 0);
+        test_assert_eq!(dispatch(SYS_SETGID, 99, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_gid(), before);
+        test_assert_eq!(crate::process::scheduler::current_egid(), before);
+        TestResult::Pass
+    }
+
+    /// The other two arms of the family drop their write in exactly the same
+    /// place and must answer the same way. `SYS_SETEUID` matters most of the
+    /// four in practice: it is the one a privileged service uses to put its
+    /// privilege down temporarily, which is worthless if it can be reported as
+    /// done without being done.
+    fn test_effective_id_syscalls_report_dropped_write() -> TestResult {
+        test_assert_eq!(crate::process::scheduler::current_task_id(), 0);
+        let euid_before = crate::process::scheduler::current_euid();
+        let egid_before = crate::process::scheduler::current_egid();
+        test_assert_eq!(dispatch(SYS_SETEUID, 1000, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(dispatch(SYS_SETEGID, 1000, 0, 0).code, -3); // ESRCH
+        test_assert_eq!(crate::process::scheduler::current_euid(), euid_before);
+        test_assert_eq!(crate::process::scheduler::current_egid(), egid_before);
+        // The dropped-write code is distinct from the refusal code, so a
+        // caller and the audit trail can tell "not permitted" from "nowhere to
+        // put it". ENOSYS on an unknown number is untouched by either.
+        test_assert_eq!(dispatch(9_999_999, 0, 0, 0).code, -38);
         TestResult::Pass
     }
 
@@ -298,8 +336,18 @@ pub mod tests {
     }
 
     pub fn register_all() {
-        crate::testing::register_test("syscall::setuid_changes_uid", test_setuid_changes_uid);
-        crate::testing::register_test("syscall::setgid_changes_gid", test_setgid_changes_gid);
+        crate::testing::register_test(
+            "syscall::setuid_reports_dropped_uid_write",
+            test_setuid_reports_dropped_uid_write,
+        );
+        crate::testing::register_test(
+            "syscall::setgid_reports_dropped_gid_write",
+            test_setgid_reports_dropped_gid_write,
+        );
+        crate::testing::register_test(
+            "syscall::effective_id_syscalls_report_dropped_write",
+            test_effective_id_syscalls_report_dropped_write,
+        );
         crate::testing::register_test(
             "syscall::credential_change_denies_unprivileged_escalation",
             test_credential_change_denies_unprivileged_escalation,
@@ -589,6 +637,44 @@ fn chart_name_from_path(path: &str) -> String {
 /// denied.
 fn credential_change_allowed(requested: u32, real: u32, effective: u32) -> bool {
     effective == 0 || requested == real || requested == effective
+}
+
+/// What to report after an identity setter has run: `ok(0)` when a task existed
+/// to receive the write, ESRCH when the scheduler dropped it.
+///
+/// The setters `scheduler::set_current_uid`/`_gid`/`_euid`/`_egid` return `()`
+/// and only print when the write is discarded, so the outcome is recovered from
+/// the condition they themselves test. They write through
+/// `ManifoldScheduler::current` into a live slab entry, and
+/// `scheduler::current_task_id()` reports 0 in exactly the two cases where that
+/// write goes nowhere — `current` is `None`, or it indexes no entry. Task ids
+/// start at 1 (`ManifoldScheduler::new()`, `next_id: 1`), the invariant
+/// `fd_owned_by_caller` above already relies on, so 0 never names a live task.
+/// That condition holds for the whole uptime today (see `scheduler::current_uid`
+/// for why `current` is never assigned), which is precisely why these arms must
+/// stop answering 0: a program that calls `setuid(1000)` to drop privilege, is
+/// told it succeeded, and keeps running as root has no way to detect it.
+///
+/// ESRCH rather than EPERM, deliberately. EPERM is this dispatch's answer for a
+/// *refused* credential change, and a dropped write is not a refusal — sharing
+/// the code would make an unprivileged `setuid(0)` attempt and a kernel with
+/// nowhere to put the write indistinguishable both to the caller and in the
+/// audit trail, which is the one place that distinction is worth money. ESRCH
+/// states what happened, "no such process", and is what `process/signal.rs`
+/// already returns (`-3`) when a call names a task that is not there. EAGAIN was
+/// rejected: it invites a retry loop against a condition that does not clear,
+/// and on Linux it means RLIMIT_NPROC, a different and transient thing.
+///
+/// Reads the scheduler a second time rather than threading the setters' `bool`
+/// out through their `()` wrappers, which `security/passwd.rs` also calls. The
+/// gap between write and read is not a race worth closing here: both observe
+/// "is there a current task", nothing in these arms yields, and the answer is
+/// `None` on every path today.
+fn identity_write_outcome() -> SyscallResult {
+    if crate::process::scheduler::current_task_id() == 0 {
+        return SyscallResult::err(3); // ESRCH — no task held the write
+    }
+    SyscallResult::ok(0)
 }
 
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
@@ -1223,7 +1309,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             }
             crate::process::scheduler::set_current_uid(new_uid);
             crate::process::scheduler::set_current_euid(new_uid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_SETGID => {
@@ -1235,7 +1321,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             }
             crate::process::scheduler::set_current_gid(new_gid);
             crate::process::scheduler::set_current_egid(new_gid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_SETEUID => {
@@ -1246,7 +1332,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 return SyscallResult::err(1); // EPERM
             }
             crate::process::scheduler::set_current_euid(new_euid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_SETEGID => {
@@ -1257,7 +1343,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
                 return SyscallResult::err(1); // EPERM
             }
             crate::process::scheduler::set_current_egid(new_egid);
-            SyscallResult::ok(0)
+            identity_write_outcome()
         }
 
         SYS_CHDIR => {
