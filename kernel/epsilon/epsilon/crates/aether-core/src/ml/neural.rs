@@ -432,9 +432,27 @@ impl MLP {
         loss
     }
 
+    /// Train for `epochs` full passes over `x`/`y` and report what happened.
+    ///
+    /// [`TrainingResult::converged`] is true only when the run *ended* on a
+    /// plateau: the last [`CONVERGENCE_PATIENCE`] epochs each failed to beat the
+    /// best mean loss seen so far by more than [`CONVERGENCE_TOL`]. Comparing
+    /// against the best rather than the previous epoch means a loss oscillating
+    /// without net progress counts as stalled, which is what it is.
+    ///
+    /// Exhausting the epoch budget while still improving is a normal outcome,
+    /// not an error: it reports `converged == false` and the caller decides.
+    /// Training is never cut short — the full budget always runs, so the
+    /// reported `final_loss` is the loss of the network the caller now holds.
+    ///
+    /// `converged` describes the optimizer, not the model. A run that stalls at
+    /// a useless loss — a saturated or dead network that stops moving — has
+    /// converged in this sense. Judging the result is the job of `final_loss`.
     pub fn fit(&mut self, x: &[Tensor], y: &[Tensor], epochs: usize) -> TrainingResult {
         let mut result = TrainingResult::default();
         let n_samples = x.len();
+        let mut best_loss = f64::MAX;
+        let mut epochs_without_improvement = 0usize;
 
         for epoch in 0..epochs {
             let mut total_loss = 0.0;
@@ -443,6 +461,14 @@ impl MLP {
             }
             let avg_loss = total_loss / n_samples as f64;
 
+            if best_loss - avg_loss > CONVERGENCE_TOL {
+                best_loss = avg_loss;
+                epochs_without_improvement = 0;
+            } else {
+                best_loss = best_loss.min(avg_loss);
+                epochs_without_improvement += 1;
+            }
+
             if epoch < 100 {
                 result.loss_history.push(avg_loss);
             }
@@ -450,10 +476,32 @@ impl MLP {
         }
 
         result.epochs = epochs as u32;
-        result.converged = true; // Simple logic
+        // A run that diverged to NaN or infinity stops "improving" too, and
+        // would otherwise claim the plateau. It has not converged to anything.
+        // ponytail: a *finite* stall at a bad loss (saturated sigmoid pinned at
+        // 0.5) still reports true; separating "stopped" from "stopped somewhere
+        // useful" needs a problem-scale reference this signature does not have,
+        // so callers pair this with `final_loss`, as `test_mlp_xor` does.
+        result.converged =
+            epochs_without_improvement >= CONVERGENCE_PATIENCE && result.final_loss.is_finite();
         result
     }
 }
+
+/// Smallest mean-loss improvement over the best epoch so far that still counts
+/// as progress in [`MLP::fit`].
+///
+/// Fixed rather than passed in: every call site in the tree
+/// (`seal-os::ml_engine::demo_train_mlp`, the `aether-lang` interpreter's `train`
+/// method) calls `fit(x, y, epochs)`, so a fourth parameter would break both to
+/// hand them a value neither has an opinion about. The pair below matches
+/// scikit-learn's `MLPClassifier` defaults (`tol`, `n_iter_no_change`), which is
+/// where the convention comes from.
+pub const CONVERGENCE_TOL: f64 = 1e-4;
+
+/// Consecutive epochs without an improvement of [`CONVERGENCE_TOL`] before
+/// [`MLP::fit`] calls the run converged.
+pub const CONVERGENCE_PATIENCE: usize = 10;
 
 /// Training result
 #[derive(Debug, Clone)]
@@ -522,8 +570,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_mlp_xor() {
+    /// The XOR training set, pinned to the shapes the seeded runs below expect.
+    fn xor_problem() -> (Vec<Tensor>, Vec<Tensor>) {
+        (
+            vec![
+                Tensor::new(&[0.0, 0.0], &[2, 1]),
+                Tensor::new(&[0.0, 1.0], &[2, 1]),
+                Tensor::new(&[1.0, 0.0], &[2, 1]),
+                Tensor::new(&[1.0, 1.0], &[2, 1]),
+            ],
+            vec![
+                Tensor::new(&[0.0], &[1, 1]),
+                Tensor::new(&[1.0], &[1, 1]),
+                Tensor::new(&[1.0], &[1, 1]),
+                Tensor::new(&[0.0], &[1, 1]),
+            ],
+        )
+    }
+
+    /// A freshly initialised 2-8-1 net on the pinned seed pair (42, 43).
+    fn xor_mlp() -> MLP {
         let config = OptimizerConfig::SGD {
             learning_rate: 0.1,
             momentum: 0.9,
@@ -531,23 +597,24 @@ mod tests {
         let mut mlp = MLP::new(config, LossConfig::MSE);
         mlp.add_layer(2, 8, Activation::Tanh, Some(42));
         mlp.add_layer(8, 1, Activation::Sigmoid, Some(43));
+        mlp
+    }
 
-        // XOR Data
-        let x = vec![
-            Tensor::new(&[0.0, 0.0], &[2, 1]),
-            Tensor::new(&[0.0, 1.0], &[2, 1]),
-            Tensor::new(&[1.0, 0.0], &[2, 1]),
-            Tensor::new(&[1.0, 1.0], &[2, 1]),
-        ];
-        let y = vec![
-            Tensor::new(&[0.0], &[1, 1]),
-            Tensor::new(&[1.0], &[1, 1]),
-            Tensor::new(&[1.0], &[1, 1]),
-            Tensor::new(&[0.0], &[1, 1]),
-        ];
+    #[test]
+    fn test_mlp_xor() {
+        let mut mlp = xor_mlp();
+        let (x, y) = xor_problem();
 
         let result = mlp.fit(&x, &y, 500);
-        assert!(result.converged);
+        // No longer a tautology: `fit` computes this from the loss trajectory,
+        // and the same schedule reports `false` for any budget under 117 epochs
+        // (see `fit_reports_false_when_the_epoch_budget_runs_out`). 500 clears
+        // that boundary by 4.3x.
+        assert!(
+            result.converged,
+            "XOR training did not reach a loss plateau within 500 epochs (final loss {})",
+            result.final_loss
+        );
 
         // Bound justified by measurement, not by guess. Sweeping 64 seed pairs
         // (`(2s+42, 2s+43)` for `s` in `0..64`) through this exact topology and
@@ -583,6 +650,39 @@ mod tests {
                 xi.get(&[1, 0])
             );
         }
+    }
+
+    #[test]
+    fn fit_reports_false_when_the_epoch_budget_runs_out() {
+        // `converged` is only evidence if it can be `false`. Three budgets on
+        // one problem: none at all, too few, and enough.
+        let (x, y) = xor_problem();
+
+        // At 50 epochs the net sits at a loss of 0.114, 437x its 500-epoch
+        // value: still in the steep part of the curve. Every per-epoch
+        // improvement before epoch 96 exceeds 2.653e-4 -- 2.6x
+        // `CONVERGENCE_TOL` -- so the patience window cannot close here by
+        // accident. Sweeping the budget 0..=500 puts the true boundary at 117,
+        // and it never reverts to `false` after that, so 50 sits 2.3x clear of
+        // it on one side and the 500 below sits 4.3x clear on the other.
+        let short = xor_mlp().fit(&x, &y, 50);
+        assert!(
+            !short.converged,
+            "50 epochs is not enough for XOR (final loss {}), yet fit reported convergence",
+            short.final_loss
+        );
+
+        assert!(
+            !xor_mlp().fit(&x, &y, 0).converged,
+            "a run of zero epochs cannot have converged"
+        );
+
+        let long = xor_mlp().fit(&x, &y, 500);
+        assert!(
+            long.converged,
+            "500 epochs drives XOR to a plateau (final loss {}), yet fit reported no convergence",
+            long.final_loss
+        );
     }
 
     #[test]
