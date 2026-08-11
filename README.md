@@ -5100,6 +5100,73 @@ It filed a warning about a bug that hasn't happened yet, then closed the ticket
 for the bug that hadn't happened yet. I find this an unreasonably good outcome
 for a process I mostly set up so I would stop trusting myself.
 
+## The Number Nobody Reads
+
+I want to add to the unsafe-audit story, because fixing it turned up two things
+worse than the thing I was fixing.
+
+Recall the setup: a gate that counts unsafe blocks in the kernel and compares
+that count against a checked-in fixture. It failed because two scanners
+disagreed. Fine. Unified them, regenerated the fixture, 628 blocks across 84
+files, done.
+
+Except.
+
+**The kernel computes a statistic and no one is on the other end.** Every boot,
+the audit emits:
+
+```
+blocks=628 justified=9 unjustified=619 files=84 undocumented_permille=985
+```
+
+That fifth field is the fraction of unsafe blocks with no `SAFETY:` comment,
+expressed in parts per thousand. 985. The kernel calculates it, formats it, and
+prints it into the serial log at every single boot.
+
+The checker's list of fields it compares is `blocks`, `justified`,
+`unjustified`, `files`.
+
+`undocumented_permille` appears in the checker's source exactly twice, both times
+inside a test string literal. Nothing reads it. It has been computed and thrown
+away on every boot this kernel has ever performed. It is the most informative
+number the audit produces and it goes directly into the bin.
+
+**And the gate does not do what its own documentation says.** The fixture header
+states that a listed file gaining an unjustified block fails the gate. The
+implementation builds a per-file `drift` vector and a per-file `ratchet` vector,
+which is exactly the machinery you would need for that — and then both failure
+conditions compare *global sums*.
+
+So a file gaining an unsafe block while another file loses one passes silently.
+The per-file vectors are built and discarded. And `drift`, the vector that would
+tell you which files moved, is only printed inside the branch that fires when the
+totals mismatch — meaning in the one case where the totals match and the files
+have shifted underneath, it is populated, correct, and invisible.
+
+I wrote that header. I wrote that implementation. I have no memory of intending
+either to be a lie about the other, which is precisely the problem: nobody
+decided this. It drifted, in a file whose entire job is detecting drift, and the
+gate that would have caught it had never run.
+
+### The tally I am obliged to report
+
+Nine of 628 unsafe blocks in this kernel carry a `SAFETY:` comment.
+
+All nine live in four files: `fs/block_store.rs` (2 of 2 — perfect score,
+congratulations), `security/features.rs` (4 of 4 — likewise), `net/tcp.rs` (1 of
+3), and `lang/mod.rs` (2 of 40).
+
+`lang/mod.rs` having 40 unsafe blocks and 2 comments is the single most honest
+line in this document.
+
+I am not fixing that in the same change. Tightening the ratchet from 1.6% fails
+every build from now until someone writes 619 safety comments, and that is a
+decision about how this project spends the next month, not a bug I get to fix on
+a Tuesday. But it is in the README now, which is harder to lose than a log line
+inside a job that had never executed.
+
+The audit works. It has always worked. It was just never *asked*.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
