@@ -61,10 +61,10 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 628
-justified 9
+total 629
+justified 10
 unjustified 619
-files 84
+files 85
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
 file atlas/mod.rs 2 0
@@ -148,4 +148,5 @@ file syscall/pipe.rs 1 0
 file syscall/table.rs 25 0
 file syscall/time.rs 2 0
 file testing/harness.rs 1 0
+file wm/compositor.rs 1 1
 file wm/desktop.rs 2 0
