@@ -64,9 +64,11 @@ pub fn parse_eph(data: &[u8]) -> Result<EphPackage, EphError> {
     offset += 64;
 
     let mut files = Vec::new();
+    let mut found_trailer = false;
     while offset + 4 <= data.len() {
         if data[offset..offset + 4] == *b"END\0" {
             offset += 4;
+            found_trailer = true;
             break;
         }
         if offset + 2 > data.len() {
@@ -103,7 +105,9 @@ pub fn parse_eph(data: &[u8]) -> Result<EphPackage, EphError> {
         });
     }
 
-    if offset != data.len() && (offset < 4 || data[offset - 4..offset] != *b"END\0") {
+    // The trailer is mandatory: the loop must have matched `END\0` exactly
+    // (not merely run out of remaining bytes), and nothing may follow it.
+    if !found_trailer || offset != data.len() {
         return Err(EphError::BadTrailer);
     }
 
@@ -157,9 +161,15 @@ fn parse_manifest(bytes: &[u8]) -> Result<PackageManifest, EphError> {
     Ok(manifest)
 }
 
-#[cfg(test)]
-mod tests {
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
     use super::*;
+    use crate::test_assert_eq;
+    use crate::testing::TestResult;
 
     fn build_test_eph() -> Vec<u8> {
         let mut data = Vec::new();
@@ -177,32 +187,75 @@ mod tests {
         data
     }
 
-    #[test]
-    fn test_parse_eph_basic() {
+    fn test_parse_eph_basic() -> TestResult {
         let raw = build_test_eph();
-        let pkg = parse_eph(&raw).unwrap();
-        assert_eq!(pkg.manifest.name, "testpkg");
-        assert_eq!(pkg.manifest.version, "1.0.0");
-        assert_eq!(pkg.manifest.dependencies.len(), 1);
-        assert_eq!(pkg.files.len(), 1);
-        assert_eq!(pkg.files[0].path, "hello");
-        assert_eq!(pkg.files[0].data, b"world");
+        let Ok(pkg) = parse_eph(&raw) else {
+            return TestResult::Fail("well-formed .eph failed to parse");
+        };
+        test_assert_eq!(pkg.manifest.name, "testpkg");
+        test_assert_eq!(pkg.manifest.version, "1.0.0");
+        test_assert_eq!(pkg.manifest.dependencies.len(), 1);
+        test_assert_eq!(pkg.files.len(), 1);
+        test_assert_eq!(pkg.files[0].path, "hello");
+        test_assert_eq!(pkg.files[0].data, b"world");
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_bad_magic() {
+    fn test_bad_magic() -> TestResult {
         let mut raw = build_test_eph();
         raw[0] = b'X';
-        assert_eq!(parse_eph(&raw), Err(EphError::BadMagic));
+        test_assert_eq!(parse_eph(&raw).err(), Some(EphError::BadMagic));
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_sha256_hash() {
+    fn test_sha256_hash() -> TestResult {
         let raw = build_test_eph();
-        let pkg = parse_eph(&raw).unwrap();
+        let Ok(pkg) = parse_eph(&raw) else {
+            return TestResult::Fail("well-formed .eph failed to parse");
+        };
         let mut hasher = Sha256::new();
         hasher.update(b"world");
         let expected: [u8; 32] = hasher.finalize().into();
-        assert_eq!(pkg.files[0].hash, expected);
+        test_assert_eq!(pkg.files[0].hash, expected);
+        TestResult::Pass
+    }
+
+    /// Regression for the trailer bypass: the parse loop can exit because
+    /// fewer than 4 bytes remain without ever matching `END\0`. If that
+    /// happens to land exactly on `offset == data.len()` (as it does here,
+    /// with the trailer omitted entirely), a package with no trailer at all
+    /// must still be rejected — the trailer is mandatory, not merely
+    /// checked-when-present.
+    fn test_missing_trailer_rejects() -> TestResult {
+        let mut raw = build_test_eph();
+        let end = raw.len();
+        raw.truncate(end - 4); // drop the trailing "END\0"
+        test_assert_eq!(parse_eph(&raw).err(), Some(EphError::BadTrailer));
+        TestResult::Pass
+    }
+
+    /// Regression for the second half of the same bug: once `END\0` is
+    /// matched mid-stream, trailing bytes after it must be rejected rather
+    /// than accepted (the old check re-inspected the just-consumed `END\0`
+    /// itself instead of the bytes that actually follow it).
+    fn test_trailing_garbage_after_trailer_rejects() -> TestResult {
+        let mut raw = build_test_eph();
+        raw.extend_from_slice(b"\xff\xff\xff\xff");
+        test_assert_eq!(parse_eph(&raw).err(), Some(EphError::BadTrailer));
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("pkg::format::parse_eph_basic", test_parse_eph_basic);
+        crate::testing::register_test("pkg::format::bad_magic", test_bad_magic);
+        crate::testing::register_test("pkg::format::sha256_hash", test_sha256_hash);
+        crate::testing::register_test(
+            "pkg::format::missing_trailer_rejects",
+            test_missing_trailer_rejects,
+        );
+        crate::testing::register_test(
+            "pkg::format::trailing_garbage_after_trailer_rejects",
+            test_trailing_garbage_after_trailer_rejects,
+        );
     }
 }
