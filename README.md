@@ -5896,13 +5896,38 @@ The fix is a loopback path that cannot re-enter itself: queue the packet for the
 next poll rather than dispatching it from inside the send. Structural, not
 bounded — impossible rather than merely limited.
 
-There is also a question I do not yet have the answer to, and it changes the
-shape of the repair. **Has loopback ever worked at all?** If locally-built packets
-were always dropped at the checksum, then that path has never once carried a
-packet, and `tcp-roundtrip` has been passing by some other route this entire time.
-In which case this is not a regression. It is the tenth subsystem in this document
-found never to have worked, and the honest fix is to make it work, for the first
-time, rather than to restore the accident that was standing in for it.
+There was also a question that changes the shape of the repair, and I have the
+answer now. **Has loopback ever worked at all?**
+
+No. Not once. The checksum arithmetic for the exact header that fixture emits was
+worked out by hand: `internet_checksum` returns `0xBBCF`, which verifies to
+`0x0000` when stored with the conversion and `0xEC13` without. So every locally
+built packet was dropped at `ipv4.rs:194` before reaching any handler, for the
+life of the code.
+
+Which makes this the tenth thing in this document found never to have worked, and
+means the repair is to make loopback function for the first time rather than to
+restore the accident that was standing in for it.
+
+But I need to correct something I wrote a paragraph ago, in the same breath.
+
+I said `tcp-roundtrip` had "been passing by some other route." True — and I then
+said out loud, to someone, that it had therefore been measuring nothing. That was
+wrong and I want it on the record next to the rest.
+
+The benchmark reports `established=8`, `server_rx=512`, `client_rx=512`, and
+those numbers are real. The fixture injects packets **directly** into
+`handle_tcp_packet` rather than putting them on the wire, so the TCP state
+machine genuinely was being exercised: eight connections, real transitions, real
+byte accounting. What was dead underneath it was the *transmit* path — the
+packets `send_tcp_packet` handed to `send_ipv4_packet` were discarded at the
+checksum, and the fixture never depended on them arriving.
+
+So: the measurements were honest, the plumbing under them was not, and I nearly
+filed a working test as a fake one because the distinction is two layers down.
+
+Which is the entire lesson of this document arriving one more time, at my
+expense, in the paragraph where I was explaining the lesson.
 
 I will know shortly. The kernel now has a way to tell me, which is new.
 
