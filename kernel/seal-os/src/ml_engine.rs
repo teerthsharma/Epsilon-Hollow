@@ -113,15 +113,21 @@ pub fn tensor_from_data(data: Vec<f64>, shape: Vec<usize>) -> Result<Tensor, Str
 }
 
 /// Matrix multiply two tensors.
+///
+/// `Tensor::matmul` handles rank exactly 2 and `assert_eq!`s on anything
+/// else, so this rank check must be exact rather than a lower bound: the
+/// kernel builds with `panic = "abort"`, which makes that assertion a machine
+/// stop instead of an error the shell can print. Accepting rank 3 here and
+/// letting it reach `matmul` is not a laxer contract, it is a halt.
+/// `seal-graph`'s `matmul_shape` guards the same call the same way.
 pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
-    if a.shape.len() < 2 || b.shape.len() < 2 {
-        return Err(String::from(
-            "Both tensors must have at least 2 dimensions for matmul",
+    if a.shape.len() != 2 || b.shape.len() != 2 {
+        return Err(format!(
+            "Matmul requires 2D tensors, got {:?} x {:?}",
+            a.shape, b.shape
         ));
     }
-    let a_cols = a.shape.last().unwrap();
-    let b_rows = b.shape[b.shape.len().saturating_sub(2)];
-    if a_cols != &b_rows {
+    if a.shape[1] != b.shape[0] {
         return Err(format!(
             "Incompatible shapes for matmul: {:?} x {:?}",
             a.shape, b.shape
@@ -132,6 +138,15 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 
 /// Train a simple MLP on synthetic XOR-like data.
 /// Returns (human-readable report, serialized model bytes).
+///
+/// Samples are column vectors — `[features, 1]`, not `[features]`.
+/// `DenseLayer::forward` computes `weights.matmul(input)` with weights shaped
+/// `[out, in]`, and `Tensor::matmul` `assert_eq!`s that both operands are rank
+/// 2. A rank-1 sample therefore does not train badly, it aborts the kernel:
+/// the crate builds with `panic = "abort"`. aether-core's own `xor_problem`
+/// fixture uses the same `[2, 1]` / `[1, 1]` pair. Every read below indexes
+/// with both axes for the same reason — `Tensor::compute_offset` asserts that
+/// the index rank matches the shape rank.
 pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
     let mut mlp = MLP::new(
         OptimizerConfig::Adam {
@@ -149,16 +164,16 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
 
     // Synthetic XOR dataset
     let x = vec![
-        Tensor::new(&[0.0, 0.0], &[2]),
-        Tensor::new(&[0.0, 1.0], &[2]),
-        Tensor::new(&[1.0, 0.0], &[2]),
-        Tensor::new(&[1.0, 1.0], &[2]),
+        Tensor::new(&[0.0, 0.0], &[2, 1]),
+        Tensor::new(&[0.0, 1.0], &[2, 1]),
+        Tensor::new(&[1.0, 0.0], &[2, 1]),
+        Tensor::new(&[1.0, 1.0], &[2, 1]),
     ];
     let y = vec![
-        Tensor::new(&[0.0], &[1]),
-        Tensor::new(&[1.0], &[1]),
-        Tensor::new(&[1.0], &[1]),
-        Tensor::new(&[0.0], &[1]),
+        Tensor::new(&[0.0], &[1, 1]),
+        Tensor::new(&[1.0], &[1, 1]),
+        Tensor::new(&[1.0], &[1, 1]),
+        Tensor::new(&[0.0], &[1, 1]),
     ];
 
     let result = mlp.fit(&x, &y, epochs);
@@ -180,13 +195,13 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
 
     for (i, input) in x.iter().enumerate() {
         let pred = mlp.predict(input);
-        let val = pred.get(&[0]);
+        let val = pred.get(&[0, 0]);
         out.push_str(&format!(
             "  Input [{:.0}, {:.0}] -> Output {:.4} (target: {:.0})\n",
-            input.get(&[0]),
-            input.get(&[1]),
+            input.get(&[0, 0]),
+            input.get(&[1, 0]),
             val,
-            y[i].get(&[0])
+            y[i].get(&[0, 0])
         ));
     }
 
@@ -595,7 +610,54 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `Tensor::matmul` handles rank exactly 2 and `assert_eq!`s otherwise.
+    /// The pre-fix guard here only demanded rank >= 2, so a rank-3 pair
+    /// cleared it and reached that assertion — which, under `panic = "abort"`,
+    /// halts the machine instead of returning the `Err` the shell prints.
+    /// Both directions are checked: a guard that refused everything would
+    /// also stop the abort and would also be wrong.
+    fn test_matmul_rejects_non_2d() -> TestResult {
+        let cube = match tensor_from_data(vec![1.0; 8], vec![2, 2, 2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("rank-3 tensor must be constructible"),
+        };
+        let vector = match tensor_from_data(vec![1.0, 2.0], vec![2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("rank-1 tensor must be constructible"),
+        };
+        let square = match tensor_from_data(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("2x2 tensor must be constructible"),
+        };
+
+        test_assert!(
+            tensor_matmul(&cube, &square).is_err(),
+            "a rank-3 left operand must be rejected, not handed to matmul's assertion"
+        );
+        test_assert!(
+            tensor_matmul(&square, &cube).is_err(),
+            "a rank-3 right operand must be rejected, not handed to matmul's assertion"
+        );
+        test_assert!(
+            tensor_matmul(&vector, &square).is_err(),
+            "a rank-1 left operand must be rejected, not handed to matmul's assertion"
+        );
+
+        // The shell's `ml matmul` still has to compute. [[1,2],[3,4]] squared
+        // is [[7,10],[15,22]]; both values are exact in f64.
+        let product = match tensor_matmul(&square, &square) {
+            Ok(t) => t,
+            Err(_) => return TestResult::Fail("a 2x2 by 2x2 multiply must still be accepted"),
+        };
+        test_assert_eq!(product.shape, vec![2, 2]);
+        test_assert_eq!(product.get(&[0, 0]), 7.0);
+        test_assert_eq!(product.get(&[1, 1]), 22.0);
+        TestResult::Pass
+    }
+
     /// The fix must fail closed on garbage without breaking a real model.
+    /// Reaches `demo_train_mlp`, so it is also the case that the rank-1
+    /// training samples aborted in `Tensor::matmul` before the fix.
     fn test_valid_roundtrip_still_loads() -> TestResult {
         let (_, bytes) = demo_train_mlp(1);
         let mlp = deserialize_mlp(&bytes);
@@ -631,6 +693,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::deserialize_mismatched_shape_rejected",
             test_mismatched_shape_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::matmul_rejects_non_2d",
+            test_matmul_rejects_non_2d,
         );
         crate::testing::register_test(
             "ml_engine::deserialize_valid_roundtrip_still_loads",
