@@ -5498,7 +5498,46 @@ Twenty-three groups.
 
 151 is a floor. I do not know what the total is. Nobody does yet.
 
-### The one that failed
+### Update, four hours later: 296 passed, 0 failed
+
+The abort was `with_vfs`, which is `.expect("VFS not initialized")`. The harness
+runs from `kernel_main_continue` immediately after the entropy driver, many layers
+before the filesystem is set up — and under the test-mode build, `init_vfs` is
+never reached at all. So the tests had always been running before the filesystem
+existed. Nobody could have known, because the tests had never run.
+
+The file the panic named was not at fault, incidentally. `bundle` already guarded
+its filesystem access correctly; the unguarded call was two frames deeper, in the
+package installer, reached through a test fixture. That is the third time in one
+day that the location a report named turned out to be one layer off the cause.
+
+With a test-mode filesystem root mounted on first use:
+
+```
+PASS=296  FAIL=2  PANIC=0
+```
+
+All fifty-four registration groups execute. The suite finishes.
+
+And the moment it did, it found two more:
+
+```
+TEST_FAIL: dns::legit_response_accepted
+TEST_FAIL: ahci::large_read_matches_chunked_small_reads - 16 KiB read from boot device failed
+```
+
+Both live in suites that had never executed. Both are now being investigated, and
+I genuinely do not know yet whether the code or the test is wrong in either case —
+which, four hours ago, was not a question this project was capable of asking.
+
+The DNS one has a suspect. Earlier in this same series, a commit made DNS query IDs
+and source ports unguessable, drawn from hardware entropy, specifically to stop
+cache poisoning. If that test's fixture hardcodes a query ID, then a security fix
+broke it by doing precisely what it was supposed to do. The correct repair is to
+teach the test to use the real generated ID — not to relax the check that makes it
+unpredictable.
+
+### The one that failed on the first run
 
 ```
 TEST_FAIL: atlas::relocation_arithmetic
