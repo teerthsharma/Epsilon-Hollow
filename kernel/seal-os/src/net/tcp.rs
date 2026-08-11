@@ -4,6 +4,7 @@
 //! Minimal TCP state machine with retransmission timer.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -226,7 +227,7 @@ impl TcpSocket {
                 let mut pkt = Vec::with_capacity(20 + payload.len());
                 pkt.extend_from_slice(&hdr.to_bytes());
                 pkt.extend_from_slice(payload);
-                crate::net::ipv4::send_ipv4_packet(remote_ip, 6, &pkt);
+                queue_tx(crate::net::IpAddr::V4(remote_ip), pkt);
             }
             crate::net::IpAddr::V6(remote_ip) => {
                 let src_ip = crate::net::local_ip_v6();
@@ -248,7 +249,7 @@ impl TcpSocket {
                 let mut pkt = Vec::with_capacity(20 + payload.len());
                 pkt.extend_from_slice(&hdr.to_bytes());
                 pkt.extend_from_slice(payload);
-                crate::net::ipv6::send_ipv6_packet(remote_ip, 6, &pkt);
+                queue_tx(crate::net::IpAddr::V6(remote_ip), pkt);
             }
         }
 
@@ -288,6 +289,103 @@ static TCP_FLOW_INDEX: Mutex<TcpFlowIndex> = Mutex::new(TcpFlowIndex::new());
 static TCP_LISTENER_INDEX: Mutex<TcpListenerIndex> = Mutex::new(TcpListenerIndex::new());
 static NEXT_TCP_PORT: Mutex<u16> = Mutex::new(40000);
 static PENDING_SYN_QUEUE: Mutex<Vec<(u16, crate::net::IpAddr, u16, u32)>> = Mutex::new(Vec::new());
+
+/// Segments TCP has built but not yet handed to the IP layer.
+///
+/// Every one of `send_tcp_packet`'s callers holds `TCP_SOCKETS` across the
+/// call: `poll` takes it before creating the accepted socket and still holds it
+/// at the SYN-ACK, all seven state arms of `handle_tcp_packet` hold it, and so
+/// do the `connect` / `send` / `close` wrappers. `ipv4::send_ipv4_packet`
+/// hands a 127.0.0.1 destination straight to `handle_ipv4_packet`, which
+/// dispatches protocol 6 back into `handle_tcp_packet`, which locks
+/// `TCP_SOCKETS` a second time. That mutex is a `spin::Mutex` -- non-reentrant,
+/// no interrupt masking -- so the second acquire spins forever: no panic, no
+/// fault report, the boot thread simply stops while the timer keeps ticking.
+///
+/// Before the checksum store sites were fixed, the loopback header failed
+/// `handle_ipv4_packet`'s verifier and the path returned before reaching TCP,
+/// so the stall was masked rather than absent. The loopback branch had never
+/// once carried a segment.
+///
+/// Building the segment here and transmitting it from `flush_tx` once the guard
+/// has dropped removes the re-entry at the single chokepoint every send routes
+/// through, rather than at each of the ten call sites -- and a call site that
+/// forgets to flush loses nothing, because `poll` flushes unconditionally.
+static TCP_TX_QUEUE: Mutex<Vec<(crate::net::IpAddr, Vec<u8>)>> = Mutex::new(Vec::new());
+
+/// Set while `flush_tx` owns the drain. A segment delivered over loopback can
+/// make `handle_tcp_packet` queue a reply and call `flush_tx` again from inside
+/// the outer flush; the flag sends that inner call straight back so the reply
+/// is picked up by the outer loop's next iteration. Re-entry depth is therefore
+/// one `handle_ipv4_packet` frame by construction, not by how the TCP state
+/// machine happens to reply.
+static TX_FLUSHING: AtomicBool = AtomicBool::new(false);
+
+static TCP_TX_DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// Segments allowed to sit unflushed. Reached only if something queues without
+/// ever reaching a flush point, so it is a memory ceiling, not a rate limit.
+pub const TCP_TX_QUEUE_LIMIT: usize = 256;
+
+/// Segments one `flush_tx` may transmit before it stops. A loopback exchange
+/// that answers every segment with another would otherwise keep the drain loop
+/// fed indefinitely; at the budget the remaining segments are dropped and
+/// counted rather than transmitted.
+pub const TCP_TX_FLUSH_BUDGET: usize = 256;
+
+fn queue_tx(dst: crate::net::IpAddr, pkt: Vec<u8>) {
+    let mut queue = TCP_TX_QUEUE.lock();
+    if queue.len() >= TCP_TX_QUEUE_LIMIT {
+        TCP_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    queue.push((dst, pkt));
+}
+
+/// Hand every queued segment to the IP layer. Callers must not hold
+/// `TCP_SOCKETS`: loopback delivery re-enters `handle_tcp_packet`, which takes
+/// it.
+pub fn flush_tx() {
+    if TX_FLUSHING.swap(true, Ordering::Acquire) {
+        return;
+    }
+    let mut budget = TCP_TX_FLUSH_BUDGET;
+    loop {
+        // ponytail: remove(0) is O(n) on a queue that holds single digits in
+        // every observed exchange. A ring buffer if that ever stops being true.
+        let next = {
+            let mut queue = TCP_TX_QUEUE.lock();
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        };
+        let Some((dst, pkt)) = next else {
+            break;
+        };
+        if budget == 0 {
+            TCP_TX_DROPPED.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        budget -= 1;
+        match dst {
+            crate::net::IpAddr::V4(ip) => crate::net::ipv4::send_ipv4_packet(ip, 6, &pkt),
+            crate::net::IpAddr::V6(ip) => crate::net::ipv6::send_ipv6_packet(ip, 6, &pkt),
+        }
+    }
+    TX_FLUSHING.store(false, Ordering::Release);
+}
+
+/// Segments dropped by either transmit ceiling since boot.
+pub fn tcp_tx_dropped() -> usize {
+    TCP_TX_DROPPED.load(Ordering::Relaxed)
+}
+
+/// Segments built but not yet transmitted.
+pub fn tcp_tx_queued() -> usize {
+    TCP_TX_QUEUE.lock().len()
+}
 
 #[derive(Clone, Copy, PartialEq)]
 struct TcpFlowKey {
@@ -794,6 +892,7 @@ pub fn reset_for_benchmark() {
     TCP_FLOW_INDEX.lock().clear();
     TCP_LISTENER_INDEX.lock().clear();
     PENDING_SYN_QUEUE.lock().clear();
+    TCP_TX_QUEUE.lock().clear();
     *NEXT_TCP_PORT.lock() = 40000;
 }
 
@@ -845,20 +944,26 @@ pub fn accept(idx: usize) -> Option<usize> {
 }
 
 pub fn connect(idx: usize, ip: crate::net::IpAddr, port: u16) {
-    let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        remove_exact_flow_socket(idx, sock);
-        remove_listener_socket(idx, sock);
-        sock.connect(ip, port);
-        index_exact_flow_socket(idx, sock);
+    {
+        let mut sockets = TCP_SOCKETS.lock();
+        if let Some(sock) = sockets.get_mut(idx) {
+            remove_exact_flow_socket(idx, sock);
+            remove_listener_socket(idx, sock);
+            sock.connect(ip, port);
+            index_exact_flow_socket(idx, sock);
+        }
     }
+    flush_tx();
 }
 
 pub fn send(idx: usize, buf: &[u8]) {
-    let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        sock.send(buf);
+    {
+        let mut sockets = TCP_SOCKETS.lock();
+        if let Some(sock) = sockets.get_mut(idx) {
+            sock.send(buf);
+        }
     }
+    flush_tx();
 }
 
 pub fn recv(idx: usize, buf: &mut [u8]) -> usize {
@@ -871,14 +976,17 @@ pub fn recv(idx: usize, buf: &mut [u8]) -> usize {
 }
 
 pub fn close(idx: usize) {
-    let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        remove_exact_flow_socket(idx, sock);
-        remove_listener_socket(idx, sock);
-        sock.close();
-        index_exact_flow_socket(idx, sock);
-        index_listener_socket(idx, sock);
+    {
+        let mut sockets = TCP_SOCKETS.lock();
+        if let Some(sock) = sockets.get_mut(idx) {
+            remove_exact_flow_socket(idx, sock);
+            remove_listener_socket(idx, sock);
+            sock.close();
+            index_exact_flow_socket(idx, sock);
+            index_listener_socket(idx, sock);
+        }
     }
+    flush_tx();
 }
 
 pub fn state(idx: usize) -> TcpState {
@@ -1262,6 +1370,9 @@ fn cleanup_tcp_fixture(base_len: usize) -> bool {
     }
     sockets.truncate(base_len);
     PENDING_SYN_QUEUE.lock().clear();
+    // Segments addressed to the sockets just dropped must not reach the next
+    // connection's freshly indexed sockets on the same ports.
+    TCP_TX_QUEUE.lock().clear();
     sockets.len() == base_len
 }
 
@@ -1324,12 +1435,15 @@ pub fn poll() {
         }
     }
 
-    let mut sockets = TCP_SOCKETS.lock();
-    for sock in sockets.iter_mut() {
-        if !sock.retransmit_queue.is_empty() {
-            sock.retransmit_expired();
+    {
+        let mut sockets = TCP_SOCKETS.lock();
+        for sock in sockets.iter_mut() {
+            if !sock.retransmit_queue.is_empty() {
+                sock.retransmit_expired();
+            }
         }
     }
+    flush_tx();
 }
 
 pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
@@ -1454,6 +1568,10 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
     if let Some(syn) = pending_syn {
         PENDING_SYN_QUEUE.lock().push(syn);
     }
+    // The `TCP_SOCKETS` guard above has dropped, so a reply this packet
+    // produced can now go out -- including back through loopback, which will
+    // re-enter here and need that same lock.
+    flush_tx();
 }
 
 #[cfg(test)]

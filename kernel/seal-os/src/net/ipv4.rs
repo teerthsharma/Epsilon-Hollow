@@ -4,6 +4,7 @@
 //! IPv4 protocol -- header, checksum, routing, encapsulation.
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C, packed)]
 pub struct Ipv4Header {
@@ -126,11 +127,77 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// How deeply a loopback datagram may be delivered from inside the delivery of
+/// another before the stack drops it.
+///
+/// The branch below hands the datagram to `handle_ipv4_packet` on the caller's
+/// stack, so a protocol handler that answers 127.0.0.1 from inside its own
+/// delivery grows the stack with no natural stopping point. Only two handlers
+/// can currently answer at all -- `icmp::handle_icmp_packet`, which replies to
+/// an echo request but not to a reply, so it stops at two; and
+/// `tcp::handle_tcp_packet`, which since this change queues its replies for
+/// `tcp::flush_tx` and so never nests. This bound is what holds if a third
+/// handler, or a change to either of those, removes that property.
+///
+/// It bounds stack growth only. It is not a cure for a handler that re-enters a
+/// lock its own sender is holding: that stalls at the first nested delivery,
+/// below any depth a counter could reject. `tcp` avoids it by not transmitting
+/// under `TCP_SOCKETS`; `udp::sendto` still holds `UDP_SOCKETS` across its send
+/// and would stall the same way.
+pub const LOOPBACK_MAX_DEPTH: usize = 4;
+
+static LOOPBACK_DEPTH: AtomicUsize = AtomicUsize::new(0);
+static LOOPBACK_DISPATCHED: AtomicUsize = AtomicUsize::new(0);
+static LOOPBACK_NESTED: AtomicUsize = AtomicUsize::new(0);
+static LOOPBACK_DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+/// Loopback datagrams handed to `handle_ipv4_packet` since boot.
+pub fn loopback_dispatched() -> usize {
+    LOOPBACK_DISPATCHED.load(Ordering::Relaxed)
+}
+
+/// Loopback datagrams delivered from inside another loopback delivery since
+/// boot -- the event this branch must never produce. Counted separately from
+/// the depth ceiling because a nested delivery below `LOOPBACK_MAX_DEPTH` is
+/// still a re-entry: it is only the stack that is safe, not the locks the
+/// protocol handler is about to take.
+pub fn loopback_nested() -> usize {
+    LOOPBACK_NESTED.load(Ordering::Relaxed)
+}
+
+/// Loopback datagrams refused at `LOOPBACK_MAX_DEPTH` since boot.
+pub fn loopback_dropped() -> usize {
+    LOOPBACK_DROPPED.load(Ordering::Relaxed)
+}
+
+/// Loopback deliveries currently on the stack. Zero outside a delivery.
+pub fn loopback_depth() -> usize {
+    LOOPBACK_DEPTH.load(Ordering::Relaxed)
+}
+
 pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
     if dst == [127, 0, 0, 1] {
         // Loopback
+        let depth = LOOPBACK_DEPTH.load(Ordering::Relaxed);
+        if depth >= LOOPBACK_MAX_DEPTH {
+            LOOPBACK_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if depth > 0 {
+            LOOPBACK_NESTED.fetch_add(1, Ordering::Relaxed);
+        }
         let mut pkt = Vec::with_capacity(20 + payload.len());
-        let src = crate::net::local_ip();
+        // RFC 1122 section 3.2.1.3: a datagram whose destination is the
+        // loopback address carries the loopback address as its source. Stamping
+        // `local_ip()` here addressed the datagram from whatever the NIC had
+        // been given -- 0.0.0.0 before DHCP runs, which is where the benchmark
+        // sits. Every reply a handler then built was addressed to 0.0.0.0, so
+        // it left the loopback branch entirely: `tcp::handle_tcp_packet` keys
+        // its flow index on the source address and missed every time, and
+        // `send_tcp_packet` handed the reply to the ARP path, which dropped it
+        // for want of an entry. The checksum verified, so the datagram was
+        // accepted -- and then went nowhere.
+        let src = dst;
         let mut hdr = Ipv4Header::new(protocol, src, dst, payload.len());
         hdr.compute_checksum();
         let hdr_bytes = unsafe {
@@ -141,7 +208,10 @@ pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
         };
         pkt.extend_from_slice(hdr_bytes);
         pkt.extend_from_slice(payload);
+        LOOPBACK_DEPTH.fetch_add(1, Ordering::Relaxed);
+        LOOPBACK_DISPATCHED.fetch_add(1, Ordering::Relaxed);
         handle_ipv4_packet(&pkt);
+        LOOPBACK_DEPTH.fetch_sub(1, Ordering::Relaxed);
         return;
     }
 
@@ -223,8 +293,8 @@ pub fn handle_ipv4_packet(pkt: &[u8]) {
 // Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
 // `kernel/seal-os` is excluded from the workspace, so `cargo test --workspace`
 // never builds this crate; these register into crate::testing::TEST_REGISTRY
-// and execute under QEMU via testing::runner::test_main(). See WIRING note on
-// `register_all` below -- runner.rs does not call it yet.
+// and execute under QEMU via testing::runner::test_main(), which calls this
+// group's `register_all` at testing/runner.rs:40.
 // ---------------------------------------------------------------------------
 
 #[cfg(any(test, feature = "test-mode"))]
@@ -312,8 +382,77 @@ pub mod tests {
         TestResult::Pass
     }
 
-    // WIRING: testing/runner.rs must call `crate::net::ipv4::tests::register_all()`
-    // for this group to execute; it is not registered there yet.
+    /// The loopback branch delivers on the caller's stack, so a re-entry is a
+    /// second `handle_ipv4_packet` frame inside the first. Driving a whole TCP
+    /// handshake across 127.0.0.1 exercises the deepest chain the stack can
+    /// currently produce, and the dispatch counter pins it at exactly the three
+    /// segments the handshake is made of -- SYN, SYN-ACK, ACK.
+    ///
+    /// This fails four different ways, which is the point:
+    ///
+    /// * A non-zero `loopback_nested` delta means one delivery was made from
+    ///   inside another -- the re-entry this test exists to forbid. Nesting on
+    ///   its own does not change the dispatch count, so the count alone would
+    ///   not catch it; that was confirmed by removing `tcp::flush_tx`'s
+    ///   re-entry guard and watching a count-only assertion still pass.
+    /// * A count other than three means a segment was delivered twice or never.
+    /// * A non-zero drop delta means the branch was quietened by refusing to
+    ///   deliver rather than by deferring. The states below then fail too, so
+    ///   silencing the loopback path cannot pass this.
+    /// * A non-`Established` pair means the segments were delivered but the
+    ///   exchange did not settle.
+    ///
+    /// Before this change the same sequence did not fail -- it stalled.
+    /// `poll` sent the SYN-ACK while holding `TCP_SOCKETS`, loopback delivery
+    /// re-entered `handle_tcp_packet`, and that took the same `spin::Mutex`
+    /// again. No panic and no fault report: the boot thread simply stopped.
+    fn test_loopback_tcp_handshake_does_not_reenter() -> TestResult {
+        use crate::net::tcp::{self, TcpState};
+
+        let listener = tcp::socket();
+        tcp::bind(listener, 49_600);
+        tcp::listen(listener);
+        let client = tcp::socket();
+
+        let dispatched_before = loopback_dispatched();
+        let dropped_before = loopback_dropped();
+        let nested_before = loopback_nested();
+
+        tcp::connect(client, crate::net::IpAddr::V4([127, 0, 0, 1]), 49_600);
+        tcp::poll();
+
+        let accepted = tcp::accept(listener);
+        test_assert!(
+            accepted.is_some(),
+            "the loopback SYN never reached the listener, so no re-entry could have occurred and the counters below prove nothing"
+        );
+        test_assert!(
+            tcp::state(client) == TcpState::Established,
+            "the client never left SYN-SENT: the loopback SYN-ACK was not delivered"
+        );
+        test_assert!(
+            accepted.map(tcp::state) == Some(TcpState::Established),
+            "the accepted socket never left SYN-RECEIVED: the loopback ACK was not delivered"
+        );
+        test_assert!(
+            loopback_nested() == nested_before,
+            "a loopback datagram was delivered from inside another delivery -- the send path re-entered the receive path"
+        );
+        test_assert!(
+            loopback_dropped() == dropped_before,
+            "a loopback datagram hit LOOPBACK_MAX_DEPTH -- deliveries are nesting instead of being deferred"
+        );
+        test_assert!(
+            loopback_dispatched() - dispatched_before == 3,
+            "a three-way handshake over 127.0.0.1 entered the loopback branch other than three times -- one delivery re-entered another, or one was never made"
+        );
+        test_assert!(
+            loopback_depth() == 0,
+            "loopback depth did not return to zero -- a delivery was counted in but not out"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("ipv4::total_len_zero_dropped", test_total_len_zero_dropped);
         crate::testing::register_test(
@@ -327,6 +466,10 @@ pub mod tests {
         crate::testing::register_test(
             "ipv4::total_len_above_frame_dropped",
             test_total_len_above_frame_dropped,
+        );
+        crate::testing::register_test(
+            "ipv4::loopback_tcp_handshake_does_not_reenter",
+            test_loopback_tcp_handshake_does_not_reenter,
         );
     }
 }
