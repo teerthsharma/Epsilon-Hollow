@@ -116,6 +116,20 @@ const RTO_INITIAL: u64 = 1000;
 /// answers is retried at this fixed slow rate rather than forever faster.
 const RTO_MAX: u64 = 64_000;
 
+/// How long a socket holds its four-tuple in TIME-WAIT, in timer ticks.
+///
+/// RFC 793 section 3.5 requires the four-tuple to be held for twice the maximum
+/// segment lifetime, so a delayed duplicate from the connection just closed
+/// cannot be taken for a segment of a new one on the same ports. Nothing in
+/// this file used to leave TIME-WAIT at all -- the state arm says "remain in
+/// TIME-WAIT for 2*MSL" and no timer ever expired it -- so every socket the
+/// active close path touched held its port for the life of the machine.
+///
+/// `interrupts::ticks` counts the APIC timer at roughly 1 kHz, so this is 60
+/// seconds: an MSL of 30 s, which is what BSD and Linux use, rather than the
+/// 2 minutes RFC 793 offers as an engineering choice.
+const TIME_WAIT_TICKS: u64 = 60_000;
+
 pub const TCP_FLOW_INDEX_BUCKETS: usize = 256;
 pub const TCP_FLOW_INDEX_MAX_PROBES: usize = TCP_FLOW_INDEX_BUCKETS;
 pub const TCP_LISTENER_INDEX_BUCKETS: usize = 256;
@@ -141,6 +155,10 @@ pub struct TcpSocket {
     retransmit_queue: Vec<RetransmitEntry>,
     rto: u64,
     pending_accept: Vec<usize>,
+    /// The tick TIME-WAIT was entered on. Read only in that state, where it is
+    /// what lets the 2MSL hold end; `TcpSocket::new` leaves it at zero and
+    /// `enter_time_wait` is the only thing that sets it.
+    time_wait_since: u64,
 }
 
 impl TcpSocket {
@@ -157,6 +175,47 @@ impl TcpSocket {
             retransmit_queue: Vec::new(),
             rto: RTO_INITIAL,
             pending_accept: Vec::new(),
+            time_wait_since: 0,
+        }
+    }
+
+    /// Enter TIME-WAIT and start the 2MSL hold.
+    ///
+    /// Three arms of `handle_tcp_packet` reach this state and each used to
+    /// assign it directly. The timestamp is what `is_finished` measures the
+    /// hold against, so it is stamped here rather than at each of them: an arm
+    /// that forgot it would leave a socket whose hold had, on the kernel's
+    /// live tick counter, already expired at the moment it began.
+    fn enter_time_wait(&mut self) {
+        self.state = TcpState::TimeWait;
+        self.time_wait_since = crate::drivers::interrupts::ticks();
+    }
+
+    /// Whether the socket is finished with its four-tuple, its local port and
+    /// its slot in the table.
+    ///
+    /// CLOSED ends the passive teardown path and every abort, but it is also
+    /// the state `socket` hands out: a socket that has not connected yet is
+    /// CLOSED with no peer, and reaping it would take the table entry out from
+    /// under a caller that is about to `bind` or `connect` it. The peer is what
+    /// separates a connection that ended from one that never started, which is
+    /// why `remote_port` is part of the test rather than the state alone.
+    ///
+    /// Received bytes outlive the connection: `abort` leaves them in
+    /// `rx_buffer` on purpose and `http::get_http` drains them *after* it sees
+    /// CLOSED, so a socket still holding data is not collected until its owner
+    /// has read it or closed the handle.
+    ///
+    /// TIME-WAIT is not dead. RFC 793 requires the four-tuple to be held for
+    /// 2MSL, and reaping it early would let a delayed duplicate from the
+    /// connection just closed be taken for a segment of a new one, so the hold
+    /// is the whole test here. Its receive buffer is not consulted: 2MSL is
+    /// the RFC's own deadline and it has to be able to pass.
+    fn is_finished(&self, now: u64) -> bool {
+        match self.state {
+            TcpState::Closed => self.remote_port != 0 && self.rx_buffer.is_empty(),
+            TcpState::TimeWait => now.wrapping_sub(self.time_wait_since) >= TIME_WAIT_TICKS,
+            _ => false,
         }
     }
 
@@ -302,7 +361,9 @@ impl TcpSocket {
     /// `tcp_listener_key` report as unkeyable, so the `refresh_*` calls at the
     /// end of `handle_tcp_packet` drop it out of both indexes. A caller that was
     /// polling `state(idx)` sees `Closed` rather than waiting on `SynSent`
-    /// forever. Bytes already delivered stay in `rx_buffer` and remain readable.
+    /// forever. Bytes already delivered stay in `rx_buffer` and remain readable:
+    /// `is_finished` will not let `poll` collect the slot until they are drained
+    /// or the owner closes the handle.
     fn abort(&mut self) {
         self.state = TcpState::Closed;
         self.retransmit_queue.clear();
@@ -360,7 +421,22 @@ impl TcpSocket {
     }
 }
 
-static TCP_SOCKETS: Mutex<Vec<TcpSocket>> = Mutex::new(Vec::new());
+/// One entry in the socket table.
+///
+/// A socket that is finished is taken out of its slot but the slot stays where
+/// it is: `accept` hands out handles into this table, both demux indexes store
+/// positions in it, and `Vec::remove` or `swap_remove` would silently retarget
+/// every one of them at whatever slid into the gap. The slot is instead
+/// emptied and offered to the next `socket`, with the generation below telling
+/// the two occupants apart.
+struct SocketSlot {
+    sock: Option<TcpSocket>,
+    /// The generation carried by the handle that owns `sock`, or
+    /// `FREE_GENERATION` while the slot is empty.
+    generation: usize,
+}
+
+static TCP_SOCKETS: Mutex<Vec<SocketSlot>> = Mutex::new(Vec::new());
 static TCP_FLOW_INDEX: Mutex<TcpFlowIndex> = Mutex::new(TcpFlowIndex::new());
 static TCP_LISTENER_INDEX: Mutex<TcpListenerIndex> = Mutex::new(TcpListenerIndex::new());
 /// Lowest and highest port `socket` hands out, inclusive.
@@ -907,7 +983,7 @@ fn refresh_listener_socket(idx: usize, old_key: Option<u16>, sock: &TcpSocket) {
 }
 
 fn lookup_exact_flow_index(
-    sockets: &[TcpSocket],
+    sockets: &[SocketSlot],
     src: crate::net::IpAddr,
     src_port: u16,
     dst_port: u16,
@@ -917,10 +993,7 @@ fn lookup_exact_flow_index(
     let Some(idx) = lookup.socket_idx else {
         return lookup;
     };
-    if sockets
-        .get(idx)
-        .is_some_and(|sock| tcp_flow_key(sock) == Some(key))
-    {
+    if slot_sock(sockets, idx).is_some_and(|sock| tcp_flow_key(sock) == Some(key)) {
         lookup
     } else {
         TCP_FLOW_INDEX.lock().last_lookup_hit = false;
@@ -931,15 +1004,12 @@ fn lookup_exact_flow_index(
     }
 }
 
-fn lookup_listener_index(sockets: &[TcpSocket], dst_port: u16) -> TcpListenerLookup {
+fn lookup_listener_index(sockets: &[SocketSlot], dst_port: u16) -> TcpListenerLookup {
     let lookup = TCP_LISTENER_INDEX.lock().lookup(dst_port);
     let Some(idx) = lookup.socket_idx else {
         return lookup;
     };
-    if sockets
-        .get(idx)
-        .is_some_and(|sock| tcp_listener_key(sock) == Some(dst_port))
-    {
+    if slot_sock(sockets, idx).is_some_and(|sock| tcp_listener_key(sock) == Some(dst_port)) {
         lookup
     } else {
         TCP_LISTENER_INDEX.lock().last_lookup_hit = false;
@@ -985,13 +1055,154 @@ pub fn reset_for_benchmark() {
 
 /// The handle `socket` returns when it could not allocate one.
 ///
-/// No `Vec` can hold `usize::MAX` elements, so this indexes nothing: `bind`,
-/// `listen`, `accept`, `connect`, `send`, `recv` and `close` all resolve
-/// through `get`/`get_mut` and do nothing with it, and `state` reports
-/// `Closed`. A caller that never checks therefore fails closed -- its
-/// connection simply never establishes -- and one that wants to say why can
-/// compare against this.
+/// Its slot half is the largest a handle can express and no table can hold that
+/// many, so it resolves to nothing: `bind`, `listen`, `accept`, `connect`,
+/// `send`, `recv` and `close` all go through `resolve` and do nothing with it,
+/// and `state` reports `Closed`. A caller that never checks therefore fails
+/// closed -- its connection simply never establishes -- and one that wants to
+/// say why can compare against this.
 pub const TCP_SOCKET_NONE: usize = usize::MAX;
+
+/// Bits of a handle that name a slot in `TCP_SOCKETS`; the rest carry the
+/// generation that slot held when the handle was issued.
+const HANDLE_SLOT_BITS: u32 = usize::BITS / 2;
+const HANDLE_SLOT_MASK: usize = (1 << HANDLE_SLOT_BITS) - 1;
+
+/// Stamped on a slot that holds nothing. `next_generation` never returns it, so
+/// no handle ever resolves to a free slot.
+const FREE_GENERATION: usize = 0;
+
+static NEXT_SOCKET_GENERATION: Mutex<usize> = Mutex::new(1);
+
+/// A generation no live slot carries.
+///
+/// Counted once for the whole table rather than per slot: `cleanup_tcp_fixture`
+/// truncates the table, which would drop a per-slot counter along with the
+/// slot, and the next socket pushed into that position would then repeat a
+/// generation a handle somewhere still carries. Nothing resets this, for the
+/// same reason.
+///
+/// ponytail: it wraps after 2^32 sockets on a 64-bit target -- 50 days at one
+/// socket per millisecond -- and a handle that old would alias again. Past that
+/// needs a handle wider than `usize`.
+fn next_generation() -> usize {
+    let mut next = NEXT_SOCKET_GENERATION.lock();
+    let generation = *next;
+    *next = if generation == HANDLE_SLOT_MASK {
+        1
+    } else {
+        generation + 1
+    };
+    generation
+}
+
+/// The slot `handle` names, if that slot still holds the socket the handle was
+/// issued for. `None` once the socket has been reaped, whatever has since taken
+/// its place -- which is the point: a handle outlives its socket, and reading
+/// through it must not reach a different connection.
+fn resolve(sockets: &[SocketSlot], handle: usize) -> Option<usize> {
+    let slot = handle & HANDLE_SLOT_MASK;
+    let entry = sockets.get(slot)?;
+    if entry.sock.is_some() && entry.generation == handle >> HANDLE_SLOT_BITS {
+        Some(slot)
+    } else {
+        None
+    }
+}
+
+fn slot_sock(sockets: &[SocketSlot], slot: usize) -> Option<&TcpSocket> {
+    sockets.get(slot).and_then(|entry| entry.sock.as_ref())
+}
+
+fn slot_sock_mut(sockets: &mut [SocketSlot], slot: usize) -> Option<&mut TcpSocket> {
+    sockets.get_mut(slot).and_then(|entry| entry.sock.as_mut())
+}
+
+/// Put `sock` in a free slot, or in a new one, and return its handle.
+///
+/// `TCP_SOCKET_NONE` if a new slot would not fit in a handle, which is the same
+/// fail-closed answer `socket` gives when no port is free.
+///
+/// ponytail: the free slot is found by a linear scan, on a table
+/// `alloc_ephemeral_port` already scans once per candidate port -- and one that
+/// no longer grows without bound now that it is reaped. A free list when either
+/// stops holding single digits.
+fn insert_socket(sockets: &mut Vec<SocketSlot>, sock: TcpSocket) -> usize {
+    let slot = match sockets.iter().position(|entry| entry.sock.is_none()) {
+        Some(slot) => slot,
+        None => {
+            if sockets.len() >= HANDLE_SLOT_MASK {
+                return TCP_SOCKET_NONE;
+            }
+            sockets.push(SocketSlot {
+                sock: None,
+                generation: FREE_GENERATION,
+            });
+            sockets.len() - 1
+        }
+    };
+    let Some(entry) = sockets.get_mut(slot) else {
+        return TCP_SOCKET_NONE;
+    };
+    let generation = next_generation();
+    entry.sock = Some(sock);
+    entry.generation = generation;
+    (generation << HANDLE_SLOT_BITS) | slot
+}
+
+/// Drop the socket in `slot` and leave the slot free for the next `socket`.
+///
+/// Both demux indexes are keyed on the slot, so their entries go with it.
+/// Leaving them behind would hold a bucket of a 256-entry table for the life of
+/// the machine, and a full index is a connection that cannot be demuxed at all
+/// -- `insert` refuses and the segment reaches no socket.
+///
+/// Clearing the generation is what keeps every handle to the departing socket
+/// from following the slot to its next occupant.
+fn free_slot(sockets: &mut [SocketSlot], slot: usize) {
+    let Some(entry) = sockets.get_mut(slot) else {
+        return;
+    };
+    let Some(sock) = entry.sock.take() else {
+        return;
+    };
+    entry.generation = FREE_GENERATION;
+    remove_exact_flow_socket(slot, &sock);
+    remove_listener_socket(slot, &sock);
+}
+
+/// Free every socket that has finished with its port.
+///
+/// Called from `poll`, which is the only part of the stack that runs on its
+/// own: a connection reaches CLOSED or leaves TIME-WAIT because of a segment or
+/// a clock, not because anyone called anything.
+fn reap_finished_sockets(sockets: &mut [SocketSlot]) {
+    let now = crate::drivers::interrupts::ticks();
+    for slot in 0..sockets.len() {
+        if slot_sock(sockets, slot).is_some_and(|sock| sock.is_finished(now)) {
+            free_slot(sockets, slot);
+        }
+    }
+}
+
+/// File a freshly inserted socket in the exact-flow index. A no-op for a socket
+/// with no flow to key on, which is what `tcp_flow_key` says of a fresh one.
+fn index_flow_handle(sockets: &[SocketSlot], handle: usize) {
+    if let Some(slot) = resolve(sockets, handle) {
+        if let Some(sock) = slot_sock(sockets, slot) {
+            index_exact_flow_socket(slot, sock);
+        }
+    }
+}
+
+/// File a freshly inserted socket in the listener index.
+fn index_listener_handle(sockets: &[SocketSlot], handle: usize) {
+    if let Some(slot) = resolve(sockets, handle) {
+        if let Some(sock) = slot_sock(sockets, slot) {
+            index_listener_socket(slot, sock);
+        }
+    }
+}
 
 /// The next free port in `EPHEMERAL_PORT_MIN..=EPHEMERAL_PORT_MAX`, or `None`
 /// if every port in that range is held by a socket in `sockets`.
@@ -1012,7 +1223,7 @@ pub const TCP_SOCKET_NONE: usize = usize::MAX;
 /// table that holds single digits in every observed exchange -- the same
 /// ceiling `packet_fixture_proof`'s own port search carries. A port bitmap if a
 /// host ever holds thousands of sockets.
-fn alloc_ephemeral_port(sockets: &[TcpSocket]) -> Option<u16> {
+fn alloc_ephemeral_port(sockets: &[SocketSlot]) -> Option<u16> {
     let mut p = NEXT_TCP_PORT.lock();
     for _ in 0..=(EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN) {
         let port = *p;
@@ -1023,7 +1234,13 @@ fn alloc_ephemeral_port(sockets: &[TcpSocket]) -> Option<u16> {
         } else {
             port + 1
         };
-        if !sockets.iter().any(|sock| sock.local_port == port) {
+        // A reaped socket holds nothing, which is what returns its port to this
+        // range. While every socket ever opened stayed in the table, the first
+        // 25,536 opens consumed the range for the life of the machine.
+        if !sockets
+            .iter()
+            .any(|entry| entry.sock.as_ref().is_some_and(|sock| sock.local_port == port))
+        {
             return Some(port);
         }
     }
@@ -1036,94 +1253,121 @@ pub fn socket() -> usize {
     let Some(port) = alloc_ephemeral_port(&sockets) else {
         return TCP_SOCKET_NONE;
     };
-    let idx = sockets.len();
-    sockets.push(TcpSocket::new(port));
-    if let Some(sock) = sockets.get(idx) {
-        index_exact_flow_socket(idx, sock);
-    }
-    idx
+    let handle = insert_socket(&mut sockets, TcpSocket::new(port));
+    index_flow_handle(&sockets, handle);
+    handle
 }
 
-pub fn bind(idx: usize, port: u16) {
+pub fn bind(handle: usize, port: u16) {
     let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        remove_exact_flow_socket(idx, sock);
-        remove_listener_socket(idx, sock);
+    let Some(slot) = resolve(&sockets, handle) else {
+        return;
+    };
+    if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+        remove_exact_flow_socket(slot, sock);
+        remove_listener_socket(slot, sock);
         sock.local_port = port;
-        index_exact_flow_socket(idx, sock);
-        index_listener_socket(idx, sock);
+        index_exact_flow_socket(slot, sock);
+        index_listener_socket(slot, sock);
     }
 }
 
-pub fn listen(idx: usize) {
+pub fn listen(handle: usize) {
     let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        remove_exact_flow_socket(idx, sock);
-        remove_listener_socket(idx, sock);
+    let Some(slot) = resolve(&sockets, handle) else {
+        return;
+    };
+    if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+        remove_exact_flow_socket(slot, sock);
+        remove_listener_socket(slot, sock);
         sock.listen();
-        index_listener_socket(idx, sock);
+        index_listener_socket(slot, sock);
     }
 }
 
-pub fn accept(idx: usize) -> Option<usize> {
+pub fn accept(handle: usize) -> Option<usize> {
     let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        if sock.state == TcpState::Listen {
-            return sock.pending_accept.pop();
-        }
+    let slot = resolve(&sockets, handle)?;
+    let sock = slot_sock_mut(&mut sockets, slot)?;
+    if sock.state == TcpState::Listen {
+        // Handles, not positions: the socket a pending entry names may have
+        // been reset and reaped before anyone accepted it, and the accepting
+        // caller then reads `Closed` rather than whatever took the slot.
+        return sock.pending_accept.pop();
     }
     None
 }
 
-pub fn connect(idx: usize, ip: crate::net::IpAddr, port: u16) {
+pub fn connect(handle: usize, ip: crate::net::IpAddr, port: u16) {
     {
         let mut sockets = TCP_SOCKETS.lock();
-        if let Some(sock) = sockets.get_mut(idx) {
-            remove_exact_flow_socket(idx, sock);
-            remove_listener_socket(idx, sock);
-            sock.connect(ip, port);
-            index_exact_flow_socket(idx, sock);
+        if let Some(slot) = resolve(&sockets, handle) {
+            if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+                remove_exact_flow_socket(slot, sock);
+                remove_listener_socket(slot, sock);
+                sock.connect(ip, port);
+                index_exact_flow_socket(slot, sock);
+            }
         }
     }
     flush_tx();
 }
 
-pub fn send(idx: usize, buf: &[u8]) {
+pub fn send(handle: usize, buf: &[u8]) {
     {
         let mut sockets = TCP_SOCKETS.lock();
-        if let Some(sock) = sockets.get_mut(idx) {
-            sock.send(buf);
+        if let Some(slot) = resolve(&sockets, handle) {
+            if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+                sock.send(buf);
+            }
         }
     }
     flush_tx();
 }
 
-pub fn recv(idx: usize, buf: &mut [u8]) -> usize {
+pub fn recv(handle: usize, buf: &mut [u8]) -> usize {
     let mut sockets = TCP_SOCKETS.lock();
-    if let Some(sock) = sockets.get_mut(idx) {
-        sock.recv(buf)
-    } else {
-        0
-    }
+    let Some(slot) = resolve(&sockets, handle) else {
+        return 0;
+    };
+    slot_sock_mut(&mut sockets, slot).map_or(0, |sock| sock.recv(buf))
 }
 
-pub fn close(idx: usize) {
+/// Close the connection `handle` names, and give up the handle.
+///
+/// An established connection sends its FIN and finishes the exchange from
+/// TIME-WAIT, where `poll` collects it once the 2MSL hold is up. Anything that
+/// is not going to send another segment -- a socket that never connected, one
+/// an abort already closed, a listener -- is done with its port the moment its
+/// owner says so, and is freed here. `close` used to change the state and
+/// nothing else, so both the port and the slot were held for the life of the
+/// machine.
+pub fn close(handle: usize) {
     {
         let mut sockets = TCP_SOCKETS.lock();
-        if let Some(sock) = sockets.get_mut(idx) {
-            remove_exact_flow_socket(idx, sock);
-            remove_listener_socket(idx, sock);
-            sock.close();
-            index_exact_flow_socket(idx, sock);
-            index_listener_socket(idx, sock);
+        if let Some(slot) = resolve(&sockets, handle) {
+            if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+                remove_exact_flow_socket(slot, sock);
+                remove_listener_socket(slot, sock);
+                sock.close();
+                index_exact_flow_socket(slot, sock);
+                index_listener_socket(slot, sock);
+            }
+            if slot_sock(&sockets, slot)
+                .is_some_and(|sock| matches!(sock.state, TcpState::Closed | TcpState::Listen))
+            {
+                free_slot(&mut sockets, slot);
+            }
         }
     }
     flush_tx();
 }
 
-pub fn state(idx: usize) -> TcpState {
+pub fn state(handle: usize) -> TcpState {
     let sockets = TCP_SOCKETS.lock();
-    sockets.get(idx).map_or(TcpState::Closed, |s| s.state())
+    resolve(&sockets, handle)
+        .and_then(|slot| slot_sock(&sockets, slot))
+        .map_or(TcpState::Closed, |sock| sock.state())
 }
 
 pub struct TcpPacketFixtureProof {
@@ -1177,9 +1421,11 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     let remote_port = 80u16;
     let (base_len, fixture_port) = {
         let sockets = TCP_SOCKETS.lock();
-        let Some(port) =
-            (49_152u16..=65_535).find(|port| !sockets.iter().any(|s| s.local_port == *port))
-        else {
+        let Some(port) = (49_152u16..=65_535).find(|port| {
+            !sockets
+                .iter()
+                .any(|entry| entry.sock.as_ref().is_some_and(|s| s.local_port == *port))
+        }) else {
             return TcpPacketFixtureProof {
                 ok: false,
                 listener_first: false,
@@ -1205,7 +1451,7 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         (sockets.len(), port)
     };
 
-    {
+    let (listener_handle, decoy_handle, accepted_handle) = {
         let mut sockets = TCP_SOCKETS.lock();
         let mut listener = TcpSocket::new(fixture_port);
         listener.listen();
@@ -1224,19 +1470,14 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         accepted.seq_num = 1001;
         accepted.ack_num = 501;
 
-        sockets.push(listener);
-        sockets.push(decoy);
-        sockets.push(accepted);
-        if let Some(sock) = sockets.get(base_len) {
-            index_listener_socket(base_len, sock);
-        }
-        if let Some(sock) = sockets.get(base_len + 1) {
-            index_exact_flow_socket(base_len + 1, sock);
-        }
-        if let Some(sock) = sockets.get(base_len + 2) {
-            index_exact_flow_socket(base_len + 2, sock);
-        }
-    }
+        let listener_handle = insert_socket(&mut sockets, listener);
+        let decoy_handle = insert_socket(&mut sockets, decoy);
+        let accepted_handle = insert_socket(&mut sockets, accepted);
+        index_listener_handle(&sockets, listener_handle);
+        index_flow_handle(&sockets, decoy_handle);
+        index_flow_handle(&sockets, accepted_handle);
+        (listener_handle, decoy_handle, accepted_handle)
+    };
 
     let packet = make_tcp_packet(
         remote,
@@ -1254,22 +1495,25 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     let mut rx = [0u8; PAYLOAD.len()];
     let mut decoy_rx = [0u8; PAYLOAD.len()];
     let mut sockets = TCP_SOCKETS.lock();
-    let listener_idx = base_len;
-    let decoy_idx = base_len + 1;
-    let accepted_idx = base_len + 2;
-    let listener_first = sockets
-        .get(listener_idx)
-        .is_some_and(|sock| sock.state == TcpState::Listen)
-        && decoy_idx > listener_idx
-        && accepted_idx > decoy_idx;
-    let accepted_state = sockets
-        .get(accepted_idx)
+    let listener_slot = resolve(&sockets, listener_handle);
+    let decoy_slot = resolve(&sockets, decoy_handle);
+    let accepted_slot = resolve(&sockets, accepted_handle);
+    let listener_first = match (listener_slot, decoy_slot, accepted_slot) {
+        (Some(listener), Some(decoy), Some(accepted)) => {
+            slot_sock(&sockets, listener).is_some_and(|sock| sock.state == TcpState::Listen)
+                && decoy > listener
+                && accepted > decoy
+        }
+        _ => false,
+    };
+    let accepted_state = accepted_slot
+        .and_then(|slot| slot_sock(&sockets, slot))
         .map_or(TcpState::Closed, |sock| sock.state);
-    let decoy_rx_bytes = sockets
-        .get_mut(decoy_idx)
+    let decoy_rx_bytes = decoy_slot
+        .and_then(|slot| slot_sock_mut(&mut sockets, slot))
         .map_or(0, |sock| sock.recv(&mut decoy_rx));
-    let rx_bytes = sockets
-        .get_mut(accepted_idx)
+    let rx_bytes = accepted_slot
+        .and_then(|slot| slot_sock_mut(&mut sockets, slot))
         .map_or(0, |sock| sock.recv(&mut rx));
     let payload_matches = rx_bytes == PAYLOAD.len() && &rx[..rx_bytes] == PAYLOAD;
     drop(sockets);
@@ -1290,24 +1534,23 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     let listener_index_proof = tcp_listener_index_proof();
 
     let mut sockets = TCP_SOCKETS.lock();
-    let listener_fallback = sockets.get(listener_idx).is_some_and(|listener| {
-        listener.pending_accept.iter().copied().any(|idx| {
-            sockets.get(idx).is_some_and(|sock| {
-                sock.local_port == fixture_port
-                    && sock.remote_ip == fallback_remote
-                    && sock.remote_port == 81
-                    && sock.state == TcpState::SynReceived
+    let listener_fallback = resolve(&sockets, listener_handle)
+        .and_then(|slot| slot_sock(&sockets, slot))
+        .is_some_and(|listener| {
+            listener.pending_accept.iter().copied().any(|handle| {
+                resolve(&sockets, handle)
+                    .and_then(|slot| slot_sock(&sockets, slot))
+                    .is_some_and(|sock| {
+                        sock.local_port == fixture_port
+                            && sock.remote_ip == fallback_remote
+                            && sock.remote_port == 81
+                            && sock.state == TcpState::SynReceived
+                    })
             })
-        })
-    });
+        });
 
-    let mut idx = base_len;
-    while idx < sockets.len() {
-        if let Some(sock) = sockets.get(idx) {
-            remove_exact_flow_socket(idx, sock);
-            remove_listener_socket(idx, sock);
-        }
-        idx += 1;
+    for slot in base_len..sockets.len() {
+        free_slot(&mut sockets, slot);
     }
     if sockets.len() >= base_len + 3 {
         sockets.truncate(base_len);
@@ -1378,7 +1621,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         let client_port = 40_200u16 + conn as u16;
         let client_seq = 10_000u32 + (conn as u32 * 1_000);
         let server_seq = 1_000u32;
-        let base_len = {
+        let (base_len, listener_handle, client_handle) = {
             let mut sockets = TCP_SOCKETS.lock();
             let base_len = sockets.len();
 
@@ -1391,15 +1634,11 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             client.state = TcpState::SynSent;
             client.seq_num = client_seq;
 
-            sockets.push(listener);
-            sockets.push(client);
-            if let Some(sock) = sockets.get(base_len) {
-                index_listener_socket(base_len, sock);
-            }
-            if let Some(sock) = sockets.get(base_len + 1) {
-                index_exact_flow_socket(base_len + 1, sock);
-            }
-            base_len
+            let listener_handle = insert_socket(&mut sockets, listener);
+            let client_handle = insert_socket(&mut sockets, client);
+            index_listener_handle(&sockets, listener_handle);
+            index_flow_handle(&sockets, client_handle);
+            (base_len, listener_handle, client_handle)
         };
 
         let syn = make_tcp_packet(
@@ -1420,7 +1659,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         proof.index_lookup_probes_max = proof.index_lookup_probes_max.max(listener_proof.probes);
 
         poll();
-        let Some(accepted_idx) = accept(base_len) else {
+        let Some(accepted_handle) = accept(listener_handle) else {
             proof.cleanup_ok &= cleanup_tcp_fixture(base_len);
             continue;
         };
@@ -1474,7 +1713,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         proof.client_tx += payload.len();
 
         let mut server_buf = [0u8; PAYLOAD_BYTES];
-        let server_rx = recv(accepted_idx, &mut server_buf);
+        let server_rx = recv(accepted_handle, &mut server_buf);
         proof.server_rx += server_rx;
 
         let echo = make_tcp_packet(
@@ -1496,11 +1735,11 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         proof.server_echo += server_rx;
 
         let mut client_buf = [0u8; PAYLOAD_BYTES];
-        let client_rx = recv(base_len + 1, &mut client_buf);
+        let client_rx = recv(client_handle, &mut client_buf);
         proof.client_rx += client_rx;
 
-        if state(base_len + 1) == TcpState::Established
-            && state(accepted_idx) == TcpState::Established
+        if state(client_handle) == TcpState::Established
+            && state(accepted_handle) == TcpState::Established
             && server_rx == PAYLOAD_BYTES
             && client_rx == PAYLOAD_BYTES
             && server_buf[..server_rx] == payload[..]
@@ -1525,14 +1764,14 @@ fn loopback_payload(conn: usize) -> [u8; 64] {
 
 fn cleanup_tcp_fixture(base_len: usize) -> bool {
     let mut sockets = TCP_SOCKETS.lock();
-    let mut idx = base_len;
-    while idx < sockets.len() {
-        if let Some(sock) = sockets.get(idx) {
-            remove_exact_flow_socket(idx, sock);
-            remove_listener_socket(idx, sock);
-        }
-        idx += 1;
+    for slot in base_len..sockets.len() {
+        free_slot(&mut sockets, slot);
     }
+    // The slots go too, not just the sockets in them: this restores the table
+    // to the length the caller measured, which is what `cleanup_ok` reports.
+    // Generations are counted for the whole table rather than per slot, so a
+    // socket pushed into one of these positions later still gets one no handle
+    // has seen.
     sockets.truncate(base_len);
     PENDING_SYN_QUEUE.lock().clear();
     // Segments addressed to the sockets just dropped must not reach the next
@@ -1585,38 +1824,45 @@ pub fn poll() {
 
     for (dst_port, remote_ip, remote_port, seq) in pending {
         let mut sockets = TCP_SOCKETS.lock();
-        let listener_idx = lookup_listener_index(&sockets, dst_port).socket_idx;
-        if let Some(listener_idx) = listener_idx {
+        let listener_slot = lookup_listener_index(&sockets, dst_port).socket_idx;
+        if let Some(listener_slot) = listener_slot {
             // An accepted socket answers on the port the segment was addressed
             // to, so it needs no ephemeral port. It used to take one anyway and
             // overwrite it on the next line: the number went nowhere, but the
             // counter moved once per SYN a remote peer sent, which is how a
             // peer that never opened a connection here drove it to its ceiling.
-            let new_idx = sockets.len();
             let mut new_sock = TcpSocket::new(dst_port);
             new_sock.remote_ip = remote_ip;
             new_sock.remote_port = remote_port;
             new_sock.state = TcpState::SynReceived;
             new_sock.ack_num = seq + 1;
-            sockets.push(new_sock);
-            if let Some(new_sock) = sockets.get_mut(new_idx) {
+            let new_handle = insert_socket(&mut sockets, new_sock);
+            let Some(new_slot) = resolve(&sockets, new_handle) else {
+                continue;
+            };
+            if let Some(new_sock) = slot_sock_mut(&mut sockets, new_slot) {
                 new_sock.send_tcp_packet(FLAG_SYN | FLAG_ACK, &[]);
                 new_sock.seq_num += 1;
-                index_exact_flow_socket(new_idx, new_sock);
+                index_exact_flow_socket(new_slot, new_sock);
             }
-            if let Some(listener) = sockets.get_mut(listener_idx) {
-                listener.pending_accept.push(new_idx);
+            if let Some(listener) = slot_sock_mut(&mut sockets, listener_slot) {
+                listener.pending_accept.push(new_handle);
             }
         }
     }
 
     {
         let mut sockets = TCP_SOCKETS.lock();
-        for sock in sockets.iter_mut() {
-            if !sock.retransmit_queue.is_empty() {
-                sock.retransmit_expired();
+        for entry in sockets.iter_mut() {
+            if let Some(sock) = entry.sock.as_mut() {
+                if !sock.retransmit_queue.is_empty() {
+                    sock.retransmit_expired();
+                }
             }
         }
+        // After the retransmit pass, so a socket collected here is one that had
+        // nothing left to resend anyway.
+        reap_finished_sockets(&mut sockets);
     }
     flush_tx();
 }
@@ -1668,7 +1914,7 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: 
             lookup_listener_index(&sockets, dst_port).socket_idx
         };
         if let Some(idx) = exact_idx.or(listener_idx) {
-            if let Some(sock) = sockets.get_mut(idx) {
+            if let Some(sock) = slot_sock_mut(&mut sockets, idx) {
                 let old_key = tcp_flow_key(sock);
                 let old_listener_key = tcp_listener_key(sock);
                 if flags & FLAG_RST != 0 {
@@ -1757,7 +2003,7 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: 
                             if flags & FLAG_FIN != 0 && flags & FLAG_ACK != 0 {
                                 sock.ack_num = seq + 1;
                                 sock.send_tcp_packet(FLAG_ACK, &[]);
-                                sock.state = TcpState::TimeWait;
+                                sock.enter_time_wait();
                             } else if flags & FLAG_ACK != 0 {
                                 sock.state = TcpState::FinWait2;
                             }
@@ -1766,7 +2012,7 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: 
                             if flags & FLAG_FIN != 0 {
                                 sock.ack_num = seq + 1;
                                 sock.send_tcp_packet(FLAG_ACK, &[]);
-                                sock.state = TcpState::TimeWait;
+                                sock.enter_time_wait();
                             }
                         }
                         TcpState::CloseWait => {
@@ -1782,11 +2028,15 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: 
                         }
                         TcpState::Closing => {
                             if flags & FLAG_ACK != 0 {
-                                sock.state = TcpState::TimeWait;
+                                sock.enter_time_wait();
                             }
                         }
                         TcpState::TimeWait => {
-                            // RFC 793: remain in TIME-WAIT for 2*MSL; ignore further data
+                            // RFC 793: remain in TIME-WAIT for 2*MSL; ignore
+                            // further data. `poll` ends the hold at
+                            // `TIME_WAIT_TICKS`; until this change nothing did,
+                            // so the four-tuple and the port were held for the
+                            // life of the machine.
                         }
                         TcpState::Closed => {
                             // No-op: closed sockets ignore all incoming packets
@@ -1854,10 +2104,45 @@ pub mod tests {
     /// as this call.
     fn push_indexed(sock: TcpSocket) -> usize {
         let mut sockets = TCP_SOCKETS.lock();
-        let idx = sockets.len();
-        sockets.push(sock);
-        index_exact_flow_socket(idx, &sockets[idx]);
-        idx
+        let handle = insert_socket(&mut sockets, sock);
+        index_flow_handle(&sockets, handle);
+        handle
+    }
+
+    /// Read a field of the socket `handle` names.
+    ///
+    /// Every case below reads through this rather than indexing the table, for
+    /// the same reason the kernel does: a handle whose socket has been reaped
+    /// must read nothing, not whatever `socket` has since put in its slot.
+    fn with_sock<R>(handle: usize, read: impl FnOnce(&TcpSocket) -> R) -> Option<R> {
+        let sockets = TCP_SOCKETS.lock();
+        let slot = resolve(&sockets, handle)?;
+        slot_sock(&sockets, slot).map(read)
+    }
+
+    /// Sockets the table is holding. Free slots do not count: they are the
+    /// table's spare capacity, not connections.
+    fn live_socket_count() -> usize {
+        TCP_SOCKETS
+            .lock()
+            .iter()
+            .filter(|entry| entry.sock.is_some())
+            .count()
+    }
+
+    /// Rewind a socket's 2MSL clock by `by` ticks.
+    ///
+    /// The same experiment as waiting, and the only one available: `ticks()` is
+    /// a live counter no test may advance, which is why `age_retransmit_queue`
+    /// rewinds its entries rather than the clock.
+    fn age_time_wait(handle: usize, by: u64) {
+        let mut sockets = TCP_SOCKETS.lock();
+        let Some(slot) = resolve(&sockets, handle) else {
+            return;
+        };
+        if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+            sock.time_wait_since = sock.time_wait_since.wrapping_sub(by);
+        }
     }
 
     /// Age every queued segment by `by` ticks.
@@ -1901,17 +2186,16 @@ pub mod tests {
 
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
 
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].state == TcpState::Established,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::Established),
             "a SYN-ACK in SYN-SENT did not complete the handshake"
         );
         test_assert!(
-            sockets[idx].ack_num == 501,
+            with_sock(idx, |sock| sock.ack_num) == Some(501),
             "SYN-SENT did not acknowledge the peer's SYN sequence + 1"
         );
         test_assert!(
-            sockets[idx].seq_num == 1001,
+            with_sock(idx, |sock| sock.seq_num) == Some(1001),
             "SYN-SENT did not consume the sequence its own SYN occupied"
         );
         TestResult::Pass
@@ -1932,13 +2216,12 @@ pub mod tests {
 
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
 
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].state == TcpState::CloseWait,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::CloseWait),
             "a FIN at ESTABLISHED did not move the socket to CLOSE-WAIT"
         );
         test_assert!(
-            sockets[idx].ack_num == 501,
+            with_sock(idx, |sock| sock.ack_num) == Some(501),
             "the FIN was not acknowledged: a FIN occupies one sequence number"
         );
         TestResult::Pass
@@ -1955,13 +2238,12 @@ pub mod tests {
 
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
 
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].state == TcpState::TimeWait,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::TimeWait),
             "a simultaneous FIN-ACK in FIN-WAIT-1 did not reach TIME-WAIT"
         );
         test_assert!(
-            sockets[idx].ack_num == 501,
+            with_sock(idx, |sock| sock.ack_num) == Some(501),
             "the peer's FIN was not acknowledged in FIN-WAIT-1"
         );
         TestResult::Pass
@@ -2071,18 +2353,17 @@ pub mod tests {
         reset_tcp_for_test();
         let idx = socket();
         connect(idx, crate::net::IpAddr::V4([127, 0, 0, 1]), 80);
-        let sockets = TCP_SOCKETS.lock();
-        let sock = &sockets[idx];
         test_assert!(
-            sock.state == TcpState::SynSent,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::SynSent),
             "connect did not leave the socket in SYN-SENT"
         );
         test_assert!(
-            sock.retransmit_queue.len() == 1,
+            with_sock(idx, |sock| sock.retransmit_queue.len()) == Some(1),
             "the SYN was not queued for retransmission"
         );
         test_assert!(
-            sock.retransmit_queue[0].flags == FLAG_SYN,
+            with_sock(idx, |sock| sock.retransmit_queue.first().map(|entry| entry.flags))
+                == Some(Some(FLAG_SYN)),
             "the queued segment is not the SYN"
         );
         TestResult::Pass
@@ -2305,7 +2586,7 @@ pub mod tests {
             "an in-window reset did not abort the connection"
         );
         test_assert!(
-            TCP_SOCKETS.lock()[idx].retransmit_queue.is_empty(),
+            with_sock(idx, |sock| sock.retransmit_queue.is_empty()) == Some(true),
             "an aborted socket is still retransmitting"
         );
 
@@ -2313,13 +2594,12 @@ pub mod tests {
         // same four-tuple reaches nothing.
         let data = make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5008, 9000, b"after");
         handle_tcp_packet(REMOTE, LOCAL, &data);
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].state == TcpState::Closed,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::Closed),
             "a segment reopened an aborted socket"
         );
         test_assert!(
-            sockets[idx].rx_buffer.is_empty(),
+            with_sock(idx, |sock| sock.rx_buffer.is_empty()) == Some(true),
             "an aborted socket accepted data: its flow is still in the index"
         );
         TestResult::Pass
@@ -2345,13 +2625,12 @@ pub mod tests {
             &make_tcp_header(FLAG_RST | FLAG_ACK, 5700, 5000, 9010),
         );
 
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].state == TcpState::Established,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::Established),
             "an out-of-window reset tore the connection down"
         );
         test_assert!(
-            sockets[idx].ack_num == 700,
+            with_sock(idx, |sock| sock.ack_num) == Some(700),
             "an out-of-window RST+ACK was processed as an ordinary acknowledgement"
         );
         TestResult::Pass
@@ -2390,17 +2669,16 @@ pub mod tests {
             state(idxs[2]) == TcpState::SynSent,
             "a reset acknowledging the wrong sequence aborted the connection attempt"
         );
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idxs[0]].retransmit_queue.is_empty(),
+            with_sock(idxs[0], |sock| sock.retransmit_queue.is_empty()) == Some(true),
             "an aborted connection attempt is still retransmitting its SYN"
         );
         test_assert!(
-            sockets[idxs[1]].retransmit_queue.len() == 1,
+            with_sock(idxs[1], |sock| sock.retransmit_queue.len()) == Some(1),
             "a dropped reset discarded the SYN still awaiting an answer"
         );
         test_assert!(
-            sockets[idxs[2]].retransmit_queue.len() == 1,
+            with_sock(idxs[2], |sock| sock.retransmit_queue.len()) == Some(1),
             "a dropped reset discarded the SYN still awaiting an answer"
         );
         TestResult::Pass
@@ -2492,17 +2770,21 @@ pub mod tests {
     }
 
     /// The local port `idx` was given, or 0 if it names no socket.
-    fn local_port_of(idx: usize) -> u16 {
-        TCP_SOCKETS.lock().get(idx).map_or(0, |sock| sock.local_port)
+    fn local_port_of(handle: usize) -> u16 {
+        with_sock(handle, |sock| sock.local_port).unwrap_or(0)
     }
 
     /// Whether two sockets in the table share a local port.
     fn any_duplicate_local_port() -> bool {
-        let sockets = TCP_SOCKETS.lock();
-        sockets
+        let ports: Vec<u16> = TCP_SOCKETS
+            .lock()
+            .iter()
+            .filter_map(|entry| entry.sock.as_ref().map(|sock| sock.local_port))
+            .collect();
+        ports
             .iter()
             .enumerate()
-            .any(|(i, a)| sockets[i + 1..].iter().any(|b| b.local_port == a.local_port))
+            .any(|(i, a)| ports[i + 1..].iter().any(|b| b == a))
     }
 
     /// The counter used to be a bare `*p += 1` on a `u16` that started at 40000,
@@ -2541,7 +2823,10 @@ pub mod tests {
         );
         let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets.iter().all(|sock| sock.local_port >= 40_000),
+            sockets
+                .iter()
+                .filter_map(|entry| entry.sock.as_ref())
+                .all(|sock| sock.local_port >= 40_000),
             "an allocated port landed below the ephemeral floor -- 0-1023 is the well-known range"
         );
         TestResult::Pass
@@ -2588,7 +2873,7 @@ pub mod tests {
         {
             let mut sockets = TCP_SOCKETS.lock();
             for port in 40_000..40_000 + RUN {
-                sockets.push(TcpSocket::new(port));
+                insert_socket(&mut sockets, TcpSocket::new(port));
             }
         }
 
@@ -2672,14 +2957,318 @@ pub mod tests {
             &buf[..n] == b"abc",
             "a duplicate or out-of-sequence segment was accepted into the receive buffer"
         );
-        let sockets = TCP_SOCKETS.lock();
         test_assert!(
-            sockets[idx].ack_num == 703,
+            with_sock(idx, |sock| sock.ack_num) == Some(703),
             "the next expected sequence moved on a segment that was not next"
         );
         test_assert!(
-            sockets[idx].state == TcpState::Established,
+            with_sock(idx, |sock| sock.state) == Some(TcpState::Established),
             "an out-of-sequence FIN closed the connection"
+        );
+        TestResult::Pass
+    }
+
+    /// `close` moved a socket's state and left the socket itself in the table
+    /// for the life of the machine. `alloc_ephemeral_port` skips every port a
+    /// socket in that table holds, so the port went with it: 25,536 opens and
+    /// the range is gone, whatever the program did with the handles.
+    fn closing_a_socket_frees_its_port_and_its_slot() -> TestResult {
+        reset_tcp_for_test();
+
+        let first = socket();
+        test_assert!(
+            local_port_of(first) == 40_000,
+            "the first allocation is not the floor of the ephemeral range"
+        );
+        close(first);
+
+        // The counter is rewound so the next allocation asks for the port the
+        // closed socket was given. Whether it gets it is the whole question.
+        *NEXT_TCP_PORT.lock() = 40_000;
+        let second = socket();
+        test_assert!(
+            local_port_of(second) == 40_000,
+            "a closed socket still holds the port it was given"
+        );
+        test_assert!(
+            TCP_SOCKETS.lock().len() == 1,
+            "the closed socket's slot was not reused: the table only grows"
+        );
+        TestResult::Pass
+    }
+
+    /// A connection torn down by a reset ends in CLOSED with its peer still
+    /// recorded, which is the state the sweep collects. The slot it frees is
+    /// handed to the next `socket`, so the handle that named it must stop
+    /// resolving -- a stale handle that quietly reads whatever moved in is a
+    /// worse defect than the leak this fixes.
+    fn an_aborted_connection_is_reaped_without_aliasing_its_handle() -> TestResult {
+        reset_tcp_for_test();
+        let mut sock = TcpSocket::new(9_060);
+        sock.remote_ip = REMOTE;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5_000;
+        sock.ack_num = 700;
+        let stale = push_indexed(sock);
+
+        // Bytes that arrived before the reset. `abort` keeps them readable and
+        // `http::get_http` drains them only after it has seen CLOSED, so the
+        // sweep must not collect the socket out from under that read.
+        handle_tcp_packet(
+            REMOTE,
+            LOCAL,
+            &make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5_000, 9_060, b"tick"),
+        );
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_RST, 704, 0, 9_060));
+        test_assert!(
+            state(stale) == TcpState::Closed,
+            "an in-window reset did not abort the connection"
+        );
+        poll();
+        test_assert!(
+            live_socket_count() == 1,
+            "an aborted socket was collected with bytes its owner has not read yet"
+        );
+        let mut delivered = [0u8; 8];
+        test_assert!(
+            recv(stale, &mut delivered) == 4 && &delivered[..4] == b"tick",
+            "the bytes that arrived before the reset were lost"
+        );
+
+        poll();
+        test_assert!(
+            live_socket_count() == 0,
+            "a drained aborted connection is still in the socket table"
+        );
+        test_assert!(
+            TCP_SOCKETS
+                .lock()
+                .iter()
+                .all(|entry| entry.sock.is_some() || entry.generation == FREE_GENERATION),
+            "a freed slot kept the generation of the socket that left it"
+        );
+
+        let fresh = socket();
+        test_assert!(
+            TCP_SOCKETS.lock().len() == 1,
+            "the reaped socket's slot was not reused: the table only grows"
+        );
+        test_assert!(
+            fresh != stale,
+            "the new socket was handed the dead socket's handle"
+        );
+        bind(fresh, 9_061);
+        listen(fresh);
+        test_assert!(
+            state(fresh) == TcpState::Listen,
+            "the new socket did not reach LISTEN, so the handles below prove nothing"
+        );
+        test_assert!(
+            state(stale) == TcpState::Closed,
+            "a stale handle reads the state of the socket that took its slot"
+        );
+        test_assert!(
+            local_port_of(stale) == 0,
+            "a stale handle reads the port of the socket that took its slot"
+        );
+        TestResult::Pass
+    }
+
+    /// The path the reported defect names, end to end: an established
+    /// connection is closed, the peer answers, and the socket parks in
+    /// TIME-WAIT. Nothing ever left that state, so the four-tuple and the port
+    /// were held for the life of the machine -- and the hold is not something
+    /// to shorten, only to end on time: RFC 793 wants 2MSL so a delayed
+    /// duplicate cannot be read as a segment of a new connection on the same
+    /// ports. The tick before the deadline is the control.
+    fn time_wait_is_held_for_2msl_and_then_returns_the_port() -> TestResult {
+        reset_tcp_for_test();
+        // The steps below are spelled in `TIME_WAIT_TICKS`, so they follow the
+        // constant wherever it goes and prove only the shape of the hold. This
+        // is what pins the length: at the ~1 kHz tick rate a hold under 30
+        // seconds is not the 2MSL RFC 793 section 3.5 asks for, and shortening
+        // it is the obvious way to make a port leak look fixed.
+        test_assert!(
+            TIME_WAIT_TICKS >= 30_000,
+            "the 2MSL hold is shorter than 30 seconds of the ~1 kHz tick counter"
+        );
+        let mut sock = TcpSocket::new(40_500);
+        sock.remote_ip = REMOTE;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5_000;
+        sock.ack_num = 700;
+        let handle = push_indexed(sock);
+
+        close(handle);
+        test_assert!(
+            state(handle) == TcpState::FinWait1,
+            "close did not leave an established connection in FIN-WAIT-1 with its FIN outstanding"
+        );
+        handle_tcp_packet(
+            REMOTE,
+            LOCAL,
+            &make_tcp_header(FLAG_FIN | FLAG_ACK, 700, 5_001, 40_500),
+        );
+        test_assert!(
+            state(handle) == TcpState::TimeWait,
+            "the peer's FIN did not take the closing socket to TIME-WAIT"
+        );
+
+        poll();
+        test_assert!(
+            state(handle) == TcpState::TimeWait,
+            "TIME-WAIT was collected immediately: a delayed duplicate can now be read as a new connection"
+        );
+        age_time_wait(handle, TIME_WAIT_TICKS - 1);
+        poll();
+        test_assert!(
+            state(handle) == TcpState::TimeWait,
+            "the 2MSL hold ended a tick early"
+        );
+
+        age_time_wait(handle, 1);
+        poll();
+        test_assert!(
+            state(handle) == TcpState::Closed,
+            "the 2MSL hold never ended: the socket holds its four-tuple for the life of the machine"
+        );
+        test_assert!(
+            live_socket_count() == 0,
+            "the finished connection is still in the socket table"
+        );
+
+        *NEXT_TCP_PORT.lock() = 40_500;
+        let next = socket();
+        test_assert!(
+            local_port_of(next) == 40_500,
+            "the closed connection still holds the port it was using"
+        );
+        TestResult::Pass
+    }
+
+    /// The sweep runs on its own, so every state it must leave alone is worth
+    /// pinning: a socket taken out from under its owner is a worse defect than
+    /// the leak. CLOSED is the one that needs the care -- it is both the end of
+    /// a connection and the state `socket` hands out, and a caller between
+    /// `socket` and `connect` has done nothing wrong.
+    fn the_reap_leaves_every_live_socket_alone() -> TestResult {
+        reset_tcp_for_test();
+        static CASES: [(TcpState, &str); 10] = [
+            (
+                TcpState::Listen,
+                "a LISTEN socket was reaped: a listener holds its port until it is closed",
+            ),
+            (TcpState::SynSent, "a connecting socket was reaped"),
+            (
+                TcpState::SynReceived,
+                "a half-open accepted socket was reaped",
+            ),
+            (
+                TcpState::Established,
+                "an established connection was reaped",
+            ),
+            (TcpState::FinWait1, "a socket awaiting its FIN's ACK was reaped"),
+            (TcpState::FinWait2, "a socket awaiting the peer's FIN was reaped"),
+            (
+                TcpState::CloseWait,
+                "a socket whose owner has not closed yet was reaped",
+            ),
+            (TcpState::Closing, "a simultaneously closing socket was reaped"),
+            (
+                TcpState::LastAck,
+                "a socket awaiting the ACK of its own FIN was reaped",
+            ),
+            (
+                TcpState::TimeWait,
+                "a socket was reaped inside its 2MSL hold",
+            ),
+        ];
+
+        let mut handles = Vec::new();
+        for (n, (live, _)) in CASES.iter().enumerate() {
+            let mut sock = TcpSocket::new(41_000 + n as u16);
+            sock.remote_ip = REMOTE;
+            sock.remote_port = 80 + n as u16;
+            sock.state = *live;
+            // A hold that has only just begun, measured against the same clock
+            // the sweep reads.
+            sock.time_wait_since = crate::drivers::interrupts::ticks();
+            handles.push(push_indexed(sock));
+        }
+        // Fresh from `socket`: CLOSED, no peer, and nobody has bound or
+        // connected it yet.
+        let unconnected = socket();
+
+        poll();
+
+        for (n, (live, msg)) in CASES.iter().enumerate() {
+            if state(handles[n]) != *live {
+                return TestResult::Fail(msg);
+            }
+        }
+        test_assert!(
+            state(unconnected) == TcpState::Closed && local_port_of(unconnected) != 0,
+            "a socket that has not connected yet was reaped out from under its owner"
+        );
+        test_assert!(
+            live_socket_count() == CASES.len() + 1,
+            "the reap collected a socket that is still in use"
+        );
+        TestResult::Pass
+    }
+
+    /// The flow index has 256 buckets and an entry is keyed on the slot that
+    /// holds the socket, so a slot freed without taking its entry with it holds
+    /// that bucket for good. Two hundred and fifty-six finished connections
+    /// later the index is full, `insert` refuses, and a new connection is not
+    /// demuxed at all -- its segments reach no socket. Three hundred
+    /// connections are opened and collected one after another here, so the
+    /// index has to be handed back each time.
+    fn reaping_returns_the_flow_index_entry_the_socket_held() -> TestResult {
+        reset_tcp_for_test();
+        const CHURN: usize = TCP_FLOW_INDEX_BUCKETS + 44;
+        for n in 0..CHURN {
+            let mut sock = TcpSocket::new(41_500);
+            sock.remote_ip = REMOTE;
+            sock.remote_port = 1_000 + n as u16;
+            sock.state = TcpState::TimeWait;
+            sock.time_wait_since = crate::drivers::interrupts::ticks()
+                .wrapping_sub(TIME_WAIT_TICKS + 1);
+            let handle = push_indexed(sock);
+            poll();
+            if state(handle) != TcpState::Closed {
+                return TestResult::Fail("a TIME-WAIT socket past 2MSL was not reaped");
+            }
+        }
+        test_assert!(
+            live_socket_count() == 0,
+            "the churned connections are still in the socket table"
+        );
+
+        let mut sock = TcpSocket::new(41_500);
+        sock.remote_ip = REMOTE;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5_000;
+        sock.ack_num = 700;
+        let handle = push_indexed(sock);
+        handle_tcp_packet(
+            REMOTE,
+            LOCAL,
+            &make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5_000, 41_500, b"late"),
+        );
+
+        test_assert!(
+            tcp_flow_index_proof().hit,
+            "the flow index missed a connection opened after 300 were collected: their entries were never handed back"
+        );
+        let mut buf = [0u8; 8];
+        let got = recv(handle, &mut buf);
+        test_assert!(
+            got == 4 && &buf[..4] == b"late",
+            "a connection opened after 300 were collected cannot receive: the index is full of entries for sockets that no longer exist"
         );
         TestResult::Pass
     }
@@ -2744,6 +3333,26 @@ pub mod tests {
         crate::testing::register_test(
             "tcp::accepting_a_connection_consumes_no_ephemeral_port",
             accepting_a_connection_consumes_no_ephemeral_port,
+        );
+        crate::testing::register_test(
+            "tcp::closing_a_socket_frees_its_port_and_its_slot",
+            closing_a_socket_frees_its_port_and_its_slot,
+        );
+        crate::testing::register_test(
+            "tcp::an_aborted_connection_is_reaped_without_aliasing_its_handle",
+            an_aborted_connection_is_reaped_without_aliasing_its_handle,
+        );
+        crate::testing::register_test(
+            "tcp::time_wait_is_held_for_2msl_and_then_returns_the_port",
+            time_wait_is_held_for_2msl_and_then_returns_the_port,
+        );
+        crate::testing::register_test(
+            "tcp::the_reap_leaves_every_live_socket_alone",
+            the_reap_leaves_every_live_socket_alone,
+        );
+        crate::testing::register_test(
+            "tcp::reaping_returns_the_flow_index_entry_the_socket_held",
+            reaping_returns_the_flow_index_entry_the_socket_held,
         );
     }
 }
