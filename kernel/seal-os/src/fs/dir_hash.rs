@@ -157,16 +157,40 @@ impl DirHash {
     fn insert_unchecked(&mut self, parent: u64, name_hash: u64, name: String, inode_id: u64) {
         let hash = hash_dir_key(parent, name_hash, self.seed);
         let mut idx = (hash as usize) & self.cap_mask;
+        // Remember the first reusable (tombstoned) slot seen along the probe
+        // chain, but keep scanning past it: if the same (parent, name) key
+        // is already occupied further along the chain, that entry must be
+        // overwritten in place rather than shadowed by a second insert. A
+        // blind first-fit here would double-count `len` and leave the old
+        // entry as a stale duplicate reachable by `probe`/`entries_in_dir`.
+        let mut first_reusable: Option<usize> = None;
         loop {
             match &self.buckets[idx] {
-                Bucket::Empty | Bucket::Tombstone => {
-                    self.buckets[idx] = Bucket::Occupied {
+                Bucket::Empty => {
+                    let target = first_reusable.unwrap_or(idx);
+                    self.buckets[target] = Bucket::Occupied {
                         parent,
                         name_hash,
                         name,
                         inode_id,
                     };
                     self.len += 1;
+                    return;
+                }
+                Bucket::Tombstone => {
+                    if first_reusable.is_none() {
+                        first_reusable = Some(idx);
+                    }
+                }
+                Bucket::Occupied { parent: p, name: n, .. } if *p == parent && *n == name => {
+                    // Same key already present: replace its value in place.
+                    // `len` is unchanged and no duplicate slot is created.
+                    self.buckets[idx] = Bucket::Occupied {
+                        parent,
+                        name_hash,
+                        name,
+                        inode_id,
+                    };
                     return;
                 }
                 Bucket::Occupied { .. } => {
@@ -264,6 +288,16 @@ impl DirHash {
         }
         out
     }
+
+    /// Count tombstoned slots. Test-only: used to confirm that `insert`
+    /// reuses a vacated slot rather than leaking it as permanently dead.
+    #[cfg(any(test, feature = "test-mode"))]
+    fn tombstone_count(&self) -> usize {
+        self.buckets
+            .iter()
+            .filter(|b| matches!(b, Bucket::Tombstone))
+            .count()
+    }
 }
 
 #[cfg(any(test, feature = "test-mode"))]
@@ -291,8 +325,84 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Inserting an already-present (parent, name) key must overwrite the
+    /// existing entry in place, not append a second occupied bucket.
+    fn test_insert_duplicate_replaces() -> TestResult {
+        let mut dh = DirHash::new(0x1234);
+        dh.insert(0, "dup.txt", 1);
+        test_assert_eq!(dh.len(), 1);
+        dh.insert(0, "dup.txt", 2);
+        test_assert_eq!(dh.len(), 1);
+        test_assert_eq!(dh.lookup(0, "dup.txt"), Some(2));
+        TestResult::Pass
+    }
+
+    /// A slot vacated by `remove` is reused by a later `insert` instead of
+    /// being permanently leaked. Re-inserting the removed key lands its
+    /// probe chain on that key's own former slot at distance 0, so the
+    /// tombstone count returning to zero proves reuse rather than a fresh
+    /// empty slot being consumed instead.
+    fn test_insert_reuses_tombstone() -> TestResult {
+        let mut dh = DirHash::new(0x1234);
+        dh.insert(0, "a", 1);
+        dh.insert(0, "b", 2);
+        test_assert_eq!(dh.remove(0, "a"), Some(1));
+        test_assert_eq!(dh.tombstone_count(), 1);
+        dh.insert(0, "a", 99);
+        test_assert_eq!(dh.tombstone_count(), 0);
+        test_assert_eq!(dh.len(), 2);
+        test_assert_eq!(dh.lookup(0, "a"), Some(99));
+        test_assert_eq!(dh.lookup(0, "b"), Some(2));
+        TestResult::Pass
+    }
+
+    /// Two distinct keys whose base hash bucket collides must each get
+    /// their own slot via probing, rather than the second overwriting the
+    /// first (which would only be correct for a true key match).
+    fn test_insert_collision_gets_own_slot() -> TestResult {
+        let dh = DirHash::new(0x1234);
+        let mut found: Option<(String, String)> = None;
+        'search: for i in 0..64u32 {
+            for j in (i + 1)..64u32 {
+                let a = alloc::format!("k{}", i);
+                let b = alloc::format!("k{}", j);
+                let ha = hash_name(&a, dh.seed);
+                let hb = hash_name(&b, dh.seed);
+                let ba = (hash_dir_key(0, ha, dh.seed) as usize) & dh.cap_mask;
+                let bb = (hash_dir_key(0, hb, dh.seed) as usize) & dh.cap_mask;
+                if ba == bb {
+                    found = Some((a, b));
+                    break 'search;
+                }
+            }
+        }
+        let (a, b) = match found {
+            Some(pair) => pair,
+            None => return TestResult::Fail("no colliding name pair found among 64 candidates"),
+        };
+        let mut dh = dh;
+        dh.insert(0, &a, 10);
+        dh.insert(0, &b, 20);
+        test_assert_eq!(dh.len(), 2);
+        test_assert_eq!(dh.lookup(0, &a), Some(10));
+        test_assert_eq!(dh.lookup(0, &b), Some(20));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("dir_hash::insert_lookup", test_insert_lookup);
         crate::testing::register_test("dir_hash::remove", test_remove);
+        crate::testing::register_test(
+            "dir_hash::insert_duplicate_replaces",
+            test_insert_duplicate_replaces,
+        );
+        crate::testing::register_test(
+            "dir_hash::insert_reuses_tombstone",
+            test_insert_reuses_tombstone,
+        );
+        crate::testing::register_test(
+            "dir_hash::insert_collision_gets_own_slot",
+            test_insert_collision_gets_own_slot,
+        );
     }
 }

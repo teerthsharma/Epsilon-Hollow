@@ -226,11 +226,17 @@ fn parse(bytes: &[u8]) -> Result<RelObject, ObjError> {
     let mut sections = Vec::with_capacity(shnum);
     for i in 0..shnum {
         let base = shoff + shentsize * i as u64;
+        // Elf64_Shdr field offsets, in order:
+        //   sh_name 0, sh_type 4, sh_flags 8, sh_addr 16, sh_offset 24,
+        //   sh_size 32, sh_link 40, sh_info 44, sh_addralign 48, sh_entsize 56.
+        // `sh_addr` is the easy one to drop, because a relocatable object always
+        // writes it as zero — reading `sh_offset` at 16 then yields 0 and every
+        // later field is silently shifted by one field width.
         let sh = SectionHeader {
             kind: rd_u32(bytes, base + 4)?,
             flags: rd_u64(bytes, base + 8)?,
-            offset: rd_u64(bytes, base + 16)?,
-            size: rd_u64(bytes, base + 24)?,
+            offset: rd_u64(bytes, base + 24)?,
+            size: rd_u64(bytes, base + 32)?,
             link: rd_u32(bytes, base + 40)?,
             info: rd_u32(bytes, base + 44)?,
             addralign: rd_u64(bytes, base + 48)?,
