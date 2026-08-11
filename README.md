@@ -5816,6 +5816,96 @@ rather than at the retransmit timeout.
 That one is not fixed yet. It is written down, which is the difference between a
 bug and a secret.
 
+## I Fixed The Checksum And The Kernel Stopped Booting
+
+This one is mine, it happened while writing the sections above, and it is the
+best illustration in this entire document of the thing the document is about. So
+it goes in, in the present tense, unresolved at time of writing.
+
+Recall the checksum defect: `internet_checksum` returns a host-order number, seven
+sites stored it into a packed header without converting, and every packet this
+stack ever sent went out byte-swapped. The receive path verifies by recomputing
+and comparing against zero, so the kernel rejected its own packets — including on
+loopback, where `send_ipv4_packet` routes 127.0.0.1 straight back into
+`handle_ipv4_packet`.
+
+I fixed it. Seven `.to_be()` calls. Proven by round-tripping a packet the kernel
+builds through the verifier the kernel uses, which is about as unambiguous as
+evidence gets.
+
+CI went red. The boot stops. Fourteen milestones pass, eleven do not, no panic
+message, no fault report — the serial log just ends.
+
+The first line missing from the log, compared against the last good boot, is
+`[BENCH] tcp-roundtrip`. That benchmark opens eight TCP connections with both
+endpoints set to `127.0.0.1`.
+
+And `send_ipv4_packet`'s loopback branch does not queue. It calls
+`handle_ipv4_packet` **synchronously, from inside the send path.**
+
+My first guess was that this recursed forever — send, loop back, dispatch, answer,
+send. That guess was wrong, and the real answer is tidier and worse.
+
+`poll()` takes the lock on the socket table. **While still holding it**, it sends
+the SYN-ACK. That goes to `send_ipv4_packet`, which loops back, which dispatches
+to `handle_tcp_packet`, which takes the lock on the socket table.
+
+It is a `spin::Mutex`. Non-reentrant. There is no second packet and no stack
+growth — one re-entry, and the boot thread spins on a lock it is itself holding,
+forever.
+
+You can see it in the log without knowing any of that. The failing serial output
+ends with twenty-two consecutive timer-interrupt lines and nothing else, for two
+hundred and thirty-four seconds, until the harness gives up. The CPU is alive.
+Interrupts are being delivered. The kernel is simply never going to do anything
+again.
+
+**That cycle has been there the whole time.** It was unreachable for exactly one
+reason: every packet the kernel built failed its own checksum test and got
+dropped at the door. The bug was load-bearing. Fixing it removed the only thing
+standing between this kernel and an infinite loop.
+
+I want to be precise about the shape, because it has happened repeatedly in this
+repository and I have now been on both ends of it.
+
+Earlier, `map_page_inner` was overwriting live page-table entries. Making it
+refuse a present leaf was correct — and it turned a silent corruption into an
+`Err` that the caller was discarding with `let _`, which leaked a frame on every
+concurrent double-fault. One fix, one new defect exposed, both real.
+
+This is the same, and worse, because the suppressed defect is a lock-ordering
+deadlock in the network stack rather than a leaked page. A wrong checksum was the
+only reason `handle_tcp_packet` had never been re-entered while the socket table
+was locked.
+
+### What I am not going to do about it
+
+**Revert the checksum fix.** It restores a defect in which this operating system
+cannot send a valid packet to anybody, including itself, in order to hide a
+different defect. That trade is exactly what the preceding eighty commits exist
+to undo.
+
+**Weaken the verifier.** Same reason, with extra steps.
+
+**Make the benchmark skip the live path.** Then the benchmark stops measuring the
+thing it is named after, and this document gains an eighth entry in its taxonomy
+of checks that cannot fail — authored deliberately, by me, to make a light turn
+green. No.
+
+The fix is a loopback path that cannot re-enter itself: queue the packet for the
+next poll rather than dispatching it from inside the send. Structural, not
+bounded — impossible rather than merely limited.
+
+There is also a question I do not yet have the answer to, and it changes the
+shape of the repair. **Has loopback ever worked at all?** If locally-built packets
+were always dropped at the checksum, then that path has never once carried a
+packet, and `tcp-roundtrip` has been passing by some other route this entire time.
+In which case this is not a regression. It is the tenth subsystem in this document
+found never to have worked, and the honest fix is to make it work, for the first
+time, rather than to restore the accident that was standing in for it.
+
+I will know shortly. The kernel now has a way to tell me, which is new.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
