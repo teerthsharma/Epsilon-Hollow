@@ -6964,7 +6964,7 @@ fn cmd_packages(&self) -> String {
     String::new()
 }
 "#;
-        let pkg = "parse_eph(data); verify_signature(&pkg, key); self.install_file";
+        let pkg = "parse_eph(data); verify_package_signature(&pkg, key); self.install_file";
         let carrier = r#"
 pub enum CarrierType { Aether, Rust, C, Js }
 impl CarrierType {
@@ -8292,6 +8292,25 @@ fn check_manifoldpkg_shell_contract(root: &Path) -> Result<(), String> {
         fs::read_to_string(&pkg_path).map_err(|e| format!("read {}: {e}", pkg_path.display()))?;
     let carrier = fs::read_to_string(&carrier_path)
         .map_err(|e| format!("read {}: {e}", carrier_path.display()))?;
+    // The weak verifier deleted in this series signed neither the manifest
+    // description nor its dependencies, and separated no fields, so two
+    // different manifests could share one signature. Nothing else reads
+    // format.rs, so without this the function can be reintroduced silently.
+    let format_path = root
+        .join("kernel")
+        .join("seal-os")
+        .join("src")
+        .join("pkg")
+        .join("format.rs");
+    let format = fs::read_to_string(&format_path)
+        .map_err(|e| format!("read {}: {e}", format_path.display()))?;
+    if format.contains("fn verify_signature") {
+        return Err(
+            "pkg/format.rs reintroduces `fn verify_signature`; signature verification belongs \
+             in pkg/mod.rs::verify_package_signature, whose preimage covers every manifest field"
+                .to_string(),
+        );
+    }
     check_manifoldpkg_shell_contract_text(&shell, &pkg, &carrier)
 }
 
