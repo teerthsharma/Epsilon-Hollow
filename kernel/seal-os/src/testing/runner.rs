@@ -16,6 +16,7 @@ pub fn test_main() -> ! {
     crate::apps::shell::tests::register_all();
     crate::wm::window::tests::register_all();
     crate::wm::welcome::tests::register_all();
+    crate::wm::taskbar::tests::register_all();
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
