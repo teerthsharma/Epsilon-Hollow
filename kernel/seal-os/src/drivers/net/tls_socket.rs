@@ -4,9 +4,11 @@
 //! TLS-over-TCP socket — wraps TcpSocket with TlsSession encryption.
 //!
 //! [`TlsSocket::connect`] fails closed: it returns an error unless the peer
-//! authenticated over this handshake's transcript. There is no switch to skip
-//! that, because a chain replayed from an observed connection would pass any
-//! check that stops at chain validation.
+//! authenticated over this handshake's transcript *as the hostname the caller
+//! asked for*. There is no switch to skip that, because a chain replayed from
+//! an observed connection would pass any check that stops at chain
+//! validation, and a certificate the trust store issued for another name
+//! would pass any check that stops at the chain.
 
 use crate::drivers::net::tcp::TcpSocket;
 use crate::drivers::net::tls::{TlsSession, TlsState};
@@ -51,7 +53,25 @@ impl TlsSocket {
         self.tls.peer_authenticated()
     }
 
-    pub fn connect(&mut self, ip: crate::net::IpAddr, port: u16) -> Result<(), &'static str> {
+    /// Connect to `hostname` at `ip`:`port` and authenticate the peer as that
+    /// hostname.
+    ///
+    /// A caller holding only an address is refused: RFC 6125 §6.4 forbids
+    /// matching an IP literal against a certificate's dNSNames, and accepting
+    /// one as a name would mean any trust-store-issued certificate
+    /// authenticates the connection. Reaching a host by address needs an
+    /// iPAddress SubjectAltName, which [`crate::drivers::net::x509`] parses
+    /// past but does not surface.
+    pub fn connect(
+        &mut self,
+        ip: crate::net::IpAddr,
+        port: u16,
+        hostname: &str,
+    ) -> Result<(), &'static str> {
+        if hostname.is_empty() || is_ip_literal(hostname) {
+            return Err("TLS needs a hostname to authenticate the peer as");
+        }
+        self.tls.set_hostname(hostname);
         self.tcp.connect(ip, port);
 
         let start = crate::drivers::interrupts::ticks();
@@ -120,12 +140,6 @@ impl TlsSocket {
             return Err("TLS peer did not authenticate");
         }
 
-        // ponytail: the peer is authenticated as *some* holder of a
-        // trust-store-issued certificate, not as a particular name. `connect`
-        // takes an IpAddr and never sees a hostname, so there is nothing to
-        // match. Upgrade path: take the hostname alongside the address and
-        // require `x509::Certificate::matches_dns` on the leaf, which
-        // `x509.rs` already implements and tests.
         self.connected = true;
         Ok(())
     }
@@ -202,4 +216,15 @@ impl Default for TlsSocket {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Whether `host` is an IP address literal rather than a DNS name.
+///
+/// IPv6 literals carry a colon; an IPv4 literal is digits and dots only. Both
+/// are refused by [`TlsSocket::connect`] rather than matched against a
+/// dNSName, which RFC 6125 §6.4 forbids. The empty string is not a literal —
+/// it is not a name either, and `connect` rejects it on its own.
+fn is_ip_literal(host: &str) -> bool {
+    host.contains(':')
+        || (!host.is_empty() && host.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
 }

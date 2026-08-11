@@ -11,10 +11,16 @@
 //!
 //! A certificate chain is public data, so validating one proves only that a CA
 //! signed *some* key — anyone who observed a connection can replay the chain.
-//! The peer is authenticated only when it signs this handshake's transcript:
+//! The peer is authenticated only when it signs this handshake's transcript,
+//! and only as the name the caller asked for:
 //!
+//! * [`TlsSession::set_hostname`] records the name being connected to. A
+//!   session with no hostname refuses every certificate, because a chain that
+//!   is not checked against a name authenticates the holder of *any*
+//!   trust-store-issued certificate, including one issued for another name.
 //! * [`TlsSession::handle_certificate`] validates the chain against the
-//!   embedded anchor and remembers the leaf's public key.
+//!   embedded anchor, requires the leaf's SubjectAltName to carry that
+//!   hostname, and remembers the leaf's public key.
 //! * [`TlsSession::handle_certificate_verify`] checks an RFC 8446 §4.4.3
 //!   signature by that key over 64 `0x20` bytes, the context string, a zero
 //!   byte, and the transcript hash.
@@ -34,11 +40,22 @@
 //! For a pre-shared key with no certificate, RFC 8446 authenticates by the
 //! Finished MAC alone, which is what this code requires there.
 //!
+//! # Record layer
+//!
+//! Application data is fragmented at the RFC 8446 §5.1 limit of 2^14 bytes and
+//! each fragment becomes its own record under its own sequence number, so a
+//! large write is never truncated to fit a 16-bit length field. Every record
+//! header is authenticated: RFC 8446 §5.2 makes `opaque_type`,
+//! `legacy_record_version`, and `length` the AEAD additional data, so altering
+//! any of the five header bytes in flight fails the tag check.
+//!
 //! One documented deviation from RFC 8446 remains: the peer's Certificate,
 //! CertificateVerify, and Finished are read as plaintext handshake records,
 //! whereas RFC 8446 encrypts them under the handshake traffic keys, and no
-//! EncryptedExtensions message is expected. This does not interoperate with a
-//! stock TLS 1.3 server.
+//! EncryptedExtensions message is expected. The ClientHello also carries no
+//! `server_name` extension, so the hostname binds the certificate this end
+//! accepts without telling the peer which certificate to send. This does not
+//! interoperate with a stock TLS 1.3 server.
 //!
 //! What *is* real: the key schedule (RFC 5869 HMAC-SHA256 HKDF) over a running
 //! SHA-256 transcript, the X25519 agreement ([`super::ecdhe`]), the record
@@ -63,6 +80,14 @@ const HS_CERTIFICATE_VERIFY: u8 = 0x0f;
 const HS_FINISHED: u8 = 0x14;
 /// RFC 8446 §4.4.3 context string for a server CertificateVerify.
 const CERT_VERIFY_CONTEXT: &[u8] = b"TLS 1.3, server CertificateVerify";
+/// RFC 8446 §5.1: a TLSPlaintext fragment is at most 2^14 bytes. Longer
+/// application data is fragmented across records, never truncated.
+const MAX_PLAINTEXT_LEN: usize = 1 << 14;
+/// RFC 8446 §5.2: TLSCiphertext.length is at most 2^14 + 256, which is the
+/// largest length the 16-bit record header may ever be asked to describe.
+const MAX_RECORD_LEN: usize = (1 << 14) + 256;
+/// AES-128-GCM authentication tag.
+const TAG_LEN: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TlsState {
@@ -94,6 +119,9 @@ pub struct TlsSession {
     key_exchange: KeyExchange,
     peer_verified: bool,
     peer_cert_error: Option<x509::X509Error>,
+    /// The name this connection asked for. The leaf certificate must carry it
+    /// as a SubjectAltName dNSName; `None` refuses every certificate.
+    hostname: Option<String>,
     /// Running SHA-256 over every handshake message, in wire order. Cloned to
     /// snapshot Transcript-Hash at each point RFC 8446 needs one.
     transcript: Sha256,
@@ -136,6 +164,7 @@ impl TlsSession {
             key_exchange: KeyExchange::None,
             peer_verified: false,
             peer_cert_error: None,
+            hostname: None,
             transcript: Sha256::new(),
             peer_public_key: None,
             server_hs_secret: [0u8; 32],
@@ -153,6 +182,15 @@ impl TlsSession {
     pub fn set_psk(&mut self, psk: &[u8; 32]) {
         self.psk = *psk;
         self.has_psk = true;
+    }
+
+    /// Name the peer's certificate must be issued for.
+    ///
+    /// Without one, [`Self::handle_certificate`] refuses every chain: a
+    /// certificate checked only against the trust store authenticates whoever
+    /// holds *a* certificate the anchor issued, not the host being reached.
+    pub fn set_hostname(&mut self, hostname: &str) {
+        self.hostname = Some(String::from(hostname));
     }
 
     pub fn state(&self) -> TlsState {
@@ -271,7 +309,7 @@ impl TlsSession {
         // Seed the transcript. Everything the peer later signs or MACs covers
         // these bytes, so a tampered ClientHello cannot go unnoticed.
         self.transcript.update(&hs);
-        Ok(wrap_record(ContentType::Handshake, &hs))
+        wrap_record(ContentType::Handshake, &hs)
     }
 
     /// Parse ServerHello and derive traffic keys.
@@ -390,10 +428,17 @@ impl TlsSession {
     /// Validate a peer Certificate handshake message (RFC 8446 §4.4.2) against
     /// the embedded trust store and the CMOS clock.
     ///
-    /// `msg` is the handshake message: type byte, 3-byte length, body. On
-    /// success the leaf's Ed25519 key is retained for
-    /// [`Self::handle_certificate_verify`]; a valid chain on its own
-    /// authenticates nothing.
+    /// `msg` is the handshake message: type byte, 3-byte length, body. The
+    /// leaf must also be issued for the hostname given to
+    /// [`Self::set_hostname`], or a certificate the anchor issued for any
+    /// other name would authenticate this connection. On success the leaf's
+    /// Ed25519 key is retained for [`Self::handle_certificate_verify`]; a
+    /// valid chain on its own authenticates nothing.
+    ///
+    /// A name mismatch is not an [`x509::X509Error`] — the chain itself is
+    /// sound — so it leaves [`Self::peer_cert_error`] unset and reports the
+    /// reason in the returned error instead. A session with no hostname at all
+    /// matches nothing and so refuses every chain.
     pub fn handle_certificate(&mut self, msg: &[u8]) -> Result<(), String> {
         let body = handshake_body(msg, HS_CERTIFICATE)?;
         let msg_len = 4 + body.len();
@@ -409,6 +454,17 @@ impl TlsSession {
                 // so this cannot fail; propagate rather than unwrap anyway.
                 let leaf = x509::Certificate::parse(ders[0])
                     .map_err(|_| String::from("leaf certificate re-parse failed"))?;
+                if !self
+                    .hostname
+                    .as_deref()
+                    .is_some_and(|host| leaf.matches_dns(host))
+                {
+                    self.peer_verified = false;
+                    self.peer_public_key = None;
+                    return Err(String::from(
+                        "peer certificate is not issued for the requested hostname",
+                    ));
+                }
                 self.peer_public_key = Some(leaf.public_key);
                 self.peer_verified = true;
                 self.peer_cert_error = None;
@@ -500,6 +556,12 @@ impl TlsSession {
     }
 
     /// Encrypt application data with AES-128-GCM.
+    ///
+    /// Plaintext longer than the RFC 8446 §5.1 fragment limit is split across
+    /// records, each with its own sequence number, rather than truncated into
+    /// one record whose 16-bit length field has wrapped. Each record's header
+    /// is the AEAD additional data (RFC 8446 §5.2), so the type, version, and
+    /// length are authenticated along with the payload.
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
         if self.state != TlsState::Established {
             return Err(String::from("handshake not complete"));
@@ -507,19 +569,40 @@ impl TlsSession {
         if !self.authenticated {
             return Err(String::from("peer has not authenticated"));
         }
-        let nonce = self.make_nonce(true);
         let cipher =
             Aes128Gcm::new_from_slice(&self.write_key).map_err(|_| String::from("bad key"))?;
-        let mut ciphertext = plaintext.to_vec();
-        let tag = cipher
-            .encrypt_in_place_detached((&nonce[..]).into(), &[], &mut ciphertext)
-            .map_err(|_| String::from("encrypt failed"))?;
-        ciphertext.extend_from_slice(&tag);
-        self.write_seq += 1;
-        Ok(wrap_record(ContentType::ApplicationData, &ciphertext))
+        let mut out = Vec::with_capacity(plaintext.len() + 5 + TAG_LEN);
+        let mut rest = plaintext;
+        loop {
+            let (fragment, tail) = rest.split_at(rest.len().min(MAX_PLAINTEXT_LEN));
+            let header = record_header(
+                ContentType::ApplicationData,
+                fragment.len().saturating_add(TAG_LEN),
+            )?;
+            let nonce = self.make_nonce(true);
+            let mut ciphertext = fragment.to_vec();
+            let tag = cipher
+                .encrypt_in_place_detached((&nonce[..]).into(), &header, &mut ciphertext)
+                .map_err(|_| String::from("encrypt failed"))?;
+            self.write_seq += 1;
+            out.extend_from_slice(&header);
+            out.extend_from_slice(&ciphertext);
+            out.extend_from_slice(&tag);
+            rest = tail;
+            // A zero-length write is still one record, so this runs at least
+            // once before the tail is consulted.
+            if rest.is_empty() {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Decrypt application data.
+    ///
+    /// The record's own five header bytes are the additional data, so a type,
+    /// version, or length altered in flight fails the tag check instead of
+    /// being ignored.
     pub fn decrypt(&mut self, data: &[u8]) -> Result<Vec<u8>, String> {
         if self.state != TlsState::Established {
             return Err(String::from("handshake not complete"));
@@ -531,16 +614,22 @@ impl TlsSession {
         if rec.ctype != ContentType::ApplicationData as u8 {
             return Err(String::from("expected application data"));
         }
-        if rec.payload.len() < 16 {
+        // RFC 8446 §5.2: a longer record is a record_overflow, not something
+        // to buffer and try to open.
+        if rec.payload.len() > MAX_RECORD_LEN {
+            return Err(String::from("TLS record exceeds RFC 8446 §5.2 maximum"));
+        }
+        if rec.payload.len() < TAG_LEN {
             return Err(String::from("ciphertext too short"));
         }
-        let (ct, tag) = rec.payload.split_at(rec.payload.len() - 16);
+        let header: [u8; 5] = [data[0], data[1], data[2], data[3], data[4]];
+        let (ct, tag) = rec.payload.split_at(rec.payload.len() - TAG_LEN);
         let nonce = self.make_nonce(false);
         let cipher =
             Aes128Gcm::new_from_slice(&self.read_key).map_err(|_| String::from("bad key"))?;
         let mut pt = ct.to_vec();
         cipher
-            .decrypt_in_place_detached((&nonce[..]).into(), &[], &mut pt, tag.into())
+            .decrypt_in_place_detached((&nonce[..]).into(), &header, &mut pt, tag.into())
             .map_err(|_| String::from("decrypt failed (auth tag mismatch)"))?;
         self.read_seq += 1;
         Ok(pt)
@@ -601,13 +690,36 @@ enum ContentType {
     ApplicationData = 23,
 }
 
-fn wrap_record(ctype: ContentType, payload: &[u8]) -> Vec<u8> {
+/// The five header bytes of a record, which RFC 8446 §5.2 also makes the AEAD
+/// additional data: `opaque_type`, `legacy_record_version`, `length`.
+///
+/// Refuses any length the 16-bit field cannot describe rather than letting it
+/// wrap, so a record on the wire always says how long it really is.
+fn record_header(ctype: ContentType, len: usize) -> Result<[u8; 5], String> {
+    if len > MAX_RECORD_LEN {
+        return Err(String::from("TLS record exceeds RFC 8446 §5.2 maximum"));
+    }
+    Ok([
+        ctype as u8,
+        0x03,
+        0x03, // TLS 1.2 legacy record version
+        (len >> 8) as u8,
+        len as u8,
+    ])
+}
+
+/// Frame a plaintext record. RFC 8446 §5.1 caps the fragment at 2^14 bytes;
+/// a caller with more to send fragments it, as [`TlsSession::encrypt`] does.
+fn wrap_record(ctype: ContentType, payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.len() > MAX_PLAINTEXT_LEN {
+        return Err(String::from(
+            "TLS plaintext exceeds the RFC 8446 §5.1 fragment limit",
+        ));
+    }
     let mut rec = Vec::with_capacity(5 + payload.len());
-    rec.push(ctype as u8);
-    rec.extend_from_slice(&0x0303u16.to_be_bytes()); // TLS 1.2 legacy record version
-    rec.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    rec.extend_from_slice(&record_header(ctype, payload.len())?);
     rec.extend_from_slice(payload);
-    rec
+    Ok(rec)
 }
 
 struct Record {
@@ -1126,6 +1238,7 @@ pub mod tests {
             &super::super::certs::INTERMEDIATE_DER,
         ]);
         let mut session = TlsSession::new();
+        session.set_hostname("seal.local");
         let now = crate::drivers::rtc::seconds_since_epoch();
         let expected_ok = x509::verify_chain_der(
             &[
@@ -1150,6 +1263,8 @@ pub mod tests {
             &super::super::certs::INTERMEDIATE_DER,
         ]);
         let mut session = TlsSession::new();
+        // Named, so the rejection below is the chain and not a missing name.
+        session.set_hostname("seal.local");
         test_assert!(
             session.handle_certificate(&msg).is_err(),
             "a chain through a non-CA leaf was accepted"
@@ -1165,6 +1280,9 @@ pub mod tests {
         let msg = certificate_message(&[&super::super::certs::LEAF_DER]);
         for cut in 0..msg.len() {
             let mut session = TlsSession::new();
+            // Named, so each rejection below is the truncation and not a
+            // missing name.
+            session.set_hostname("seal.local");
             test_assert!(
                 session.handle_certificate(&msg[..cut]).is_err(),
                 "a truncated Certificate message was accepted"
@@ -1178,6 +1296,7 @@ pub mod tests {
         // connection can replay it verbatim, so chain validation alone must
         // never unlock the record layer.
         let mut session = TlsSession::new();
+        session.set_hostname("seal.local");
         session.client_random = [0x01u8; 32];
         session.ecdhe_key = Some(ecdhe::EphemeralKey::from_scalar([0x55u8; 32]));
         let server_key = ecdhe::EphemeralKey::from_scalar([0x66u8; 32]);
@@ -1548,6 +1667,7 @@ pub mod tests {
             return TestResult::Fail("leaf fixture failed to parse");
         };
         let mut session = TlsSession::new();
+        session.set_hostname("seal.local");
         let msg = certificate_message(&[
             &super::super::certs::LEAF_DER,
             &super::super::certs::INTERMEDIATE_DER,
@@ -1559,6 +1679,7 @@ pub mod tests {
         }
 
         let mut rogue = TlsSession::new();
+        rogue.set_hostname("seal.local");
         let bad = certificate_message(&[
             &super::super::certs::ROGUE_LEAF_DER,
             &super::super::certs::LEAF_DER,
@@ -1607,7 +1728,286 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_certificate_must_match_the_requested_hostname() -> TestResult {
+        // A trust-store-issued certificate proves the peer is *somebody*. It
+        // has to be the somebody the caller asked for, or a valid certificate
+        // for any other name authenticates this connection.
+        let msg = certificate_message(&[
+            &super::super::certs::LEAF_DER,
+            &super::super::certs::INTERMEDIATE_DER,
+        ]);
+        let now = crate::drivers::rtc::seconds_since_epoch();
+        let chain_ok = x509::verify_chain_der(
+            &[
+                &super::super::certs::LEAF_DER,
+                &super::super::certs::INTERMEDIATE_DER,
+            ],
+            now,
+        )
+        .is_ok();
+
+        // Both SubjectAltName dNSNames the leaf actually carries, so this is a
+        // SAN lookup and not a single hard-coded string.
+        for host in ["seal.local", "proof.seal", "SEAL.LOCAL"] {
+            let mut session = TlsSession::new();
+            session.set_hostname(host);
+            test_assert_eq!(session.handle_certificate(&msg).is_ok(), chain_ok);
+        }
+
+        // Names the leaf does not carry. The chain still validates against the
+        // embedded anchor, so only the name check can refuse these.
+        for host in [
+            "evil.seal",
+            "seal.local.evil.seal",
+            "evil.seal.local",
+            "eal.local",
+            "seal.loca",
+            "*.local",
+            "",
+        ] {
+            let mut session = TlsSession::new();
+            session.set_hostname(host);
+            test_assert!(
+                session.handle_certificate(&msg).is_err(),
+                "a certificate issued for another name was accepted"
+            );
+            test_assert!(
+                !session.peer_verified(),
+                "peer marked verified on a name mismatch"
+            );
+            test_assert_eq!(session.peer_public_key, None);
+        }
+
+        // No hostname configured at all: fail closed rather than accept any
+        // name the peer happens to present.
+        let mut session = TlsSession::new();
+        test_assert!(
+            session.handle_certificate(&msg).is_err(),
+            "a certificate was accepted with no hostname to check it against"
+        );
+        test_assert!(
+            !session.peer_verified(),
+            "peer marked verified with no hostname"
+        );
+        TestResult::Pass
+    }
+
+    fn test_hostname_mismatch_stops_the_handshake() -> TestResult {
+        // The name check has to keep the transcript closed too: a refused
+        // Certificate must leave nothing for CertificateVerify to build on.
+        let cert = certificate_message(&[
+            &super::super::certs::LEAF_DER,
+            &super::super::certs::INTERMEDIATE_DER,
+        ]);
+        let mut session = TlsSession::new();
+        session.set_hostname("evil.seal");
+        session.client_random = [0x01u8; 32];
+        session.ecdhe_key = Some(ecdhe::EphemeralKey::from_scalar([0x55u8; 32]));
+        let server_key = ecdhe::EphemeralKey::from_scalar([0x66u8; 32]);
+        let hello = server_hello_with_key_share(&[0xfeu8; 32], server_key.public());
+        if session.handle_server_hello(&hello).is_err() {
+            return TestResult::Fail("ServerHello with a key share was rejected");
+        }
+        test_assert!(
+            session.handle_handshake_record(&cert).is_err(),
+            "a certificate issued for another name was accepted"
+        );
+        let signing = SigningKey::from_bytes(&RFC8032_SECRET);
+        session.peer_public_key = Some(signing.verifying_key().to_bytes());
+        let cv = signed_certificate_verify(&session, &signing, 0);
+        test_assert!(
+            session.handle_certificate_verify(&cv).is_err(),
+            "CertificateVerify was accepted after a refused certificate"
+        );
+        test_assert!(
+            session.encrypt(b"GET /secret HTTP/1.1").is_err(),
+            "the record layer opened for a certificate issued to another name"
+        );
+        test_assert!(!session.peer_authenticated(), "peer marked authenticated");
+        TestResult::Pass
+    }
+
+    // --- record layer ---------------------------------------------------
+
+    fn test_large_plaintext_never_wraps_the_length_field() -> TestResult {
+        // 65_520 bytes of plaintext put 65_536 into a 16-bit length field.
+        // RFC 8446 §5.1 caps a fragment at 2^14, so this has to come back as
+        // several records, each one honestly describing its own payload.
+        let mut session = record_session();
+        let plaintext = vec![0x5Au8; 65_520];
+        let Ok(out) = session.encrypt(&plaintext) else {
+            return TestResult::Fail("a plaintext larger than one fragment was refused outright");
+        };
+
+        let mut peer = record_session();
+        let mut recovered: Vec<u8> = Vec::new();
+        let mut records = 0usize;
+        let mut off = 0usize;
+        while off < out.len() {
+            test_assert!(out.len() - off >= 5, "record header truncated");
+            let len = u16::from_be_bytes([out[off + 3], out[off + 4]]) as usize;
+            test_assert!(len > 0, "record declares a zero length");
+            test_assert!(
+                len <= MAX_RECORD_LEN,
+                "record exceeds the RFC 8446 §5.2 maximum"
+            );
+            let end = off + 5 + len;
+            test_assert!(end <= out.len(), "record length field overruns the buffer");
+            let Ok(pt) = peer.decrypt(&out[off..end]) else {
+                return TestResult::Fail("an emitted record did not decrypt");
+            };
+            recovered.extend_from_slice(&pt);
+            off = end;
+            records += 1;
+        }
+        test_assert!(records >= 4, "the plaintext was not fragmented");
+        test_assert_eq!(recovered.len(), plaintext.len());
+        test_assert!(
+            recovered == plaintext,
+            "the plaintext did not survive fragmentation"
+        );
+
+        // The frame builder refuses outright anything the 16-bit length field
+        // cannot describe, so no other caller can emit a wrapped length
+        // either.
+        test_assert!(
+            wrap_record(ContentType::Handshake, &vec![0u8; 70_000]).is_err(),
+            "a record longer than the length field was framed"
+        );
+        test_assert!(
+            wrap_record(ContentType::Handshake, &vec![0u8; MAX_PLAINTEXT_LEN + 1]).is_err(),
+            "a fragment over the RFC 8446 §5.1 limit was framed"
+        );
+        test_assert!(
+            record_header(ContentType::ApplicationData, MAX_RECORD_LEN + 1).is_err(),
+            "a record over the RFC 8446 §5.2 maximum was framed"
+        );
+        // The limits themselves still frame, so the checks above are bounds
+        // and not a blanket refusal.
+        let Ok(largest) = wrap_record(ContentType::Handshake, &vec![0u8; MAX_PLAINTEXT_LEN]) else {
+            return TestResult::Fail("the largest legal fragment was refused");
+        };
+        test_assert_eq!(
+            u16::from_be_bytes([largest[3], largest[4]]) as usize,
+            MAX_PLAINTEXT_LEN
+        );
+        // A receiver refuses a record longer than §5.2 allows even when its
+        // tag is genuinely valid, so the limit is the receiver's own and not
+        // something the AEAD happens to enforce. Both records below are built
+        // here with the fixture key, and only the length tells them apart.
+        let Ok(cipher) = Aes128Gcm::new_from_slice(&[0xCDu8; 16]) else {
+            return TestResult::Fail("AES-128-GCM rejected the fixture key");
+        };
+        for (declared, allowed) in [(MAX_RECORD_LEN, true), (MAX_RECORD_LEN + 1, false)] {
+            let mut forged = vec![23u8, 0x03, 0x03];
+            forged.extend_from_slice(&(declared as u16).to_be_bytes());
+            let mut body = vec![0x11u8; declared - TAG_LEN];
+            let Ok(tag) =
+                cipher.encrypt_in_place_detached((&[0xEFu8; 12][..]).into(), &forged, &mut body)
+            else {
+                return TestResult::Fail("the oversize fixture would not encrypt");
+            };
+            forged.extend_from_slice(&body);
+            forged.extend_from_slice(&tag);
+            let mut peer = record_session();
+            test_assert_eq!(peer.decrypt(&forged).is_ok(), allowed);
+        }
+        TestResult::Pass
+    }
+
+    fn test_record_header_is_authenticated() -> TestResult {
+        // RFC 8446 §5.2 binds the record header as AEAD additional data. The
+        // two legacy_record_version bytes are read nowhere else in this
+        // module, so only the AEAD can refuse an altered one.
+        let mut session = record_session();
+        let Ok(rec) = session.encrypt(b"authenticated header") else {
+            return TestResult::Fail("the record layer refused a plaintext");
+        };
+        for i in [1usize, 2] {
+            let mut tampered = rec.clone();
+            tampered[i] ^= 0x01;
+            let mut peer = record_session();
+            if peer.decrypt(&tampered).is_ok() {
+                return TestResult::Fail("a record with an altered header was accepted");
+            }
+        }
+        // Control: the untouched record still opens, so the rejections above
+        // are the header check and not a broken fixture.
+        let mut peer = record_session();
+        test_assert!(
+            peer.decrypt(&rec).is_ok(),
+            "an untouched record failed to decrypt"
+        );
+        TestResult::Pass
+    }
+
+    fn test_record_aad_is_the_rfc8446_header() -> TestResult {
+        // The additional data is built here from the RFC 8446 §5.2 text —
+        // opaque_type ‖ legacy_record_version ‖ length — and the record is
+        // opened by a separate AES-GCM invocation that never calls this
+        // module's helper, so agreement means the record layer matches the
+        // specification rather than matching itself.
+        let mut session = record_session();
+        let plaintext = b"RFC 8446 5.2 additional_data";
+        let Ok(rec) = session.encrypt(plaintext) else {
+            return TestResult::Fail("the record layer refused a plaintext");
+        };
+        test_assert_eq!(rec.len(), 5 + plaintext.len() + 16);
+
+        let mut aad: Vec<u8> = Vec::new();
+        aad.push(23u8); // TLSCiphertext.opaque_type = application_data
+        aad.extend_from_slice(&[0x03, 0x03]); // legacy_record_version
+        aad.extend_from_slice(&((rec.len() - 5) as u16).to_be_bytes()); // length
+        test_assert_eq!(aad.as_slice(), &rec[..5]);
+
+        // RFC 8446 §5.3: the nonce is the write IV XOR the 64-bit sequence
+        // number, right-aligned. This is the first record, so sequence 0.
+        let nonce = [0xEFu8; 12];
+        let Ok(cipher) = Aes128Gcm::new_from_slice(&[0xCDu8; 16]) else {
+            return TestResult::Fail("AES-128-GCM rejected the fixture key");
+        };
+        let (ct, tag) = rec[5..].split_at(rec.len() - 5 - 16);
+        let mut pt = ct.to_vec();
+        if cipher
+            .decrypt_in_place_detached((&nonce[..]).into(), &aad, &mut pt, tag.into())
+            .is_err()
+        {
+            return TestResult::Fail("the record does not open under the RFC 8446 §5.2 header");
+        }
+        test_assert_eq!(pt.as_slice(), plaintext.as_slice());
+
+        // The empty additional data this module used to pass must not open
+        // it, and neither must a header whose length field is wrong.
+        let mut wrong_len = aad.clone();
+        wrong_len[4] ^= 0x01;
+        for bad in [Vec::new(), wrong_len] {
+            let mut pt = ct.to_vec();
+            if cipher
+                .decrypt_in_place_detached((&nonce[..]).into(), &bad, &mut pt, tag.into())
+                .is_ok()
+            {
+                return TestResult::Fail("the record opened under something other than its header");
+            }
+        }
+        TestResult::Pass
+    }
+
     // --- fixtures -------------------------------------------------------
+
+    /// A session with the record layer open on fixed keys, so a record it
+    /// encrypts can be handed straight to another one's `decrypt`. No
+    /// handshake runs, so `authenticated` is set explicitly rather than
+    /// earned; the gate itself is exercised by the `tls::*` handshake tests.
+    fn record_session() -> TlsSession {
+        let mut session = TlsSession::new();
+        session.state = TlsState::Established;
+        session.authenticated = true;
+        session.write_key = [0xCDu8; 16];
+        session.read_key = [0xCDu8; 16];
+        session.write_iv = [0xEFu8; 12];
+        session.read_iv = [0xEFu8; 12];
+        session
+    }
 
     /// Wrap a body in a handshake header: type byte, then a 24-bit length.
     fn handshake_message(ty: u8, body: &[u8]) -> Vec<u8> {
@@ -1673,6 +2073,9 @@ pub mod tests {
     /// As above, with the Certificate message spelled out.
     fn session_after_certificate(tag: u8, cert: &[u8]) -> Option<TlsSession> {
         let mut session = TlsSession::new();
+        // The name the fixture leaf is issued for, which is what production
+        // supplies through `TlsSocket::connect`.
+        session.set_hostname("seal.local");
         session.client_random = [tag; 32];
         session.ecdhe_key = Some(ecdhe::EphemeralKey::from_scalar([0x55u8; 32]));
         let server_key = ecdhe::EphemeralKey::from_scalar([0x66u8; 32]);
@@ -1725,7 +2128,9 @@ pub mod tests {
             ((len >> 8) & 0xFF) as u8,
             (len & 0xFF) as u8,
         ]);
-        wrap_record(ContentType::Handshake, &hs)
+        // Every fixture here is a few hundred bytes, far below the §5.1
+        // fragment limit. An empty record would fail its test loudly.
+        wrap_record(ContentType::Handshake, &hs).unwrap_or_default()
     }
 
     /// Build an RFC 8446 §4.4.2 Certificate handshake message.
@@ -1857,6 +2262,26 @@ pub mod tests {
             "tls::handshake_record_rejects_unknown_message",
             test_handshake_record_rejects_unknown_message,
         );
+        crate::testing::register_test(
+            "tls::certificate_must_match_the_requested_hostname",
+            test_certificate_must_match_the_requested_hostname,
+        );
+        crate::testing::register_test(
+            "tls::hostname_mismatch_stops_the_handshake",
+            test_hostname_mismatch_stops_the_handshake,
+        );
+        crate::testing::register_test(
+            "tls::large_plaintext_never_wraps_the_length_field",
+            test_large_plaintext_never_wraps_the_length_field,
+        );
+        crate::testing::register_test(
+            "tls::record_header_is_authenticated",
+            test_record_header_is_authenticated,
+        );
+        crate::testing::register_test(
+            "tls::record_aad_is_the_rfc8446_header",
+            test_record_aad_is_the_rfc8446_header,
+        );
         crate::testing::register_test("tls::proof_line_shape", test_proof_line_shape);
     }
 }
@@ -1875,7 +2300,7 @@ mod host_tests {
     #[test]
     fn test_record_roundtrip() {
         let payload = b"hello";
-        let rec = wrap_record(ContentType::ApplicationData, payload);
+        let rec = wrap_record(ContentType::ApplicationData, payload).unwrap();
         let parsed = parse_record(&rec).unwrap();
         assert_eq!(parsed.ctype, ContentType::ApplicationData as u8);
         assert_eq!(parsed.payload, payload.as_slice());
