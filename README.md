@@ -6017,6 +6017,35 @@ pleasing shape: the document argues that fixing the visible defect reveals the
 next, and then the argument had to be made four more times on the author's own
 commits before it would let the build go green.
 
+### 370, and a network stack that works
+
+The count is 370 now. The five new ones are TCP resets, retransmission, and the
+receive window — and with them, this operating system can do a list of things it
+has never done:
+
+- send a packet whose checksum is correct
+- deliver a packet to itself, over TCP or UDP, without deadlocking
+- complete a three-way handshake over `127.0.0.1`
+- resolve an address by ARP
+- cache a DNS answer
+- notice that a connection was refused
+- stop retransmitting something that was already acknowledged
+- refuse a duplicate segment instead of appending it to the receive buffer twice
+- refuse a neighbour advertisement that carries no address
+
+Every one of those is a thing an operating system is generally assumed to do on
+the first day. This one has been shipping without them, through twenty-seven
+proof gates, a boot-milestone checker, and a benchmark suite that emitted
+`result=pass` the entire time.
+
+That is not because anybody was careless. It is because a network stack that
+cannot send a valid packet still boots, still passes every gate that greps a log
+line, and still reports `established=8 result=pass` from a fixture that injects
+its packets directly into the handler and never touches the wire.
+
+The failure mode of a network is silence, and silence is also what success looks
+like from the outside.
+
 ### What the number is not
 
 364 is not coverage. It is the count of assertions that now execute on every boot,
