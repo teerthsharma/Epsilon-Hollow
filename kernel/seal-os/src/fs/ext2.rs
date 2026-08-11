@@ -464,6 +464,19 @@ impl Ext2Fs {
             size
         };
 
+        // `total_size` is disk-controlled (directly for `i_size`, and via
+        // the `i_dir_acl` high-bits extension for large regular files) and
+        // is not otherwise bounded before it drives `file_block` below.
+        // A corrupted, oversized `total_size` combined with a caller offset
+        // still inside it pushes `file_block` past the real capacity of
+        // `get_disk_block_from_inode`'s triple-indirect block-pointer
+        // arrays, producing an out-of-bounds `buf[off]` index there —
+        // `panic = "abort"` in this kernel's profiles turns that into a
+        // halt. Reject it here, before any block lookup, using the same
+        // capacity ceiling `checked_dir_size` already applies to directory
+        // sizes.
+        self.checked_size(total_size)?;
+
         if offset >= total_size {
             return Ok(0);
         }
@@ -500,35 +513,48 @@ impl Ext2Fs {
         Ok(read_bytes)
     }
 
-    /// Bound a directory inode's `i_size` against what the mounted filesystem
-    /// can physically hold, before it is used to size a scratch allocation.
+    /// Bound a raw byte size against what the mounted filesystem can
+    /// physically hold, before that size is used to size an allocation or
+    /// drive index arithmetic over on-disk block-pointer arrays.
     ///
-    /// `i_size` is read straight off disk (`read_inode`) and is therefore
-    /// untrusted: a corrupted or crafted image can set a directory inode's
-    /// `i_size` to e.g. `0xFFFF_FFF0` (~4 GiB). Every directory-entry parser
-    /// used to do `alloc::vec![0u8; inode.i_size as usize]` with no upper
-    /// bound, which reaches the allocator before a single byte is read from
-    /// disk. `no_std` seal-os has no `#[alloc_error_handler]`, so an
-    /// allocation failure aborts the kernel outright rather than returning
-    /// an error — a single `ls` of a bit-rotted directory halts the machine.
+    /// Shared by `checked_dir_size` (directory `i_size`, straight off disk
+    /// via `read_inode`) and `read_inode_data` (regular-file `total_size`,
+    /// including the `i_dir_acl`-extended high bits) so the ceiling is
+    /// defined and can be adjusted in exactly one place. A prior fix to
+    /// this file added this bound for directories only; a second,
+    /// independently-derived copy for regular files is the failure mode
+    /// this branch has hit before — the two would drift the moment one of
+    /// them changed and the other did not.
     ///
     /// The ceiling is the total byte capacity of the mounted volume:
     /// `block_size` (derived from superblock field `s_log_block_size`,
     /// `mount()` above) times `s_blocks_count` (total block count, also
     /// read from the superblock). No single inode can legitimately hold
-    /// more data than the whole filesystem, so an `i_size` beyond that is
+    /// more data than the whole filesystem, so a size beyond that is
     /// definitionally corrupt. Fails closed: out-of-range returns an error
     /// instead of allocating, and instead of silently truncating the read
-    /// (which would turn corruption into a wrong-but-plausible directory
-    /// listing).
-    fn checked_dir_size(&self, inode: &Inode) -> Result<usize, VfsError> {
+    /// (which would turn corruption into wrong-but-plausible data).
+    fn checked_size(&self, size: u64) -> Result<usize, VfsError> {
         let sb = self.superblock.as_ref().ok_or(VfsError::IoError)?;
         let ceiling = (self.block_size as u64) * (sb.s_blocks_count as u64);
-        let size = inode.i_size as u64;
         if size > ceiling {
             return Err(VfsError::IoError);
         }
         Ok(size as usize)
+    }
+
+    /// Bound a directory inode's `i_size` against filesystem capacity — see
+    /// `checked_size` for the ceiling and the rationale. `i_size` is read
+    /// straight off disk (`read_inode`) and is therefore untrusted: a
+    /// corrupted or crafted image can set a directory inode's `i_size` to
+    /// e.g. `0xFFFF_FFF0` (~4 GiB). Every directory-entry parser used to do
+    /// `alloc::vec![0u8; inode.i_size as usize]` with no upper bound, which
+    /// reaches the allocator before a single byte is read from disk.
+    /// `no_std` seal-os has no `#[alloc_error_handler]`, so an allocation
+    /// failure aborts the kernel outright rather than returning an error —
+    /// a single `ls` of a bit-rotted directory halts the machine.
+    fn checked_dir_size(&self, inode: &Inode) -> Result<usize, VfsError> {
+        self.checked_size(inode.i_size as u64)
     }
 
     /// Resolve or allocate the indirect block referenced by `inode.i_block[idx]`.
@@ -665,7 +691,16 @@ impl Ext2Fs {
 
         // Triple indirect.
         rel -= ptrs_per_block * ptrs_per_block;
-        if rel < ptrs_per_block * ptrs_per_block * ptrs_per_block {
+        // `ptrs_per_block` is `block_size / 4`; for every block size this
+        // file accepts with `s_log_block_size >= 3` (8192, 16384, 32768),
+        // `ptrs_per_block` is a power of two >= 2048, so its cube is an
+        // exact multiple of `2^32` and a `u32` product wraps to `0`,
+        // permanently disabling this branch. Widen to `u64`, which cannot
+        // wrap for any `ptrs_per_block` this file can produce (max `8192`,
+        // cube `~5.5e11`, far under `u64::MAX`), so the comparison reflects
+        // the intended triple-indirect capacity bound rather than zero.
+        if (rel as u64) < (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64)
+        {
             let tind_block = self.get_or_allocate_indirect_block(inode, 14, block_incr)?;
 
             let mut cache = self.buffer_cache.lock();
@@ -1942,6 +1977,127 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: the defect this closes. `checked_dir_size` bounds directory
+    /// `i_size` only, by its own doc comment and its eight call sites, all
+    /// directory-entry parsers. `read_inode_data` — reached from
+    /// `FileSystem::read` for *regular* files — never bounded `i_size`
+    /// against filesystem capacity at all. A corrupted regular-file inode
+    /// claiming a huge size, combined with a caller-chosen offset inside
+    /// that claimed size, drives `get_disk_block_from_inode`'s
+    /// triple-indirect branch to compute `dind_idx`/`ind_idx` past the real
+    /// `ptrs_per_block` entries of the block, producing an out-of-bounds
+    /// `buf[off]` index — and this kernel builds `panic = "abort"`, so
+    /// that halts the machine. `offset = 0` alone is enough to observe the
+    /// gap without ever reaching that dangerous index arithmetic: pre-fix,
+    /// `read_inode_data` treated `offset (0) < total_size (huge)` as
+    /// license to proceed and silently returned zeroed "hole" bytes for a
+    /// size no real disk of this capacity could hold, instead of refusing
+    /// the read.
+    fn test_oversized_regular_file_size_is_rejected() -> TestResult {
+        let fs = make_fs(4096, 0); // 4096 * 1 KiB = 4 MiB filesystem capacity
+        let mut inode = make_dir_inode(0xFFFF_FFF0); // ~4 GiB claimed size
+        inode.i_mode = EXT2_S_IFREG;
+        let mut buf = [0u8; 16];
+        let result = fs.read_inode_data(&inode, 0, &mut buf);
+        test_assert!(
+            result.is_err(),
+            "a regular-file i_size beyond filesystem capacity must be rejected before any block lookup, not read as zeros"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: a regular-file inode whose size fits inside the filesystem's
+    /// real capacity must still read normally — unallocated (hole) blocks
+    /// read back as zero, unchanged from before this fix.
+    fn test_in_bounds_regular_file_size_is_accepted() -> TestResult {
+        let fs = make_fs(4096, 0); // 4 MiB filesystem capacity
+        let mut inode = make_dir_inode(16); // 16-byte file, well inside 4 MiB
+        inode.i_mode = EXT2_S_IFREG;
+        let mut buf = [0xAAu8; 16];
+        let result = fs.read_inode_data(&inode, 0, &mut buf);
+        test_assert!(result.is_ok(), "in-bounds regular-file size must still be read");
+        test_assert!(
+            result.unwrap() == 16,
+            "must read the full requested length within i_size"
+        );
+        test_assert!(buf == [0u8; 16], "unallocated (hole) blocks must read as zero");
+        TestResult::Pass
+    }
+
+    /// RED: the defect this closes. `get_or_allocate_data_block`'s
+    /// triple-indirect capacity guard is
+    /// `rel < ptrs_per_block * ptrs_per_block * ptrs_per_block`, computed
+    /// in `u32`. `ptrs_per_block` is `block_size / 4`; for block sizes
+    /// 8192, 16384, and 32768 (`s_log_block_size` 3..=5, all accepted by
+    /// `validate_superblock`), `ptrs_per_block` is a power of two >= 2048,
+    /// so its cube is an exact multiple of `2^32` and — with neither Cargo
+    /// profile in this crate setting `overflow-checks` — wraps to exactly
+    /// `0` in release. The guard becomes `rel < 0`, false for every
+    /// unsigned `rel`, so even `rel == 0` (the very first triple-indirect
+    /// data block) is rejected: the branch is permanently unreachable and
+    /// the write path returns `Err(IoError)` for any offset needing it.
+    /// Widening the same product to `u64` — which cannot wrap for any
+    /// `ptrs_per_block` this file can produce (max `8192`, cube `~5.5e11`,
+    /// far under `u64::MAX`) — restores it.
+    fn test_triple_indirect_guard_reachable_after_widening() -> TestResult {
+        for &log_block_size in &[3u32, 4, 5] {
+            let block_size = 1024u32 << log_block_size;
+            let ptrs_per_block = block_size / 4;
+            let rel: u32 = 0; // the very first triple-indirect data block
+
+            // Pre-fix arithmetic: the exact `u32` product this file used to compute.
+            let wrapped_bound = ptrs_per_block
+                .wrapping_mul(ptrs_per_block)
+                .wrapping_mul(ptrs_per_block);
+            test_assert!(
+                wrapped_bound == 0,
+                "regression precondition: ptrs_per_block^3 must wrap to 0 in u32 for this test to mean anything"
+            );
+            test_assert!(
+                !(rel < wrapped_bound),
+                "RED: the unfixed u32 guard rejects even rel == 0, proving the branch was unreachable"
+            );
+
+            // Post-fix arithmetic: the exact `u64` product this file now computes.
+            let fixed_bound =
+                (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64);
+            test_assert!(
+                (rel as u64) < fixed_bound,
+                "GREEN: the widened guard accepts rel == 0, restoring the triple-indirect branch"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// GREEN: the widened guard must still reject a `rel` past the true
+    /// triple-indirect capacity, not merely become unconditionally true —
+    /// the fix must preserve the intended bound, not just avoid the wrap.
+    /// Uses the smallest block size this file accepts (1024,
+    /// `ptrs_per_block` 256, cube `16_777_216` — ext2's real maximum
+    /// triple-indirect block count for 1 KiB blocks), where the true
+    /// boundary is small enough to exceed while still fitting in a `u32`
+    /// `rel`.
+    fn test_triple_indirect_guard_still_bounded() -> TestResult {
+        let ptrs_per_block = 1024u32 / 4; // 256
+        let cube = (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64);
+        test_assert!(
+            cube == 16_777_216,
+            "known-value sanity check on the intended bound itself"
+        );
+
+        let in_range: u64 = cube - 1;
+        let out_of_range: u64 = cube;
+        test_assert!(
+            in_range < cube,
+            "the last legal triple-indirect index must stay in bounds"
+        );
+        test_assert!(
+            !(out_of_range < cube),
+            "the fix must still reject a rel at the true capacity boundary, not just avoid the u32 wrap"
+        );
+        TestResult::Pass
+    }
+
     /// RED: the defect this closes. `mount()` (ext2.rs) read `s_log_block_size`
     /// straight off disk and only validated the magic number:
     ///
@@ -2151,6 +2307,22 @@ pub mod tests {
         crate::testing::register_test(
             "ext2::in_bounds_dir_i_size_is_accepted",
             test_in_bounds_dir_i_size_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::oversized_regular_file_size_is_rejected",
+            test_oversized_regular_file_size_is_rejected,
+        );
+        crate::testing::register_test(
+            "ext2::in_bounds_regular_file_size_is_accepted",
+            test_in_bounds_regular_file_size_is_accepted,
+        );
+        crate::testing::register_test(
+            "ext2::triple_indirect_guard_reachable_after_widening",
+            test_triple_indirect_guard_reachable_after_widening,
+        );
+        crate::testing::register_test(
+            "ext2::triple_indirect_guard_still_bounded",
+            test_triple_indirect_guard_still_bounded,
         );
         crate::testing::register_test(
             "ext2::oversized_log_block_size_is_rejected",
