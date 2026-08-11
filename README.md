@@ -5979,6 +5979,44 @@ valid packet to anything, including itself. I did not do that, and the refusal i
 the only part of this section I would defend as a principle rather than a
 consequence.
 
+### Postscript: 365, and the four-defect stack
+
+The section above was written at 364. The next run said 365, and the extra one is
+`udp::loopback_sendto_does_not_reenter_socket_lock`, which matters more than a
+single increment.
+
+Because it turned out the checksum fix had been holding down not one defect but
+three, and they had to come off in order.
+
+**One.** Every packet this stack sent went out byte-swapped, so peers dropped it
+and the kernel's own receive path dropped it too.
+
+**Two.** Fixing that woke a lock re-entry. `poll()` holds the socket table, sends
+a SYN-ACK, and the loopback branch dispatches straight back into the handler,
+which takes the same non-reentrant mutex. Self-deadlock at re-entry depth *one* —
+which is why the depth guard I had suggested as a fallback would have fixed
+precisely nothing, sitting as it would beneath any ceiling a counter could reject.
+
+**Three.** Fixing *that* still failed, because loopback replies carried a source
+address of `0.0.0.0`, so they missed a flow index keyed on source and were handed
+to the ARP path and dropped. `exact_flow=0 result=fail`, with the deadlock gone.
+
+**Four.** And the same pattern sat in UDP, at two sites — one reported, one not,
+and neither covered by any test. Its IPv6 leg had been deadlocked since the day it
+was written, with no checksum ever involved, because IPv6 has no header checksum
+to fail.
+
+Four defects, each one visible only after the one above it was repaired. The
+revert was available at every step and would have taken ten seconds. It was
+refused three times, and each refusal cost hours and bought a real bug.
+
+I do not think there is a general lesson in that beyond the obvious one, which is
+that a green pipeline and a working system are different things and this
+repository has spent its entire existence demonstrating the gap. But it is a
+pleasing shape: the document argues that fixing the visible defect reveals the
+next, and then the argument had to be made four more times on the author's own
+commits before it would let the build go green.
+
 ### What the number is not
 
 364 is not coverage. It is the count of assertions that now execute on every boot,
