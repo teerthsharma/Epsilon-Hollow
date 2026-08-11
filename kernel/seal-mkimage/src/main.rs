@@ -8314,7 +8314,14 @@ fn check_manifoldpkg_shell_contract_text(
             findings.push(format!("shell ManifoldPkg path missing `{needle}`"));
         }
     }
-    for needle in ["parse_eph(data)", "verify_signature(&pkg, key)", "self.install_file"] {
+    // `verify_package_signature` replaced `format::verify_signature` in 8f0693c:
+    // the old preimage covered neither the manifest description nor its
+    // dependencies, and carried no length separators between fields.
+    for needle in [
+        "parse_eph(data)",
+        "verify_package_signature(&pkg, key)",
+        "self.install_file",
+    ] {
         if !pkg.contains(needle) {
             findings.push(format!("ManifoldPkg core missing `{needle}`"));
         }
