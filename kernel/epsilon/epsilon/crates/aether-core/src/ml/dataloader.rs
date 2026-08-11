@@ -9,7 +9,6 @@
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
-
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
@@ -39,8 +38,17 @@ impl DataLoader {
     ///
     /// Panics if the feature and target counts differ, or if `batch_size` is 0 —
     /// a zero-width batch cannot advance the iterator.
-    pub fn new(features: Vec<Tensor>, targets: Vec<Tensor>, batch_size: usize, shuffle: bool) -> Self {
-        assert_eq!(features.len(), targets.len(), "Features and targets must have same length");
+    pub fn new(
+        features: Vec<Tensor>,
+        targets: Vec<Tensor>,
+        batch_size: usize,
+        shuffle: bool,
+    ) -> Self {
+        assert_eq!(
+            features.len(),
+            targets.len(),
+            "Features and targets must have same length"
+        );
         assert!(batch_size > 0, "batch_size must be non-zero");
         Self {
             features,
@@ -161,22 +169,22 @@ mod tests {
     fn test_dataloader() {
         let x = ones(5);
         let y = x.clone();
-        
+
         let loader = DataLoader::new(x, y, 2, false);
         let mut iter = loader.iter();
-        
+
         let batch1 = iter.next();
         assert!(batch1.is_some());
         assert_eq!(batch1.unwrap().0.len(), 2);
-        
+
         let batch2 = iter.next();
         assert!(batch2.is_some());
         assert_eq!(batch2.unwrap().0.len(), 2);
-        
+
         let batch3 = iter.next(); // Last batch of 1
         assert!(batch3.is_some());
         assert_eq!(batch3.unwrap().0.len(), 1);
-        
+
         assert!(iter.next().is_none());
     }
 
@@ -213,7 +221,11 @@ mod tests {
         let mut sorted = e0.clone();
         sorted.sort_unstable();
         assert_eq!(sorted, (0..32).collect::<Vec<_>>());
-        assert_eq!(e0, loader.epoch_order(0), "epoch order must be reproducible");
+        assert_eq!(
+            e0,
+            loader.epoch_order(0),
+            "epoch order must be reproducible"
+        );
 
         // A different seed must move the whole schedule.
         let other = DataLoader::new(ones(32), ones(32), 4, true).with_seed(7);
@@ -225,10 +237,16 @@ mod tests {
     #[test]
     fn drop_last_discards_the_short_tail() {
         let ragged = DataLoader::new(ones(5), ones(5), 2, false);
-        assert_eq!(ragged.iter().map(|(x, _)| x.len()).collect::<Vec<_>>(), [2, 2, 1]);
+        assert_eq!(
+            ragged.iter().map(|(x, _)| x.len()).collect::<Vec<_>>(),
+            [2, 2, 1]
+        );
 
         let even = ragged.clone().with_drop_last(true);
-        assert_eq!(even.iter().map(|(x, _)| x.len()).collect::<Vec<_>>(), [2, 2]);
+        assert_eq!(
+            even.iter().map(|(x, _)| x.len()).collect::<Vec<_>>(),
+            [2, 2]
+        );
 
         // A dataset shorter than one batch yields nothing rather than a partial.
         let tiny = DataLoader::new(ones(1), ones(1), 4, false).with_drop_last(true);

@@ -72,9 +72,17 @@ struct Entry<P> {
     seq: u64,
     sig: Signal<P>,
 }
-impl<P> PartialEq for Entry<P> { fn eq(&self, o: &Self) -> bool { self.key == o.key && self.seq == o.seq } }
+impl<P> PartialEq for Entry<P> {
+    fn eq(&self, o: &Self) -> bool {
+        self.key == o.key && self.seq == o.seq
+    }
+}
 impl<P> Eq for Entry<P> {}
-impl<P> PartialOrd for Entry<P> { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) } }
+impl<P> PartialOrd for Entry<P> {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
 impl<P> Ord for Entry<P> {
     fn cmp(&self, o: &Self) -> Ordering {
         // higher key first; older seq wins ties (FIFO within same alpha)
@@ -86,17 +94,21 @@ impl<P> Ord for Entry<P> {
 #[derive(Copy, Clone, PartialEq)]
 struct OrdF32(f32);
 impl Eq for OrdF32 {}
-impl PartialOrd for OrdF32 { fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) } }
+impl PartialOrd for OrdF32 {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
 impl Ord for OrdF32 {
     fn cmp(&self, o: &Self) -> Ordering {
-        self.0.partial_cmp(&o.0).unwrap_or_else(|| {
-            match (self.0.is_nan(), o.0.is_nan()) {
+        self.0
+            .partial_cmp(&o.0)
+            .unwrap_or_else(|| match (self.0.is_nan(), o.0.is_nan()) {
                 (true, true) => Ordering::Equal,
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
                 _ => Ordering::Equal,
-            }
-        })
+            })
     }
 }
 
@@ -109,13 +121,21 @@ pub struct Dispatcher<P> {
 
 impl<P> Dispatcher<P> {
     pub fn new(decay_per_tick: f32) -> Self {
-        Self { heap: BinaryHeap::new(), seq: 0, decay_per_tick }
+        Self {
+            heap: BinaryHeap::new(),
+            seq: 0,
+            decay_per_tick,
+        }
     }
 
     pub fn enqueue(&mut self, sig: Signal<P>) {
         self.seq += 1;
         let key = OrdF32(sig.effective(sig.enqueued_tick, self.decay_per_tick));
-        self.heap.push(Entry { key, seq: self.seq, sig });
+        self.heap.push(Entry {
+            key,
+            seq: self.seq,
+            sig,
+        });
     }
 
     /// Pop the currently-highest effective-alpha signal at `now_tick`.
@@ -130,7 +150,9 @@ impl<P> Dispatcher<P> {
             match &best {
                 Some(b) if b.key >= e.key => self.heap.push(e),
                 _ => {
-                    if let Some(prev) = best.take() { self.heap.push(prev); }
+                    if let Some(prev) = best.take() {
+                        self.heap.push(prev);
+                    }
                     best = Some(e);
                 }
             }
@@ -138,8 +160,12 @@ impl<P> Dispatcher<P> {
         best.map(|e| e.sig)
     }
 
-    pub fn len(&self) -> usize { self.heap.len() }
-    pub fn is_empty(&self) -> bool { self.heap.is_empty() }
+    pub fn len(&self) -> usize {
+        self.heap.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.heap.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -151,8 +177,16 @@ mod check {
         // Two kernel variants: 0 favors small batch, 1 favors large batch.
         // features = [batch_size_normalized, dtype_is_f16]
         let cands = [
-            KernelScore { kernel_id: 0, nz: alloc::vec![(0, -1.0), (1, 0.2)], bias: 0.5 },
-            KernelScore { kernel_id: 1, nz: alloc::vec![(0,  1.0)],          bias: 0.0 },
+            KernelScore {
+                kernel_id: 0,
+                nz: alloc::vec![(0, -1.0), (1, 0.2)],
+                bias: 0.5,
+            },
+            KernelScore {
+                kernel_id: 1,
+                nz: alloc::vec![(0, 1.0)],
+                bias: 0.0,
+            },
         ];
         assert_eq!(select_kernel(&cands, &[0.1, 1.0]), Some(0));
         assert_eq!(select_kernel(&cands, &[0.9, 0.0]), Some(1));
@@ -160,8 +194,18 @@ mod check {
 
         // Dispatch: high alpha wins fresh; stale high loses to fresh medium.
         let mut d = Dispatcher::new(0.1);
-        d.enqueue(Signal { alpha: 10.0, enqueued_tick: 0,  kernel_id: 0, payload: "stale-high" });
-        d.enqueue(Signal { alpha:  5.0, enqueued_tick: 90, kernel_id: 1, payload: "fresh-mid"  });
+        d.enqueue(Signal {
+            alpha: 10.0,
+            enqueued_tick: 0,
+            kernel_id: 0,
+            payload: "stale-high",
+        });
+        d.enqueue(Signal {
+            alpha: 5.0,
+            enqueued_tick: 90,
+            kernel_id: 1,
+            payload: "fresh-mid",
+        });
         // at t=100: stale-high eff = 10 - 0.1*100 = 0.0; fresh-mid eff = 5 - 0.1*10 = 4.0
         assert_eq!(d.pop(100).unwrap().payload, "fresh-mid");
         assert_eq!(d.pop(100).unwrap().payload, "stale-high");

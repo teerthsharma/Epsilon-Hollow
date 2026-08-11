@@ -176,7 +176,11 @@ mod tests {
         }
         // Mean of 4096 symmetric draws sits near zero. Loose bound: this is a
         // smoke test for sign balance, not a distributional claim.
-        assert!((sum / n as f64).abs() < 0.05, "signed mean skewed: {}", sum / n as f64);
+        assert!(
+            (sum / n as f64).abs() < 0.05,
+            "signed mean skewed: {}",
+            sum / n as f64
+        );
     }
 
     #[test]
