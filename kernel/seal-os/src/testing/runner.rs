@@ -55,6 +55,7 @@ pub fn test_main() -> ! {
     crate::drivers::net::tls::tests::register_all();
     crate::cpu::tests::register_all();
     crate::sync::tests::register_all();
+    crate::ml_engine::tensor_viz::tests::register_all();
     crate::ml_engine::stratum::tests::register_all();
     crate::ml_engine::foliation::tests::register_all();
     crate::ml_engine::topo_asm::tests::register_all();
