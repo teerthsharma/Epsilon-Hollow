@@ -398,6 +398,16 @@ An earlier revision of this very section said "four gates." That was wrong: it w
 
 ## Nothing In The Kernel Has Ever Been Tested
 
+> **This section is superseded and is kept for the record.** On 11 August 2026 the
+> in-kernel harness executed for the first time and reported 151 passes and 1
+> failure. Everything below was true when it was written and every mechanism it
+> describes was measured. What it got wrong was the implication that this was
+> permanent. See [The Tests Ran](#the-tests-ran) for what changed, what the 151
+> covers, and the twenty-three test groups that still have not run.
+>
+> The table below is left exactly as it was. Correcting it in place would delete
+> the evidence of how long this state persisted, which is the part worth keeping.
+
 That heading is not a joke and this section is not a bit. It is the single most important thing in this file.
 
 The kernel is 70,683 lines across 20 subsystems. Here is every mechanism that is supposed to verify it, and what each one actually does:
