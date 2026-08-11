@@ -5362,6 +5362,66 @@ That one is being fixed as I write this, which is a sentence I can only publish
 because someone read all 5,699 lines instead of the 200 the failing test pointed
 at.
 
+## Right About The Bug, Wrong About Both Numbers
+
+Here is the strongest argument I have for making somebody check the report before
+somebody acts on it, and it is not the case where the report was wrong. It is the
+case where the report was right.
+
+Someone read the window manager and found that `render_decorations` computes
+`w - 20`, `w - 40`, and `w - 60` on unsigned integers with no minimum window
+width. That is a real defect. A four-pixel window makes `4 - 40` evaluate to
+4294967260, and the loop that follows indexes a 104-element buffer at
+4294967276. The machine stops. All of that is correct and it is exactly what
+happens.
+
+The report then said two more things, both reasonable, both load-bearing for the
+fix, and both wrong.
+
+**"The safe minimum width is 12."** It is 60.
+
+The person who fixed it did not take that number. They swept every width from 0
+to 200 through the actual rendering body and printed what happened. Widths 12
+through 59 do not crash. They wrap `w - 60` and the resulting index lands *back
+inside the buffer*, so the write succeeds, in the wrong place, silently.
+
+Think about what shipping the reported number would have done. It would have
+raised the floor to 12, closed the crash, produced a green test, and converted
+every window between 12 and 59 pixels wide from a loud immediate abort into
+quiet pixel corruption. The bug report would have been closed. The defect would
+have gotten harder to find.
+
+**"It's reachable from the shell's `run` command."** It is not.
+
+`cmd_run` calls `execute_file(file, "")`. It passes an empty source string. It
+never opens the file. That entire path is dead, and had the fix been justified
+solely by it, the justification would have been fiction.
+
+The real path is `SYS_EXEC` on any file ending in `.aether`, which does read the
+bytes, and where the window dimension arrives via
+`get_arg_num(args, 1).unwrap_or(640.0) as u32`. That cast saturates, so a
+negative literal produces 0 and a huge literal produces `u32::MAX`. Both ends of
+the range are reachable, and neither goes anywhere near the shell.
+
+### The part I want to keep
+
+Three claims. The defect was real. The threshold was wrong by a factor of five,
+in the direction that would have hidden the problem. The trigger was wrong
+entirely, and the fix's stated justification would have described a code path
+that cannot execute.
+
+A reviewer reading the diff would have caught none of this. The diff was fine.
+The numbers *in* the diff were the problem, and the only thing that finds a wrong
+number is measuring it.
+
+Which is the whole thesis, really. Every gate in this repository was written by
+someone confident about a number. The unsafe audit was confident about 594. The
+compositor is confident the screen is 1024 pixels wide. A test was confident that
+a loss below 0.1 meant a network had learned, when the real value was 0.00026 and
+the bound was four hundred times too loose to notice anything going wrong.
+
+None of them were lying. All of them were unmeasured.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
