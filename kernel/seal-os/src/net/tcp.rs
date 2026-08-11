@@ -116,6 +116,22 @@ const RTO_INITIAL: u64 = 1000;
 /// answers is retried at this fixed slow rate rather than forever faster.
 const RTO_MAX: u64 = 64_000;
 
+/// SYN and SYN-ACK retransmissions one handshake may spend before the socket
+/// gives up, which is Linux's `tcp_syn_retries` default.
+///
+/// Counted in `TcpSocket::syn_retries` and spent only in SYN-SENT and
+/// SYN-RECEIVED, where the retransmit queue holds the handshake's own SYN and
+/// nothing else. The backoff doubles from `RTO_INITIAL` and stops at `RTO_MAX`,
+/// so on the ~1 kHz tick counter the attempts fall at 1, 3, 7, 15, 31 and 63
+/// seconds and the expiry that gives up rather than retry a seventh time lands
+/// at 127 s -- the same wall clock Linux reaches from the same count.
+///
+/// Nothing shorter would do: `http::get_http` and `TlsSocket::connect` each
+/// abandon a connect on a 3000-tick deadline of their own, so the socket
+/// outlives its caller either way and this limit is what a peer's own
+/// retransmissions are given room to arrive within, not what a caller waits.
+const SYN_RETRIES: u32 = 6;
+
 /// How long a socket holds its four-tuple in TIME-WAIT, in timer ticks.
 ///
 /// RFC 793 section 3.5 requires the four-tuple to be held for twice the maximum
@@ -159,6 +175,10 @@ pub struct TcpSocket {
     /// what lets the 2MSL hold end; `TcpSocket::new` leaves it at zero and
     /// `enter_time_wait` is the only thing that sets it.
     time_wait_since: u64,
+    /// Retransmissions this handshake has spent. `connect` clears it, so a
+    /// second attempt on the same socket is owed the whole budget again, and
+    /// `retransmit_expired` is the only thing that raises it.
+    syn_retries: u32,
 }
 
 impl TcpSocket {
@@ -176,6 +196,7 @@ impl TcpSocket {
             rto: RTO_INITIAL,
             pending_accept: Vec::new(),
             time_wait_since: 0,
+            syn_retries: 0,
         }
     }
 
@@ -223,6 +244,9 @@ impl TcpSocket {
         self.remote_ip = ip;
         self.remote_port = port;
         self.state = TcpState::SynSent;
+        // A fresh handshake, so a fresh budget: the count belongs to the
+        // attempt, not to the socket that makes it.
+        self.syn_retries = 0;
         self.send_tcp_packet(FLAG_SYN, &[]);
     }
 
@@ -410,6 +434,26 @@ impl TcpSocket {
         else {
             return;
         };
+        // A handshake nobody answers is bounded; an established connection's
+        // retransmissions are not, because there is a peer at the other end
+        // whose own patience ends them. Only SYN-SENT and SYN-RECEIVED are
+        // counted, and in those two states the queue holds the handshake's own
+        // SYN and nothing else, so an expiry here is a SYN retransmission.
+        //
+        // The socket is aborted rather than merely left alone: `abort` leaves
+        // it CLOSED with its peer still recorded, which is what `is_finished`
+        // collects, so `reap_finished_sockets` -- which runs later in the same
+        // `poll` -- returns the ephemeral port and the table slot. Nothing else
+        // was going to: `http::get_http` abandons the handle on a deadline of
+        // its own without closing it, and a peer that half-opens a connection
+        // and walks away leaves no local caller at all.
+        if matches!(self.state, TcpState::SynSent | TcpState::SynReceived) {
+            if self.syn_retries >= SYN_RETRIES {
+                self.abort();
+                return;
+            }
+            self.syn_retries += 1;
+        }
         // ponytail: remove(pos) is O(n) on a queue that holds single digits,
         // the same ceiling the flush loop already carries.
         let entry = self.retransmit_queue.remove(pos);
@@ -1853,10 +1897,20 @@ pub fn poll() {
 
     {
         let mut sockets = TCP_SOCKETS.lock();
-        for entry in sockets.iter_mut() {
+        for (slot, entry) in sockets.iter_mut().enumerate() {
             if let Some(sock) = entry.sock.as_mut() {
                 if !sock.retransmit_queue.is_empty() {
+                    // The key the socket is filed under, read while it still
+                    // has one: the pass below gives up on a handshake nobody
+                    // answered by aborting it, `tcp_flow_key` reports a CLOSED
+                    // socket as unkeyable, and `free_slot` would then have
+                    // nothing to remove the entry by -- holding one of the flow
+                    // index's 256 buckets for the life of the machine. This is
+                    // the refresh the end of `handle_tcp_packet` already does
+                    // for the abort a reset causes.
+                    let old_key = tcp_flow_key(sock);
                     sock.retransmit_expired();
+                    refresh_exact_flow_socket(slot, old_key, sock);
                 }
             }
         }
@@ -2156,6 +2210,19 @@ pub mod tests {
     fn age_retransmit_queue(sock: &mut TcpSocket, by: u64) {
         for entry in sock.retransmit_queue.iter_mut() {
             entry.time = entry.time.wrapping_sub(by);
+        }
+    }
+
+    /// `age_retransmit_queue` for a socket that lives in the table, so the
+    /// expiry is driven through `poll` the way the kernel drives it rather than
+    /// by calling `retransmit_expired` on a socket of the case's own.
+    fn age_retransmit_handle(handle: usize, by: u64) {
+        let mut sockets = TCP_SOCKETS.lock();
+        let Some(slot) = resolve(&sockets, handle) else {
+            return;
+        };
+        if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
+            age_retransmit_queue(sock, by);
         }
     }
 
@@ -3273,6 +3340,238 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A connect nobody answers used to retransmit its SYN at the capped RTO
+    /// for the life of the machine, holding its ephemeral port and its slot
+    /// with it. Nothing else was going to end it either: `http::get_http` gives
+    /// up on a deadline of its own and returns `Err("TCP connect timeout")`
+    /// without ever closing the socket, and `TlsSocket::connect` does the same.
+    ///
+    /// Six retransmissions, which is Linux's `tcp_syn_retries` default, and the
+    /// seventh expiry gives up instead of retrying. The per-attempt timeouts
+    /// are written out here rather than derived from `RTO_INITIAL` and
+    /// `RTO_MAX`: they are what the 127-second wall clock is the sum of, and an
+    /// assertion spelled in the constants it guards follows them wherever they
+    /// go and pins nothing.
+    fn an_unanswered_syn_gives_up_after_six_retries_and_returns_its_port() -> TestResult {
+        reset_tcp_for_test();
+        static ATTEMPT_RTO: [u64; 7] = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
+
+        *NEXT_TCP_PORT.lock() = 40_700;
+        let handle = socket();
+        connect(handle, REMOTE, 80);
+        test_assert!(
+            state(handle) == TcpState::SynSent,
+            "connect did not leave the socket in SYN-SENT"
+        );
+        test_assert!(
+            local_port_of(handle) == 40_700,
+            "the socket is not on the port this case rewound the counter to"
+        );
+
+        // Polls that arrive before the timer expires cost nothing: the budget
+        // is spent per retransmission, not per visit from the timer thread,
+        // which runs at whatever rate the caller's loop happens to poll at.
+        for _ in 0..20 {
+            poll();
+        }
+        test_assert!(
+            state(handle) == TcpState::SynSent,
+            "the connection attempt gave up on polls that retransmitted nothing"
+        );
+
+        // Each attempt is a whole RTO after the one before it, so the ticks
+        // summed here are the wall clock a connect to a silent host spends.
+        let mut elapsed = 0u64;
+        for (n, expected) in ATTEMPT_RTO.iter().enumerate() {
+            let Some(rto) = with_sock(handle, |sock| sock.rto) else {
+                return TestResult::Fail(
+                    "the connection attempt was collected before its retries were spent",
+                );
+            };
+            if rto != *expected {
+                return TestResult::Fail(
+                    "the SYN backoff is not the doubling schedule this case's wall clock is summed from",
+                );
+            }
+            age_retransmit_handle(handle, rto);
+            poll();
+            elapsed += rto;
+            if n < 6 && state(handle) != TcpState::SynSent {
+                return TestResult::Fail(
+                    "the connection attempt gave up before its sixth retransmission",
+                );
+            }
+        }
+        test_assert!(
+            elapsed == 127_000,
+            "giving up no longer takes 127 seconds of the ~1 kHz tick counter"
+        );
+        test_assert!(
+            state(handle) == TcpState::Closed,
+            "a connect nobody answers retransmits its SYN forever"
+        );
+        test_assert!(
+            live_socket_count() == 0,
+            "the abandoned connection attempt still holds its slot"
+        );
+
+        *NEXT_TCP_PORT.lock() = 40_700;
+        let next = socket();
+        test_assert!(
+            local_port_of(next) == 40_700,
+            "the abandoned connection attempt still holds its ephemeral port"
+        );
+
+        // The control. The budget belongs to the handshake, not to the socket:
+        // an established connection retransmitting data over a lossy link must
+        // not be torn down at the same count, and nine expiries is past it.
+        let mut sock = TcpSocket::new(40_710);
+        sock.remote_ip = REMOTE;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5_000;
+        sock.send(b"unacked");
+        let live = push_indexed(sock);
+        for _ in 0..9 {
+            age_retransmit_handle(live, RTO_MAX + 1);
+            poll();
+        }
+        test_assert!(
+            state(live) == TcpState::Established,
+            "an established connection was torn down by the handshake retry limit"
+        );
+
+        // A second `connect` is a second handshake and is owed the whole budget
+        // again, so the count is the attempt's rather than the socket's.
+        let again = socket();
+        connect(again, REMOTE, 80);
+        for _ in 0..6 {
+            age_retransmit_handle(again, RTO_MAX + 1);
+            poll();
+        }
+        connect(again, REMOTE, 80);
+        age_retransmit_handle(again, RTO_MAX + 1);
+        poll();
+        test_assert!(
+            state(again) == TcpState::SynSent,
+            "a second connect attempt inherited the retries the first one had spent"
+        );
+        TestResult::Pass
+    }
+
+    /// The same leak reached from the other side, and the classic SYN flood: a
+    /// remote peer sends a SYN, `poll` answers it with a SYN-ACK, and the peer
+    /// never completes the handshake. The half-open socket held a table slot
+    /// and one of the flow index's 256 buckets for the life of the machine, and
+    /// a peer needs no local socket at all to make one.
+    fn a_half_open_connection_gives_up_on_the_same_six_retries() -> TestResult {
+        reset_tcp_for_test();
+        let listener = socket();
+        bind(listener, 8_082);
+        listen(listener);
+
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_SYN, 500, 0, 8_082));
+        poll();
+        let Some(accepted) = accept(listener) else {
+            return TestResult::Fail("a SYN to a listening port produced nothing to accept");
+        };
+        test_assert!(
+            state(accepted) == TcpState::SynReceived,
+            "the accepted socket is not half-open"
+        );
+        test_assert!(
+            live_socket_count() == 2,
+            "the fixture is not a listener plus one half-open connection"
+        );
+
+        for _ in 0..6 {
+            age_retransmit_handle(accepted, RTO_MAX + 1);
+            poll();
+            if state(accepted) != TcpState::SynReceived {
+                return TestResult::Fail(
+                    "the half-open connection gave up before its sixth SYN-ACK retransmission",
+                );
+            }
+        }
+        age_retransmit_handle(accepted, RTO_MAX + 1);
+        poll();
+
+        test_assert!(
+            state(accepted) == TcpState::Closed,
+            "a half-open connection retransmits its SYN-ACK forever: every unanswered SYN costs a slot and a flow-index bucket"
+        );
+        test_assert!(
+            live_socket_count() == 1,
+            "the half-open connection still holds its slot"
+        );
+        test_assert!(
+            state(listener) == TcpState::Listen,
+            "the listener was collected along with the half-open connection it accepted"
+        );
+        TestResult::Pass
+    }
+
+    /// Giving up has to hand the flow index entry back as well as the slot. A
+    /// socket that gives up is CLOSED, `tcp_flow_key` reports a CLOSED socket
+    /// as unkeyable, and `free_slot` therefore has no key to remove it by -- so
+    /// the bucket is held unless the index is refreshed while the four-tuple is
+    /// still readable. Three hundred abandoned attempts is more than the index
+    /// has buckets: past 256 leaked entries `insert` refuses, and a connection
+    /// opened afterwards is not demuxed at all.
+    fn giving_up_on_a_handshake_returns_the_flow_index_entry_it_held() -> TestResult {
+        reset_tcp_for_test();
+        const CHURN: usize = TCP_FLOW_INDEX_BUCKETS + 44;
+        // Holds slot 0 for the whole run -- a socket nobody has connected is
+        // CLOSED with no peer, which the sweep leaves alone -- so every
+        // abandoned attempt below lives at slot 1 and the index entry handed
+        // back has to be the one keyed on *its* slot rather than on the first.
+        let anchor = socket();
+        for n in 0..CHURN {
+            let handle = socket();
+            connect(handle, REMOTE, 1_000 + n as u16);
+            for _ in 0..7 {
+                age_retransmit_handle(handle, RTO_MAX + 1);
+                poll();
+            }
+            if state(handle) != TcpState::Closed {
+                return TestResult::Fail("a connection attempt nobody answered was not given up on");
+            }
+        }
+        test_assert!(
+            live_socket_count() == 1,
+            "the abandoned connection attempts are still in the socket table"
+        );
+        test_assert!(
+            state(anchor) == TcpState::Closed && local_port_of(anchor) != 0,
+            "the socket holding slot 0 was collected along with the attempts churned past it"
+        );
+
+        let mut sock = TcpSocket::new(41_700);
+        sock.remote_ip = REMOTE;
+        sock.remote_port = 80;
+        sock.state = TcpState::Established;
+        sock.seq_num = 5_000;
+        sock.ack_num = 700;
+        let handle = push_indexed(sock);
+        handle_tcp_packet(
+            REMOTE,
+            LOCAL,
+            &make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5_000, 41_700, b"late"),
+        );
+
+        test_assert!(
+            tcp_flow_index_proof().hit,
+            "the flow index missed a connection opened after 300 attempts were abandoned: their entries were never handed back"
+        );
+        let mut buf = [0u8; 8];
+        let got = recv(handle, &mut buf);
+        test_assert!(
+            got == 4 && &buf[..4] == b"late",
+            "a connection opened after 300 attempts were abandoned cannot receive: the index is full of entries for sockets that no longer exist"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("tcp::syn_sent_to_established", test_syn_sent_to_established);
         crate::testing::register_test("tcp::established_to_closewait", test_established_to_closewait);
@@ -3353,6 +3652,18 @@ pub mod tests {
         crate::testing::register_test(
             "tcp::reaping_returns_the_flow_index_entry_the_socket_held",
             reaping_returns_the_flow_index_entry_the_socket_held,
+        );
+        crate::testing::register_test(
+            "tcp::an_unanswered_syn_gives_up_after_six_retries_and_returns_its_port",
+            an_unanswered_syn_gives_up_after_six_retries_and_returns_its_port,
+        );
+        crate::testing::register_test(
+            "tcp::a_half_open_connection_gives_up_on_the_same_six_retries",
+            a_half_open_connection_gives_up_on_the_same_six_retries,
+        );
+        crate::testing::register_test(
+            "tcp::giving_up_on_a_handshake_returns_the_flow_index_entry_it_held",
+            giving_up_on_a_handshake_returns_the_flow_index_entry_it_held,
         );
     }
 }
