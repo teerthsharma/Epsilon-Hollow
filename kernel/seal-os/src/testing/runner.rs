@@ -27,6 +27,7 @@ pub fn test_main() -> ! {
     crate::bundle::tests::register_all();
     crate::lang::tests::register_all();
     crate::net::dns::tests::register_all();
+    crate::net::udp::tests::register_all();
     crate::pkg::channel::tests::register_all();
     crate::drivers::apic::tests::register_all();
     crate::drivers::gpu::gpu_bench::tests::register_all();

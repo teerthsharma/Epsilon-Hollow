@@ -146,40 +146,44 @@ impl UdpSocket {
 }
 
 static UDP_SOCKETS: Mutex<Vec<UdpSocket>> = Mutex::new(Vec::new());
-// Fallback only -- see `allocate_ephemeral_port`. Kept monotonic (never
-// reused) so the fallback path can't hand out a port already in use.
-static NEXT_EPHEMERAL_PORT: Mutex<u16> = Mutex::new(49152);
 const EPHEMERAL_PORT_BASE: u16 = 49152; // RFC 6335 dynamic/private range start
 
 pub fn init() {}
 
 /// Pick a fresh local ephemeral port (RFC 6335 dynamic/private range,
-/// 49152-65535). Drawn from hardware entropy when available rather than a
-/// plain counter: the same induced-lookup prediction that made a monotonic
-/// DNS transaction ID guessable (`net::dns`'s `random_query_id`) applies
-/// just as well to a monotonic port counter here -- a spoofing target that
-/// also runs a server the kernel talks to sees the source port of every
-/// packet it receives, and could predict the counter's next value for an
-/// unrelated query the same way. Retries on collision with an already-open
-/// socket; falls back to the previous incrementing counter (which can only
-/// collide on `u16` wraparound, unchanged pre-existing behavior) if entropy
-/// is unavailable or stays unlucky for 8 draws.
+/// 49152-65535). Every candidate is randomized -- hardware entropy
+/// (`drivers::entropy::getrandom`) when available, else the shared
+/// boot-seeded PRNG fallback (`drivers::entropy::fallback_random_u64`, also
+/// used by `net::dns`'s transaction IDs) -- there is no bare-counter path at
+/// all, at any point: the same induced-lookup prediction that made a
+/// monotonic DNS transaction ID guessable applies just as well to a
+/// monotonic port counter, since a spoofing target that also runs a server
+/// the kernel talks to sees the source port of every packet it receives.
+/// Retries on collision with an already-open socket for up to 8 draws, then
+/// returns the last (still-randomized) draw regardless -- a same-port
+/// collision between two sockets is tolerated by `handle_udp_packet`'s
+/// dispatch (first match wins). `net::dns` allocates a fresh socket per
+/// query (a shared-socket variant was tried and reverted -- see the
+/// `ponytail:` comment on `net::dns`'s `DNS_SERVER`/`CACHE` statics), so
+/// this table still grows without bound under sustained DNS traffic and
+/// collisions here are a real, if much smaller, residual: with no bare
+/// counter left in this function, a collision degrades to "two sockets
+/// briefly share a port," not to predictability.
 fn allocate_ephemeral_port(sockets: &[UdpSocket]) -> u16 {
-    let mut buf = [0u8; 2];
+    let mut candidate = EPHEMERAL_PORT_BASE;
     for _ in 0..8 {
-        if !crate::drivers::entropy::getrandom(&mut buf) {
-            break;
-        }
-        let candidate = EPHEMERAL_PORT_BASE
-            .wrapping_add(u16::from_ne_bytes(buf) % (u16::MAX - EPHEMERAL_PORT_BASE));
+        let mut buf = [0u8; 2];
+        let raw = if crate::drivers::entropy::getrandom(&mut buf) {
+            u16::from_ne_bytes(buf)
+        } else {
+            crate::drivers::entropy::fallback_random_u64() as u16
+        };
+        candidate = EPHEMERAL_PORT_BASE.wrapping_add(raw % (u16::MAX - EPHEMERAL_PORT_BASE));
         if !sockets.iter().any(|s| s.local_port == candidate) {
             return candidate;
         }
     }
-    let mut p = NEXT_EPHEMERAL_PORT.lock();
-    let port = *p;
-    *p = p.wrapping_add(1);
-    port
+    candidate
 }
 
 pub fn socket() -> usize {
@@ -267,5 +271,68 @@ pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
             sock.push_packet(src, src_port, payload.to_vec());
             return;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// See net/dns.rs's own test-module header for why (`kernel/seal-os` is
+// excluded from the workspace). `testing/runner.rs` calls
+// `crate::net::udp::tests::register_all()`, so these do run under the QEMU
+// boot proof in CI.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// Exercises exactly the code path `allocate_ephemeral_port` (and
+    /// `dns::random_query_id`) take when hardware entropy is unavailable.
+    /// This harness has no hook to force RDRAND/RDSEED off, so this tests
+    /// the shared fallback generator directly rather than simulating the
+    /// hardware-absent branch specifically -- honest scope, not a claim that
+    /// hardware entropy was actually disabled for this run.
+    fn test_fallback_prng_not_sequential() -> TestResult {
+        let mut vals: Vec<u64> = Vec::new();
+        for _ in 0..8 {
+            vals.push(crate::drivers::entropy::fallback_random_u64());
+        }
+        let looks_sequential = vals.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
+        test_assert!(
+            !looks_sequential,
+            "fallback_random_u64 looks like a monotonic counter, not randomized"
+        );
+        TestResult::Pass
+    }
+
+    /// Forces every one of `allocate_ephemeral_port`'s 8 randomized attempts
+    /// to collide, by filling the visible socket table with one entry per
+    /// port in the entire ephemeral range, driving it into the terminal
+    /// retries-exhausted path. That path must still be a randomized draw --
+    /// it must not fall back to a fixed or incrementing value (the defect
+    /// this whole change exists to close).
+    fn test_retry_exhaustion_still_randomized() -> TestResult {
+        let full: Vec<UdpSocket> = (EPHEMERAL_PORT_BASE..=u16::MAX).map(UdpSocket::new).collect();
+        let a = allocate_ephemeral_port(&full);
+        let b = allocate_ephemeral_port(&full);
+        let c = allocate_ephemeral_port(&full);
+        test_assert!(
+            !(a == b && b == c),
+            "port allocation under retry exhaustion returned the same value repeatedly -- looks like a fixed/counter fallback, not a randomized draw"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "udp::fallback_prng_not_sequential",
+            test_fallback_prng_not_sequential,
+        );
+        crate::testing::register_test(
+            "udp::retry_exhaustion_still_randomized",
+            test_retry_exhaustion_still_randomized,
+        );
     }
 }
