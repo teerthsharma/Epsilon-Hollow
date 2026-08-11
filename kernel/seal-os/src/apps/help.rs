@@ -42,6 +42,15 @@ pub fn handbook() -> String {
            b >> file         Append it to file instead\n\
            Example: peek notes.txt | grep -i seal | sort -u > hits.txt\n\
          \n\
+         Variables (help variables):\n\
+           NAME=value        Name a value; no spaces in it, no quoting here\n\
+           $NAME  ${NAME}    Use it; an unset name expands to nothing\n\
+           export NAME       Mark it for the environment; export NAME=v too\n\
+           unset NAME        Forget it\n\
+           env               List the exported ones\n\
+           set               List all of them\n\
+           Example: OUT=hits.txt then peek notes.txt | grep seal > $OUT\n\
+         \n\
          Transfer:\n\
            copy <file>       Copy file to clipboard\n\
            paste             Paste here\n\
@@ -202,7 +211,19 @@ pub fn help_for(cmd: &str) -> String {
             "theme <name>\n  Change the desktop theme.\n  Available: dark, light, seal, matrix\n  Example: theme matrix",
         ),
         "set" => String::from(
-            "set <key> <value>\n  Change a system setting.\n  Example: set font-size 16",
+            "set\n  With no argument, list every shell variable, sorted by name.\n  set <key> <value>\n  Change a system setting.\n  Example: set font-size 16",
+        ),
+        "variables" | "variable" | "var" | "$" => String::from(
+            "Shell variables\n  NAME=value   Name a value. NAME is a letter or '_' followed by\n               letters, digits or '_'; anything else is a command.\n  $NAME        Use it. ${NAME} does the same and can touch the text\n  ${NAME}      after it, as in ${F}.txt. An unset name expands to\n               nothing, and a '$' no name follows is a plain '$'.\n  A value may not contain a space. There is no quoting here, so\n  'A=1 look' cannot be told from a value with a space in it, and the\n  two readings do opposite things; it is refused instead.\n  The line is split on | < > first and expanded second, so a value\n  holding one of them is an argument and never an operator.\n  Expansion is one pass: what a value expands to is never re-read,\n  so no pair of variables can chase each other.\n  At most 64 variables, 4096 bytes of names and values together.\n  There is no $? — this shell has no exit status.\n  Example: OUT=hits.txt then peek notes.txt | grep seal > $OUT",
+        ),
+        "export" => String::from(
+            "export <NAME>\nexport <NAME>=<value>\n  Mark a variable for the environment; 'env' lists the marked set.\n  Exporting a name that is not set yet creates it empty.\n  Reassigning a marked variable keeps the mark; 'unset' clears it.",
+        ),
+        "unset" => String::from(
+            "unset <NAME>\n  Forget a variable, along with any 'export' mark it carried.\n  Unsetting a name that was never set is not an error.",
+        ),
+        "env" => String::from(
+            "env\n  List the exported variables as NAME=value, sorted by name.\n  'set' with no argument lists every variable, exported or not.\n  Nothing is passed to a command's environment: Seal OS commands are\n  shell methods, not processes, so 'export' only marks the set that\n  'env' reports.",
         ),
         "history" => String::from("history\n  Show command history for this session."),
         "clear" => String::from("clear\n  Clear the terminal screen."),
