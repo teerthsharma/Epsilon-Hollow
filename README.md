@@ -48,6 +48,7 @@
 - [Why I Did This To Myself](#why-i-did-this-to-myself)
 - [The FAQ Nobody Asked For](#the-faq-nobody-asked-for)
 - [The Gate That Is Currently Red](#the-gate-that-is-currently-red)
+- [Nothing In The Kernel Has Ever Been Tested](#nothing-in-the-kernel-has-ever-been-tested)
 - [How This Repository Gets Reviewed Now](#how-this-repository-gets-reviewed-now)
 - [Nine Things The Verifier Caught That The Author Did Not](#nine-things-the-verifier-caught-that-the-author-did-not)
 - [Honest Status Dashboard](#honest-status-dashboard)
@@ -351,7 +352,7 @@ Two things made that easy to miss, and both are now fixed:
 
 **A lead that fits your hypothesis feels confirmed without being tested.** A scout had independently flagged that `map_page_inner` performs no TLB shootdown, unlike `unmap_page`. Real finding, correctly recorded, and completely unreachable in this path — `charts_peak=0` refuted it and had been printed all along.
 
-### What is red now, and the four gates nobody has ever seen
+### What is red now, and the fifteen gates nobody has ever seen
 
 ```
 success  Verify Atlas chart graft proof
@@ -361,23 +362,75 @@ skipped  Verify FAT/ext2 parity proof
 skipped  Verify stratum fit-control proof
 skipped  Verify foliation KV cache policy proof
 skipped  Verify GCN ISA GPU bench proof
+skipped  Verify KASLR mapping proof
+skipped  Verify per-feature security proof
+skipped  Verify unsafe-audit census against the source tree
+skipped  Verify T1-T5 runtime theorem coverage
+skipped  Verify Seal ABI/no-POSIX discipline
+skipped  Verify Seal OS language hygiene
+skipped  Verify Aether/Rust migration gates
+skipped  Verify O(1) allocator hot path
+skipped  Verify O(1) TCP demux indexes
+skipped  Inventory unsafe Rust blocks
+skipped  Verify soft boot milestones
 ```
 
-The installer gate fails on exactly one field, `auth_topo5000=0`, while everything around it passes — GPT written and CRC-verified on both copies, ext2 formatted and mounted with `.` and `..` present, all three refusal guards refusing correctly.
+The installer gate fails on one field, `auth_topo5000=0`, while everything around it passes — GPT written and CRC-verified on both copies, ext2 formatted and mounted with `.` and `..` present, all three refusal guards refusing correctly. Its root cause turned out to be `ManifoldFS::write` discarding its `offset` argument, so `add_user` truncated `/etc/passwd` and `/etc/shadow` down to the new account's single line instead of appending. That is fixed, and it was a data-loss bug on any real boot, not a test artifact.
 
-It is worth knowing *why* that failure is new: it isn't. The gate runs sequentially, Atlas failed first, and every step after it was **skipped on every run since the subsystem was written**. The installer failure has always been there. So, presumably, has whatever is behind it.
+But that is not the headline of this section.
 
-Which is the honest headline of this section. `stratum` and `foliation` are the two subsystems this README leads with — the ML gates, the ones the pitch rests on. **Their proof gates have never executed.** Not failed: never run. Nobody knows.
+**Every gate after the first failure is skipped.** The proof job runs sequentially. Atlas failed at stage one from the day the subsystem was written, so nothing past it ever ran. Not failed — *never executed*. Nobody has ever seen the result.
 
-That is what a red gate actually costs. Not one defect deferred — the entire depth of the pipeline past the first stop, invisible for as long as the first stop stands.
+Read that list again with the README's own claims in hand:
+
+- **`Verify T1-T5 runtime theorem coverage`.** The status table below marks "Theorem-gated boot (T1-T10)" with a ✅. The gate that checks the theorems at runtime has never run.
+- **`Verify O(1) allocator hot path`** and **`Verify O(1) TCP demux indexes`.** The pitch says every "O(1)" is "either tied to a proof gate or explicitly marked pending." The gates exist. They have never executed.
+- **`Verify KASLR mapping proof`**, **`Verify per-feature security proof`**, **`Inventory unsafe Rust blocks`**, **`Verify unsafe-audit census against the source tree`.** The entire security-posture section rests on these.
+- **`stratum` and `foliation`** — the two ML subsystems this README leads with, the reason the project claims an operating system should have opinions about your loss curve.
+
+Fifteen gates, hidden behind one parser reading `Elf64_Shdr` one field short.
+
+That is what a red gate actually costs. Not one defect deferred — the entire depth of the pipeline past the first stop, invisible for exactly as long as the first stop stands, while every badge and every ✅ upstream of it keeps rendering.
+
+An earlier revision of this very section said "four gates." That was wrong: it was written from a truncated step list without going back for the full one. The number is fifteen. Correcting it here rather than quietly editing the figure, because a document that claims its numbers are checkable has to show its own corrections too.
+
+---
+
+## Nothing In The Kernel Has Ever Been Tested
+
+That heading is not a joke and this section is not a bit. It is the single most important thing in this file.
+
+The kernel is 70,683 lines across 20 subsystems. Here is every mechanism that is supposed to verify it, and what each one actually does:
+
+| Mechanism | Reality |
+| --- | --- |
+| `cargo test --workspace` | Never reaches it. `kernel/seal-os` is in the workspace `exclude` list. |
+| The 65 `#[test]` functions in the kernel | Never compiled, never run. They compile in the sense that a poem compiles. |
+| The in-kernel harness under QEMU | **Never executed.** See below. |
+| `miri (UB detection)` | Failed to compile for its entire existence, so never detected any UB. Fixed this session. |
+| `memory::tests::register_all()` | An empty stub containing one comment, faithfully called by the harness every boot. Fixed this session. |
+
+The third row is the one that matters. `.github/workflows/kernel-tests.yml` is the *only* thing that boots the test-mode image and runs `testing::runner::test_main()`. It is triggered by `workflow_run` from CI, and gated:
+
+```yaml
+    if: github.event.workflow_run.conclusion == 'success'
+```
+
+CI has never concluded successfully. The Atlas boot proof failed at stage one from the day that subsystem was written, so the whole workflow has always ended in `failure`, so this job has always been skipped. Fifteen consecutive runs, every one `skipped`, on every branch.
+
+**The in-kernel test harness has never run. Not once.**
+
+Which means the honest statement about this kernel is not "the tests pass," and it is not "the tests are gated behind QEMU." It is: *there is no evidence any of it works beyond the fact that it boots and prints markers.* The boot markers are real — the machine genuinely comes up, mounts a filesystem, draws a desktop, completes a TLS handshake. Everything past that is unmeasured.
+
+The tests themselves are fine. They are written, they are registered, they are correct as far as anyone can tell by reading. They are pointed at a job that has never fired.
+
+The fix for this is not a testing change. It is the boot proof going green — the moment CI concludes successfully, `Kernel Tests` fires for the first time and every registered test executes at once. That is one gate away, and this session spent most of its time getting there.
 
 ---
 
 ## How This Repository Gets Reviewed Now
 
-The kernel is 70,683 lines across 20 subsystems and is excluded from the root Cargo workspace, which means `cargo test --workspace` never touches it and its 65 `#[test]` functions do not run. They have never run. They compile in the sense that a poem compiles.
-
-What actually executes is the in-kernel harness at `src/testing/`, under QEMU, gated by `seal-mkimage` boot proofs. So the review loop looks like this:
+Given the above, "review" here cannot mean "the tests caught it." It means people and process. The loop:
 
 - **scout** — read-only, one subsystem, finds defects and refuses to invent them. `DEFECT: none` is a valid and encouraged answer.
 - **smith** — implements exactly one item inside a handed file scope. Writes the failing check first and has to paste the failure. A check nobody watched fail proves nothing.
