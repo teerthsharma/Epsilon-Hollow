@@ -146,18 +146,45 @@ impl UdpSocket {
 }
 
 static UDP_SOCKETS: Mutex<Vec<UdpSocket>> = Mutex::new(Vec::new());
+// Fallback only -- see `allocate_ephemeral_port`. Kept monotonic (never
+// reused) so the fallback path can't hand out a port already in use.
 static NEXT_EPHEMERAL_PORT: Mutex<u16> = Mutex::new(49152);
+const EPHEMERAL_PORT_BASE: u16 = 49152; // RFC 6335 dynamic/private range start
 
 pub fn init() {}
 
+/// Pick a fresh local ephemeral port (RFC 6335 dynamic/private range,
+/// 49152-65535). Drawn from hardware entropy when available rather than a
+/// plain counter: the same induced-lookup prediction that made a monotonic
+/// DNS transaction ID guessable (`net::dns`'s `random_query_id`) applies
+/// just as well to a monotonic port counter here -- a spoofing target that
+/// also runs a server the kernel talks to sees the source port of every
+/// packet it receives, and could predict the counter's next value for an
+/// unrelated query the same way. Retries on collision with an already-open
+/// socket; falls back to the previous incrementing counter (which can only
+/// collide on `u16` wraparound, unchanged pre-existing behavior) if entropy
+/// is unavailable or stays unlucky for 8 draws.
+fn allocate_ephemeral_port(sockets: &[UdpSocket]) -> u16 {
+    let mut buf = [0u8; 2];
+    for _ in 0..8 {
+        if !crate::drivers::entropy::getrandom(&mut buf) {
+            break;
+        }
+        let candidate = EPHEMERAL_PORT_BASE
+            .wrapping_add(u16::from_ne_bytes(buf) % (u16::MAX - EPHEMERAL_PORT_BASE));
+        if !sockets.iter().any(|s| s.local_port == candidate) {
+            return candidate;
+        }
+    }
+    let mut p = NEXT_EPHEMERAL_PORT.lock();
+    let port = *p;
+    *p = p.wrapping_add(1);
+    port
+}
+
 pub fn socket() -> usize {
     let mut sockets = UDP_SOCKETS.lock();
-    let port = {
-        let mut p = NEXT_EPHEMERAL_PORT.lock();
-        let port = *p;
-        *p += 1;
-        port
-    };
+    let port = allocate_ephemeral_port(&sockets);
     let idx = sockets.len();
     sockets.push(UdpSocket::new(port));
     idx
@@ -182,6 +209,15 @@ pub fn sendto(idx: usize, buf: &[u8], dst_addr: crate::net::IpAddr, dst_port: u1
     if let Some(sock) = sockets.get(idx) {
         sock.sendto(buf, dst_addr, dst_port);
     }
+}
+
+/// Local (ephemeral) port a socket is bound to. Callers that need to verify
+/// an inbound packet was actually addressed to the port a query went out
+/// from (e.g. `dns::handle_dns_response`'s destination-port check) read it
+/// back through here rather than re-deriving it.
+pub fn port(idx: usize) -> u16 {
+    let sockets = UDP_SOCKETS.lock();
+    sockets.get(idx).map(|sock| sock.port()).unwrap_or(0)
 }
 
 pub fn send(idx: usize, buf: &[u8]) {
@@ -222,7 +258,7 @@ pub fn handle_udp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
         return;
     }
     if src_port == 53 {
-        crate::net::dns::handle_dns_response(src, src_port, payload);
+        crate::net::dns::handle_dns_response(src, src_port, dst_port, payload);
         return;
     }
     let mut sockets = UDP_SOCKETS.lock();

@@ -372,21 +372,54 @@ impl Drop for LoadRollback {
     }
 }
 
+/// True if `addr` is at or beyond the kernel half of address space — i.e.
+/// not a legal address for a user segment or relocation target, even though
+/// it may well be *canonical*.
+///
+/// x86_64 canonical form is two disjoint ranges, not one: user half
+/// `0..=USER_SPACE_TOP` and kernel half `0xFFFF_8000_0000_0000..=u64::MAX`.
+/// `x86_64::VirtAddr::try_new` — `new_truncate` (sign-extend bit 47) equated
+/// against the input — accepts *both* halves; it only rejects the
+/// non-canonical hole in between. A `p_vaddr` (ET_EXEC: unmodified by any
+/// ASLR base, `base == 0`) or a relocation `r_offset` chosen to land exactly
+/// in the kernel half is therefore both "canonical" and, once
+/// `map_load_segments` maps it with `PageTableFlags::USER_ACCESSIBLE` set
+/// unconditionally and `load()` shallow-clones the kernel's PML4 entries
+/// into the new address space, a `USER_ACCESSIBLE` page implanted into (or
+/// overlapping) live kernel virtual memory. `try_new` alone does not catch
+/// this; this predicate does, by checking the boundary this loader actually
+/// needs — "inside user space" — instead of merely "canonical".
+///
+/// Shared by `validate_segment_range` (`seg_start`) and
+/// `apply_relative_relocations` (`target_addr`): both dereference a single
+/// address and must reject it outright if it's outside user space.
+fn exceeds_user_space(addr: u64) -> bool {
+    addr > crate::security::aslr::USER_SPACE_TOP
+}
+
 /// Validate a PT_LOAD segment's address range before it drives any page
 /// allocation or `VirtAddr` construction.
 ///
 /// `p_vaddr`, `base`, and `p_memsz` are attacker-controlled: `p_vaddr` and
 /// `p_memsz` come straight from a program header in a binary passed to
 /// `spawn_user`/`exec`, and `base` is only trusted for ET_EXEC (0) — for
-/// ET_DYN it is ASLR-chosen but the *addition* still needs checking. Two
-/// separate hazards live in the two lines this replaces:
+/// ET_DYN it is ASLR-chosen but the *addition* still needs checking. Three
+/// separate hazards are covered here:
 ///
 /// - `ph.p_vaddr + base` and `seg_start + ph.p_memsz` were plain `u64`
 ///   additions that can wrap, and the result feeds `VirtAddr::new` (in the
 ///   caller's page loop), which *panics* on a non-canonical address. This
 ///   process runs with `panic = "abort"`, so a single malformed header
-///   would abort the whole kernel. `checked_add` plus `VirtAddr::try_new`
-///   turn that into a rejected load.
+///   would abort the whole kernel. `checked_add` turns that into a
+///   rejected load.
+/// - Canonical is not the same as "in user space" — see
+///   `exceeds_user_space`. `seg_start` is checked against it directly.
+///   `seg_end` is an *exclusive* bound (one past the last mapped byte), so
+///   a segment legitimately ending on the very last byte of user space
+///   produces `seg_end == USER_SPACE_TOP + 1` — one past what
+///   `exceeds_user_space` accepts for a dereferenced address, so it gets
+///   its own inclusive-of-the-boundary comparison rather than reusing that
+///   predicate.
 /// - `p_memsz` had no upper bound, so a crafted segment could drive the
 ///   per-page allocation loop to try to allocate most of physical RAM
 ///   before any failure (including the leak in Defect B) was reached. The
@@ -404,8 +437,15 @@ fn validate_segment_range(p_vaddr: u64, base: u64, p_memsz: u64) -> Result<(u64,
     let seg_end = seg_start
         .checked_add(p_memsz)
         .ok_or(ElfError::InvalidSegment)?;
-    VirtAddr::try_new(seg_start).map_err(|_| ElfError::InvalidSegment)?;
-    VirtAddr::try_new(seg_end).map_err(|_| ElfError::InvalidSegment)?;
+
+    if exceeds_user_space(seg_start) {
+        return Err(ElfError::InvalidSegment);
+    }
+    let user_space_limit = crate::security::aslr::USER_SPACE_TOP + 1;
+    if seg_end > user_space_limit {
+        return Err(ElfError::InvalidSegment);
+    }
+
     Ok((seg_start, seg_end))
 }
 
@@ -575,12 +615,17 @@ fn apply_relative_relocations(
         }
         // `r_offset` comes straight from an Elf64_Rela entry in the object
         // (attacker-controlled, same as p_vaddr above): `base + r_offset`
-        // must not wrap, and the result must be canonical before it reaches
-        // `VirtAddr`, which panics on a non-canonical address.
+        // must not wrap, and — same boundary as `validate_segment_range`,
+        // see `exceeds_user_space` — must land inside user space, not just
+        // pass the weaker canonical check `VirtAddr::new` performs on its
+        // own (which happily accepts the kernel half too).
         let target_addr = base
             .checked_add(r_offset)
             .ok_or(ElfError::InvalidSegment)?;
-        let target = VirtAddr::try_new(target_addr).map_err(|_| ElfError::InvalidSegment)?;
+        if exceeds_user_space(target_addr) {
+            return Err(ElfError::InvalidSegment);
+        }
+        let target = VirtAddr::new(target_addr);
         let value = base.wrapping_add(r_addend as u64);
         let phys = crate::memory::virt::translate_in_pml4(target, PhysAddr::new(pml4_phys))
             .ok_or(ElfError::LoadFailed)?;
@@ -661,6 +706,58 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The case that shipped untested: `0xFFFF_8000_0000_0000` is the
+    /// smallest kernel-half address — fully canonical, so the old
+    /// `VirtAddr::try_new`-only check accepted it. `base == 0` reproduces
+    /// exactly what `load()` uses for an ET_EXEC binary (`elf.rs:125`), so
+    /// `p_vaddr` reaches this check completely unmodified.
+    fn test_rejects_kernel_half_vaddr() -> TestResult {
+        let result = validate_segment_range(0xFFFF_8000_0000_0000, 0, 4096);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// Same kernel-half rejection, but with a nonzero base added in —
+    /// proves the check runs on `seg_start` (the sum), not on `p_vaddr` in
+    /// isolation, so an ASLR-style base can't be used to walk a
+    /// user-half-looking `p_vaddr` into the kernel half.
+    fn test_rejects_kernel_half_vaddr_with_nonzero_base() -> TestResult {
+        let result = validate_segment_range(0xFFFF_7FFF_FFFF_E000, 0x2000, 4096);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// The ceiling must not reject a segment that legitimately ends on the
+    /// very last byte of user space. `seg_end` is exclusive, so this
+    /// segment's `seg_end` is `USER_SPACE_TOP + 1` — the ceiling is `<=`
+    /// against that value, not `<`, specifically so this is accepted.
+    fn test_accepts_last_user_space_page() -> TestResult {
+        let result = validate_segment_range(0x0000_7fff_ffff_f000, 0, 4096);
+        test_assert_eq!(
+            result,
+            Ok((0x0000_7fff_ffff_f000, 0x0000_8000_0000_0000))
+        );
+        TestResult::Pass
+    }
+
+    /// `seg_start` alone can be a legal user-space address while `seg_end`
+    /// still runs past the top of user space — both ends must be checked.
+    fn test_rejects_segment_crossing_user_space_boundary() -> TestResult {
+        let result = validate_segment_range(0x0000_7fff_ffff_f000, 0, 0x2000);
+        test_assert_eq!(result, Err(ElfError::InvalidSegment));
+        TestResult::Pass
+    }
+
+    /// `apply_relative_relocations` rejects `target_addr` with this exact
+    /// predicate (`exceeds_user_space`) before calling `VirtAddr::new` on
+    /// it — this is that check, exercised directly with the same
+    /// kernel-half trigger value used above.
+    fn test_relocation_target_rejects_kernel_half() -> TestResult {
+        test_assert!(exceeds_user_space(0xFFFF_8000_0000_0000));
+        test_assert!(!exceeds_user_space(0x0000_7fff_ffff_ffff));
+        TestResult::Pass
+    }
+
     /// Defect B: a frame tracked in `LoadRollback` but never committed
     /// (the shape every early-return failure path in `load` and
     /// `load_shared_object` now takes) must be freed back to the allocator
@@ -690,6 +787,26 @@ pub mod tests {
         crate::testing::register_test(
             "elf_loader::accepts_sane_segment",
             test_accepts_sane_segment,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_kernel_half_vaddr",
+            test_rejects_kernel_half_vaddr,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_kernel_half_vaddr_with_nonzero_base",
+            test_rejects_kernel_half_vaddr_with_nonzero_base,
+        );
+        crate::testing::register_test(
+            "elf_loader::accepts_last_user_space_page",
+            test_accepts_last_user_space_page,
+        );
+        crate::testing::register_test(
+            "elf_loader::rejects_segment_crossing_user_space_boundary",
+            test_rejects_segment_crossing_user_space_boundary,
+        );
+        crate::testing::register_test(
+            "elf_loader::relocation_target_rejects_kernel_half",
+            test_relocation_target_rejects_kernel_half,
         );
         crate::testing::register_test(
             "elf_loader::uncommitted_rollback_frees_tracked_frames",

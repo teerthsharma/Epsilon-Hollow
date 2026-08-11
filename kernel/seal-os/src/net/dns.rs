@@ -17,7 +17,6 @@ static DNS_SERVER: Mutex<[u8; 4]> = Mutex::new([10, 0, 2, 3]);
 static CACHE: Mutex<BTreeMap<String, DnsCacheEntry>> = Mutex::new(BTreeMap::new());
 #[allow(dead_code)] // REASON: UDP socket handle reserved for future async DNS resolver
 static DNS_SOCKET: Mutex<Option<usize>> = Mutex::new(None);
-static QUERY_ID: Mutex<u16> = Mutex::new(1);
 
 pub fn init() {}
 
@@ -42,6 +41,61 @@ static PENDING_QUERY_ID: Mutex<Option<u16>> = Mutex::new(None);
 // DNS_SERVER at receive time, so a `set_server` call racing with an in-flight
 // query can't shift what the response is checked against.
 static PENDING_QUERY_SERVER: Mutex<Option<(crate::net::IpAddr, u16)>> = Mutex::new(None);
+// Local ephemeral UDP port the outstanding query went out from (from the
+// same socket handle used for `sendto`). A response must be addressed back
+// to this exact port -- see DST-PORT check in `handle_dns_response`.
+static PENDING_QUERY_LOCAL_PORT: Mutex<Option<u16>> = Mutex::new(None);
+
+// ---------------------------------------------------------------------------
+// Transaction-ID entropy.
+//
+// IDs used to come from a plain incrementing counter, making the "next" ID
+// fully predictable to anyone who observed -- or merely induced, by making
+// the kernel resolve any unrelated hostname -- one prior lookup. Draw from
+// hardware entropy instead, with a boot-seeded PRNG fallback for the rare
+// CPU with neither RDSEED nor RDRAND.
+// ---------------------------------------------------------------------------
+
+/// Fallback PRNG state, used only when `drivers::entropy::getrandom` reports
+/// no hardware entropy source. xorshift64 seeded once from RDTSC (same
+/// construction as `security::aslr`'s fallback). This is *not*
+/// cryptographically secure -- a single timer sample seeds a linear
+/// generator whose state an attacker who sees enough outputs could in
+/// principle reconstruct -- but it is still unpredictable from a single
+/// induced lookup, unlike the incrementing counter it replaces, and this
+/// path is dead code on any CPU with RDRAND (available since ~2012) or
+/// RDSEED (~2015).
+static FALLBACK_RNG_STATE: Mutex<Option<u64>> = Mutex::new(None);
+
+fn fallback_random_u64() -> u64 {
+    let mut state = FALLBACK_RNG_STATE.lock();
+    let mut s = state.unwrap_or_else(|| {
+        let seed = unsafe { core::arch::x86_64::_rdtsc() };
+        if seed == 0 {
+            0x9e37_79b9_7f4a_7c15
+        } else {
+            seed
+        }
+    });
+    s ^= s << 13;
+    s ^= s >> 7;
+    s ^= s << 17;
+    *state = Some(s);
+    s
+}
+
+/// Draw a random 16-bit DNS transaction ID. Prefers hardware entropy
+/// (`drivers::entropy::getrandom`, which itself prefers RDSEED and falls
+/// back to RDRAND, and checks CPUID before using either); falls back to a
+/// boot-seeded PRNG only if the CPU offers neither.
+fn random_query_id() -> u16 {
+    let mut buf = [0u8; 2];
+    if crate::drivers::entropy::getrandom(&mut buf) {
+        u16::from_ne_bytes(buf)
+    } else {
+        fallback_random_u64() as u16
+    }
+}
 
 // ---------------------------------------------------------------------------
 // NEW: Real DNS header and query structs with honest error handling.
@@ -119,10 +173,7 @@ pub fn resolve(name: &str) -> Result<Option<[u8; 4]>, &'static str> {
 
     *PENDING_QUERY.lock() = Some(String::from(name));
 
-    let mut qid = QUERY_ID.lock();
-    let id = *qid;
-    *qid = id.wrapping_add(1);
-    drop(qid);
+    let id = random_query_id();
     *PENDING_QUERY_ID.lock() = Some(id);
 
     let hdr = DnsHeader {
@@ -150,6 +201,7 @@ pub fn resolve(name: &str) -> Result<Option<[u8; 4]>, &'static str> {
     let dst_port = 53;
     *PENDING_QUERY_SERVER.lock() = Some((dst, dst_port));
     let sock = crate::net::udp::socket();
+    *PENDING_QUERY_LOCAL_PORT.lock() = Some(crate::net::udp::port(sock));
     crate::net::udp::sendto(sock, &pkt, dst, dst_port);
     Ok(None)
 }
@@ -169,10 +221,7 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
 
     *PENDING_QUERY.lock() = Some(String::from(name));
 
-    let mut qid = QUERY_ID.lock();
-    let id = *qid;
-    *qid = id.wrapping_add(1);
-    drop(qid);
+    let id = random_query_id();
     *PENDING_QUERY_ID.lock() = Some(id);
 
     let mut pkt = Vec::new();
@@ -196,6 +245,7 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
     let dst_port = 53;
     *PENDING_QUERY_SERVER.lock() = Some((dst, dst_port));
     let sock = crate::net::udp::socket();
+    *PENDING_QUERY_LOCAL_PORT.lock() = Some(crate::net::udp::port(sock));
     crate::net::udp::sendto(sock, &pkt, dst, dst_port);
     None
 }
@@ -207,18 +257,27 @@ pub fn query(name: &str) -> Option<[u8; 4]> {
 /// followed, but every pointer target must land strictly before the pointer
 /// itself; combined with a hard cap on the number of jumps, a pointer that
 /// targets itself or forms a cycle is rejected outright rather than merely
-/// bounded, so no packet can drive this into a long or infinite loop.
+/// bounded, so no packet can drive this into a long or infinite loop. Also
+/// enforces RFC 1035 SS3.1's 255-octet cap on the encoded name length --
+/// belt-and-suspenders alongside the jump cap and `pkt.len()` bound, not
+/// load-bearing for termination by itself, but a malformed/oversized name is
+/// still a malformed name and should be rejected as one.
 fn read_name(pkt: &[u8], offset: usize) -> Option<(String, usize)> {
     let mut name = String::new();
     let mut pos = offset;
     let mut end_pos: Option<usize> = None;
     let mut jumps = 0u32;
+    let mut wire_len = 0usize;
     loop {
         if pos >= pkt.len() {
             return None;
         }
         let len = pkt[pos];
         if len == 0 {
+            wire_len += 1; // terminating zero octet
+            if wire_len > 255 {
+                return None;
+            }
             if end_pos.is_none() {
                 end_pos = Some(pos + 1);
             }
@@ -245,6 +304,10 @@ fn read_name(pkt: &[u8], offset: usize) -> Option<(String, usize)> {
         if stop > pkt.len() {
             return None;
         }
+        wire_len += 1 + label_len; // length octet + label bytes
+        if wire_len > 255 {
+            return None;
+        }
         if !name.is_empty() {
             name.push('.');
         }
@@ -254,10 +317,11 @@ fn read_name(pkt: &[u8], offset: usize) -> Option<(String, usize)> {
     Some((name, end_pos.unwrap_or(pos)))
 }
 
-/// Handle an inbound UDP datagram from `src:src_port` that claims to be a DNS
-/// response. `src`/`src_port` come straight from the IP/UDP headers `udp.rs`
-/// already parsed for this packet -- see `handle_udp_packet` (udp.rs:207).
-pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, pkt: &[u8]) {
+/// Handle an inbound UDP datagram from `src:src_port`, addressed to our
+/// local `dst_port`, that claims to be a DNS response. All three come
+/// straight from the IP/UDP headers `udp.rs` already parsed for this packet
+/// -- see `handle_udp_packet` (udp.rs:207).
+pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, dst_port: u16, pkt: &[u8]) {
     if pkt.len() < 12 {
         return;
     }
@@ -267,13 +331,18 @@ pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, pkt: &[u8]) {
     }
 
     // Reject any response whose transaction ID doesn't match the single
-    // outstanding query. A mismatch must not touch PENDING_QUERY /
-    // PENDING_QUERY_ID / PENDING_QUERY_SERVER -- dropping silently is the
-    // fail-closed behavior; clearing state on an unverified response would
-    // hand an attacker a denial-of-service primitive instead of a poisoning
-    // one.
+    // outstanding query. A mismatch must not touch any PENDING_QUERY_* state
+    // -- dropping silently is the fail-closed behavior; clearing state on an
+    // unverified response would hand an attacker a denial-of-service
+    // primitive instead of a poisoning one.
     let id = u16::from_be_bytes([pkt[0], pkt[1]]);
     if *PENDING_QUERY_ID.lock() != Some(id) {
+        return;
+    }
+
+    // Reject any response not addressed to the local port the query went
+    // out from (the classic second 16 bits of entropy post-Kaminsky).
+    if *PENDING_QUERY_LOCAL_PORT.lock() != Some(dst_port) {
         return;
     }
 
@@ -287,8 +356,8 @@ pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, pkt: &[u8]) {
 
     // Reject any response whose echoed question doesn't name the host this
     // ID's query actually asked about (cross-association guard for the
-    // single-slot PENDING_QUERY, and a third independent check beyond ID and
-    // source).
+    // single-slot PENDING_QUERY, and a fourth independent check beyond ID,
+    // destination port, and source).
     let matches_pending = match read_name(pkt, 12) {
         Some((qname, _)) => PENDING_QUERY
             .lock()
@@ -362,6 +431,7 @@ pub fn handle_dns_response(src: crate::net::IpAddr, src_port: u16, pkt: &[u8]) {
                 .unwrap_or_else(|| String::from("unknown"));
             *PENDING_QUERY_ID.lock() = None;
             *PENDING_QUERY_SERVER.lock() = None;
+            *PENDING_QUERY_LOCAL_PORT.lock() = None;
             let mut cache = CACHE.lock();
             if cache.len() >= 16 {
                 let first = cache.keys().next().cloned();
@@ -430,6 +500,9 @@ pub mod tests {
     /// matching `DNS_SERVER`'s default so tests don't depend on `set_server`.
     const TEST_SERVER: crate::net::IpAddr = crate::net::IpAddr::V4([10, 0, 2, 3]);
     const TEST_PORT: u16 = 53;
+    /// The local ephemeral port `arm_pending` records as "where the query
+    /// went out from" -- a response must be addressed back to this port.
+    const TEST_LOCAL_PORT: u16 = 51234;
 
     /// Arm a pending query the way `resolve`/`query` would on the send path,
     /// without touching the network.
@@ -437,12 +510,14 @@ pub mod tests {
         *PENDING_QUERY.lock() = Some(String::from(hostname));
         *PENDING_QUERY_ID.lock() = Some(id);
         *PENDING_QUERY_SERVER.lock() = Some((TEST_SERVER, TEST_PORT));
+        *PENDING_QUERY_LOCAL_PORT.lock() = Some(TEST_LOCAL_PORT);
     }
 
     fn reset_state() {
         *PENDING_QUERY.lock() = None;
         *PENDING_QUERY_ID.lock() = None;
         *PENDING_QUERY_SERVER.lock() = None;
+        *PENDING_QUERY_LOCAL_PORT.lock() = None;
         CACHE.lock().clear();
     }
 
@@ -453,7 +528,7 @@ pub mod tests {
         reset_state();
         arm_pending("example.com", 0x1234);
         let spoofed = build_dns_response(0xBEEF, "example.com", [6, 6, 6, 6], 300);
-        handle_dns_response(TEST_SERVER, TEST_PORT, &spoofed);
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &spoofed);
         test_assert!(
             CACHE.lock().get("example.com").is_none(),
             "response with mismatched transaction ID was accepted into the cache"
@@ -461,6 +536,47 @@ pub mod tests {
         test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("example.com")));
         test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x1234));
         test_assert_eq!(*PENDING_QUERY_SERVER.lock(), Some((TEST_SERVER, TEST_PORT)));
+        TestResult::Pass
+    }
+
+    /// RED: an attacker who induced a prior lookup (or simply guessed the
+    /// old counter's successor) tries the "next" ID under the pre-fix
+    /// sequential scheme. With random IDs that guess is just another wrong
+    /// ID and must be rejected the same way -- this documents that the
+    /// specific sequential-guess strategy the old counter enabled no longer
+    /// works, not just that arbitrary wrong IDs are rejected.
+    fn test_predicted_id_rejected() -> TestResult {
+        reset_state();
+        let observed_prior_id: u16 = 0x1234; // an ID seen/induced on an earlier lookup
+        arm_pending("example.com", 0x9ABC); // the real (random) ID for this query
+        let predicted = observed_prior_id.wrapping_add(1); // old counter's guess
+        test_assert!(
+            predicted != 0x9ABC,
+            "test fixture invalid: predicted guess accidentally equals the armed ID"
+        );
+        let spoofed = build_dns_response(predicted, "example.com", [6, 6, 6, 6], 300);
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &spoofed);
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "response using a sequentially-predicted ID was accepted"
+        );
+        test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x9ABC));
+        TestResult::Pass
+    }
+
+    /// Sanity check that `random_query_id` is not the old monotonic counter
+    /// -- the smallest thing that fails if the entropy plumbing regresses to
+    /// `n, n+1, n+2, ...`. Not a statistical randomness test, just a tripwire.
+    fn test_query_id_not_sequential() -> TestResult {
+        let mut ids: Vec<u16> = Vec::new();
+        for _ in 0..8 {
+            ids.push(random_query_id());
+        }
+        let looks_sequential = ids.windows(2).all(|w| w[1] == w[0].wrapping_add(1));
+        test_assert!(
+            !looks_sequential,
+            "random_query_id looks like a monotonic counter, not randomized"
+        );
         TestResult::Pass
     }
 
@@ -472,7 +588,7 @@ pub mod tests {
         reset_state();
         arm_pending("bank.example", 0x1234);
         let spoofed = build_dns_response(0x1234, "evil.attacker.example", [6, 6, 6, 6], 300);
-        handle_dns_response(TEST_SERVER, TEST_PORT, &spoofed);
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &spoofed);
         test_assert!(
             CACHE.lock().get("bank.example").is_none(),
             "response naming a different host than the pending query was accepted"
@@ -494,7 +610,7 @@ pub mod tests {
         arm_pending("example.com", 0x1234);
         let spoofed = build_dns_response(0x1234, "example.com", [6, 6, 6, 6], 300);
         let attacker = crate::net::IpAddr::V4([203, 0, 113, 66]); // not TEST_SERVER
-        handle_dns_response(attacker, TEST_PORT, &spoofed);
+        handle_dns_response(attacker, TEST_PORT, TEST_LOCAL_PORT, &spoofed);
         test_assert!(
             CACHE.lock().get("example.com").is_none(),
             "response from an unexpected source address was accepted into the cache"
@@ -511,7 +627,7 @@ pub mod tests {
         reset_state();
         arm_pending("example.com", 0x1234);
         let spoofed = build_dns_response(0x1234, "example.com", [6, 6, 6, 6], 300);
-        handle_dns_response(TEST_SERVER, 9999, &spoofed); // right IP, wrong port
+        handle_dns_response(TEST_SERVER, 9999, TEST_LOCAL_PORT, &spoofed); // right IP, wrong port
         test_assert!(
             CACHE.lock().get("example.com").is_none(),
             "response from an unexpected source port was accepted into the cache"
@@ -522,14 +638,32 @@ pub mod tests {
         TestResult::Pass
     }
 
-    /// GREEN: a response matching the outstanding ID, the source the query
-    /// was sent to, and the pending hostname is still accepted and cached,
-    /// and the pending state is cleared on acceptance.
+    /// RED: a response from the right server on the right server-side port,
+    /// but addressed to a local port other than the one the query actually
+    /// went out from, must be dropped without disturbing the pending query.
+    fn test_wrong_dst_port_rejected() -> TestResult {
+        reset_state();
+        arm_pending("example.com", 0x1234);
+        let spoofed = build_dns_response(0x1234, "example.com", [6, 6, 6, 6], 300);
+        handle_dns_response(TEST_SERVER, TEST_PORT, 9999, &spoofed); // wrong local port
+        test_assert!(
+            CACHE.lock().get("example.com").is_none(),
+            "response addressed to an unexpected local port was accepted into the cache"
+        );
+        test_assert_eq!(*PENDING_QUERY.lock(), Some(String::from("example.com")));
+        test_assert_eq!(*PENDING_QUERY_ID.lock(), Some(0x1234));
+        test_assert_eq!(*PENDING_QUERY_LOCAL_PORT.lock(), Some(TEST_LOCAL_PORT));
+        TestResult::Pass
+    }
+
+    /// GREEN: a response matching the outstanding ID, the destination port,
+    /// the source the query was sent to, and the pending hostname is still
+    /// accepted and cached, and the pending state is cleared on acceptance.
     fn test_legit_response_accepted() -> TestResult {
         reset_state();
         arm_pending("example.com", 0x1234);
         let good = build_dns_response(0x1234, "example.com", [93, 184, 216, 34], 300);
-        handle_dns_response(TEST_SERVER, TEST_PORT, &good);
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &good);
         test_assert_eq!(
             CACHE.lock().get("example.com").map(|e| e.ip),
             Some([93, 184, 216, 34])
@@ -545,6 +679,10 @@ pub mod tests {
         test_assert!(
             PENDING_QUERY_SERVER.lock().is_none(),
             "pending query server was not cleared on a validated accept"
+        );
+        test_assert!(
+            PENDING_QUERY_LOCAL_PORT.lock().is_none(),
+            "pending query local port was not cleared on a validated accept"
         );
         TestResult::Pass
     }
@@ -572,10 +710,36 @@ pub mod tests {
 
         reset_state();
         arm_pending("example.com", 0x1234);
-        handle_dns_response(TEST_SERVER, TEST_PORT, &pkt); // must return promptly, not loop
+        handle_dns_response(TEST_SERVER, TEST_PORT, TEST_LOCAL_PORT, &pkt); // must return promptly, not loop
         test_assert!(
             CACHE.lock().get("example.com").is_none(),
             "malformed name was accepted as a match"
+        );
+        TestResult::Pass
+    }
+
+    /// RFC 1035 SS3.1: a name whose wire-encoded length exceeds 255 octets
+    /// must be rejected, not truncated or accepted.
+    fn test_oversized_name_rejected() -> TestResult {
+        // 4 labels of 63 bytes each (the max single-label length) plus
+        // separators comfortably exceeds the 255-octet total cap.
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(&0x1234u16.to_be_bytes());
+        pkt.extend_from_slice(&0x8180u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0000u16.to_be_bytes());
+        for _ in 0..5 {
+            pkt.push(63);
+            pkt.extend_from_slice(&[b'a'; 63]);
+        }
+        pkt.push(0);
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes());
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes());
+        test_assert!(
+            read_name(&pkt, 12).is_none(),
+            "name over 255 wire-encoded octets was accepted"
         );
         TestResult::Pass
     }
@@ -633,6 +797,11 @@ pub mod tests {
 
     pub fn register_all() {
         crate::testing::register_test("dns::wrong_id_rejected", test_wrong_id_rejected);
+        crate::testing::register_test("dns::predicted_id_rejected", test_predicted_id_rejected);
+        crate::testing::register_test(
+            "dns::query_id_not_sequential",
+            test_query_id_not_sequential,
+        );
         crate::testing::register_test(
             "dns::wrong_question_rejected",
             test_wrong_question_rejected,
@@ -646,12 +815,20 @@ pub mod tests {
             test_wrong_source_port_rejected,
         );
         crate::testing::register_test(
+            "dns::wrong_dst_port_rejected",
+            test_wrong_dst_port_rejected,
+        );
+        crate::testing::register_test(
             "dns::legit_response_accepted",
             test_legit_response_accepted,
         );
         crate::testing::register_test(
             "dns::decompression_self_pointer_rejected",
             test_decompression_self_pointer_rejected,
+        );
+        crate::testing::register_test(
+            "dns::oversized_name_rejected",
+            test_oversized_name_rejected,
         );
         crate::testing::register_test("dns::cache_expiration", test_dns_cache_expiration);
         crate::testing::register_test("dns::cache_hit", test_dns_cache_hit);
