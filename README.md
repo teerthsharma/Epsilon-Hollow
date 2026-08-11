@@ -5422,6 +5422,96 @@ the bound was four hundred times too loose to notice anything going wrong.
 
 None of them were lying. All of them were unmeasured.
 
+## The Tests Ran
+
+Earlier in this document there is a section explaining that nothing in this
+kernel had ever been tested. Seventy thousand lines, sixty-five `#[test]`
+functions that never compiled, an in-kernel harness that boots under QEMU and
+greps for `ALL TESTS PASSED`, and a CI job to run it that had reported `skipped`
+on every run on every branch since it was written, because it gates on a green CI
+that had never existed.
+
+That section is now wrong, and I am leaving it in, because how it became wrong is
+the only interesting part.
+
+Six root causes, in order, each one hiding the next:
+
+1. `cargo fmt` failed on two files that had never been formatted, because they
+   had never been compiled.
+2. `miri` had never compiled at all — a `use std::f64;` shadowed the primitive
+   type, so `f64::MAX` quietly resolved to the deprecated module constant.
+3. The Atlas boot proof failed because `relobj::parse()` read the section header's
+   fields at the wrong offsets. Not "sometimes wrong": no chart had ever loaded,
+   ever, and the boot log had been printing `charts_peak=0` the entire time.
+4. The installer proof failed because `ManifoldFS::write` accepted an `offset`
+   parameter and ignored it, so creating a second user account destroyed the
+   first one.
+5. The unsafe-block census failed because the audit contained two scanners that
+   disagreed with each other.
+6. The language-hygiene gate failed on documentation that was accurately
+   describing the repository.
+
+And then, at 04:49 on a Tuesday:
+
+```
+[TEST] === Suite: All Registered Tests ===
+TEST_PASS: installer::gpt_header_crc_matches_independent
+TEST_PASS: installer::write_to_unselected_device_is_refused
+TEST_PASS: shell::root_secret_denied_for_unprivileged_shell
+TEST_PASS: virt::map_page_inner_refuses_present_leaf
+TEST_PASS: mmap::munmap_user_refuses_foreign_page_table
+TEST_PASS: filesystem::write_honors_offset
+...
+```
+
+**151 passed. 1 failed.**
+
+I have written a lot of words in this README about not trusting things that look
+like verification. So let me be precise about what that number is and is not.
+
+### What it is
+
+Those are real assertions, executing on a real x86_64 kernel, booted under real
+firmware, on a machine that is not mine. `filesystem::write_honors_offset` is the
+test for the bug that was eating `/etc/passwd`. It ran. It passed. That is no
+longer a claim I am making; it is a thing that happened.
+
+### What it is not
+
+**The suite did not finish.** It aborted at registration group 31 of 54.
+
+The thirty-second group reaches `with_vfs`, which is `.expect("VFS not
+initialized")`, and this kernel builds with `panic = "abort"`, so there is no
+catching it. Everything after that never ran: the network stack, the language
+runtime, all three ACPI parsers, TLS, AHCI, virtio, the ramdisk, the ML engine.
+Twenty-three groups.
+
+151 is a floor. I do not know what the total is. Nobody does yet.
+
+### The one that failed
+
+```
+TEST_FAIL: atlas::relocation_arithmetic
+  compute_reloc(R_X86_64_PLT32, 0xFFFF_9000_0000_1000, -4, 0xFFFF_9000_0000_1100)
+  != Ok(RelocWrite::W4(0xFFFF_FF00))
+```
+
+`PLT32` is `L + A - P`. The operands give `-0x104`, which is `0xFFFF_FEFC`. The
+test wanted `0xFFFF_FF00`, which is `-0x100`. It dropped the addend.
+
+The code was right. The test was wrong.
+
+And here is the part that made me laugh out loud: **the assertion two lines above
+it tests `PC32` with the same `A = -4` and expects the correct answer.** Same
+file. Same function. Same sitting. The addend was honoured in one branch and
+forgotten in the next, and then the whole thing sat there being wrong for the
+entire life of the project, because there was no mechanism on Earth that would
+have told anyone.
+
+That is the shape of every defect in this document, one last time, and this time
+the thing that caught it was the project's own test harness — working correctly,
+on the first occasion it was ever permitted to try.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
