@@ -261,10 +261,23 @@ pub fn ndp_lookup(ip: [u8; 16]) -> Option<[u8; 6]> {
     None
 }
 
+/// Records `mac` as the link-layer address of `ip`, replacing whatever was
+/// cached for it. Callers that hold an unauthenticated address -- everything
+/// arriving off the wire -- go through `ndp_record` instead.
 pub fn insert_ndp(ip: [u8; 16], mac: [u8; 6]) {
+    ndp_record(ip, mac, true);
+}
+
+/// With `overwrite` false the entry is only created, never replaced: a live
+/// mapping keeps the address it already resolved to. Expiry still applies, so
+/// an entry that has aged out is replaced like any empty slot.
+fn ndp_record(ip: [u8; 16], mac: [u8; 6], overwrite: bool) {
     let mut cache = ND_CACHE.lock();
     for (cached_ip, entry) in cache.iter_mut() {
         if *cached_ip == ip {
+            if !overwrite && !is_expired(entry) {
+                return;
+            }
             entry.mac = mac;
             entry.expires_at = ticks().wrapping_add(300_000);
             return;
@@ -364,7 +377,19 @@ pub fn handle_icmpv6_packet(src: [u8; 16], pkt: &[u8]) {
             }
         }
         ICMPV6_NEIGHBOR_ADVERT => {
-            if pkt.len() < 24 {
+            // RFC 4861 4.4: flags octet at 4, target address at 8..24, then
+            // options. A target link-layer address option is type 2 with
+            // length 1 (one 8-octet unit): two header bytes and a 6-byte MAC.
+            // Anything shorter carries no address, and caching a placeholder
+            // for it blackholes the target -- `ndp_lookup` would then hand
+            // `send_ipv6_packet` an all-zero destination MAC for every frame
+            // until the entry expires.
+            //
+            // ponytail: only the option at 24 is read, so an advertisement
+            // that puts another option ahead of the link-layer address is
+            // dropped rather than parsed. That fails closed. Walk the option
+            // chain by its length fields if a peer is seen to send one.
+            if pkt.len() < 32 || pkt[24] != 2 || pkt[25] != 1 {
                 return;
             }
             let target = [
@@ -372,13 +397,236 @@ pub fn handle_icmpv6_packet(src: [u8; 16], pkt: &[u8]) {
                 pkt[17], pkt[18], pkt[19], pkt[20], pkt[21], pkt[22], pkt[23],
             ];
             let mut mac = [0u8; 6];
-            if pkt.len() >= 32 && pkt[24] == 2 {
-                mac.copy_from_slice(&pkt[26..32]);
+            mac.copy_from_slice(&pkt[26..32]);
+            // The all-zero address blackholes the target and a group address
+            // (low bit of the first octet, which covers ff:ff:ff:ff:ff:ff)
+            // floods the link; neither is a unicast link-layer address. A
+            // multicast or unspecified target is not a neighbour at all.
+            if mac == [0u8; 6] || mac[0] & 0x01 != 0 || target[0] == 0xFF || target == [0u8; 16] {
+                return;
             }
-            insert_ndp(target, mac);
+            // Nothing records which solicitations went out, so an
+            // advertisement cannot be matched against one and "unsolicited"
+            // cannot be detected. What is left is to refuse the takeover: an
+            // advertisement may fill an entry that does not resolve yet, and
+            // only one that claims Solicited and Override -- the pair this
+            // stack's own replies set -- may replace one that does.
+            ndp_record(target, mac, pkt[4] & 0x60 == 0x60);
         }
         _ => {
             // Unknown ICMPv6 type; drop silently
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    const MAC_A: [u8; 6] = [0x52, 0x54, 0x00, 0xAA, 0xAA, 0x01];
+    const MAC_B: [u8; 6] = [0x52, 0x54, 0x00, 0xBB, 0xBB, 0x02];
+
+    /// RFC 4861 4.4 flags octet.
+    const F_SOLICITED: u8 = 0x40;
+    const F_OVERRIDE: u8 = 0x20;
+
+    /// Builds a Neighbor Advertisement as it arrives at `handle_icmpv6_packet`:
+    /// type, code, two checksum bytes, the flags octet, three reserved bytes
+    /// and the 16-byte target. With `opt` it carries a target link-layer
+    /// address option (type 2, length 1); without it the message is the
+    /// 24-byte minimum, which is what the length guard admits.
+    fn advert(flags: u8, target: [u8; 16], opt: Option<[u8; 6]>) -> Vec<u8> {
+        let mut pkt = Vec::with_capacity(32);
+        pkt.push(ICMPV6_NEIGHBOR_ADVERT);
+        pkt.push(0); // code
+        pkt.push(0); // checksum: not verified on receive
+        pkt.push(0);
+        pkt.push(flags);
+        pkt.push(0); // reserved
+        pkt.push(0);
+        pkt.push(0);
+        pkt.extend_from_slice(&target);
+        if let Some(mac) = opt {
+            pkt.push(2); // target link-layer address
+            pkt.push(1); // one 8-octet unit
+            pkt.extend_from_slice(&mac);
+        }
+        pkt
+    }
+
+    /// A distinct target per test, so the shared cache carries no state from
+    /// one case into the next.
+    fn target(n: u8) -> [u8; 16] {
+        [0xFD, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, n]
+    }
+
+    /// Reads the cache directly rather than through `ndp_lookup`, which emits a
+    /// solicitation on a miss.
+    fn cached(ip: [u8; 16]) -> Option<[u8; 6]> {
+        ND_CACHE
+            .lock()
+            .iter()
+            .find(|(cached_ip, _)| *cached_ip == ip)
+            .map(|(_, entry)| entry.mac)
+    }
+
+    /// An advertisement with no link-layer address option carries no address to
+    /// cache. Installing a placeholder makes `ndp_lookup` return
+    /// `00:00:00:00:00:00`, which `send_ipv6_packet` writes as the destination
+    /// of every frame to that address for the entry's lifetime.
+    fn test_advert_without_option_not_cached() -> TestResult {
+        let t = target(0x11);
+        let src = target(0xEE);
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, None));
+        test_assert!(
+            cached(t).is_none(),
+            "a 24-byte Neighbor Advertisement with no link-layer option was cached"
+        );
+        TestResult::Pass
+    }
+
+    /// Control: an advertisement that does carry an option still resolves, so
+    /// the guard above does not disable neighbour discovery.
+    fn test_advert_with_option_cached() -> TestResult {
+        let t = target(0x12);
+        let src = target(0xEE);
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        test_assert!(
+            cached(t) == Some(MAC_A),
+            "a Neighbor Advertisement carrying a link-layer option did not resolve"
+        );
+        TestResult::Pass
+    }
+
+    /// Nothing records which solicitations went out, so an advertisement cannot
+    /// be matched against one. What is left is to refuse the takeover: an
+    /// advertisement may fill an empty entry, and only a solicited one that
+    /// also sets Override may replace an entry that already resolves.
+    fn test_unsolicited_advert_does_not_overwrite() -> TestResult {
+        let t = target(0x13);
+        let src = target(0xEE);
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_A)));
+        test_assert!(cached(t) == Some(MAC_A), "setup advertisement did not cache");
+
+        handle_icmpv6_packet(src, &advert(F_OVERRIDE, t, Some(MAC_B)));
+        test_assert!(
+            cached(t) == Some(MAC_A),
+            "an unsolicited Neighbor Advertisement replaced a resolved entry"
+        );
+
+        // RFC 4861 7.2.5: with Override clear, a cached address that differs
+        // is kept whatever else the advertisement claims.
+        handle_icmpv6_packet(src, &advert(F_SOLICITED, t, Some(MAC_B)));
+        test_assert!(
+            cached(t) == Some(MAC_A),
+            "an advertisement without Override replaced a resolved entry"
+        );
+
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, t, Some(MAC_B)));
+        test_assert!(
+            cached(t) == Some(MAC_B),
+            "a solicited Override advertisement failed to update a resolved entry"
+        );
+        TestResult::Pass
+    }
+
+    /// An option can carry an address that is unusable as a unicast
+    /// destination: all-zero blackholes the target and a group address floods
+    /// it. A multicast or unspecified target is not a neighbour at all.
+    fn test_unusable_addresses_not_cached() -> TestResult {
+        let src = target(0xEE);
+
+        let zero = target(0x14);
+        handle_icmpv6_packet(
+            src,
+            &advert(F_SOLICITED | F_OVERRIDE, zero, Some([0u8; 6])),
+        );
+        test_assert!(
+            cached(zero).is_none(),
+            "an all-zero link-layer address was cached"
+        );
+
+        let bcast = target(0x15);
+        handle_icmpv6_packet(
+            src,
+            &advert(F_SOLICITED | F_OVERRIDE, bcast, Some([0xFF; 6])),
+        );
+        test_assert!(
+            cached(bcast).is_none(),
+            "a broadcast link-layer address was cached"
+        );
+
+        let mcast = [
+            0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01,
+        ];
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, mcast, Some(MAC_A)));
+        test_assert!(
+            cached(mcast).is_none(),
+            "a multicast target address was cached as a neighbour"
+        );
+
+        let unspec = [0u8; 16];
+        handle_icmpv6_packet(src, &advert(F_SOLICITED | F_OVERRIDE, unspec, Some(MAC_A)));
+        test_assert!(
+            cached(unspec).is_none(),
+            "the unspecified target address was cached as a neighbour"
+        );
+        TestResult::Pass
+    }
+
+    /// The option header has to say what it holds. An option that is not a
+    /// target link-layer address, or one that declares a length other than a
+    /// single 8-octet unit, does not carry six bytes of Ethernet address at
+    /// 26..32 -- reading them anyway caches whatever happened to be there.
+    fn test_advert_with_malformed_option_not_cached() -> TestResult {
+        let src = target(0xEE);
+
+        let wrong_type = target(0x16);
+        let mut pkt = advert(F_SOLICITED | F_OVERRIDE, wrong_type, Some(MAC_A));
+        pkt[24] = 1; // source link-layer address, not the target's
+        handle_icmpv6_packet(src, &pkt);
+        test_assert!(
+            cached(wrong_type).is_none(),
+            "an option that is not a target link-layer address was cached as one"
+        );
+
+        let wrong_len = target(0x17);
+        let mut pkt = advert(F_SOLICITED | F_OVERRIDE, wrong_len, Some(MAC_A));
+        pkt[25] = 2; // claims 16 octets, of which only 8 arrived
+        handle_icmpv6_packet(src, &pkt);
+        test_assert!(
+            cached(wrong_len).is_none(),
+            "a truncated link-layer option was cached from its first six bytes"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "ipv6::advert_without_option_not_cached",
+            test_advert_without_option_not_cached,
+        );
+        crate::testing::register_test(
+            "ipv6::advert_with_malformed_option_not_cached",
+            test_advert_with_malformed_option_not_cached,
+        );
+        crate::testing::register_test(
+            "ipv6::advert_with_option_cached",
+            test_advert_with_option_cached,
+        );
+        crate::testing::register_test(
+            "ipv6::unsolicited_advert_does_not_overwrite",
+            test_unsolicited_advert_does_not_overwrite,
+        );
+        crate::testing::register_test(
+            "ipv6::unusable_addresses_not_cached",
+            test_unusable_addresses_not_cached,
+        );
     }
 }
