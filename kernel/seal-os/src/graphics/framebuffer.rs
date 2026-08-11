@@ -38,13 +38,22 @@ impl Framebuffer {
     /// `addr` must be the base of a linear framebuffer that is mapped writable
     /// for at least `pitch * height` bytes and stays valid for the lifetime of
     /// the returned value, which is `Send + Sync` and normally kept in a
-    /// static. `pitch` must be the real scanline stride in bytes (at least
-    /// `width * bpp / 8`) and `bpp` must be 32: `put_pixel` writes a whole
-    /// `u32` at `y * pitch + x * (bpp / 8)`, so any smaller depth writes past
-    /// the pixel it addresses and past the end of the last scanline. Passing
-    /// `addr` 0 yields a framebuffer that reports itself unavailable rather
-    /// than one that faults.
+    /// static. `pitch` must be the real scanline stride in bytes and `bpp` must
+    /// be 32: `put_pixel` writes a whole `u32` at `y * pitch + x * (bpp / 8)`,
+    /// so any smaller depth writes past the pixel it addresses and past the end
+    /// of the last scanline.
+    ///
+    /// Those two conditions are the only ones checked here rather than left to
+    /// the caller: a `bpp` other than 32, or a `pitch` narrower than
+    /// `width * 4`, yields a framebuffer that reports itself unavailable, the
+    /// same as passing `addr` 0. Both fail closed to a blank screen instead of
+    /// writing outside the framebuffer.
     pub unsafe fn new(addr: u64, width: u32, height: u32, pitch: u32, bpp: u8) -> Self {
+        let addr = if bpp == 32 && pitch >= width.saturating_mul(4) {
+            addr
+        } else {
+            0
+        };
         Self {
             buffer: addr as *mut u8,
             width,
