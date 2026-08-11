@@ -6059,6 +6059,168 @@ project should enforce rather than a bug I get to fix on a Tuesday.
 What changed is not that the kernel is correct. It is that the kernel can now be
 asked.
 
+## Three Things Shaped Like Checks
+
+379/379. It was 364 that morning, 370 by lunch, and the nine assertions in
+between came from three defects that turned out to be the same defect wearing
+different hats.
+
+The theme, stated once so the rest of this section makes sense: **none of the
+three was a wrong function.** Each was code that had the shape of a check
+without the substance of one. A guard that cannot fire. A counter that
+increments while the state it guards proceeds regardless. A field parsed into a
+struct and never read again. If you skim these three diffs you will see
+nothing wrong, which is precisely the problem, and precisely why they survived
+this long.
+
+**One: the regime detector that could not report bad news.**
+
+`ml_engine/stratum.rs` classifies a training run as `wellfit`, `drifting`, or
+`collapsing` from topological signals — the shatter ratio of a minimum spanning
+tree, the loop score, the residual drift. My brief to the agent said the bug
+was NaN: that `shatter` could go NaN and every comparison against NaN is false,
+so every threshold would silently pass.
+
+The agent came back and told me I was wrong, which is the most useful thing an
+agent did all day.
+
+`shatter` cannot be NaN. `mst_edge_stats` only records an edge when
+`best_key.is_finite()`, so the maximum is never infinite and the ratio is never
+NaN. What actually happens is worse. Feed the detector a training run whose
+loss has diverged to 1e200 and *every pairwise distance overflows*. Prim's
+algorithm records no edges at all. The function returns `(0.0, 0.0)`. And a
+`raw_max` below `EPS_FLOOR` is indistinguishable from the one case the code
+does handle — a cloud where every point genuinely coincides — so control falls
+into the every-point-coincides branch and **fabricates** `shatter=1.000
+h0_death=0 loop=0`.
+
+Measured, before the fix, on a stream whose validation loss had gone to
+infinity:
+
+```
+C/report: regime=wellfit loop=0.0000 h0_death=0.0000 shatter=1.000 ...
+C/all-finite=true
+```
+
+Every signal finite. Every threshold passed. Regime: well fit. The model had
+exploded and the instrument reported a clean bill of health with no NaN
+anywhere for a NaN guard to catch. I had asked for a fix to the wrong bug, and
+the fix I asked for would have found nothing.
+
+The kernel now marks a cloud unmeasurable when its own radius is not finite,
+and refuses to compare a non-finite signal against a threshold at all. The
+signals stay NaN across the ABI on purpose rather than being clamped to
+something tidy. `regime=collapsing shatter=NaN` tells an operator "this was not
+measurable". `shatter=1.000` tells them a lie with a decimal point on it.
+
+There is a second half nobody would have found by reading the classifier.
+`set_field`, the calibration ABI, accepted any finite `f64` for all six knobs.
+`min_samples` is cast `as u64`. Hand it `1e300` and the cast saturates to
+18446744073709551615, and the detector waits for eighteen quintillion samples
+before it will classify anything ever again. One syscall, and the instrument is
+off for the lifetime of the machine, with no error, no counter, and no log
+line. Every knob is now bounded by the range of the statistic it is compared
+against.
+
+**Two: the leaf that was resident and also absent.**
+
+`ml_engine/foliation.rs` manages a pool of physical frames behind a tree of
+leaves. `admit` pops a slot, allocates a frame, and publishes the leaf. When
+the allocation fails it increments `frames_failed`, writes a plaque with
+`frame: None`, sets `leaves[leaf].slot` anyway — and returns `Ok(())`.
+
+So the leaf is resident and not resident at the same time, depending which
+function you ask. `leaf_resident` reads `slot != NONE` and says yes.
+`seq_frame` reads `plaques[slot].frame` and returns `None` — the same `None`
+that means *no such block exists*. Two functions, one leaf, opposite answers,
+and every frame counter stays perfectly balanced because `collapse` only frees
+when `frame.take()` yields `Some`. The books balance. The building is on fire.
+
+The counter-based checks could not see it. That is the whole lesson. A counter
+that only counts successful frees will never disagree with a counter that only
+counts successful allocations, no matter how wrong the state between them gets.
+
+The agent found a second instance I had not scoped: `teardown` frees every
+frame but clears neither the slot nor the plaque, so *after teardown* leaves
+still report resident with nothing behind them. Same shape, opposite direction.
+It fixed that one by deleting code and calling the existing `collapse`, which
+is the best kind of fix.
+
+And then it did the thing I have been trying to get agents to do all day. It
+wrote its assertion, mutated the code to break the fix, ran the assertion — and
+the assertion **passed**. Its test carried `frames_failed == 0`, a condition
+that holds under starvation whether the code is fixed or broken. It reported
+this in its own results, deleted the line, and reran until the test
+discriminated. An agent catching its own test being useless is worth more than
+an agent catching a bug.
+
+**Three: the checksum field that was parsed and thrown away.**
+
+Four network handlers. Four different flavours of not checking:
+
+| handler | what it does with the checksum |
+|---|---|
+| `tcp::handle_tcp_packet` | parses it into the struct, never reads the field |
+| `udp::handle_udp_packet` | it's in the type, nothing touches it |
+| `icmp::handle_icmp_packet` | indexes `[0]`, `[1]`, `[4..8]` — skips `[2..4]` entirely |
+| `ipv6::handle_icmpv6_packet` | same |
+
+The first one is my favourite. `TcpHeader::from_bytes` does real work to
+extract `u16::from_be_bytes([bytes[16], bytes[17]])`, stores it in a field, and
+no line of code anywhere ever reads that field. It is a variable that exists
+purely so that a reader will assume the check happens.
+
+The consequence for ICMPv6 is not academic. A corrupted Neighbor Advertisement
+went straight into the neighbor cache. That is a remote path to a wrong
+link-layer address — poison the cache and traffic goes to the wrong MAC. There
+is no authentication in NDP by design; the checksum is the only thing standing
+between the cache and whatever arrives on the wire, and it was not being
+consulted.
+
+Fixing it required unifying four private copies of the ICMPv6 pseudo-header
+builder, and unification exposed a fifth bug that had been sitting in plain
+sight: **one of the four applied `.to_be()` to the result and three did not.**
+Same field, same protocol, same file, two different byte orders. One of those
+senders had been emitting a wrong checksum every single time it ran. Duplicated
+code hid it perfectly — nothing in the system ever compared the four copies to
+each other, and fixing any one of them would have left the others wrong.
+
+The agent then stopped, and stopping was the right call. TCP and UDP need the
+*destination* address for their pseudo-headers, and `handle_tcp_packet(src,
+pkt)` is only handed the source. It could have guessed `local_ip()`. It
+explicitly refused, and gave the reason: QEMU slirp sends the DHCP offer to
+255.255.255.255 while `local_ip()` is still 0.0.0.0, so the checksum would fail
+and **DHCP would die at boot**. A security guard that bricks the network is not
+a security fix, it is the same self-inflicted outage I caused with the IPv4
+checksum earlier in this very README, and it recognised the shape from a
+sentence in its brief.
+
+It also corrected two more of my facts on the way out. I told it `icmp.rs`
+contained zero `unsafe` blocks; it contains two. Every agent this round found
+at least one thing I had stated confidently and wrong. The count of things I
+was wrong about is now large enough that I have stopped being embarrassed by it
+and started treating it as the point.
+
+**What the number actually says.**
+
+379 assertions execute on every boot, up from 364, and the nine new ones were
+mutation-tested: break the fix on purpose, confirm the test goes red. Sixteen
+mutations across the three units, sixteen kills, one of which was a test
+killing itself.
+
+What 379 does not say is that the kernel is correct. TCP and UDP still do not
+verify a checksum on receive. `referenced_evictions` still increments on a path
+`pick_victim` cannot select, which means that CI field proves nothing and I
+have left it that way with a note. `link_child` still returns an error it
+cannot return. The list of things I know are wrong is longer than the list of
+things I fixed, which is a healthier ratio than it sounds, because in the
+morning the list of things I *knew* was empty and the list of things that were
+wrong was exactly the same size as it is now.
+
+The instruments were the whole job. You cannot fix what the instrument reports
+as fine, and every one of these three defects was, in its own way, an
+instrument reporting fine.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
