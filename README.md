@@ -6348,6 +6348,610 @@ though it did. It is that for about eleven hours the instruments were the work,
 and every single time I was sure I had finished fixing them, one of them turned
 out to be reporting fine.
 
+## Round 1: Thirteen Commits, And The One That Says Do Not Ship This
+
+455/455 was where the last section left off. This one covers what landed after
+it: thirteen commits on `ralph/graph-round-1`, seven of them fixes to things
+that were already shipping and already wrong, five of them subsystems that did
+not exist, and one of them a feature that was built, measured, and then refused
+by the measurement.
+
+The through-line is not "the kernel got faster". Nothing here got faster. The
+through-line is that six of these thirteen exist because a *previous* commit
+wrote down its own ceiling in a limits paragraph, and then someone came back and
+read it.
+
+### The shell learned to run a file
+
+`source script.eph`, and `.` as its alias. `#` comments. `echo`. That is the
+whole feature, and it took a surprising amount of deciding.
+
+Comments are cut at the very top of `run_line` — before the assignment test,
+before the `|` split, and long before variable expansion. Cutting before
+expansion is the part that matters: a `#` that arrives *from a variable* is
+text, not a comment that reaches backward and truncates the line that already
+parsed. And a `#` opens a comment only where a word opens, at the start of a
+line or after whitespace, because with no quoting anywhere in this shell,
+cutting at every `#` would silently shorten `A=v#1` to `A=v` with no way on
+earth to ask for the character back.
+
+Three bounds, all separate on purpose. `MAX_SOURCE_DEPTH` is 8, and the wall is
+the kernel stack rather than the heap — each level stacks `run_line` →
+`run_pipeline` → `dispatch` → `cmd_source` → `run_script`. `MAX_SCRIPT_BYTES` is
+65,536, the same `PIPE_CAPACITY` a `< file` redirect already uses. And
+`MAX_SCRIPT_LINES` is 1,024 *separately*, because a file of 200,000 blank lines
+is nothing in bytes and still walks `run_line` once per line. Exceeding any of
+them refuses the whole script instead of running the part that fits, because
+half a script is a different script and the operator cannot tell which half ran.
+
+Where it stops is the honest bit. A script stops when `run_line` returns `Err` —
+a syntax error, an unclosed `${`, a refused redirect. It keeps going when a line
+*ran* and printed something, including `peek: 'x' not found`, because `dispatch`
+returns a `String` whether it worked or not and the shell genuinely cannot tell
+those apart. Sniffing for a `seal: ` prefix was considered and rejected:
+`seal: unknown command` is ordinary `dispatch` output, so that rule would halt
+on a typo and sail past a real failure. There is no exit status. There should
+be. That is written down as the ceiling rather than papered over.
+
+Assertions in the module went 34 → 41, twenty-three mutations applied and
+twenty-three killed. Five of those kills come only from the host harness and not
+from the registry CI runs, and all five are the `&mut self` parts — which is to
+say, the ordering decisions the whole design rests on. That is in the commit
+message too, because a mutation table that does not say which layer killed each
+mutation is a table that reads as more coverage than it has.
+
+One detail worth stealing: the depth assertion was first written against
+`MAX_SOURCE_DEPTH` symbolically, so changing the constant to 64 would have left
+it green. It is pinned to the literal `8` instead, sitting next to the handbook
+assertion that prints the same number, so the documented bound cannot drift from
+the enforced one.
+
+### Every TCP port this machine ever used, held forever
+
+`TCP_SOCKETS` was a `Vec` that only grew. `close()` changed a state and removed
+nothing. `alloc_ephemeral_port` skips any port a socket in that table holds. So
+every port this kernel ever used was held until reboot.
+
+The state named in the item was not the state that mattered. `TimeWait` was
+*terminal* — its arm carries a comment saying the socket should stay there for
+2×MSL, and no timer anywhere ever left it. An active close goes `FinWait1` →
+`TimeWait` and stops. Reaping `Closed` alone would never have touched the path
+that actually leaks.
+
+So: a real 2MSL timer, `TIME_WAIT_TICKS` of 60,000 on the ~1 kHz counter, an MSL
+of 30 seconds the way BSD and Linux use it. Reaping `TimeWait` on sight was
+rejected outright — RFC 793 holds the four-tuple precisely so a delayed
+duplicate cannot be misread as a new connection, and collecting it early is a
+correctness regression wearing a cleanup's clothes.
+
+`Closed` is not enough on its own either, twice over. `socket()` hands back a
+`Closed` socket with `remote_port == 0`, so reaping on state alone yanks the
+table entry out from under a caller standing between `socket()` and `connect()`.
+And `abort()` *promises* the received bytes stay readable — `drivers/net/http.rs`
+relies on exactly that, draining after it observes `Closed`. A socket is
+collected only when it is `Closed`, has a peer, and its receive buffer is empty.
+
+Removing from a `Vec` was never an option: six classes of holder store an index
+into it, including both demux indexes and two benchmark fixtures that address
+sockets positionally, and `swap_remove` repoints all six. `TCP_SOCKETS` is now a
+slot map. A slot is emptied in place and never moves. The handle stays a `usize`
+and stops being an index — low half slot, high half generation — and `resolve`
+returns a slot only when it is occupied *and* the generation matches. A
+tombstone alone leaves the table growing one slot per socket ever opened, which
+is the original defect with extra steps; reuse without a generation lets a stale
+handle read whatever moved in. The generation counter is global rather than
+per-slot, because `cleanup_tcp_fixture` truncates, and a per-slot counter would
+be dropped with its slot and could re-mint a generation a live handle still
+holds.
+
+And `free_slot` repairs both demux indexes, which is the quieter half of the
+bug. Those key on slot across 256 buckets. A leaked entry holds its bucket
+forever, so after 256 finished connections `insert` refuses and new connections
+are not demuxed **at all**.
+
+21 → 26 assertions, sixteen mutations, sixteen killed. One survived at first,
+and the fix was to the harness rather than the test: with a clock starting at
+zero, a `TimeWait` entry that recorded no timestamp is indistinguishable from a
+fresh one. The harness clock now starts at 1,234,567.
+
+### The gate that went red for the right reason
+
+Making `TCP_SOCKETS` a slot map turned CI red, and the failing thing was not the
+kernel.
+
+`--check-o1-network` requires the two demux lookups to validate a candidate
+socket by *direct index* rather than by scanning, and it enforced that by
+requiring the literal `.get(idx)` in each body. After the slot map, both bodies
+call `slot_sock(sockets, idx)` — which is `sockets.get(slot).and_then(...)`, the
+same direct index, one call deep. The property held perfectly. The gate was
+pattern-matching on a spelling.
+
+Both checks now accept either shape, and the indirection is not taken on faith:
+`slot_sock` is *itself* checked to contain `sockets.get(slot)` and to contain no
+`iter()`, no `for`, no `while`. That is a check the gate did not previously
+have, for the excellent reason that before this change there was nothing sitting
+between the lookup and the table. 76/76 in `seal-mkimage`, and
+`O(1) NETWORK OK` against a very specific `O(1) NETWORK FAIL` beforehand.
+
+### A handshake nobody answers, forever
+
+Same file, next defect, and this one the previous commit had named on its way
+out the door.
+
+`is_finished` has two arms — `Closed` with a peer and a drained buffer, and
+`TimeWait` past 2MSL — and `_ => false` swallows `SynSent`. Nothing moves a
+socket out of `SynSent` except an inbound SYN-ACK or an acceptable reset, and a
+silent host sends neither. `retransmit_expired` backs the RTO off to `RTO_MAX`,
+64,000 ticks, and then retransmits at that rate until the machine is turned off.
+Both callers confirm nobody cleans up: `http.rs` and `tls_socket.rs` spin to
+their own 3,000-tick deadline, return `Err("TCP connect timeout")`, and drop a
+wrapper with no `Drop` impl that never calls `close`.
+
+`SynReceived` leaks identically and worse. `poll` builds an accepted socket per
+inbound SYN and answers it, and the same `_ => false` catches that too — so a
+peer that half-opens and walks away costs one table slot and one of the 256
+demux buckets **per SYN**, with no local socket involved at all.
+
+Both are now bounded by `SYN_RETRIES` = 6, counted per handshake and raised only
+when an expiry fires in one of the two handshake states, where the retransmit
+queue holds the handshake's own segment and nothing else. Attempts land at 1, 3,
+7, 15, 31 and 63 seconds; the seventh expiry aborts instead of retrying, at 127
+seconds — the same wall clock Linux reaches from the same `tcp_syn_retries`
+default. Counting *expiries* rather than polls is deliberate: the poll rate is
+the caller's business, not the protocol's, and there is a mutation and a control
+proving twenty polls before any expiry cost nothing.
+
+Fixing that immediately exposed a hole in the commit before it. A socket that
+aborts is `Closed`, and `tcp_flow_key` treats a `Closed` socket as unkeyable, so
+`free_slot`'s index removal was a no-op and the bucket leaked *even though the
+slot came back*. The reset path had escaped it only by accident, because
+`handle_tcp_packet` refreshes the index first and `poll` did not.
+
+26 → 29, sixteen mutations, sixteen killed. Both CI benchmarks unmoved. What is
+still open, stated plainly: `listener.pending_accept` still grows without bound
+under a SYN flood — reaping the half-open socket returns its slot and its
+bucket, but the stale handle stays queued at 8 bytes per SYN. Strictly better,
+never worse, still not closed.
+
+### Three commits of TLS, in the order they had to happen
+
+**First, the audit told on the code.** `docs/CRYPTO_AUDIT.md` described a system
+that had stopped existing and, in other places, had never existed. Section 3.2
+documented a package signature function that was deleted three weeks earlier and
+whose preimage had never been the installer's anyway. Section 1 opened by
+calling the TLS stack PSK-only with no X.509 and no ECDHE, which three separate
+line ranges in the shipping code contradict. Section 1.3 called the HKDF
+implementation non-compliant with RFC 5869, next to the RFC 4231 and RFC 5869
+vectors that pass.
+
+The rewrite carries a file and a line for every claim and quotes no Rust at all,
+because the quoted blocks are exactly what drifted while the citations stayed
+correct. It records one new limit nobody had ever written down: the package
+signature covers *parsed fields* rather than manifest bytes, so two wire
+manifests that parse identically share one signature. Inert today. Written down
+anyway.
+
+Reading it that carefully surfaced ten code defects, none fixed in a
+documentation commit. Two were load-bearing, and the next two commits are them.
+
+**Second, the peer was never authenticated.** `tls_socket.rs` validated a
+certificate chain against the embedded trust anchor and set `connected = true`.
+There was no CertificateVerify message anywhere in either file — grep for the
+term or for handshake type `0x0f` and you find the word "transcript" in a doc
+comment and the byte `0x0f` inside an RFC 5869 test vector. **A certificate
+chain is public data.** Replaying an observed one passed that check completely.
+There was no Finished either, and the handshake traffic secrets derived over the
+client and server randoms alone, so a modified ServerHello left no trace — and
+the ServerHello parser skipped the cipher suite without reading it.
+
+Now there is a running SHA-256 transcript over ClientHello, ServerHello,
+Certificate, CertificateVerify and Finished; secrets derive over
+`Transcript-Hash(ClientHello..ServerHello)` per RFC 8446 7.1; anything but
+`0x1301` is refused; only Finished sets `authenticated`, and `encrypt` and
+`decrypt` refuse until it does. An unknown handshake type *inside* the
+authentication window is refused rather than skipped, because skipping
+desynchronises the transcript silently, which is the worst available failure
+mode.
+
+`set_require_peer_auth` and its field were deleted rather than defaulted. A
+switch that turns authentication off is the defect, not a mitigation for it.
+
+32 → 51 assertions. The strongest control is `psk_finished_completes`, where the
+harness computes the RFC 8446 7.1 schedule and the 4.4.4 MAC with its own
+independent code — so agreement means the kernel matches the specification and
+not merely itself. Ten mutations, ten killed. One survived the first pass and it
+was a real hole rather than a weak test: dropping the Certificate message from
+the transcript passed 51 of 51, because nothing proved a CertificateVerify was
+bound to *which* certificate the peer had sent. The repair runs two handshakes
+identical except that one sends `[LEAF, INTERMEDIATE]` and the other
+`[LEAF, INTERMEDIATE, ROOT_CA]` — same leaf key, different transcript — and
+requires each one's CertificateVerify to be refused by the other.
+
+**Third, authenticated as *somebody*.** The peer now proves it holds the
+certificate's key. It did not have to be the certificate for the host you asked
+for. `connect` took an address and no name, so any valid certificate from the
+anchor passed, including one issued for a different host entirely — and
+`x509.rs` has had a tested, working `matches_dns` all along with no production
+caller. `connect` now takes a hostname threaded from `http.rs`, and the leaf must
+match it while the leaf still borrows the message buffer, so no state is carried.
+A session with no hostname matches nothing and refuses every chain. An address
+with no name is refused rather than accepted: RFC 6125 6.4 forbids matching an IP
+literal against a dNSName, so matching one anyway is precisely "silently accept
+any name".
+
+Two more in the same commit. `wrap_record` computed `payload.len() as u16`, so a
+plaintext at or above 65,536 bytes emitted a record whose length field had
+wrapped — reachable, because `tls_socket.rs` passes caller data straight
+through. `encrypt` now fragments at 2^14 per RFC 8446 5.1, each fragment its own
+record with its own sequence number; refusing instead would have broken every
+body over 16 KiB and pushed chunking onto every caller. And both `encrypt` and
+`decrypt` were passing an *empty* AAD where RFC 8446 5.2 binds the record
+header, which was an undocumented third deviation in a module whose
+documentation claimed exactly two.
+
+51 → 61. The best assertion in the file is `record_aad_is_the_rfc8446_header`,
+which builds the additional data from the RFC 8446 5.2 text and the nonce from
+5.3, opens the kernel's record with a *separate* AES-GCM invocation that never
+calls `record_header`, and then requires that same record to fail under empty
+AAD and under a wrong length field. Twelve mutations, twelve killed. Two
+survived the first pass and both were the assertions' fault: one guard turned
+out to be dead code (`is_some_and(None)` already fails closed) and was deleted
+rather than given a test for a check that cannot fail, and one oversize-record
+fixture was built from garbage bytes that failed the AEAD tag regardless, so it
+could not distinguish a length refusal from a tag refusal. It now forges a
+record with a genuinely valid tag at exactly `MAX_RECORD_LEN` and at one byte
+more, where only the length separates them.
+
+That taxonomy of unfailable checks, from earlier in this file, has now appeared
+in every single subsystem it could possibly appear in.
+
+### A rollback floor that reset every boot
+
+`ReleaseChannel::new` set `accepted_index_version: 0` and kept the rollback
+floor in a struct field — read at one line, written at another, never touching
+disk.
+
+A floor exists to stop an attacker replaying an old, validly signed index with a
+known vulnerability in it. A floor that resets on reboot stops nothing an
+attacker can simply wait out.
+
+The floor now lives at `/packages/.channel_floor` through the same `with_vfs`
+path the installer already uses, rather than a second persistence mechanism
+invented for the occasion. The record is a fixed 80 bytes — magic `EPHFLR1\0`,
+the floor as big-endian u64, an Ed25519 signature over the first sixteen under a
+key separate from both the index and package keys. Fixed width means a short
+read is a refusal and a rewrite cannot leave a stale tail.
+
+A missing record accepts. A corrupt record refuses **everything**. Those are
+opposite answers to the same question and both are deliberate: a fresh system
+has never established a floor and the only thing that creates the record is a
+first accept, so refusing on absence leaves the channel permanently dead with
+nothing to downgrade below. A record that is present but short, misframed or
+wrongly signed is a different situation entirely — treating *that* as zero turns
+one flipped byte into "the floor is gone", which is the attack rather than the
+mitigation. Recovery is an operator deleting the file.
+
+The forward-only guard lives in the store rather than at the call site:
+`persist_floor` re-reads and treats anything not strictly higher as a no-op, so
+no *future* caller can lower it, not only the one caller that exists today.
+
+17 → 23 assertions. The central one is the attack itself: write a floor, drop
+the channel, rebuild it from nothing, and require a package below the floor to
+be refused with `IndexRollback { accepted: 9, offered: 8 }` and the package
+count unchanged. Six mutations, five killed. The sixth is reported rather than
+papered over — swallowing a failed floor write with `let _ =` instead of `?`
+survives, because that branch is only reachable when the VFS write itself fails
+and no fault-injection seam exists in the VFS to reach it. The `?` stays because
+it fails in the safe direction. It is untested and says so.
+
+The boot proof deliberately replays index v2 after v3 to demonstrate rollback
+refusal, so fixtures had to opt out through a new `ReleaseChannel::ephemeral` or
+the second boot on the same disk would turn `result=pass` into `result=fail`.
+`ReleaseChannel::new` — the network-facing one — is the persistent one, so the
+default is the safe default.
+
+### Permission as a total field instead of a table with holes
+
+`check_file_permission` has three paths that return `true` without consulting
+any rule: a uid 0 short-circuit, an allow-everything when no policy is loaded,
+and falling off the end of the rule walk. It is a lookup table with holes, and
+every hole is a question a human has to answer — which is the entire cost when
+an agent is driving the machine.
+
+`security/perm_field.rs` adds a *total* function `evaluate(sources, query)` over
+`(uid, path, action)`, defined everywhere by construction from a sparse set of
+placed sources. Three properties carry it.
+
+Deny dominates: any denying source in range returns `Deny` no matter how many
+grants are nearer, so no point between a grant and a denial evaluates to a
+grant. Totality does not invent: a point no source reaches returns `Unknown`,
+and `permits()` is true for `Allow` alone, so a caller cannot write `v != Deny`
+and quietly permit. `Unknown` refuses *without prompting* and reports the point
+as uncovered — which is the whole reason totality is worth having. The kernel
+never asks a human; an agent closes the gap once by adding a source, instead of
+answering the same question forever.
+
+And inference only narrows, structurally rather than by convention. `infer`
+returns a `Narrowing` holding `Cut`, and `Cut` has no polarity field. Widening
+is not declined at runtime; there is nowhere to put it. `narrow` writes
+`Polarity::Deny` as a literal. A grant is not something inference can emit.
+
+The resource metric is descendant depth in the path tree, and it is asymmetric
+on purpose. A symmetric tree distance puts `/etc` two steps from `/data`, so a
+grant on `/data` with radius 2 would reach `/etc`. Ancestors are excluded for
+the same reason: granting `/data/x` must not grant `/data`. Subject and action
+stay discrete, because nothing observable in this kernel makes two uids or two
+actions similar, and a fake metric there would generalise wrongly *with
+confidence*, which is strictly worse than the table it replaces. The path axis
+is justified because `mac.rs` already writes every rule as a path prefix at
+component boundaries — two siblings are security-similar exactly because the
+existing policy language cannot separate them without a new rule.
+
+The influence kernel is a step function, and that is not laziness. The verdict
+is a three-value lattice under deny-dominance, so any monotone-decreasing kernel
+with the same support produces the same verdict everywhere. Smooth falloff would
+be decoration that cannot change an answer.
+
+0 → 8 assertions, against 1 passed / 7 failed in a red state produced by
+transplanting today's `mac.rs` semantics into the field. Seventeen mutations,
+seventeen killed. The radius threshold is shifted in *both* directions —
+tightening to `d < r` and loosening by removing the clamp both fail — because a
+guard nobody can over-tighten is a guard whose boundary was never tested. The
+bound is enforced twice, in `push` and again in `evaluate`, and each layer is
+mutated separately.
+
+`mac.rs` is untouched. This field is not wired into the live permission check,
+because replacing it is a separate change with its own risk, and shipping both
+at once means neither one can be reviewed.
+
+### Giving back what a converged run no longer needs
+
+A model's demand for compute falls as it converges, and nothing in this OS
+noticed, so a converged job held everything it had been given until it exited.
+
+`ml_engine/stratum.rs` already classifies a run as `Underfit`, `WellFit`,
+`Overfit` or `Collapsing` from topological signals. `tuner.rs` turns that into a
+share in `[floor, 1.0]` and hands the difference back. The model's own code
+contains no limit, which is the entire point — it does not know and must not have
+to.
+
+Reading the regime alone would have been wrong three separate ways, and finding
+that is most of the change. `classify` fails closed to `Collapsing` when the
+signal is unmeasurable, so a tuner trusting it would treat "no signal" as a
+reason to *restore*; the rule is that an unmeasurable signal leaves the
+allocation neither reduced nor raised, so `read_signal` mirrors the classifier's
+cascade and diverges in exactly one place. `classify` also returns `WellFit`
+while `samples < min_samples`, which is a default rather than a measurement, and
+reclaiming on it would starve every new job through its first sixteen steps.
+
+The third path is the one the whole design is defending against. Under three
+points, `measure()` returns the empty set with `spread = 1.0`, which reads as
+converged — and `set_field(5, 0.0)` is an accepted ABI value, which stratum's own
+test asserts. Before that was gated, stratum fabricated
+`shatter=1.000 h0_death=0 loop=0` for a cloud whose every pairwise distance had
+overflowed, reporting a run diverged to 1e200 as `WellFit` with every signal
+finite. A reclaimer built on a signal that can fabricate convergence starves
+exactly the jobs that most need capacity.
+
+Hysteresis is 3. Two kills a one-on-one-off flap; three is the smallest that
+also kills a two-observation transient, because `quartile_drift` averages
+sixteen points and a single outlier moves the estimate for as long as it sits in
+the tail quartile. Reclaim is capped at a quarter of the current share per
+decision — the largest step for which a full descent still takes five decisions,
+so a transient cannot empty an allocation before the detector re-measures. The
+bound applies to reductions only; a restore returns everything this module took.
+
+10 assertions against 24 passed / 6 failed with the implementation stubbed,
+alongside 20 unmodified `stratum::*` assertions run through the same harness as
+a control that the harness itself is faithful. Sixteen mutations, sixteen
+killed. The decisive one is raising the share on an unmeasurable signal, which
+separates "freeze" from "restore" — a distinction the regime alone cannot even
+express.
+
+**No GPU allocation is claimed.** `gpu_bench.rs` is a benchmark and no path in
+the GPU tree divides a device between two workloads, so the share is a
+dimensionless fraction of the run's own initial grant. Making it real needs one
+thing in each direction: a per-task quantum the scheduler decrements, and a
+`brk` that consults a limit instead of assigning one.
+
+### The sandbox that measured the wrong quantity, twice
+
+This is the pair the round is named for, and the second half is the reason this
+section exists at all.
+
+**The first commit** sizes a guest's resident frame count from the structure of
+the pages it actually touches. Accesses are recorded as `(tick, page)` points,
+single-linkage H₀ over the MST gives the working-region count, and the envelope
+follows. Both axes are rescaled to `[0,1]`, which is not cosmetic — page indices
+run to millions while ticks run to 64, so a raw Euclidean distance is a page
+distance with rounding noise stapled to it. Time is an *axis* rather than an
+ordering because a phase is what makes a region worth keeping: two page ranges
+touched in strict alternation are one working set, and the same two touched in
+separate phases are two, and only the time axis can tell them apart.
+
+The cut is placed at the largest *ratio* between consecutive sorted MST edges
+rather than the largest gap, because a ratio is scale-free — eight regions
+separated by 10× is a reading worth acting on, and eight separated by 1.01× is
+noise about where the cut happened to land. That ratio is carried forward as
+confidence and scales the grant, so an unseparated reading grants nothing above
+the floor.
+
+Four rules, each with an assertion and a mutation that kills it. The cap is
+fixed at construction with no setter and applied last and unconditionally.
+Unmeasurable sizes to the floor — and the assertion compares the returned
+variant *exactly*, so a conservative fabrication dies too, not only a generous
+one. Allocation failure drains everything already taken and refuses. A shrink
+returns only unpinned frames and leaves the guest running. `saturating_add` is
+load-bearing rather than defensive: with `clusters` at `usize::MAX` a plain
+`floor + grant` wraps to 3 under the release profile's absent overflow checks,
+slips under the cap, and looks exactly like the rule held.
+
+And then the limits paragraph said this, in bold, about its own work:
+
+> **This sizes region count, not region extent, and that is the wrong quantity
+> for the workload it is named after.**
+
+A model with one contiguous multi-gigabyte weight tensor reads as a single
+cluster and gets `FRAMES_PER_REGION` frames. Four. For eight gigabytes.
+
+**The second commit** is that, closed. `WorkingSet::Clustered` now carries
+`pages` beside `clusters` and `separation` — the summed page span of every
+component holding at least `MIN_SAMPLES` accesses, read off the *same* MST cut
+the cluster count comes from. `mst_edges` returns edges with endpoints instead
+of lengths alone, because the partition is what carries a region's population
+and span. `size_envelope` takes the larger of the two demands, at 32 pages per
+frame.
+
+Two design calls in there are worth the space.
+
+Extent is deliberately **not** weighted by `separation`. That looks inconsistent
+until you notice that a single contiguous region has no spectral gap to separate
+anything at, so its separation is exactly 1 — and a weighted extent would
+therefore be worth precisely nothing on the one case this commit exists for.
+That is the original defect in its deepest form: the 8 GiB tensor is *one*
+cluster with *no* separation, and every count-shaped term about it is 1.
+
+And extent is deliberately **not** invariant under an affine page relabel, which
+the summary's other two fields are and have an assertion proving it. `pages` is
+not a shape. It is a quantity of memory, measured off the raw page indices, and
+a guest striding seven times as far over seven times as much memory should ask
+for seven times the stripe.
+
+Supporting a partition also forced a repair to the cut rule. A uniformly sampled
+cloud has a spectrum uniform to within rounding, so every consecutive ratio in
+it is `1 + O(ulp)` and the largest one lands wherever the last bit happened to
+fall. The first commit tolerated that because a ratio that close to 1 grants
+nothing above the floor. A partition cannot tolerate it, because a cut placed by
+rounding noise shreds one contiguous region into fragments and charges the guest
+for none of them.
+
+6 → 8 assertions. `extent_sizes_one_large_region` pins three tensors that a
+count-driven envelope sizes *identically* — 64 accesses at strides of 16,384,
+32,768 and 229,376 pages, all reading as `clusters == 1` — at 32,257, 64,513 and
+451,585 frames, then re-asserts the cap against each of them, then asserts
+`frames_for_pages(u64::MAX) == 576,460,752,303,423,488` against a cap nothing
+can reach, then drives the whole thing through a live `Sandbox` whose 128-frame
+cap holds. `thin_cluster_buys_no_extent` builds three phases of 40,
+`MIN_SAMPLES` and `MIN_SAMPLES − 1` accesses and requires `pages` to be
+39,937 + 3,073 exactly — the third phase straddles 100,001 pages and is charged
+to nobody, which is 1,345 frames rather than 4,375.
+
+Rule 1 matters more after this change, not less. Extent multiplies page counts
+rather than region counts, so it is the likelier of the two demands to wrap
+under a profile with `overflow-checks = false`, and a wrapped demand arrives
+*under* the cap looking like the cap held. Saturation is applied at the
+measurement as well as at the sizing, because a component spanning page 0 to
+`u64::MAX` covers `u64::MAX + 1` pages, which is not a u64.
+
+Still no production caller. No syscall, no page-fault hook feeding `observe`, no
+boot-proof line. An empty trace sizes to the floor forever, and that wiring is
+the next change. Written down here so the next person reading a limits paragraph
+has something to come back for.
+
+### The one that says do not ship this
+
+A fuzzy extractor that maps a password to a point cloud, computes an exact
+Vietoris–Rips H₀ persistence diagram, quantises the death times to a stable
+fingerprint, and feeds that to a KDF with an Ed25519 commitment. Typo tolerance
+backed by a hard cryptographic commitment, standard primitives underneath,
+topology only as a front end. It works. Every invariant holds.
+
+The measurement says do not use it, and **the measurement is the deliverable.**
+
+Over an exhaustive corpus — all 65,536 passwords across a 16-character alphabet,
+so the distribution is exact rather than sampled — the construction produces:
+
+| construction | distinct keys | collision entropy | min-entropy | case typos tolerated |
+|---|---|---|---|---|
+| this module | 200 | 6.293 bits | 4.871 bits | 63,364 / 65,536 |
+| `KDF(password)` | 65,536 | 16 bits | 16 bits | 0 |
+| `KDF(ascii_lowercase(password))` | 4,096 | 12 bits | 12 bits | 65,536 / 65,536 |
+
+It costs 9.707 bits against the first and 5.707 against the second, and buys
+strictly *less* tolerance than the second, which is one line of code.
+
+The obvious rebuttal is that the quantiser grain is wrong, and it is answered by
+measurement rather than by argument. A grain finer than any tolerated edit can
+move a death time is the raw diagram itself — the ceiling no quantiser can beat.
+That gives 3,001 keys and 10.182 bits, still 1.8 bits below the one-liner, and
+by then the tolerance is gone at 20 of 65,536. The lossy step is the topological
+sketch, not the quantiser. The original hypothesis was that the loss came from
+ordering; `perm_collisions=0/128` refuted it, and the documentation now records
+the measured cause instead of the predicted one.
+
+So the module is not wired into `shadow.rs`, not into `verify_login`, not into
+any syscall. What ships is the apparatus and its verdict, re-runnable, with
+`CLAIMED_SHIPPABLE = false` asserted *against the computed result* so the
+conclusion cannot drift away from the code.
+
+The topology is correct independently of that conclusion, and that is checked
+properly: permutation invariance over sixteen seeded shuffles and a tied grid,
+scale equivariance across c from 1e-6 to 1e6 with purely relative tolerance, the
+stability bound at 2ε for three values of ε with the hypothesis re-asserted
+before the conclusion, the elder rule cross-checked against a separately written
+Prim MST, and a negative control paired with a positive one so that returning
+nothing cannot pass. 28 assertions. Fourteen mutations, fourteen killed —
+including a `CLAIMED_SHIPPABLE` flipped to true.
+
+Three assertions survived their mutations on the first pass and all three were
+repaired, and they are the usual suspects wearing new hats. The scale sweep only
+used factors where every distance stayed above 1.0, so an absolute `.max(1.0)`
+never bit. A `bottleneck_h0` returning zero satisfied every stability assertion,
+so the yardstick is now calibrated against a known separation before it is
+trusted. And the version gate was unobservable because the signature already
+covered the parameter block, so the test now builds a validly signed
+forward-version record, asserts its signature genuinely verifies, and *then*
+asserts `open` still refuses it.
+
+A fourth mutation was correctly identified as *equivalent* rather than as a
+hole: a constant salt of repeated bytes is absorbed by the stuck-source guard.
+Re-run with distinct bytes, it died.
+
+I like this commit more than any of the twelve that came before it. Building the
+thing and then publishing the number that kills it is the only part of this
+project I would defend without qualification.
+
+### What the round looks like from above
+
+| commit | assertions before → after | mutations | survived |
+|---|---|---|---|
+| shell scripts | 34 → 41 | 23 | 0 |
+| TCP slot map | 21 → 26 | 16 | 0 |
+| `--check-o1-network` | 76/76 in mkimage | — | — |
+| SYN retry limit | 26 → 29 | 16 | 0 |
+| crypto audit | docs only | — | — |
+| TLS peer auth | 32 → 51 | 10 | 0 (1 repaired) |
+| TLS name + AAD | 51 → 61 | 12 | 0 (2 repaired) |
+| rollback floor | 17 → 23 | 6 | 1, reported |
+| permission field | 0 → 8 | 17 | 0 |
+| training tuner | 0 → 10 | 16 | 0 |
+| sandbox envelope | 0 → 6 | 13 | 0 (1 killed by panic) |
+| sandbox extent | 6 → 8 | — | — |
+| topological password | 0 → 28 | 14 | 0 (3 repaired) |
+
+Three things I want on the record about that table.
+
+**One survived mutation is in it, and stayed.** The rollback floor's swallowed
+write error is unreachable without a fault-injection seam the VFS does not have.
+It is in the table as a survivor rather than quietly dropped, because a mutation
+table with no survivors in it is a table that has learned to round.
+
+**Four subsystems in this round have no production caller.** The permission
+field, the tuner, the sandbox, and the topological password module. Two of them
+are deliberate — you do not replace a live permission check and ship the
+replacement in the same commit, and you do not wire in a construction your own
+measurement rejected. Two of them are just not finished, and saying "landed" about
+them would be a lie of the exact kind the rest of this README exists to catalogue.
+
+**Six of thirteen exist because a limits paragraph got read.** The SYN retry
+limit was named in the slot-map commit's limits. The name binding and the
+fragmentation were named in the peer-auth commit's limits. The peer auth and the
+rollback floor were both named in the crypto audit. The extent sizing was named,
+in bold, in the sandbox commit's own limits. That is the mechanism actually
+doing the work in this project, more than any test and more than any gate: write
+down what you did not do, in the same commit, in a place the next person will
+look — and then be the next person.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
