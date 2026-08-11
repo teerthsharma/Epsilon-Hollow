@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 
 use super::encoder::{ManifoldPayload, SpherePoint};
-use super::journal::{compute_manifold_embedding, TopologicalJournal};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
 use core::convert::TryInto;
@@ -561,7 +560,8 @@ pub struct BlockStore {
     bitmap: Vec<u8>,
     journal_seq: u64,
     journal_pos: u64,
-    topo_journal: Option<TopologicalJournal>,
+    journal_pending: Vec<u64>,
+    journal_damaged: u64,
     data_write_ops: u64,
 }
 
@@ -579,7 +579,8 @@ impl BlockStore {
             bitmap: Vec::new(),
             journal_seq: 0,
             journal_pos: 0,
-            topo_journal: Some(TopologicalJournal::new()),
+            journal_pending: Vec::new(),
+            journal_damaged: 0,
             data_write_ops: 0,
         }
     }
@@ -588,7 +589,6 @@ impl BlockStore {
         let mut s = Self::new();
         s.backend = Some(Box::new(MockBackend::new(num_sectors)));
         let _ = s.format(num_sectors as u64);
-        s.topo_journal = Some(TopologicalJournal::new());
         s
     }
 
@@ -618,14 +618,6 @@ impl BlockStore {
         s.read_bitmap().map_err(|_| MountError::NoSuperblock)?;
         s.read_inode_table().map_err(|_| MountError::NoSuperblock)?;
         s.replay_journal().map_err(|_| MountError::NoSuperblock)?;
-        s.topo_journal = Some(TopologicalJournal::new());
-        if let Some(ref mut journal) = s.topo_journal {
-            if let Some(ref backend) = s.backend {
-                if let Some(ref sb) = s.superblock {
-                    let _ = journal.replay(backend.as_ref(), sb.journal_start, sb.journal_blocks);
-                }
-            }
-        }
         Ok(s)
     }
 
@@ -659,7 +651,8 @@ impl BlockStore {
 
         self.journal_seq = 0;
         self.journal_pos = sb.journal_start;
-        self.topo_journal = Some(TopologicalJournal::new());
+        self.journal_pending.clear();
+        self.journal_damaged = 0;
 
         if let Some(ref backend) = self.backend {
             backend.write_sector(0, sb.as_bytes())?;
@@ -794,10 +787,21 @@ impl BlockStore {
         Ok(())
     }
 
+    /// Apply every committed journal entry over the inode table just read.
+    ///
+    /// A sector that holds bytes this build cannot parse as an entry is
+    /// counted as damage rather than passed over: an all-zero sector is a slot
+    /// nothing has written yet, and anything else is a record that was written
+    /// and can no longer be read. Reporting the two as one is what let a
+    /// journal that recorded nothing look like a cleanly unmounted one. The
+    /// count is kept in `journal_damage`, and a damaged region does not refuse
+    /// the mount, because the inode table is durable and authoritative: what
+    /// is lost is the updates that postdate it, not the filesystem.
     fn replay_journal(&mut self) -> Result<(), BlockError> {
         let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let mut buf = [0u8; SECTOR_SIZE];
         let mut max_seq = 0u64;
+        let mut damaged = 0u64;
 
         for i in 0..sb.journal_blocks {
             {
@@ -895,15 +899,42 @@ impl BlockStore {
                     // whatever the inode table held, owner included.
                     record.uid = entry.uid;
                     record.gid = entry.gid;
+                    // The entry carries no directory links and no cluster, so
+                    // replaying one must not erase the table's.
+                    if let Some(old) = self.inode_records.get(&entry.inode_id) {
+                        record.sibling_next = old.sibling_next;
+                        record.sibling_prev = old.sibling_prev;
+                        record.dir_first_child = old.dir_first_child;
+                        record.cluster_id = old.cluster_id;
+                    }
                     self.inode_records.insert(entry.inode_id, record);
                     if entry.data_lba != 0 && entry.data_blocks > 0 {
                         let _ = self.read_data_extent(entry.data_lba, entry.data_blocks as usize);
                     }
                 }
+            } else if buf.iter().any(|&b| b != 0) {
+                damaged += 1;
             }
         }
         self.journal_seq = max_seq;
+        self.journal_damaged = damaged;
+        if damaged > 0 {
+            crate::serial_println!(
+                "[FS] journal: {} of {} sectors written but unreadable",
+                damaged,
+                sb.journal_blocks
+            );
+        }
         Ok(())
+    }
+
+    /// Journal sectors that hold bytes no entry could be parsed from.
+    ///
+    /// Zero means every sector in the region either parsed or was blank. Any
+    /// other value means the region was written by something whose records
+    /// this build cannot read, and the updates in it are gone.
+    pub fn journal_damage(&self) -> u64 {
+        self.journal_damaged
     }
 
     fn mark_dirty_inode(&mut self, inode_id: u64) {
@@ -926,25 +957,35 @@ impl BlockStore {
         let sector = entry.to_sector();
         backend.write_sector(lba, &sector)?;
         self.journal_pos = (self.journal_pos + 1) % sb.journal_blocks;
+        if !self.journal_pending.contains(&lba) {
+            self.journal_pending.push(lba);
+        }
         Ok(())
     }
 
+    /// Mark every entry this store has written since the last commit.
+    ///
+    /// Only those sectors: an entry left uncommitted by a mount that ended
+    /// without one describes a transaction that never completed, and marking
+    /// it committed here would hand a later replay an update nobody finished.
+    /// The list is bounded by `journal_blocks`, because the ring reuses an LBA
+    /// before it records a new one.
     fn commit_journal(&mut self) -> Result<(), BlockError> {
-        let sb = *self.superblock.as_ref().ok_or(BlockError::NoDevice)?;
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         let mut buf = [0u8; SECTOR_SIZE];
 
-        for i in 0..sb.journal_blocks {
-            backend.read_sector(sb.journal_start + i, &mut buf)?;
+        for lba in &self.journal_pending {
+            backend.read_sector(*lba, &mut buf)?;
             if let Some(mut entry) = JournalEntry::from_sector(&buf) {
                 if entry.committed == 0 {
                     entry.committed = 1;
                     entry.checksum = entry.checksum();
                     let sector = entry.to_sector();
-                    backend.write_sector(sb.journal_start + i, &sector)?;
+                    backend.write_sector(*lba, &sector)?;
                 }
             }
         }
+        self.journal_pending.clear();
         Ok(())
     }
 
@@ -969,21 +1010,6 @@ impl BlockStore {
         blocks: usize,
         data: &[u8],
     ) -> Result<(), BlockError> {
-        // Record topological journal entry for atomicity.
-        // Avoid double-borrow of self by reading extent before touching journal.
-        let before = if self.topo_journal.is_some() {
-            Some(match self.read_data_extent(lba, blocks) {
-                Ok(extent) => extent,
-                Err(_) => vec![0u8; blocks * SECTOR_SIZE],
-            })
-        } else {
-            None
-        };
-        if let (Some(journal), Some(before)) = (self.topo_journal.as_mut(), before) {
-            let embedding = compute_manifold_embedding(data);
-            journal.record_change(lba as u32, &before, data, embedding);
-        }
-
         let backend = self.backend.as_ref().ok_or(BlockError::NoDevice)?;
         for i in 0..blocks {
             let start = i * SECTOR_SIZE;
@@ -1238,16 +1264,12 @@ impl BlockStore {
     }
 
     pub fn flush_all(&mut self) -> Result<(), BlockError> {
-        // T4: commit topological journal before making metadata durable.
-        if let Some(ref mut journal) = self.topo_journal {
-            if journal.is_dirty() {
-                if let Some(ref sb) = self.superblock {
-                    if let Some(ref backend) = self.backend {
-                        journal.commit(backend.as_ref(), sb.journal_start, sb.journal_blocks)?;
-                    }
-                }
-            }
-        }
+        // Write-ahead order: the log is committed before the inode table it
+        // describes, so a crash between the two leaves entries that a remount
+        // replays over a table that never received them. Committing after the
+        // table instead makes every committed entry one the table already
+        // holds, which is a log that can recover nothing.
+        self.commit_journal()?;
 
         let dirty = self.dirty_inodes.clone();
         for id in &dirty {
@@ -1259,7 +1281,6 @@ impl BlockStore {
         }
         self.dirty_inodes.clear();
         self.deleted_inodes.clear();
-        self.commit_journal()?;
         self.write_bitmap()?;
         if let Some(ref sb) = self.superblock {
             if let Some(ref backend) = self.backend {
@@ -1548,6 +1569,293 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The lowest LBA `TableFailsBackend` refuses to write.
+    static TABLE_REFUSE_FROM: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    /// A mock whose sectors from `TABLE_REFUSE_FROM` upward stop accepting
+    /// writes. Armed at `inode_table_start`, it reproduces the window a
+    /// write-ahead log exists for: the log reached the disk and the table it
+    /// describes never did.
+    struct TableFailsBackend {
+        inner: MockBackend,
+    }
+
+    impl BlockStoreBackend for TableFailsBackend {
+        fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.inner.read_sector(lba, buf)
+        }
+        fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+            if lba as usize >= TABLE_REFUSE_FROM.load(Ordering::SeqCst) {
+                return Err(BlockError::IoError);
+            }
+            self.inner.write_sector(lba, buf)
+        }
+    }
+
+    /// The log must be committed before the inode table it describes, so that
+    /// an update which reaches the log and not the table is recovered. The
+    /// table write is made to fail after the journal is committed, which is
+    /// what a crash in that window leaves behind; the remount must then find
+    /// the node in the journal alone.
+    fn test_journal_commit_precedes_the_inode_table_write() -> TestResult {
+        TABLE_REFUSE_FROM.store(usize::MAX, Ordering::SeqCst);
+        let mut store = BlockStore::new();
+        store.backend = Some(Box::new(TableFailsBackend {
+            inner: MockBackend::new(8192),
+        }));
+        if store.format(8192).is_err() {
+            return TestResult::Fail("format failed");
+        }
+        let Some(sb) = store.superblock else {
+            return TestResult::Fail("missing superblock");
+        };
+
+        let inode = dummy_inode(0x1_0000_000A, "crashed");
+        if store.write_inode(&inode, b"crash window bytes").is_err() {
+            return TestResult::Fail("write_inode failed");
+        }
+
+        // From here the inode table is unwritable. Nothing else `flush_all`
+        // writes lives at or above it: the journal, the bitmap and the
+        // superblock are all below `inode_table_start`.
+        TABLE_REFUSE_FROM.store(sb.inode_table_start as usize, Ordering::SeqCst);
+        test_assert!(
+            store.flush_all().is_err(),
+            "flush_all reported success though the inode table refused the write"
+        );
+
+        let Ok(mut remounted) = remount(store.backend.take()) else {
+            return TestResult::Fail("remount failed");
+        };
+        TABLE_REFUSE_FROM.store(usize::MAX, Ordering::SeqCst);
+        let inodes = remounted.load_inodes();
+        let Some(restored) = inodes.iter().find(|i| i.id == inode.id) else {
+            return TestResult::Fail("the journal did not recover the lost update");
+        };
+        test_assert_eq!(restored.name, "crashed");
+        test_assert_eq!(restored.data, b"crash window bytes");
+        TestResult::Pass
+    }
+
+    /// Mount `backend` through the same four steps as `mount_backend`.
+    fn remount(backend: Option<Box<dyn BlockStoreBackend>>) -> Result<BlockStore, BlockError> {
+        let mut store = BlockStore::new();
+        store.backend = backend;
+        store.read_superblock()?;
+        store.read_bitmap()?;
+        store.read_inode_table()?;
+        store.replay_journal()?;
+        Ok(store)
+    }
+
+    /// An entry left behind by a mount that never committed it describes a
+    /// transaction nobody finished, and a later mount must not adopt it. The
+    /// kernel remounts the same disk many times per boot, so a commit that
+    /// blessed every uncommitted sector in the region would resurrect nodes
+    /// from an abandoned store on the next replay.
+    fn test_abandoned_journal_entries_are_not_committed_by_a_later_mount() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        // Three of them, so the abandoned entries carry sequence numbers above
+        // the one the next mount writes and cannot be dismissed by sequence
+        // alone.
+        let abandoned = [
+            dummy_inode(0x1_0000_000C, "abandoned_a"),
+            dummy_inode(0x1_0000_000E, "abandoned_b"),
+            dummy_inode(0x1_0000_000F, "abandoned_c"),
+        ];
+        for inode in &abandoned {
+            if store.write_inode(inode, b"abandoned bytes").is_err() {
+                return TestResult::Fail("write_inode failed");
+            }
+        }
+        // No flush: the entries are on disk and uncommitted, and the store
+        // goes away with them.
+        let Ok(mut second) = remount(store.backend.take()) else {
+            return TestResult::Fail("first remount failed");
+        };
+        let inodes = second.load_inodes();
+        test_assert!(
+            !abandoned
+                .iter()
+                .any(|a| inodes.iter().any(|i| i.id == a.id)),
+            "an uncommitted entry was replayed"
+        );
+
+        let finished = dummy_inode(0x1_0000_000D, "finished");
+        if second.write_inode(&finished, b"finished bytes").is_err() {
+            return TestResult::Fail("write_inode failed on the second mount");
+        }
+        if second.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed");
+        }
+
+        let Ok(mut third) = remount(second.backend.take()) else {
+            return TestResult::Fail("second remount failed");
+        };
+        let inodes = third.load_inodes();
+        test_assert!(
+            inodes.iter().any(|i| i.id == finished.id),
+            "the committed entry was not replayed"
+        );
+        test_assert!(
+            !abandoned
+                .iter()
+                .any(|a| inodes.iter().any(|i| i.id == a.id)),
+            "a later mount committed an entry it did not write"
+        );
+        TestResult::Pass
+    }
+
+    /// A journal region that was written and can no longer be read must not
+    /// report as one that was never written. Three regions are mounted: one
+    /// holding entries this build parses, one blank, and one full of bytes no
+    /// entry can be read from. Only the last is damage, and none of the three
+    /// may cost the filesystem its durable inode table.
+    fn test_unparseable_journal_is_not_an_absent_one() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        let inode = dummy_inode(0x1_0000_0008, "damaged");
+        if store.write_inode(&inode, b"table bytes").is_err() {
+            return TestResult::Fail("write_inode failed");
+        }
+        if store.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed");
+        }
+        let Some(sb) = store.superblock else {
+            return TestResult::Fail("missing superblock");
+        };
+
+        let Ok(mut mounted) = remount(store.backend.take()) else {
+            return TestResult::Fail("remount over a written journal failed");
+        };
+        test_assert_eq!(mounted.journal_damage(), 0);
+        test_assert!(
+            mounted.load_inodes().iter().any(|i| i.id == inode.id),
+            "the node is missing after a healthy remount"
+        );
+
+        let fill = |mounted: &BlockStore, sector: &[u8; SECTOR_SIZE]| -> bool {
+            let Some(backend) = mounted.backend.as_ref() else {
+                return false;
+            };
+            for i in 0..sb.journal_blocks {
+                if backend.write_sector(sb.journal_start + i, sector).is_err() {
+                    return false;
+                }
+            }
+            true
+        };
+
+        // Blank: nothing was ever recorded here, which is absence, not damage.
+        if !fill(&mounted, &[0u8; SECTOR_SIZE]) {
+            return TestResult::Fail("journal wipe failed");
+        }
+        let Ok(mut blank) = remount(mounted.backend.take()) else {
+            return TestResult::Fail("remount over a blank journal failed");
+        };
+        test_assert_eq!(blank.journal_damage(), 0);
+
+        // Written but unreadable: every sector is damage, and the count says
+        // so instead of the region passing for empty.
+        let mut garbage = [0u8; SECTOR_SIZE];
+        for (k, b) in garbage.iter_mut().enumerate() {
+            *b = (k % 251 + 1) as u8;
+        }
+        if !fill(&blank, &garbage) {
+            return TestResult::Fail("journal corruption failed");
+        }
+        let Ok(mut corrupt) = remount(blank.backend.take()) else {
+            return TestResult::Fail("remount over a corrupt journal failed");
+        };
+        test_assert_eq!(corrupt.journal_damage(), sb.journal_blocks);
+        // The inode table is durable and authoritative, so a journal nobody
+        // can read costs the updates it held and not the filesystem.
+        test_assert!(
+            corrupt.load_inodes().iter().any(|i| i.id == inode.id),
+            "a damaged journal took the durable inode table with it"
+        );
+        TestResult::Pass
+    }
+
+    /// The write-ahead log must carry a metadata update that the inode table
+    /// lost. The table is wiped after `flush_all`, so the journal is the only
+    /// surviving copy of the record: if the WAL stops recording, stops being
+    /// committed, or stops being replayed, the node cannot come back and this
+    /// test fails. The owner is checked too, because it rides the entry.
+    fn test_journal_replay_restores_metadata_the_inode_table_lost() -> TestResult {
+        let mut store = BlockStore::with_mock(8192);
+        let inode = dummy_inode(0x1_0000_0007, "journalled");
+        // A second node no other call journals, so the entry `write_inode`
+        // records is the only thing that can bring it back.
+        let written_only = dummy_inode(0x1_0000_000B, "written");
+        if store.write_inode(&inode, b"journalled bytes").is_err() {
+            return TestResult::Fail("write_inode failed");
+        }
+        if store.write_inode(&written_only, b"written bytes").is_err() {
+            return TestResult::Fail("write_inode failed for the second node");
+        }
+        if store.set_record_owner(inode.id, 1234, 5678).is_err() {
+            return TestResult::Fail("set_record_owner failed");
+        }
+        if store.flush_all().is_err() {
+            return TestResult::Fail("flush_all failed");
+        }
+
+        let Some(sb) = store.superblock else {
+            return TestResult::Fail("missing superblock");
+        };
+        let zero = [0u8; SECTOR_SIZE];
+        let Some(backend) = store.backend.as_ref() else {
+            return TestResult::Fail("missing backend");
+        };
+        // Every trace of the record outside the journal is destroyed.
+        for i in 0..sb.inode_table_blocks {
+            if backend
+                .write_sector(sb.inode_table_start + i, &zero)
+                .is_err()
+            {
+                return TestResult::Fail("inode table wipe failed");
+            }
+        }
+
+        let backend = store.backend.take();
+        let mut remounted = BlockStore::new();
+        remounted.backend = backend;
+        if remounted.read_superblock().is_err() {
+            return TestResult::Fail("remount read_superblock failed");
+        }
+        if remounted.read_bitmap().is_err() {
+            return TestResult::Fail("remount read_bitmap failed");
+        }
+        if remounted.read_inode_table().is_err() {
+            return TestResult::Fail("remount read_inode_table failed");
+        }
+        // The wiped table holds nothing, so anything found now came from the
+        // journal and nowhere else.
+        test_assert!(
+            remounted.load_inodes().is_empty(),
+            "the wiped inode table still yielded a record"
+        );
+        if remounted.replay_journal().is_err() {
+            return TestResult::Fail("remount replay_journal failed");
+        }
+
+        let inodes = remounted.load_inodes();
+        let Some(restored) = inodes.iter().find(|i| i.id == inode.id) else {
+            return TestResult::Fail("the journal replayed no record for the lost node");
+        };
+        test_assert_eq!(restored.name, "journalled");
+        test_assert_eq!(restored.data, b"journalled bytes");
+        test_assert_eq!(restored.parent, inode.parent);
+        test_assert_eq!(restored.metadata.permissions, 0o644);
+        test_assert_eq!(remounted.record_owner(inode.id), (1234, 5678));
+        let Some(restored) = inodes.iter().find(|i| i.id == written_only.id) else {
+            return TestResult::Fail("the journal replayed nothing that `write_inode` recorded");
+        };
+        test_assert_eq!(restored.name, "written");
+        test_assert_eq!(restored.data, b"written bytes");
+        TestResult::Pass
+    }
+
     /// Ownership recorded on a node must still be on it after a remount, and a
     /// node whose owner was never recorded must come back root-owned. Both the
     /// inode table and the journal are exercised: `flush_all` makes the record
@@ -1828,6 +2136,22 @@ pub mod tests {
         crate::testing::register_test(
             "block_store::cold_inode_table_load_restores_data_without_journal",
             test_cold_inode_table_load_restores_data_without_journal,
+        );
+        crate::testing::register_test(
+            "block_store::journal_replay_restores_metadata_the_inode_table_lost",
+            test_journal_replay_restores_metadata_the_inode_table_lost,
+        );
+        crate::testing::register_test(
+            "block_store::journal_commit_precedes_the_inode_table_write",
+            test_journal_commit_precedes_the_inode_table_write,
+        );
+        crate::testing::register_test(
+            "block_store::abandoned_journal_entries_are_not_committed_by_a_later_mount",
+            test_abandoned_journal_entries_are_not_committed_by_a_later_mount,
+        );
+        crate::testing::register_test(
+            "block_store::unparseable_journal_is_not_an_absent_one",
+            test_unparseable_journal_is_not_an_absent_one,
         );
         crate::testing::register_test(
             "block_store::recorded_owner_survives_remount",
