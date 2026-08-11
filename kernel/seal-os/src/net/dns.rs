@@ -15,8 +15,17 @@ struct DnsCacheEntry {
 
 static DNS_SERVER: Mutex<[u8; 4]> = Mutex::new([10, 0, 2, 3]);
 static CACHE: Mutex<BTreeMap<String, DnsCacheEntry>> = Mutex::new(BTreeMap::new());
-#[allow(dead_code)] // REASON: UDP socket handle reserved for future async DNS resolver
-static DNS_SOCKET: Mutex<Option<usize>> = Mutex::new(None);
+// ponytail: each query allocates a fresh `udp::socket()` rather than reusing
+// one shared socket. A shared socket was tried and reverted: `rebind` and
+// `sendto` are separate UDP_SOCKETS lock acquisitions, and a second task's
+// concurrent query could rebind the shared socket in the gap between them,
+// changing the on-wire source port of a query that had not sent yet and
+// failing the dst_port check on its legitimate response. Per-query sockets
+// mean UDP_SOCKETS grows without bound from DNS traffic again; that is
+// accepted because `udp::allocate_ephemeral_port`'s terminal case now
+// returns a randomized draw, not a predictable counter (see net/udp.rs) --
+// upgrade to a per-query-checked-out-and-returned socket (or a real
+// close/free-list on UDP_SOCKETS) if the growth itself becomes the problem.
 
 pub fn init() {}
 
@@ -52,48 +61,23 @@ static PENDING_QUERY_LOCAL_PORT: Mutex<Option<u16>> = Mutex::new(None);
 // IDs used to come from a plain incrementing counter, making the "next" ID
 // fully predictable to anyone who observed -- or merely induced, by making
 // the kernel resolve any unrelated hostname -- one prior lookup. Draw from
-// hardware entropy instead, with a boot-seeded PRNG fallback for the rare
-// CPU with neither RDSEED nor RDRAND.
+// hardware entropy instead (`drivers::entropy::getrandom`), with the shared
+// boot-seeded PRNG fallback (`drivers::entropy::fallback_random_u64`) for
+// the rare CPU with neither RDSEED nor RDRAND. That fallback used to be a
+// private copy here; it is now the one shared copy also used by
+// `net::udp`'s ephemeral-port allocator, so the two can't drift apart.
 // ---------------------------------------------------------------------------
-
-/// Fallback PRNG state, used only when `drivers::entropy::getrandom` reports
-/// no hardware entropy source. xorshift64 seeded once from RDTSC (same
-/// construction as `security::aslr`'s fallback). This is *not*
-/// cryptographically secure -- a single timer sample seeds a linear
-/// generator whose state an attacker who sees enough outputs could in
-/// principle reconstruct -- but it is still unpredictable from a single
-/// induced lookup, unlike the incrementing counter it replaces, and this
-/// path is dead code on any CPU with RDRAND (available since ~2012) or
-/// RDSEED (~2015).
-static FALLBACK_RNG_STATE: Mutex<Option<u64>> = Mutex::new(None);
-
-fn fallback_random_u64() -> u64 {
-    let mut state = FALLBACK_RNG_STATE.lock();
-    let mut s = state.unwrap_or_else(|| {
-        let seed = unsafe { core::arch::x86_64::_rdtsc() };
-        if seed == 0 {
-            0x9e37_79b9_7f4a_7c15
-        } else {
-            seed
-        }
-    });
-    s ^= s << 13;
-    s ^= s >> 7;
-    s ^= s << 17;
-    *state = Some(s);
-    s
-}
 
 /// Draw a random 16-bit DNS transaction ID. Prefers hardware entropy
 /// (`drivers::entropy::getrandom`, which itself prefers RDSEED and falls
-/// back to RDRAND, and checks CPUID before using either); falls back to a
-/// boot-seeded PRNG only if the CPU offers neither.
+/// back to RDRAND, and checks CPUID before using either); falls back to the
+/// shared boot-seeded PRNG only if the CPU offers neither.
 fn random_query_id() -> u16 {
     let mut buf = [0u8; 2];
     if crate::drivers::entropy::getrandom(&mut buf) {
         u16::from_ne_bytes(buf)
     } else {
-        fallback_random_u64() as u16
+        crate::drivers::entropy::fallback_random_u64() as u16
     }
 }
 
