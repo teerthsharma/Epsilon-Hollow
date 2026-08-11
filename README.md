@@ -5757,6 +5757,65 @@ written.
 
 It found that by breaking its own code on purpose. There is no other way.
 
+## The Network Stack, Or: Two Packets That Ended The Machine
+
+Somebody read all 5,237 lines of the networking code in one sitting. I want to
+report the two worst findings first, because they are the kind of thing that
+should make a person stop and check their own repository.
+
+**One UDP packet to port 68 aborts the kernel.** The DHCP option loop guards with
+`if i + len > pkt.len() { break; }` — which bounds the length the *packet claims*
+— and then reads a fixed one or four bytes regardless. A 242-byte payload with
+option 53 and a declared length of zero passes that guard and indexes byte 242 of
+a 242-byte buffer. No authentication. No prior DHCP exchange. The only other gate
+is a transaction ID hardcoded to `0x12345678` and never written, so it is not a
+secret.
+
+**One IPv4 header aborts the kernel.** The parser establishes that the header
+length is at least 20, checks that the total length does not exceed the buffer,
+and then slices `&pkt[ihl..total_len]`. A total length of zero passes both checks
+and produces a slice that starts at 20 and ends at 0. Rust panics on a reversed
+range, and this kernel builds with `panic = "abort"`.
+
+Both are now fixed. Both existed because the guard bounded a different quantity
+than the code read — which is the same defect this document has been describing
+for several thousand lines, arriving in a form where a stranger on the network
+gets to trigger it.
+
+### And then the quieter ones
+
+**Every checksum this stack has ever sent went out byte-swapped.** `internet_checksum`
+returns a host-order number; seven sites stored it into a packed header without
+converting. The receive path verifies by recomputing and comparing to zero — so
+the kernel rejected its own packets, including on loopback.
+
+The reason nobody caught it by reading is genuinely interesting: **there was no
+single correct example to copy.** The tree holds three conventions. Four sites
+write the bytes explicitly with shifts and are right. Two more are right a third
+way, because that struct holds host order in every field and converts on the way
+out. Which means there are two structs both named `TcpHeader`, one file apart,
+with opposite in-memory conventions. Open one file and you learn one rule; open
+the other and you learn a different one.
+
+**ARP requests were addressed to this machine.** The Ethernet header wants
+destination in bytes 0..6 and source in 6..12. `send_arp_request` wrote its own
+MAC first and the broadcast address second. So every request went out addressed to
+itself, sourced from broadcast — a frame no peer accepts and most switches drop.
+
+On-demand address resolution has therefore never once succeeded. The cache filled
+only by accident, from ARP traffic addressed to other hosts. Four sibling sites in
+the same tree get the order right. One did not.
+
+**And TCP has never handled a reset.** `_FLAG_RST` is defined with a leading
+underscore, and a repository-wide grep finds exactly one hit: the definition. So
+connecting to a closed port — the most ordinary failure on a network — leaves the
+socket in `SynSent` forever, feeding a retransmit queue that never removes its
+entries and grows by one per poll, permanently, while re-sending SYNs at poll rate
+rather than at the retransmit timeout.
+
+That one is not fixed yet. It is written down, which is the difference between a
+bug and a secret.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
