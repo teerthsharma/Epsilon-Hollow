@@ -1753,10 +1753,31 @@ pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: 
     flush_tx();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// See net/udp.rs's own test-module header for why: `kernel/seal-os` is excluded
+// from the workspace, so `cargo test --workspace` never reaches it, and the
+// crate does not build under `cfg(test)` on a host either. Every case below
+// spent its life in a `#[cfg(test)] mod tests` that had never once executed.
+// `testing/runner.rs` calls `crate::net::tcp::tests::register_all()`, so they
+// now run under the QEMU boot proof in CI.
+// ---------------------------------------------------------------------------
 
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    /// Every case runs against one process-wide socket table, so each starts
+    /// from an empty one rather than from whatever its predecessor left behind.
+    ///
+    /// `test_tcp_listen_accept` is why. It opens a listener on 8080 and drives a
+    /// SYN from `REMOTE`:80 at it, and the case before it leaves an ESTABLISHED
+    /// socket on exactly that four-tuple in the flow index. The exact-flow
+    /// lookup runs before the listener fallback and answered with the stale
+    /// socket, so the listener never saw the SYN and `accept` returned `None`.
+    /// Run on its own the same case passed.
     fn reset_tcp_for_test() {
         TCP_SOCKETS.lock().clear();
         TCP_FLOW_INDEX.lock().clear();
@@ -1767,15 +1788,36 @@ mod tests {
     }
 
     /// Push an already-configured socket and index its flow, the way `socket`
-    /// and `poll` do. The four cases below that push into `TCP_SOCKETS` without
-    /// this step fail before this change and after it, because
-    /// `handle_tcp_packet` demuxes through `TCP_FLOW_INDEX` and finds nothing.
+    /// and `poll` do.
+    ///
+    /// A socket that is only pushed is unreachable: `handle_tcp_packet` resolves
+    /// through `TCP_FLOW_INDEX` and never scans the table. Indexing alone is not
+    /// enough either -- the key comes from the socket's own four-tuple, so a
+    /// socket still holding `TcpSocket::new`'s default 0.0.0.0 `remote_ip` is
+    /// filed under an address no segment carries and the lookup misses just the
+    /// same. Both halves were missing from the four cases that failed; setting
+    /// `remote_ip` to the address the fixture delivers from is as load-bearing
+    /// as this call.
     fn push_indexed(sock: TcpSocket) -> usize {
         let mut sockets = TCP_SOCKETS.lock();
         let idx = sockets.len();
         sockets.push(sock);
         index_exact_flow_socket(idx, &sockets[idx]);
         idx
+    }
+
+    /// Age every queued segment by `by` ticks.
+    ///
+    /// `retransmit_expired` tests `ticks() - entry.time` against the RTO, so
+    /// rewinding the entries is the same experiment as advancing the clock --
+    /// and the clock cannot be advanced from here:
+    /// `interrupts::mock_advance_ticks` is `#[cfg(test)]`, which this module is
+    /// not under `test-mode`. It is also the more honest of the two in kernel,
+    /// where `ticks()` is a live ~1 kHz counter that no test may rewind.
+    fn age_retransmit_queue(sock: &mut TcpSocket, by: u64) {
+        for entry in sock.retransmit_queue.iter_mut() {
+            entry.time = entry.time.wrapping_sub(by);
+        }
     }
 
     /// Every case below delivers from `REMOTE` to `LOCAL`, and
@@ -1794,78 +1836,123 @@ mod tests {
         make_tcp_packet(REMOTE, LOCAL, 80, dst_port, flags, seq, ack, payload)
     }
 
-    #[test]
-    fn test_syn_sent_to_established() {
+    fn test_syn_sent_to_established() -> TestResult {
+        reset_tcp_for_test();
         let mut sock = TcpSocket::new(1234);
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::SynSent;
         let pkt = make_tcp_header(FLAG_SYN | FLAG_ACK, 500, 1001, 1234);
-        let mut sockets = TCP_SOCKETS.lock();
-        let idx = sockets.len();
-        sockets.push(sock);
-        drop(sockets);
+        let idx = push_indexed(sock);
+
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
+
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].state, TcpState::Established);
-        assert_eq!(sockets[idx].ack_num, 501);
-        assert_eq!(sockets[idx].seq_num, 1001);
+        test_assert!(
+            sockets[idx].state == TcpState::Established,
+            "a SYN-ACK in SYN-SENT did not complete the handshake"
+        );
+        test_assert!(
+            sockets[idx].ack_num == 501,
+            "SYN-SENT did not acknowledge the peer's SYN sequence + 1"
+        );
+        test_assert!(
+            sockets[idx].seq_num == 1001,
+            "SYN-SENT did not consume the sequence its own SYN occupied"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_established_to_closewait() {
+    /// `ack_num` is the next byte this socket expects, and the ESTABLISHED arm
+    /// requires the segment to land on it (RFC 793 section 3.9). The fixture
+    /// therefore expects byte 500, which is the sequence the FIN carries.
+    fn test_established_to_closewait() -> TestResult {
+        reset_tcp_for_test();
         let mut sock = TcpSocket::new(1234);
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::Established;
+        sock.ack_num = 500;
         let pkt = make_tcp_header(FLAG_FIN | FLAG_ACK, 500, 1000, 1234);
-        let mut sockets = TCP_SOCKETS.lock();
-        let idx = sockets.len();
-        sockets.push(sock);
-        drop(sockets);
+        let idx = push_indexed(sock);
+
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
+
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].state, TcpState::CloseWait);
-        assert_eq!(sockets[idx].ack_num, 501);
+        test_assert!(
+            sockets[idx].state == TcpState::CloseWait,
+            "a FIN at ESTABLISHED did not move the socket to CLOSE-WAIT"
+        );
+        test_assert!(
+            sockets[idx].ack_num == 501,
+            "the FIN was not acknowledged: a FIN occupies one sequence number"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_fin_wait1_to_timewait() {
+    fn test_fin_wait1_to_timewait() -> TestResult {
+        reset_tcp_for_test();
         let mut sock = TcpSocket::new(1234);
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::FinWait1;
         let pkt = make_tcp_header(FLAG_FIN | FLAG_ACK, 500, 1000, 1234);
-        let mut sockets = TCP_SOCKETS.lock();
-        let idx = sockets.len();
-        sockets.push(sock);
-        drop(sockets);
+        let idx = push_indexed(sock);
+
         handle_tcp_packet(REMOTE, LOCAL, &pkt);
+
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].state, TcpState::TimeWait);
+        test_assert!(
+            sockets[idx].state == TcpState::TimeWait,
+            "a simultaneous FIN-ACK in FIN-WAIT-1 did not reach TIME-WAIT"
+        );
+        test_assert!(
+            sockets[idx].ack_num == 501,
+            "the peer's FIN was not acknowledged in FIN-WAIT-1"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_close_to_syn_sent() {
+    fn test_close_to_syn_sent() -> TestResult {
+        reset_tcp_for_test();
         let mut sock = TcpSocket::new(1234);
-        assert_eq!(sock.state, TcpState::Closed);
+        test_assert!(
+            sock.state == TcpState::Closed,
+            "a fresh socket is not CLOSED"
+        );
         sock.connect(crate::net::IpAddr::V4([192, 168, 1, 1]), 80);
-        assert_eq!(sock.state, TcpState::SynSent);
+        test_assert!(
+            sock.state == TcpState::SynSent,
+            "connect did not leave the socket in SYN-SENT"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_retransmit_queue() {
+    fn test_retransmit_queue() -> TestResult {
+        reset_tcp_for_test();
         let mut sock = TcpSocket::new(1234);
         sock.remote_port = 80;
         sock.remote_ip = crate::net::IpAddr::V4([127, 0, 0, 1]);
         sock.seq_num = 1000;
         sock.state = TcpState::Established;
         sock.send(b"hello");
-        assert_eq!(sock.retransmit_queue.len(), 1);
-        assert_eq!(sock.retransmit_queue[0].seq, 1000);
+        test_assert!(
+            sock.retransmit_queue.len() == 1,
+            "a sent payload was not queued for retransmission"
+        );
+        test_assert!(
+            sock.retransmit_queue[0].seq == 1000,
+            "the queued segment was filed under the wrong sequence"
+        );
         sock.purge_acked(1005);
-        assert!(sock.retransmit_queue.is_empty());
+        test_assert!(
+            sock.retransmit_queue.is_empty(),
+            "an acknowledged segment stayed on the retransmit queue"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_tcp_header_roundtrip() {
+    fn test_tcp_header_roundtrip() -> TestResult {
         let hdr = TcpHeader {
             src_port: 1234,
             dst_port: 80,
@@ -1877,49 +1964,85 @@ mod tests {
             urgent: 0,
         };
         let bytes = hdr.to_bytes();
-        let parsed = TcpHeader::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.to_bytes(), bytes);
+        let Some(parsed) = TcpHeader::from_bytes(&bytes) else {
+            return TestResult::Fail("a 20-byte header failed to parse");
+        };
+        test_assert!(
+            parsed.to_bytes() == bytes,
+            "TcpHeader did not survive a serialize/parse round trip"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_tcp_header_literal_wire_order() {
+    fn test_tcp_header_literal_wire_order() -> TestResult {
         let bytes = [
             0x00, 0x50, 0x1f, 0x90, 0x00, 0x00, 0x01, 0xf5, 0x00, 0x00, 0x03, 0xe9, 0x50, 0x18,
             0xff, 0xff, 0x12, 0x34, 0x00, 0x00,
         ];
 
-        let parsed = TcpHeader::from_bytes(&bytes).unwrap();
+        let Some(parsed) = TcpHeader::from_bytes(&bytes) else {
+            return TestResult::Fail("a 20-byte header failed to parse");
+        };
         let src_port = parsed.src_port;
         let dst_port = parsed.dst_port;
         let seq = parsed.seq;
         let ack = parsed.ack;
 
-        assert_eq!(src_port, 80);
-        assert_eq!(dst_port, 8080);
-        assert_eq!(seq, 501);
-        assert_eq!(ack, 1001);
-        assert_eq!(parsed.data_offset(), 20);
-        assert_eq!(parsed.flags(), FLAG_ACK | FLAG_PSH);
-        assert_eq!(parsed.to_bytes(), bytes);
+        test_assert!(src_port == 80, "source port is not big-endian on the wire");
+        test_assert!(
+            dst_port == 8080,
+            "destination port is not big-endian on the wire"
+        );
+        test_assert!(seq == 501, "sequence number is not big-endian on the wire");
+        test_assert!(
+            ack == 1001,
+            "acknowledgement number is not big-endian on the wire"
+        );
+        test_assert!(
+            parsed.data_offset() == 20,
+            "data offset is not the high nibble of byte 12 in 4-byte words"
+        );
+        test_assert!(
+            parsed.flags() == FLAG_ACK | FLAG_PSH,
+            "flags are not the low 6 bits of the offset/flags word"
+        );
+        test_assert!(
+            parsed.to_bytes() == bytes,
+            "re-serializing a literal wire header changed its bytes"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_tcp_syn() {
+    fn test_tcp_syn() -> TestResult {
+        reset_tcp_for_test();
         let idx = socket();
         connect(idx, crate::net::IpAddr::V4([127, 0, 0, 1]), 80);
         let sockets = TCP_SOCKETS.lock();
         let sock = &sockets[idx];
-        assert_eq!(sock.state, TcpState::SynSent);
-        assert_eq!(sock.retransmit_queue.len(), 1);
-        assert_eq!(sock.retransmit_queue[0].flags, FLAG_SYN);
+        test_assert!(
+            sock.state == TcpState::SynSent,
+            "connect did not leave the socket in SYN-SENT"
+        );
+        test_assert!(
+            sock.retransmit_queue.len() == 1,
+            "the SYN was not queued for retransmission"
+        );
+        test_assert!(
+            sock.retransmit_queue[0].flags == FLAG_SYN,
+            "the queued segment is not the SYN"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_tcp_listen_accept() {
+    fn test_tcp_listen_accept() -> TestResult {
+        reset_tcp_for_test();
         let listener = socket();
         bind(listener, 8080);
         listen(listener);
-        assert_eq!(state(listener), TcpState::Listen);
+        test_assert!(
+            state(listener) == TcpState::Listen,
+            "listen did not put the socket in LISTEN"
+        );
 
         // Simulate an incoming SYN to port 8080
         let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
@@ -1928,129 +2051,234 @@ mod tests {
         // Process pending SYNs
         poll();
 
-        let accepted = accept(listener);
-        assert!(accepted.is_some());
-        let new_sock = accepted.unwrap();
-        assert_eq!(state(new_sock), TcpState::SynReceived);
+        let Some(new_sock) = accept(listener) else {
+            return TestResult::Fail("a SYN to a listening port produced nothing to accept");
+        };
+        test_assert!(
+            state(new_sock) == TcpState::SynReceived,
+            "the accepted socket is not in SYN-RECEIVED"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn test_accepted_socket_receives_payload_on_listener_port() {
+    fn test_accepted_socket_receives_payload_on_listener_port() -> TestResult {
         reset_tcp_for_test();
         let listener = socket();
         bind(listener, 8080);
         listen(listener);
 
-        let remote = REMOTE;
         let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
-        handle_tcp_packet(remote, LOCAL, &syn_pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &syn_pkt);
         poll();
 
-        let accepted = accept(listener).unwrap();
+        let Some(accepted) = accept(listener) else {
+            return TestResult::Fail("a SYN to a listening port produced nothing to accept");
+        };
         let data_pkt = make_tcp_segment(FLAG_ACK | FLAG_PSH, 501, 1001, 8080, b"tick");
-        handle_tcp_packet(remote, LOCAL, &data_pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &data_pkt);
 
-        assert_eq!(state(accepted), TcpState::Established);
+        test_assert!(
+            state(accepted) == TcpState::Established,
+            "the ACK completing the handshake did not establish the accepted socket"
+        );
         let mut buf = [0u8; 8];
-        assert_eq!(recv(accepted, &mut buf), 4);
-        assert_eq!(&buf[..4], b"tick");
+        let got = recv(accepted, &mut buf);
+        test_assert!(
+            got == 4,
+            "the payload did not reach the accepted socket -- the listener took it"
+        );
+        test_assert!(&buf[..4] == b"tick", "the delivered payload is not the one sent");
+        TestResult::Pass
     }
 
-    #[test]
-    fn packet_fixture_proof_reports_listener_first_demux() {
+    fn packet_fixture_proof_reports_listener_first_demux() -> TestResult {
         reset_tcp_for_test();
 
         let proof = packet_fixture_proof();
 
-        assert!(proof.ok);
-        assert!(proof.listener_first);
-        assert!(proof.exact_flow);
-        assert_eq!(proof.decoy_rx_bytes, 0);
-        assert!(proof.listener_fallback);
-        assert_eq!(proof.payload_bytes, 4);
-        assert_eq!(proof.rx_bytes, 4);
-        assert!(proof.o1_index);
-        assert!(proof.index_hit);
-        assert!(proof.index_lookup_probes > 0);
-        assert!(proof.index_lookup_probes <= proof.index_probe_bound);
-        assert_eq!(proof.index_probe_bound, proof.index_capacity);
-        assert_eq!(proof.index_capacity, TCP_FLOW_INDEX_BUCKETS);
-        assert!(proof.listener_index_hit);
-        assert!(proof.listener_lookup_probes > 0);
-        assert!(proof.listener_lookup_probes <= proof.listener_probe_bound);
-        assert_eq!(proof.listener_probe_bound, proof.listener_index_capacity);
-        assert_eq!(proof.listener_index_capacity, TCP_LISTENER_INDEX_BUCKETS);
-        assert!(!proof.exact_scan);
-        assert_eq!(proof.accepted_state, TcpState::Established);
-        assert!(proof.cleanup_ok);
-        assert!(TCP_SOCKETS.lock().is_empty());
+        test_assert!(proof.ok, "the packet fixture did not report ok");
+        test_assert!(
+            proof.listener_first,
+            "the listener is not ordered ahead of the flow sockets it accepted"
+        );
+        test_assert!(
+            proof.exact_flow,
+            "the segment was not demuxed to the exact flow"
+        );
+        test_assert!(
+            proof.decoy_rx_bytes == 0,
+            "a socket on the same local port but a different four-tuple got the payload"
+        );
+        test_assert!(
+            proof.listener_fallback,
+            "a SYN for an unknown flow did not fall back to the listener"
+        );
+        test_assert!(proof.payload_bytes == 4, "the fixture payload changed size");
+        test_assert!(
+            proof.rx_bytes == 4,
+            "the accepted socket did not receive the whole payload"
+        );
+        test_assert!(proof.o1_index, "the flow lookup was not a bounded index hit");
+        test_assert!(proof.index_hit, "the flow index missed");
+        test_assert!(
+            proof.index_lookup_probes > 0,
+            "the flow index reported a hit in zero probes"
+        );
+        test_assert!(
+            proof.index_lookup_probes <= proof.index_probe_bound,
+            "the flow lookup exceeded its probe bound"
+        );
+        test_assert!(
+            proof.index_probe_bound == proof.index_capacity,
+            "the flow probe bound no longer matches the table capacity"
+        );
+        test_assert!(
+            proof.index_capacity == TCP_FLOW_INDEX_BUCKETS,
+            "the flow index capacity is not the declared bucket count"
+        );
+        test_assert!(proof.listener_index_hit, "the listener index missed");
+        test_assert!(
+            proof.listener_lookup_probes > 0,
+            "the listener index reported a hit in zero probes"
+        );
+        test_assert!(
+            proof.listener_lookup_probes <= proof.listener_probe_bound,
+            "the listener lookup exceeded its probe bound"
+        );
+        test_assert!(
+            proof.listener_probe_bound == proof.listener_index_capacity,
+            "the listener probe bound no longer matches the table capacity"
+        );
+        test_assert!(
+            proof.listener_index_capacity == TCP_LISTENER_INDEX_BUCKETS,
+            "the listener index capacity is not the declared bucket count"
+        );
+        test_assert!(!proof.exact_scan, "the demux fell back to a linear scan");
+        test_assert!(
+            proof.accepted_state == TcpState::Established,
+            "the accepted socket did not reach ESTABLISHED"
+        );
+        test_assert!(proof.cleanup_ok, "the fixture did not restore the socket table");
+        test_assert!(
+            TCP_SOCKETS.lock().is_empty(),
+            "the fixture left sockets behind"
+        );
+        TestResult::Pass
     }
 
-    #[test]
-    fn loopback_echo_fixture_proves_roundtrip_and_cleanup() {
+    fn loopback_echo_fixture_proves_roundtrip_and_cleanup() -> TestResult {
         reset_tcp_for_test();
 
         let proof = loopback_echo_fixture_proof();
 
-        assert_eq!(proof.connections, 8);
-        assert_eq!(proof.established, proof.connections);
-        assert_eq!(proof.payload_bytes, 64);
-        assert_eq!(proof.client_tx, proof.connections * proof.payload_bytes);
-        assert_eq!(proof.server_rx, proof.client_tx);
-        assert_eq!(proof.server_echo, proof.client_tx);
-        assert_eq!(proof.client_rx, proof.client_tx);
-        assert_eq!(proof.listener_accept, proof.connections);
-        assert_eq!(proof.exact_flow, proof.connections);
-        assert_eq!(proof.listener_index_hit, proof.connections);
-        assert_eq!(proof.client_index_hit, proof.connections);
-        assert!(proof.index_lookup_probes_max > 0);
-        assert!(proof.index_lookup_probes_max <= proof.index_probe_bound);
-        assert!(proof.cleanup_ok);
-        assert!(TCP_SOCKETS.lock().is_empty());
+        test_assert!(proof.connections == 8, "the fixture changed connection count");
+        test_assert!(
+            proof.established == proof.connections,
+            "not every connection reached ESTABLISHED on both ends"
+        );
+        test_assert!(proof.payload_bytes == 64, "the fixture payload changed size");
+        test_assert!(
+            proof.client_tx == proof.connections * proof.payload_bytes,
+            "the client did not send the whole payload on every connection"
+        );
+        test_assert!(
+            proof.server_rx == proof.client_tx,
+            "the server did not receive every byte the client sent"
+        );
+        test_assert!(
+            proof.server_echo == proof.client_tx,
+            "the server did not echo every byte it received"
+        );
+        test_assert!(
+            proof.client_rx == proof.client_tx,
+            "the client did not receive every echoed byte"
+        );
+        test_assert!(
+            proof.listener_accept == proof.connections,
+            "not every SYN produced an accepted socket"
+        );
+        test_assert!(
+            proof.exact_flow == proof.connections,
+            "a data segment missed the exact-flow index"
+        );
+        test_assert!(
+            proof.listener_index_hit == proof.connections,
+            "a SYN missed the listener index"
+        );
+        test_assert!(
+            proof.client_index_hit == proof.connections,
+            "an echo missed the client's flow index entry"
+        );
+        test_assert!(
+            proof.index_lookup_probes_max > 0,
+            "the index reported hits in zero probes"
+        );
+        test_assert!(
+            proof.index_lookup_probes_max <= proof.index_probe_bound,
+            "a lookup exceeded its probe bound"
+        );
+        test_assert!(proof.cleanup_ok, "the fixture did not restore the socket table");
+        test_assert!(
+            TCP_SOCKETS.lock().is_empty(),
+            "the fixture left sockets behind"
+        );
+        TestResult::Pass
     }
 
     /// A bare reset at ESTABLISHED used to do nothing whatever: the arm needed
     /// an ACK flag or a payload to run, and a reset carries neither. The socket
     /// must abort, stop retransmitting, and leave the flow index with it, so
     /// the four-tuple no longer resolves.
-    #[test]
-    fn reset_in_window_aborts_established_socket() {
+    fn reset_in_window_aborts_established_socket() -> TestResult {
         reset_tcp_for_test();
-        let remote = REMOTE;
         let mut sock = TcpSocket::new(9000);
-        sock.remote_ip = remote;
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::Established;
         sock.seq_num = 5000;
         sock.ack_num = 700;
         sock.send(b"unacked");
-        assert_eq!(sock.retransmit_queue.len(), 1);
+        test_assert!(
+            sock.retransmit_queue.len() == 1,
+            "the sent payload was not queued for retransmission"
+        );
         let idx = push_indexed(sock);
 
-        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST, 700, 0, 9000));
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_RST, 700, 0, 9000));
 
-        assert_eq!(state(idx), TcpState::Closed);
-        assert!(TCP_SOCKETS.lock()[idx].retransmit_queue.is_empty());
+        test_assert!(
+            state(idx) == TcpState::Closed,
+            "an in-window reset did not abort the connection"
+        );
+        test_assert!(
+            TCP_SOCKETS.lock()[idx].retransmit_queue.is_empty(),
+            "an aborted socket is still retransmitting"
+        );
 
         // The flow left the index with the socket, so a later segment for the
         // same four-tuple reaches nothing.
         let data = make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5008, 9000, b"after");
-        handle_tcp_packet(remote, LOCAL, &data);
+        handle_tcp_packet(REMOTE, LOCAL, &data);
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].state, TcpState::Closed);
-        assert!(sockets[idx].rx_buffer.is_empty());
+        test_assert!(
+            sockets[idx].state == TcpState::Closed,
+            "a segment reopened an aborted socket"
+        );
+        test_assert!(
+            sockets[idx].rx_buffer.is_empty(),
+            "an aborted socket accepted data: its flow is still in the index"
+        );
+        TestResult::Pass
     }
 
     /// A reset that does not land on the next expected byte is a blind guess at
     /// the sequence space and must be dropped -- and dropped whole, not
     /// half-processed as an ordinary ACK, which is what the ESTABLISHED arm did
     /// with any RST+ACK it was handed.
-    #[test]
-    fn reset_out_of_window_is_ignored_at_established() {
+    fn reset_out_of_window_is_ignored_at_established() -> TestResult {
         reset_tcp_for_test();
-        let remote = REMOTE;
         let mut sock = TcpSocket::new(9010);
-        sock.remote_ip = remote;
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::Established;
         sock.seq_num = 5000;
@@ -2058,43 +2286,70 @@ mod tests {
         let idx = push_indexed(sock);
 
         handle_tcp_packet(
-            remote,
+            REMOTE,
             LOCAL,
             &make_tcp_header(FLAG_RST | FLAG_ACK, 5700, 5000, 9010),
         );
 
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].state, TcpState::Established);
-        assert_eq!(sockets[idx].ack_num, 700);
+        test_assert!(
+            sockets[idx].state == TcpState::Established,
+            "an out-of-window reset tore the connection down"
+        );
+        test_assert!(
+            sockets[idx].ack_num == 700,
+            "an out-of-window RST+ACK was processed as an ordinary acknowledgement"
+        );
+        TestResult::Pass
     }
 
     /// RFC 793: in SYN-SENT a reset is acceptable only if it acknowledges the
     /// SYN. `connect` leaves `seq_num` at the initial send sequence and the SYN
     /// occupies it, so the acknowledgement of that SYN is `seq_num + 1`. A bare
     /// reset, or one acknowledging anything else, leaves the socket connecting.
-    #[test]
-    fn reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn() {
+    fn reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn() -> TestResult {
         reset_tcp_for_test();
-        let remote = REMOTE;
         let mut idxs = [0usize; 3];
         for (n, slot) in idxs.iter_mut().enumerate() {
             let mut sock = TcpSocket::new(9020 + n as u16);
-            sock.connect(remote, 80);
-            assert_eq!(sock.seq_num, 1000);
+            sock.connect(REMOTE, 80);
+            test_assert!(
+                sock.seq_num == 1000,
+                "connect no longer starts at the initial send sequence this case assumes"
+            );
             *slot = push_indexed(sock);
         }
 
-        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 1001, 9020));
-        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST, 0, 0, 9021));
-        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 4242, 9022));
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 1001, 9020));
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_RST, 0, 0, 9021));
+        handle_tcp_packet(REMOTE, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 4242, 9022));
 
-        assert_eq!(state(idxs[0]), TcpState::Closed);
-        assert_eq!(state(idxs[1]), TcpState::SynSent);
-        assert_eq!(state(idxs[2]), TcpState::SynSent);
+        test_assert!(
+            state(idxs[0]) == TcpState::Closed,
+            "a reset acknowledging the SYN did not abort the connection attempt"
+        );
+        test_assert!(
+            state(idxs[1]) == TcpState::SynSent,
+            "a bare reset aborted a connection attempt it does not acknowledge"
+        );
+        test_assert!(
+            state(idxs[2]) == TcpState::SynSent,
+            "a reset acknowledging the wrong sequence aborted the connection attempt"
+        );
         let sockets = TCP_SOCKETS.lock();
-        assert!(sockets[idxs[0]].retransmit_queue.is_empty());
-        assert_eq!(sockets[idxs[1]].retransmit_queue.len(), 1);
-        assert_eq!(sockets[idxs[2]].retransmit_queue.len(), 1);
+        test_assert!(
+            sockets[idxs[0]].retransmit_queue.is_empty(),
+            "an aborted connection attempt is still retransmitting its SYN"
+        );
+        test_assert!(
+            sockets[idxs[1]].retransmit_queue.len() == 1,
+            "a dropped reset discarded the SYN still awaiting an answer"
+        );
+        test_assert!(
+            sockets[idxs[2]].retransmit_queue.len() == 1,
+            "a dropped reset discarded the SYN still awaiting an answer"
+        );
+        TestResult::Pass
     }
 
     /// Retransmitting used to re-push the segment without removing the entry it
@@ -2102,8 +2357,7 @@ mod tests {
     /// stale timestamp -- retransmitting again on the very next call rather than
     /// one RTO later. It also left `seq_num` pointing at the older segment, so
     /// the next `send` would have reused those numbers for different bytes.
-    #[test]
-    fn retransmit_rearms_one_entry_and_leaves_seq_num_alone() {
+    fn retransmit_rearms_one_entry_and_leaves_seq_num_alone() -> TestResult {
         reset_tcp_for_test();
         let mut sock = TcpSocket::new(9030);
         sock.remote_ip = crate::net::IpAddr::V4([192, 0, 2, 13]);
@@ -2112,38 +2366,75 @@ mod tests {
         sock.seq_num = 1000;
         sock.send(b"hello");
         sock.send(b"world");
-        assert_eq!(sock.retransmit_queue.len(), 2);
-        assert_eq!(sock.seq_num, 1010);
+        test_assert!(
+            sock.retransmit_queue.len() == 2,
+            "two sends did not queue two segments"
+        );
+        test_assert!(sock.seq_num == 1010, "seq_num did not advance over both sends");
         let rto0 = sock.rto;
 
-        crate::drivers::interrupts::mock_advance_ticks(rto0 + 1);
+        age_retransmit_queue(&mut sock, rto0 + 1);
         TCP_TX_QUEUE.lock().clear();
 
         sock.retransmit_expired();
         sock.retransmit_expired();
         sock.retransmit_expired();
 
-        assert_eq!(sock.retransmit_queue.len(), 2);
-        assert_eq!(sock.seq_num, 1010);
-        assert_eq!(tcp_tx_queued(), 1);
-        assert!(sock.rto > rto0);
+        test_assert!(
+            sock.retransmit_queue.len() == 2,
+            "retransmitting grew the queue: the entry was re-pushed without being taken off"
+        );
+        test_assert!(
+            sock.seq_num == 1010,
+            "retransmitting rewound seq_num and left it there"
+        );
+        test_assert!(
+            tcp_tx_queued() == 1,
+            "one expiry transmitted more than one segment: the entry kept its stale timestamp"
+        );
+        test_assert!(sock.rto > rto0, "the retransmit timeout did not back off");
 
         let queued = TCP_TX_QUEUE.lock();
-        let hdr = TcpHeader::from_bytes(&queued[0].1[..20]).unwrap();
+        let Some((_, first)) = queued.first() else {
+            return TestResult::Fail("the expired segment was not transmitted at all");
+        };
+        if first.len() < 20 {
+            return TestResult::Fail("the transmitted segment is shorter than a TCP header");
+        }
+        let Some(hdr) = TcpHeader::from_bytes(&first[..20]) else {
+            return TestResult::Fail("the transmitted segment has no parseable header");
+        };
         let seq = hdr.seq;
-        assert_eq!(seq, 1000);
-        assert_eq!(&queued[0].1[20..], b"hello");
+        test_assert!(seq == 1000, "the wrong segment was retransmitted");
+        test_assert!(
+            &first[20..] == b"hello",
+            "the retransmitted segment carries the wrong payload"
+        );
         drop(queued);
 
         // Re-stamped, so the next attempt is a whole backed-off RTO away.
-        crate::drivers::interrupts::mock_advance_ticks(sock.rto + 1);
+        let rto1 = sock.rto;
+        age_retransmit_queue(&mut sock, rto1 + 1);
         sock.retransmit_expired();
-        assert_eq!(sock.retransmit_queue.len(), 2);
-        assert_eq!(tcp_tx_queued(), 2);
+        test_assert!(
+            sock.retransmit_queue.len() == 2,
+            "the second expiry grew the queue"
+        );
+        test_assert!(
+            tcp_tx_queued() == 2,
+            "the second expiry did not transmit exactly one more segment"
+        );
 
         sock.purge_acked(1010);
-        assert!(sock.retransmit_queue.is_empty());
-        assert_eq!(sock.rto, rto0);
+        test_assert!(
+            sock.retransmit_queue.is_empty(),
+            "acknowledging both segments did not clear the queue"
+        );
+        test_assert!(
+            sock.rto == rto0,
+            "forward progress did not reset the backed-off retransmit timeout"
+        );
+        TestResult::Pass
     }
 
     /// The SYN-RECEIVED arm compares `seq` against `ack_num`; the ESTABLISHED
@@ -2151,12 +2442,10 @@ mod tests {
     /// anything that knew the four-tuple could inject at any sequence at all.
     /// The first segment is the control: the check must not turn every segment
     /// into a drop.
-    #[test]
-    fn established_accepts_only_the_next_expected_sequence() {
+    fn established_accepts_only_the_next_expected_sequence() -> TestResult {
         reset_tcp_for_test();
-        let remote = REMOTE;
         let mut sock = TcpSocket::new(9040);
-        sock.remote_ip = remote;
+        sock.remote_ip = REMOTE;
         sock.remote_port = 80;
         sock.state = TcpState::Established;
         sock.seq_num = 5000;
@@ -2164,23 +2453,80 @@ mod tests {
         let idx = push_indexed(sock);
 
         let in_order = make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5000, 9040, b"abc");
-        handle_tcp_packet(remote, LOCAL, &in_order);
-        handle_tcp_packet(remote, LOCAL, &in_order);
+        handle_tcp_packet(REMOTE, LOCAL, &in_order);
+        handle_tcp_packet(REMOTE, LOCAL, &in_order);
 
         let injected = make_tcp_segment(FLAG_ACK | FLAG_PSH, 60_000, 5000, 9040, b"evil");
-        handle_tcp_packet(remote, LOCAL, &injected);
+        handle_tcp_packet(REMOTE, LOCAL, &injected);
 
         handle_tcp_packet(
-            remote,
+            REMOTE,
             LOCAL,
             &make_tcp_header(FLAG_FIN | FLAG_ACK, 60_000, 5000, 9040),
         );
 
         let mut buf = [0u8; 16];
         let n = recv(idx, &mut buf);
-        assert_eq!(&buf[..n], b"abc");
+        test_assert!(
+            &buf[..n] == b"abc",
+            "a duplicate or out-of-sequence segment was accepted into the receive buffer"
+        );
         let sockets = TCP_SOCKETS.lock();
-        assert_eq!(sockets[idx].ack_num, 703);
-        assert_eq!(sockets[idx].state, TcpState::Established);
+        test_assert!(
+            sockets[idx].ack_num == 703,
+            "the next expected sequence moved on a segment that was not next"
+        );
+        test_assert!(
+            sockets[idx].state == TcpState::Established,
+            "an out-of-sequence FIN closed the connection"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test("tcp::syn_sent_to_established", test_syn_sent_to_established);
+        crate::testing::register_test("tcp::established_to_closewait", test_established_to_closewait);
+        crate::testing::register_test("tcp::fin_wait1_to_timewait", test_fin_wait1_to_timewait);
+        crate::testing::register_test("tcp::close_to_syn_sent", test_close_to_syn_sent);
+        crate::testing::register_test("tcp::retransmit_queue", test_retransmit_queue);
+        crate::testing::register_test("tcp::header_roundtrip", test_tcp_header_roundtrip);
+        crate::testing::register_test(
+            "tcp::header_literal_wire_order",
+            test_tcp_header_literal_wire_order,
+        );
+        crate::testing::register_test("tcp::syn", test_tcp_syn);
+        crate::testing::register_test("tcp::listen_accept", test_tcp_listen_accept);
+        crate::testing::register_test(
+            "tcp::accepted_socket_receives_payload_on_listener_port",
+            test_accepted_socket_receives_payload_on_listener_port,
+        );
+        crate::testing::register_test(
+            "tcp::packet_fixture_proof_reports_listener_first_demux",
+            packet_fixture_proof_reports_listener_first_demux,
+        );
+        crate::testing::register_test(
+            "tcp::loopback_echo_fixture_proves_roundtrip_and_cleanup",
+            loopback_echo_fixture_proves_roundtrip_and_cleanup,
+        );
+        crate::testing::register_test(
+            "tcp::reset_in_window_aborts_established_socket",
+            reset_in_window_aborts_established_socket,
+        );
+        crate::testing::register_test(
+            "tcp::reset_out_of_window_is_ignored_at_established",
+            reset_out_of_window_is_ignored_at_established,
+        );
+        crate::testing::register_test(
+            "tcp::reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn",
+            reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn,
+        );
+        crate::testing::register_test(
+            "tcp::retransmit_rearms_one_entry_and_leaves_seq_num_alone",
+            retransmit_rearms_one_entry_and_leaves_seq_num_alone,
+        );
+        crate::testing::register_test(
+            "tcp::established_accepts_only_the_next_expected_sequence",
+            established_accepts_only_the_next_expected_sequence,
+        );
     }
 }
