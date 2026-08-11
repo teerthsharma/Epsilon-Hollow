@@ -13,8 +13,12 @@
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-#[cfg(feature = "std")]
-use std::f64;
+// NOTE: do not `use std::f64;` here. That imports the *module*, which shadows
+// the `f64` primitive in path position, so `f64::NEG_INFINITY` and `f64::MAX`
+// resolve to the deprecated module constants rather than the associated
+// constants on the type. Under `-D warnings` — which the miri job uses — that
+// is a hard compile error, and it is why every other file in this crate writes
+// the same expressions without incident.
 
 use super::linalg::LossConfig;
 use super::tensor::Tensor;
