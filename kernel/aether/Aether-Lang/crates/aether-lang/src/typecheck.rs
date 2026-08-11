@@ -300,7 +300,10 @@ pub fn typecheck_program(program: &Program) -> Result<Type, TypeError> {
     let mut subst = Subst::new();
 
     // Pre-populate with known native function signatures
-    env.insert(String::from("print"), Type::Fun(vec![Type::Str], Box::new(Type::Unit)));
+    env.insert(
+        String::from("print"),
+        Type::Fun(vec![Type::Str], Box::new(Type::Unit)),
+    );
     env.insert(
         String::from("sin"),
         Type::Fun(vec![Type::Float], Box::new(Type::Float)),
@@ -463,6 +466,9 @@ mod tests {
         let mut parser = Parser::new("let x = 5.0~\nlet y = true~\nlet z = x + y~\n");
         let program = parser.parse().expect("program parses");
         let err = typecheck_program(&program).expect_err("bool + float must not typecheck");
-        assert!(matches!(err, TypeError::UnificationFail(Type::Bool, Type::Float)));
+        assert!(matches!(
+            err,
+            TypeError::UnificationFail(Type::Bool, Type::Float)
+        ));
     }
 }
