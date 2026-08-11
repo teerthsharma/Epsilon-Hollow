@@ -47,6 +47,9 @@
 - [The 30-Second Pitch](#the-30-second-pitch)
 - [Why I Did This To Myself](#why-i-did-this-to-myself)
 - [The FAQ Nobody Asked For](#the-faq-nobody-asked-for)
+- [The Gate That Is Currently Red](#the-gate-that-is-currently-red)
+- [How This Repository Gets Reviewed Now](#how-this-repository-gets-reviewed-now)
+- [Nine Things The Verifier Caught That The Author Did Not](#nine-things-the-verifier-caught-that-the-author-did-not)
 - [Honest Status Dashboard](#honest-status-dashboard)
 - [The Ten Subsystems That Just Landed](#the-ten-subsystems-that-just-landed)
 - [Why An Operating System Should Have Opinions About Your Loss Curve](#why-an-operating-system-should-have-opinions-about-your-loss-curve)
@@ -256,10 +259,15 @@ The naming scheme is inconsistent and borderline unhinged:
 ## The FAQ Nobody Asked For
 
 ### Q: Is this a real operating system?
-**A:** It passes the QEMU headless proof gate, including theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, and benchmark sentinels. Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes.
+**A:** It boots under the QEMU headless proof gate and passes theorem checks, a persistent ManifoldFS mount, desktop/event-loop markers, TLS, and benchmark sentinels. **One gate is currently failing at `main`: `--check-atlas-proof` reports `wx=fail`,** meaning a loadable chart's executable pages are not being flipped from `RW+NX` to `RX`. That is the W^X guarantee for runtime module loading, and it is not holding. Read [The Gate That Is Currently Red](#the-gate-that-is-currently-red) before you believe anything else in this file.
+
+Other VM and real-hardware claims are gated targets, not blanket promises. It has a scheduler, filesystem, network stack, and window manager. It does not, however, run Docker, Steam, or Microsoft Word. So the answer depends on your definition of "real." If your definition includes "can I tweet from it," then no. If your definition includes "does it prove mathematical theorems before letting me open a file," then yes — though see above, because right now it also proves one of them wrong, out loud, on every boot, which is either a bug or the most honest feature in the repository.
 
 ### Q: Can I use this as my daily driver?
 **A:** You *can*. You would be miserable. I do not recommend it. The browser is "planned." GPU hardware compute is honest CPU fallback unless real shader blobs and a hardware proof exist. The WiFi used to be "simulated"; it is now *honestly broken*, which is a genuine upgrade — see below. Your therapist will bill you hourly.
+
+### Q: You put a section in your own README admitting a gate is red. Why?
+**A:** Because the alternative is a README that lies, and this project's entire pitch is that its claims are checkable. A proof gate you quietly stop looking at is worse than no proof gate at all — no gate is honest ignorance, an ignored gate is a decoration. See below. It is not a fun section. It is the most important one.
 
 ### Q: Wait, "honestly broken" is an upgrade?
 **A:** Yes, and I will die on this hill. The old WiFi driver returned a deterministic list of fake SSIDs from a fake state machine. It looked like it worked. It printed "connected." It was a lie wearing a lab coat. The simulation has now been **deleted**, not disabled, not feature-flagged, not "off by default" — removed from the source tree. `scan()` returns an empty list and there is no code path anywhere in the kernel that can produce an SSID. What replaced it is `bundle`, a real firmware-provisioning subsystem that says `section_missing` and names the exact section it wants. A driver that tells you why it is down beats a driver that tells you it is up.
@@ -295,7 +303,74 @@ The naming scheme is inconsistent and borderline unhinged:
 **A:** Primarily one person, with occasional contributions from people who looked at the code, said "huh," and then quietly left. I treasure those contributors.
 
 ### Q: Is this production-ready?
-**A:** Define "production." If you mean "runs in a VM and passes CI gates," yes. If you mean "I would bet my company's infrastructure on it," absolutely not. If you mean "could I demo it at a conference and look smart," definitely yes.
+**A:** Define "production." If you mean "runs in a VM and passes CI gates," mostly — one gate is red, see the very next section, and I am not going to bury it under three hundred lines of jokes about topology. If you mean "I would bet my company's infrastructure on it," absolutely not. If you mean "could I demo it at a conference and look smart," definitely yes, right up until someone in row three asks to see the CI dashboard.
+
+---
+
+## The Gate That Is Currently Red
+
+This section exists because a README that grades its own homework is worth nothing, and this one has a section further down titled *Negative Controls: A Proof That Cannot Fail Is Not A Proof*. Applying that standard to the README itself: a claim nobody rechecks is not a claim, it is set dressing.
+
+At `main`, the QEMU boot smoke job fails one gate:
+
+```
+[seal-audit] TLS PROOF OK: /tmp/seal-os.log
+[seal-audit] ATLAS PROOF FAIL: Atlas proof expected wx=text_rx_data_rw_nx, got wx=fail
+```
+
+Read that carefully, because the failure is more interesting than a crash. The kernel **boots**. The VM proof passes. LAAMBA passes. TLS passes. The desktop pixel proof, the live input proof, and the proof-screen capture all pass. Then `atlas` grafts its fixture chart, tries to flip that chart's executable pages from `RW+NX` to `RX`, and reports that it could not.
+
+`wx=fail` is the kernel telling you, unprompted, that the one property making runtime module loading safe is not holding right now. Write-xor-execute is not a nice-to-have in a subsystem whose entire job is mapping code supplied at runtime. The chain runs `ChartImage::seal` → `remap_region` → `unmap_page` + `map_page`, and `remap_region` returns `false` from one of exactly two lines.
+
+Two things worth saying plainly about this.
+
+**The gate did its job.** Nothing else caught it. Not clippy, which is clean. Not the workspace test suite, which is 440 green. Not a careful read of `atlas/`, which is genuinely one of the better-written subsystems in the tree — it caps every untrusted length before allocating, verifies its ed25519 signature before it trusts a single byte, and its own doc comment promises "nothing here panics on malformed input," which as far as anyone can tell is true. The defect is not in atlas's parsing. It is in what happens when it asks the memory subsystem to change permissions on pages that are already live. A boot proof found something no amount of reading found.
+
+**It was red the whole time and nobody looked.** That is the part that stings. There is no clever story here. The signal was in GitHub Actions, freely available, and the work went on underneath it for a long stretch on the strength of "well, the local builds are clean." Local builds being clean is a statement about local builds.
+
+If you are reading this section because you came to evaluate the project: this is what the honesty is for. The gate is red, it is named, the exact failing marker is quoted, the call chain is written down, and the fix is not in yet. When it goes green this section gets rewritten rather than deleted, because "we fixed it" is also a claim and claims get receipts.
+
+---
+
+## How This Repository Gets Reviewed Now
+
+The kernel is 70,683 lines across 20 subsystems and is excluded from the root Cargo workspace, which means `cargo test --workspace` never touches it and its 65 `#[test]` functions do not run. They have never run. They compile in the sense that a poem compiles.
+
+What actually executes is the in-kernel harness at `src/testing/`, under QEMU, gated by `seal-mkimage` boot proofs. So the review loop looks like this:
+
+- **scout** — read-only, one subsystem, finds defects and refuses to invent them. `DEFECT: none` is a valid and encouraged answer.
+- **smith** — implements exactly one item inside a handed file scope. Writes the failing check first and has to paste the failure. A check nobody watched fail proves nothing.
+- **shaman** — tries to *refute* the smith. Defaults to REFUTED when the evidence is thin. Confirming something wrong costs far more than sending something right back for another look.
+- **oracle** — for anything touching persistence, filtrations, diagrams, or sparse attention, checks that the invariants a wrong implementation would violate are actually asserted. Stability under perturbation. Scale equivariance. The `sqrt(3) * r` death time for a circle's H1 bar, which is a sharp non-obvious constant that a plausible-but-wrong implementation gets wrong.
+- **medic** — runs when something is on fire and has the authority to stop everything else. Currently deployed on the section above.
+
+The rule that matters: **an item counts when the shaman confirms it, not when the smith finishes it.** Those are different numbers, and pretending otherwise is how a changelog fills with work that was never checked.
+
+---
+
+## Nine Things The Verifier Caught That The Author Did Not
+
+Presented in the spirit of *A Proof That Cannot Fail Is Not A Proof*. Every one of these got past the person who wrote it, past the tests, and past a re-read of the diff. Every one was caught by someone whose only job was to attack the change.
+
+**1. A canonical-address check that admitted kernel space.** The ELF loader was hardened to stop a panic on a non-canonical `p_vaddr`. x86_64 canonical form is *two* disjoint ranges, and `VirtAddr::try_new` sign-extends bit 47, so it accepts `0xFFFF_8000_...` as readily as user space. Combined with `base = 0` for `ET_EXEC`, an unconditional `USER_ACCESSIBLE` flag, and a shallow upper-half PML4 clone, a crafted static binary could map a user-accessible page into page tables shared with the live kernel. The fix stopped a panic and left the mapping open.
+
+**2. The same file's entry point, disclosed with the wrong reason.** `entry_point: entry + base` was flagged in a commit message as "an unchecked addition — it does not reach `VirtAddr::new` in this file." True. Irrelevant. It reaches `context.rdi`, then the `iretq` frame, then `RIP`. A defect disclosed with the wrong reason attached is worse than one missed silently, because it reads as examined.
+
+**3. A DNS fix that added approximately zero entropy.** Response validation was tightened to require a matching transaction ID, source address, and source port. The transaction ID was a monotonic counter starting at 1. The source address is the configured resolver and the port is 53 — precisely the two values a spoofer forges in order to impersonate the server. Meanwhile the ephemeral destination port, the one field carrying real entropy, was parsed two lines earlier for the DHCP branch and discarded for DNS. Attacker cost after the fix: one packet.
+
+**4. A test that measured the wrong property.** `gen_range_covers_every_residue_without_low_bit_bias` asserted that each of 8 buckets received more than 800 of 8000 draws. A perfect period-8 sawtooth fills every bucket *exactly* equally and sails through. The name claimed non-periodicity; the body checked occupancy. The replacement asserts on the sequence, and against the old implementation reports `only 0 of 56 pairs differ`.
+
+**5. Two tests that were tautologies.** `default_seed_matches_historical_42` compared the new code path against itself and its comment claimed "unchanged behaviour." The values had moved — seed 42's first draw went from `-0.019956656468772427` to `0.1364606532878152`. The tests passed, the code was correct, and the *documentation* was the defect. A green suite does not audit its own comments.
+
+**6. A fallback that was not a bound.** `xorshift64` is linear and fully invertible: observe a few dozen truncated outputs and you recover the entire 64-bit state. With one RDTSC seed and no reseeding, the sustained-attack floor is the seed's entropy, not the per-draw entropy — near zero on a deterministic virtualized boot. "Random fallback" reads like a guarantee and is not one.
+
+**7. A fix that traded a bounded problem for an unbounded one.** To stop `UDP_SOCKETS` growing per DNS query, one revision replaced per-query sockets with a single shared, rebindable one. Under a preemptive scheduler a second query's rebind lands between the first query's rebind and its send, changing the on-wire source port of a query that has not gone out yet — so the legitimate response then fails the very check the work had just added. Reverted. The residual growth causes port *collisions*; the shared socket caused dropped lookups.
+
+**8. A driver that documented a contract nothing honoured.** `ahci.rs` accepted transfers up to 128 KiB, moved 4 KiB, and returned `Ok(())`. Its own module doc said "a transfer larger than one page must be split by the caller — see the `BlockDevice` impl." The `BlockDevice` impl does not split. `verify_gpt` reads 16 KiB of partition entries in one call, so 96 of 128 entries were whatever the buffer previously held, then CRC'd as though they were disk.
+
+**9. A checksum computed over the wrong memory.** `parse_madt` copied the ACPI header by value with `read_unaligned()` before validating it, so `from_raw_parts(self, self.length)` walked from a *stack* address. The checksum said nothing about the table, and the unbounded read ran off the stack rather than the ACPI region. Bounding the length alone would have produced a check that verified nothing.
+
+The through-line, if you want one: **none of these is a wrong function.** Almost every one is two individually-correct pieces of code disagreeing about the same value — a path string, an address range, a length, a contract in a doc comment. That class does not show up in a per-file review. It shows up when someone asks who else touches this value, and what it costs an attacker.
 
 ---
 
