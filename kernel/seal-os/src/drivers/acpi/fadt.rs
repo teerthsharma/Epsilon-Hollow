@@ -89,6 +89,24 @@ fn x_fields_available(revision: u8, header_length: usize) -> bool {
     revision >= 2 && header_length >= mem::size_of::<Fadt>()
 }
 
+/// Offset immediately past the last legacy field this driver reads
+/// (`pm1_cnt_len`), derived from the struct's own layout rather than a
+/// hand-written number.
+const LEGACY_FIELDS_END: usize = mem::offset_of!(Fadt, pm1_cnt_len) + mem::size_of::<u8>();
+
+/// Whether it's safe to read this struct's legacy 32-bit fields
+/// (`pm1a_evt_blk` through `pm1_cnt_len`).
+///
+/// Unlike the `X_*` fields these exist in every FADT revision — ACPI 1.0
+/// included — so there is no `revision` gate, only a length one:
+/// `walk_sdt` validates the table's checksum over exactly `header.length`
+/// declared bytes (`SdtHeader::is_valid`, rsdp.rs), so a table shorter than
+/// `LEGACY_FIELDS_END` doesn't actually contain them no matter what this
+/// struct's `repr(C, packed)` layout implies is there.
+fn legacy_fields_available(header_length: usize) -> bool {
+    header_length >= LEGACY_FIELDS_END
+}
+
 // Global parsed addresses (0 = unknown / unavailable).
 static PM1A_EVT_BLK: AtomicU64 = AtomicU64::new(0);
 static PM1B_EVT_BLK: AtomicU64 = AtomicU64::new(0);
@@ -125,10 +143,26 @@ pub fn init(rsdp: u64) {
         let revision = core::ptr::addr_of!((*fadt).header.revision).read_unaligned();
         let header_length =
             core::ptr::addr_of!((*fadt).header.length).read_unaligned() as usize;
+
         // `walk_sdt` already validated this table's checksum over exactly
-        // `header_length` declared bytes (SdtHeader::is_valid, rsdp.rs), so
-        // reading anything within that extent is safe. The X_* fields at
-        // offsets 116..188 are outside it for an ACPI 1.0 (116-byte) table.
+        // `header_length` declared bytes (SdtHeader::is_valid, rsdp.rs) —
+        // reading anything within that extent is safe, anything past it
+        // is not. A table too short to hold even the legacy 32-bit PM
+        // blocks is degraded the same way a missing FACP is: log and back
+        // out before touching any field, rather than reading past the
+        // table's validated extent.
+        if !legacy_fields_available(header_length) {
+            crate::serial_println!(
+                "[ACPI/FADT] FACP length {} too short for legacy PM blocks (need {}) — ACPI sleep / power-off unavailable",
+                header_length,
+                LEGACY_FIELDS_END
+            );
+            return;
+        }
+
+        // The X_* fields at offsets 116..188 are outside that extent for an
+        // ACPI 1.0 (116-byte) table even though the legacy fields above are
+        // covered.
         let has_x_fields = x_fields_available(revision, header_length);
 
         let read_x_gas =
@@ -293,6 +327,52 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED (was): `parse_block!` read `pm1a_evt_blk` .. `pm_tmr_blk`, and
+    /// `init` read `pm1_evt_len`/`pm1_cnt_len` right after it, all
+    /// unconditionally — with no check that `header.length` covered offsets
+    /// up to `LEGACY_FIELDS_END` (90). A table truncated below that (e.g. a
+    /// bare 36-byte `SdtHeader` with nothing after it, which still passes
+    /// `SdtHeader::is_valid`'s floor) went straight through to those reads.
+    /// GREEN: `legacy_fields_available` must be false whenever `header_length`
+    /// doesn't reach `LEGACY_FIELDS_END`.
+    fn test_short_length_rejects_legacy_fields() -> TestResult {
+        test_assert!(
+            !legacy_fields_available(mem::size_of::<SdtHeader>()),
+            "a header-only (36-byte) FADT must not read the legacy PM blocks"
+        );
+        test_assert!(
+            !legacy_fields_available(LEGACY_FIELDS_END - 1),
+            "one byte short of LEGACY_FIELDS_END must still be rejected"
+        );
+        TestResult::Pass
+    }
+
+    /// Boundary control: a length that exactly reaches the end of the last
+    /// legacy field read (`pm1_cnt_len`) must be accepted — the check is
+    /// `>=`, not `>`.
+    fn test_boundary_length_allows_legacy_fields() -> TestResult {
+        test_assert!(
+            legacy_fields_available(LEGACY_FIELDS_END),
+            "a length exactly covering the legacy PM blocks must be accepted"
+        );
+        TestResult::Pass
+    }
+
+    /// Positive control: both a real ACPI 1.0 FADT (116 bytes) and a full
+    /// ACPI 2.0+ FADT (188 bytes) comfortably cover the legacy fields —
+    /// unlike the `X_*` fields, there is no revision gate here.
+    fn test_real_world_lengths_allow_legacy_fields() -> TestResult {
+        test_assert!(
+            legacy_fields_available(ACPI_1_0_LEN),
+            "an ACPI 1.0 FADT must still expose its legacy PM blocks"
+        );
+        test_assert!(
+            legacy_fields_available(FULL_LEN),
+            "an ACPI 2.0+ FADT must still expose its legacy PM blocks"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "acpi::fadt::acpi_1_0_length_rejects_x_fields",
@@ -309,6 +389,18 @@ pub mod tests {
         crate::testing::register_test(
             "acpi::fadt::v1_with_full_length_still_uses_legacy",
             test_v1_with_full_length_still_uses_legacy,
+        );
+        crate::testing::register_test(
+            "acpi::fadt::short_length_rejects_legacy_fields",
+            test_short_length_rejects_legacy_fields,
+        );
+        crate::testing::register_test(
+            "acpi::fadt::boundary_length_allows_legacy_fields",
+            test_boundary_length_allows_legacy_fields,
+        );
+        crate::testing::register_test(
+            "acpi::fadt::real_world_lengths_allow_legacy_fields",
+            test_real_world_lengths_allow_legacy_fields,
         );
     }
 }
