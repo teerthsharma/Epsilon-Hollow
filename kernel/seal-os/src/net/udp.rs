@@ -68,7 +68,8 @@ impl UdpSocket {
                 };
                 pseudo.extend_from_slice(hdr_bytes);
                 pseudo.extend_from_slice(buf);
-                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+                // Network order, like the three fields above: `hdr` is blitted raw.
+                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
                 let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
                 let hdr_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -98,7 +99,8 @@ impl UdpSocket {
                 };
                 pseudo.extend_from_slice(hdr_bytes);
                 pseudo.extend_from_slice(buf);
-                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo);
+                // Network order, like the three fields above: `hdr` is blitted raw.
+                hdr.checksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
                 let mut pkt = Vec::with_capacity(UDP_HEADER_LEN + buf.len());
                 let hdr_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -325,10 +327,81 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// End-to-end proof that the stack accepts a packet it built itself.
+    ///
+    /// `sendto` to 127.0.0.1 routes through `ipv4::send_ipv4_packet`'s loopback
+    /// branch straight into `handle_ipv4_packet`, which drops anything failing
+    /// `internet_checksum(header) != 0`. So a datagram arriving in the socket's
+    /// receive buffer is proof the transmit path stored its header checksum in
+    /// the byte order the receive path verifies -- the defect this closes shipped
+    /// it host-order, and every loopback datagram was silently dropped.
+    ///
+    /// A wrong-but-self-consistent byte order cannot satisfy this: the two ends
+    /// are `Ipv4Header::compute_checksum` and `internet_checksum`, which agree
+    /// only when the stored bytes are network order.
+    ///
+    /// Ports sit below the RFC 6335 ephemeral range so `allocate_ephemeral_port`
+    /// cannot hand the same value to another socket and steal the dispatch, and
+    /// avoid 68 (DHCP) and 53 (DNS), which `handle_udp_packet` diverts.
+    ///
+    /// The send goes through a locally constructed `UdpSocket` rather than the
+    /// module-level `sendto`, which holds `UDP_SOCKETS` across the call: the
+    /// loopback path re-enters `handle_udp_packet`, which takes the same
+    /// non-reentrant lock, and would deadlock the kernel.
+    fn test_loopback_ipv4_round_trip_accepted() -> TestResult {
+        const RX_PORT: u16 = 9000;
+        const TX_PORT: u16 = 9001;
+        const PAYLOAD: &[u8] = b"seal-loopback";
+
+        let idx = socket();
+        bind(idx, RX_PORT);
+
+        UdpSocket::new(TX_PORT).sendto(
+            PAYLOAD,
+            crate::net::IpAddr::V4([127, 0, 0, 1]),
+            RX_PORT,
+        );
+
+        let mut buf = [0u8; 32];
+        let got = recvfrom(idx, &mut buf);
+        test_assert!(
+            got.is_some(),
+            "loopback datagram never reached the socket -- handle_ipv4_packet rejected a header this tree built"
+        );
+        let (len, _src, src_port) = got.unwrap();
+        test_assert!(
+            &buf[..len] == PAYLOAD,
+            "loopback datagram payload did not survive the round trip"
+        );
+        test_assert!(
+            src_port == TX_PORT,
+            "loopback datagram carried the wrong source port"
+        );
+
+        // Control on the rejecting side, so the assertions above cannot pass
+        // because the receive path delivers to any socket regardless of the
+        // header: a datagram addressed to a port nothing is bound to must not
+        // land in this socket.
+        UdpSocket::new(TX_PORT).sendto(
+            PAYLOAD,
+            crate::net::IpAddr::V4([127, 0, 0, 1]),
+            RX_PORT + 100,
+        );
+        test_assert!(
+            recvfrom(idx, &mut buf).is_none(),
+            "datagram for an unbound port was delivered to the wrong socket"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "udp::fallback_prng_not_sequential",
             test_fallback_prng_not_sequential,
+        );
+        crate::testing::register_test(
+            "udp::loopback_ipv4_round_trip_accepted",
+            test_loopback_ipv4_round_trip_accepted,
         );
         crate::testing::register_test(
             "udp::retry_exhaustion_still_randomized",

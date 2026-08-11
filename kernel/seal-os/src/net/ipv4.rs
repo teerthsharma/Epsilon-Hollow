@@ -44,7 +44,11 @@ impl Ipv4Header {
                 core::mem::size_of::<Ipv4Header>(),
             )
         };
-        self.checksum = internet_checksum(bytes);
+        // `internet_checksum` returns host order; every other field of this
+        // header is stored network order because `send_ipv4_packet` blits the
+        // struct straight onto the wire. Without `to_be` the checksum ships
+        // byte-swapped and `handle_ipv4_packet` below rejects our own packets.
+        self.checksum = internet_checksum(bytes).to_be();
     }
 
     /// Parse an IPv4 header from a raw byte slice.
@@ -83,6 +87,29 @@ impl Ipv4Header {
     }
 }
 
+/// RFC 1071 internet checksum over `data`, **returned in host byte order**.
+///
+/// The return value is a number, not wire bytes. How it must be stored depends
+/// entirely on how the containing header reaches the wire, and this tree uses
+/// both conventions:
+///
+/// * A header that is **blitted raw** -- `repr(C, packed)` reinterpreted as
+///   bytes by `from_raw_parts`, as in `Ipv4Header`, `icmp::IcmpEcho`,
+///   `udp::UdpHeader`, `ipv6::Icmpv6Echo` and `drivers::net::tcp`'s
+///   `TcpHeader` -- holds every multi-byte field pre-swapped, so the checksum
+///   is stored with `.to_be()` exactly like its `total_len` / `id` / `seq` /
+///   `src_port` siblings.
+/// * A header **serialized field by field** -- `net::tcp::TcpHeader::to_bytes`,
+///   or the byte buffers built by `icmp::send_echo_reply` and the three
+///   ICMPv6 senders in `ipv6` -- holds host order throughout and converts on
+///   the way out, so the value is stored as returned.
+///
+/// Storing a raw-blitted field without `.to_be()` ships the checksum
+/// byte-swapped, and `Ipv4Header::from_bytes` / `handle_ipv4_packet` then
+/// reject the packet: the stack refuses its own traffic, loopback included.
+///
+/// Verification is direction-free -- recompute over the whole header and
+/// compare to zero -- because a byte-swapped zero is still zero.
 pub fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;

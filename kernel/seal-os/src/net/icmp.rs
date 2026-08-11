@@ -30,7 +30,8 @@ pub fn send_echo_request(dst: [u8; 4], seq: u16) {
             core::mem::size_of::<IcmpEcho>(),
         )
     };
-    pkt.checksum = crate::net::ipv4::internet_checksum(bytes);
+    // Network order, like `id` and `seq` above: this struct is blitted raw.
+    pkt.checksum = crate::net::ipv4::internet_checksum(bytes).to_be();
     let bytes = unsafe {
         core::slice::from_raw_parts(
             &pkt as *const _ as *const u8,

@@ -106,7 +106,10 @@ pub fn send_tcp_packet(
                 unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             pseudo.extend_from_slice(hdr_bytes);
             pseudo.extend_from_slice(payload);
-            let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+            // Network order, like every other field of this header: unlike
+            // `net::tcp::TcpHeader`, which holds host order and converts in
+            // `to_bytes`, this one is blitted raw.
+            let cksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
             unsafe {
                 core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
             }
@@ -132,7 +135,10 @@ pub fn send_tcp_packet(
                 unsafe { core::slice::from_raw_parts(&hdr as *const _ as *const u8, 20) };
             pseudo.extend_from_slice(hdr_bytes);
             pseudo.extend_from_slice(payload);
-            let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+            // Network order, like every other field of this header: unlike
+            // `net::tcp::TcpHeader`, which holds host order and converts in
+            // `to_bytes`, this one is blitted raw.
+            let cksum = crate::net::ipv4::internet_checksum(&pseudo).to_be();
             unsafe {
                 core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
             }
