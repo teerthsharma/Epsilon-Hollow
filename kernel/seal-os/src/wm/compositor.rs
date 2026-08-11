@@ -72,6 +72,12 @@ pub struct Compositor {
     dragging: Option<(u32, i32, i32)>, // window_id, offset_x, offset_y
     dragging_resize: Option<(u32, ResizeEdge)>,
     dirty_rects: Vec<Rect>,
+    // Geometry of the framebuffer this compositor draws into. Written only by
+    // `adopt_screen`, from the framebuffer handed to `compose`/`compose_full`,
+    // so that hit-testing and drawing cannot disagree about where the taskbar
+    // row is or how large a maximized window may be. The initial values are a
+    // placeholder for the window between `new()` and the first composed frame;
+    // `boot_graphical` composes once before it accepts any input.
     screen_w: u32,
     screen_h: u32,
 }
@@ -133,12 +139,18 @@ impl Compositor {
         self.windows.iter_mut().find(|w| w.id == id)
     }
 
-    pub fn mouse_move(&mut self, dx: i32, dy: i32, screen_w: i32, screen_h: i32) {
-        let screen_w = screen_w.max(1);
-        let screen_h = screen_h.max(1);
-        self.mouse.apply_move(dx, dy, screen_w, screen_h);
-        self.screen_w = screen_w as u32;
-        self.screen_h = screen_h as u32;
+    /// Move the cursor by a device delta.
+    ///
+    /// The cursor is clamped to the framebuffer last composed into, not to the
+    /// bounds a caller supplies: the clamp has to agree with the bounds every
+    /// drawing path uses, and a caller that invents a screen size is exactly
+    /// how the cursor came to stop at 1023x767 on every other mode. The
+    /// trailing two arguments are vestigial and ignored; they stay only until
+    /// `run_desktop_soak_probe`, the last caller that still passes them, drops
+    /// them.
+    pub fn mouse_move(&mut self, dx: i32, dy: i32, _screen_w: i32, _screen_h: i32) {
+        self.mouse
+            .apply_move(dx, dy, self.screen_w as i32, self.screen_h as i32);
 
         if let Some((win_id, ox, oy)) = self.dragging {
             if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
@@ -397,7 +409,20 @@ impl Compositor {
         }
     }
 
+    /// Adopt the geometry of the framebuffer about to be drawn into.
+    ///
+    /// A zero-sized framebuffer carries no usable geometry and is ignored: a
+    /// zero height would put the taskbar hit row at 0 and swallow every click.
+    fn adopt_screen(&mut self, fb: &Framebuffer) {
+        if fb.width == 0 || fb.height == 0 {
+            return;
+        }
+        self.screen_w = fb.width;
+        self.screen_h = fb.height;
+    }
+
     pub fn compose(&mut self, fb: &Framebuffer) {
+        self.adopt_screen(fb);
         self.frame_count += 1;
 
         let theme_dirty = themes::theme_changed();
@@ -480,6 +505,7 @@ impl Compositor {
     }
 
     pub fn compose_full(&mut self, fb: &Framebuffer) {
+        self.adopt_screen(fb);
         self.frame_count += 1;
         self.windows.sort_by_key(|w| w.z_order);
 
