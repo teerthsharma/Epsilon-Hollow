@@ -11,6 +11,7 @@ use crate::drivers::bluetooth::BluetoothDriver;
 use crate::drivers::wifi::WifiDriver;
 use crate::fs::manifold_fs::ManifoldFS;
 use crate::lang::AetherRuntime;
+use crate::security::mac::Permissions;
 
 use super::calculator::Calculator;
 use super::clipboard::Clipboard;
@@ -26,6 +27,60 @@ pub struct Shell {
     calculator: Calculator,
     media_player: MediaPlayer,
     last_model: Option<Vec<u8>>,
+}
+
+/// Absolute path named by a shell argument, or `None` when the argument is
+/// not already in the canonical form the access policy is keyed on.
+///
+/// `Shell` holds its own `ManifoldFS` (see `Shell::new`), whose inherent
+/// methods carry no permission logic at all — only `Vfs` calls
+/// `security::mac::check_file_permission`. Every command therefore has to
+/// name the file to the policy itself, and the string it names must denote
+/// the same inode the filesystem will open.
+///
+/// This validates rather than rewrites. `Vfs::canonicalize_path`
+/// (fs/vfs.rs:172) is private, and a second canonicalizer here is exactly
+/// the defect that let `//root/secret` past a `Deny /root` rule: two
+/// components normalizing one string differently authorize one file and open
+/// another. Rejecting non-canonical components instead — empty (`//`), `.`,
+/// or `..` — cannot disagree in the permissive direction. What remains is a
+/// literal component list, and `ManifoldFS::resolve_path`
+/// (fs/manifold_fs.rs:646) walks components as literal directory-entry
+/// lookups with no symlink substitution, so the path checked and the inode
+/// reached are the same file.
+///
+/// `cwd_path` is the form `Shell::update_cwd_path` produces: `/`, or
+/// `/a/b/` with a trailing separator. An empty `arg` means that directory
+/// itself.
+///
+/// Free-standing rather than a method so it is exercisable without building
+/// a `Shell`, which mounts — and on a blank disk formats — the AHCI block
+/// store.
+fn abs_path_in(cwd_path: &str, arg: &str) -> Option<String> {
+    let cwd = if cwd_path == "/" {
+        "/"
+    } else {
+        cwd_path.trim_end_matches('/')
+    };
+    if arg.is_empty() {
+        return Some(String::from(cwd));
+    }
+    if arg == "/" {
+        return Some(String::from("/"));
+    }
+    let joined = if arg.starts_with('/') {
+        String::from(arg)
+    } else if cwd == "/" {
+        format!("/{}", arg)
+    } else {
+        format!("{}/{}", cwd, arg)
+    };
+    for part in joined.split('/').skip(1) {
+        if part.is_empty() || part == "." || part == ".." {
+            return None;
+        }
+    }
+    Some(joined)
 }
 
 impl Shell {
@@ -160,7 +215,41 @@ impl Shell {
         }
     }
 
+    /// Absolute path named by `arg`, relative to `self.cwd_path`.
+    fn abs_path(&self, arg: &str) -> Option<String> {
+        abs_path_in(&self.cwd_path, arg)
+    }
+
+    /// Message to return when the current task may not touch `arg` with
+    /// `perms`; `None` when the operation is authorized.
+    ///
+    /// Fails closed: an argument that cannot be resolved to a canonical path
+    /// is refused rather than passed through to the filesystem.
+    fn deny(&self, arg: &str, perms: Permissions) -> Option<String> {
+        let path = match self.abs_path(arg) {
+            Some(p) => p,
+            None => {
+                return Some(format!(
+                    "'{}': path must be a plain name or absolute, with no empty, '.' or '..' components",
+                    arg
+                ))
+            }
+        };
+        if crate::security::mac::check_file_permission(
+            crate::process::scheduler::current_uid(),
+            &path,
+            perms,
+        ) {
+            None
+        } else {
+            Some(format!("permission denied: {}", path))
+        }
+    }
+
     fn cmd_look(&self, arg: &str) -> String {
+        if let Some(e) = self.deny(arg, Permissions::R) {
+            return format!("look: {}", e);
+        }
         let dir = if arg.is_empty() {
             self.cwd
         } else {
@@ -201,6 +290,9 @@ impl Shell {
             }
             return String::new();
         }
+        if let Some(e) = self.deny(arg, Permissions::R) {
+            return format!("open: {}", e);
+        }
         match self.fs.resolve_path_from(arg, self.cwd) {
             Ok(id) => {
                 if !self.fs.is_dir(id) {
@@ -218,6 +310,9 @@ impl Shell {
         if arg.is_empty() {
             return String::from("peek: which file? Usage: peek <filename>");
         }
+        if let Some(e) = self.deny(arg, Permissions::R) {
+            return format!("peek: {}", e);
+        }
         match self.fs.read_text(arg, self.cwd) {
             Some(text) => text,
             None => format!("peek: '{}' not found", arg),
@@ -228,6 +323,9 @@ impl Shell {
         if arg.is_empty() {
             return String::from("create: what name? Usage: create <foldername>");
         }
+        if let Some(e) = self.deny(arg, Permissions::W) {
+            return format!("create: {}", e);
+        }
         match self.fs.mkdir(arg, self.cwd) {
             Ok(id) => format!("Created folder '{}' (inode {})", arg, id),
             Err(e) => format!("create: {}", e),
@@ -237,6 +335,9 @@ impl Shell {
     fn cmd_write(&mut self, name: &str, content: &str) -> String {
         if name.is_empty() {
             return String::from("write: usage: write <filename> <content>");
+        }
+        if let Some(e) = self.deny(name, Permissions::W) {
+            return format!("write: {}", e);
         }
         let content = if content.is_empty() { "" } else { content };
         match self.fs.store_text(name, content, self.cwd) {
@@ -254,6 +355,9 @@ impl Shell {
         if arg.is_empty() {
             return String::from("delete: which file? Usage: delete <filename>");
         }
+        if let Some(e) = self.deny(arg, Permissions::W) {
+            return format!("delete: {}", e);
+        }
         match self.fs.delete(arg, self.cwd) {
             Ok(()) => format!("Deleted '{}'", arg),
             Err(e) => format!("delete: {}", e),
@@ -264,6 +368,11 @@ impl Shell {
         if old.is_empty() || new.is_empty() {
             return String::from("rename: usage: rename <old> <new>");
         }
+        for target in [old, new] {
+            if let Some(e) = self.deny(target, Permissions::W) {
+                return format!("rename: {}", e);
+            }
+        }
         match self.fs.rename(old, new, self.cwd) {
             Ok(()) => format!("Renamed '{}' → '{}'", old, new),
             Err(e) => format!("rename: {}", e),
@@ -273,6 +382,9 @@ impl Shell {
     fn cmd_copy(&mut self, arg: &str) -> String {
         if arg.is_empty() {
             return String::from("copy: which file? Usage: copy <filename>");
+        }
+        if let Some(e) = self.deny(arg, Permissions::R) {
+            return format!("copy: {}", e);
         }
         if !self.fs.exists(arg, self.cwd) {
             return format!("copy: '{}' not found", arg);
@@ -286,6 +398,11 @@ impl Shell {
             Some(e) => e,
             None => return String::from("paste: clipboard is empty — use 'copy <file>' first"),
         };
+        // The source was authorized for read when `copy` put it on the
+        // clipboard; this is the write half, at the destination.
+        if let Some(e) = self.deny(&entry.name, Permissions::W) {
+            return format!("paste: {}", e);
+        }
         match self.fs.duplicate(&entry.name, entry.source_dir, self.cwd) {
             Ok(id) => format!("Pasted '{}' here (inode {})", entry.name, id),
             Err(e) => format!("paste: {}", e),
@@ -295,6 +412,14 @@ impl Shell {
     fn cmd_move(&mut self, name: &str, dest: &str) -> String {
         if name.is_empty() || dest.is_empty() {
             return String::from("move: usage: move <file> <destination_folder>");
+        }
+        // Source removal, destination directory, and the entry created inside
+        // it are three separate writes; a rule may cover any one of them.
+        let dest_child = format!("{}/{}", dest.trim_end_matches('/'), name);
+        for target in [name, dest, dest_child.as_str()] {
+            if let Some(e) = self.deny(target, Permissions::W) {
+                return format!("move: {}", e);
+            }
         }
         let dst = match self.fs.resolve_path(dest) {
             Ok(id) => id,
@@ -314,6 +439,15 @@ impl Shell {
         if query.is_empty() {
             return String::from("search: what? Usage: search <query>");
         }
+        // ponytail: `search` is not filtered by the access policy. It names no
+        // path to check — `ManifoldFS::find` (fs/manifold_fs.rs:531) scores
+        // every inode by payload similarity and returns `FindResult { name,
+        // similarity, cell, original_size }` with no parent and no path, so
+        // there is nothing to hand `check_file_permission`. Ceiling: a name
+        // and a byte count from a directory the caller may not read can still
+        // leak. Upgrade path: carry the resolved path on `FindResult` and
+        // filter here — that field lives in fs/manifold_fs.rs, outside this
+        // unit's scope.
         let results = self.fs.find(query);
         if results.is_empty() {
             return String::from("No matches found.");
@@ -331,6 +465,9 @@ impl Shell {
     fn cmd_info(&self, arg: &str) -> String {
         if arg.is_empty() {
             return String::from("info: which file? Usage: info <filename>");
+        }
+        if let Some(e) = self.deny(arg, Permissions::R) {
+            return format!("info: {}", e);
         }
         match self.fs.file_info(arg, self.cwd) {
             Some(info) => info,
@@ -559,7 +696,16 @@ impl Shell {
             format!("{}B", size)
         };
 
-        // Real benchmark: create file, measure duplicate vs teleport
+        // Real benchmark: create file, measure duplicate vs teleport.
+        // `ManifoldFS::new` mounts the same AHCI block store the rest of the
+        // system is on (fs/manifold_fs.rs:112), so these two directories land
+        // at the filesystem root for real and need authorizing like any other
+        // write.
+        for target in ["/race_src", "/race_dst"] {
+            if let Some(e) = self.deny(target, Permissions::W) {
+                return format!("race: {}", e);
+            }
+        }
         let mut fs = ManifoldFS::new();
         let root = 0u64;
         let src_dir = fs.mkdir("race_src", root).unwrap_or(1);
@@ -619,6 +765,9 @@ impl Shell {
         }
 
         if pkg.ends_with(".eph") {
+            if let Some(e) = self.deny(pkg, Permissions::R) {
+                return format!("[ManifoldPkg] local install: {}", e);
+            }
             let Some(data) = self.fs.read_bytes(pkg, self.cwd) else {
                 return format!("[ManifoldPkg] local package '{}' not found", pkg);
             };
@@ -785,6 +934,11 @@ impl Shell {
         if key.is_empty() {
             return String::from("set: usage: set <key> <value>");
         }
+        // Settings persist at the filesystem root (`store_text(.., 0)`), not
+        // in the working directory.
+        if let Some(e) = self.deny(&format!("/.setting_{}", key), Permissions::W) {
+            return format!("[Settings] {}", e);
+        }
         let entry = format!("{}={}", key, val);
         match self.fs.store_text(&format!(".setting_{}", key), &entry, 0) {
             Ok(_) => format!("[Settings] {} = {} (persisted to ManifoldFS)", key, val),
@@ -837,12 +991,15 @@ impl Shell {
                     return String::from("topcrypt encode: usage: topcrypt encode <file>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt encode: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt encode: {}", e),
                 };
                 let topo = crate::fs::topcrypt::encode_bytes(&data, 0x5EA1);
                 let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
                 let topo_name = format!("{}.topo", arg1);
+                if let Some(e) = self.deny(&topo_name, Permissions::W) {
+                    return format!("topcrypt encode: {}", e);
+                }
                 if self.fs.exists(&topo_name, self.cwd) {
                     let _ = self.fs.delete(&topo_name, self.cwd);
                 }
@@ -861,12 +1018,15 @@ impl Shell {
                     return String::from("topcrypt decode: usage: topcrypt decode <file.topo>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt decode: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt decode: {}", e),
                 };
                 let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let decoded = crate::fs::topcrypt::decode_bytes(&topo);
                 let out_name = arg1.strip_suffix(".topo").unwrap_or(arg1);
+                if let Some(e) = self.deny(out_name, Permissions::W) {
+                    return format!("topcrypt decode: {}", e);
+                }
                 if self.fs.exists(out_name, self.cwd) {
                     let _ = self.fs.delete(out_name, self.cwd);
                 }
@@ -885,9 +1045,12 @@ impl Shell {
                     return String::from("topcrypt lock: usage: topcrypt lock <file.topo>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt lock: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt lock: {}", e),
                 };
+                if let Some(e) = self.deny(arg1, Permissions::W) {
+                    return format!("topcrypt lock: {}", e);
+                }
                 let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let key = crate::security::topcrypt_guard::LYPNOS_KEY;
                 crate::fs::topcrypt::lock_file(&mut topo, key);
@@ -908,9 +1071,12 @@ impl Shell {
                     return String::from("topcrypt unlock: usage: topcrypt unlock <file.topo>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt unlock: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt unlock: {}", e),
                 };
+                if let Some(e) = self.deny(arg1, Permissions::W) {
+                    return format!("topcrypt unlock: {}", e);
+                }
                 let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let key = crate::security::topcrypt_guard::LYPNOS_KEY;
                 if !crate::fs::topcrypt::unlock_file(&mut topo, key) {
@@ -933,8 +1099,8 @@ impl Shell {
                     return String::from("topcrypt info: usage: topcrypt info <file.topo>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt info: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt info: {}", e),
                 };
                 let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 format!(
@@ -953,6 +1119,9 @@ Seed: {:016x}",
             "render" => {
                 if arg1.is_empty() {
                     return String::from("topcrypt render: usage: topcrypt render <file.csv>");
+                }
+                if let Some(e) = self.deny(arg1, Permissions::R) {
+                    return format!("topcrypt render: {}", e);
                 }
                 let text = match self.fs.read_text(arg1, self.cwd) {
                     Some(t) => t,
@@ -983,8 +1152,8 @@ Seed: {:016x}",
                     );
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt export: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt export: {}", e),
                 };
                 let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
                 let flat = crate::fs::topcrypt::decode_bytes(&topo);
@@ -994,6 +1163,9 @@ Seed: {:016x}",
                     String::from(arg2)
                 };
                 let dest_name = dest.rsplit('/').next().unwrap_or("export.flat");
+                if let Some(e) = self.deny(dest_name, Permissions::W) {
+                    return format!("topcrypt export: {}", e);
+                }
                 if self.fs.exists(dest_name, self.cwd) {
                     let _ = self.fs.delete(dest_name, self.cwd);
                 }
@@ -1012,12 +1184,15 @@ Seed: {:016x}",
                     return String::from("topcrypt import: usage: topcrypt import <file>");
                 }
                 let data = match self.read_file_bytes(arg1) {
-                    Some(d) => d,
-                    None => return format!("topcrypt import: '{}' not found", arg1),
+                    Ok(d) => d,
+                    Err(e) => return format!("topcrypt import: {}", e),
                 };
                 let topo = crate::fs::topcrypt::encode_bytes(&data, 0x5EA1);
                 let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
                 let topo_name = format!("{}.topo", arg1.rsplit('/').next().unwrap_or(arg1));
+                if let Some(e) = self.deny(&topo_name, Permissions::W) {
+                    return format!("topcrypt import: {}", e);
+                }
                 if self.fs.exists(&topo_name, self.cwd) {
                     let _ = self.fs.delete(&topo_name, self.cwd);
                 }
@@ -1060,6 +1235,9 @@ Seed: {:016x}",
                     crate::wm::app_launcher::launch_app(9);
                     String::from("[Tensor] Launching tensor viewer with demo pattern")
                 } else {
+                    if let Some(e) = self.deny(arg, Permissions::R) {
+                        return format!("tensor render: {}", e);
+                    }
                     match self.fs.read_text(arg, self.cwd) {
                         Some(text) => {
                             crate::apps::tensor_viewer::set_pending_csv(&text);
@@ -1073,6 +1251,9 @@ Seed: {:016x}",
             "info" => {
                 if arg.is_empty() {
                     return String::from("tensor info: usage: tensor info <file.csv>");
+                }
+                if let Some(e) = self.deny(arg, Permissions::R) {
+                    return format!("tensor info: {}", e);
                 }
                 match self.fs.read_text(arg, self.cwd) {
                     Some(text) => {
@@ -1113,10 +1294,23 @@ Seed: {:016x}",
         }
     }
 
-    fn read_file_bytes(&self, name: &str) -> Option<Vec<u8>> {
-        let inode_id = self.fs.resolve_path_from(name, self.cwd).ok()?;
-        let inode = self.fs.inode(inode_id)?;
-        Some(inode.data.clone())
+    /// Read a file's raw bytes by path, relative to the working directory.
+    ///
+    /// Returns the denial message rather than `None` so a refused read is not
+    /// reported to the operator as a missing file.
+    fn read_file_bytes(&self, name: &str) -> Result<Vec<u8>, String> {
+        if let Some(e) = self.deny(name, Permissions::R) {
+            return Err(e);
+        }
+        let inode_id = self
+            .fs
+            .resolve_path_from(name, self.cwd)
+            .map_err(|_| format!("'{}' not found", name))?;
+        let inode = self
+            .fs
+            .inode(inode_id)
+            .ok_or_else(|| format!("'{}' not found", name))?;
+        Ok(inode.data.clone())
     }
 
     fn cmd_prefetch(&self, sub: &str) -> String {
@@ -1163,14 +1357,139 @@ Seed: {:016x}",
     pub fn prompt(&self) -> String {
         format!("seal:{}$ ", self.cwd_path)
     }
-
-    pub fn fs_mut(&mut self) -> &mut ManifoldFS {
-        &mut self.fs
-    }
 }
 
 impl Default for Shell {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::security::mac::{check_file_permission, init_default_policy};
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// The decision `Shell::deny` makes, for an explicit uid.
+    ///
+    /// `deny` itself reads `scheduler::current_uid()`, which needs a live
+    /// scheduler with a current task; this chains the same two calls in the
+    /// same order without one, the way `fs/vfs.rs`'s own MAC tests do.
+    fn denied(uid: u32, cwd_path: &str, arg: &str, perms: Permissions) -> bool {
+        match abs_path_in(cwd_path, arg) {
+            Some(path) => !check_file_permission(uid, &path, perms),
+            None => true, // unresolvable argument is refused, not passed through
+        }
+    }
+
+    /// A plain name is resolved against the working directory, so `peek
+    /// secret` after `open /root` names `/root/secret` — the string the
+    /// `Deny /root` rule is keyed on. Before this gate existed, `ManifoldFS`
+    /// looked the name up in the cwd with no check anywhere on the path.
+    fn test_plain_name_resolves_against_cwd() -> TestResult {
+        test_assert_eq!(abs_path_in("/root/", "secret").unwrap(), "/root/secret");
+        test_assert_eq!(abs_path_in("/", "secret").unwrap(), "/secret");
+        test_assert_eq!(abs_path_in("/a/b/", "c").unwrap(), "/a/b/c");
+        TestResult::Pass
+    }
+
+    /// An empty argument means the working directory itself, with the
+    /// trailing separator `update_cwd_path` leaves on it removed — MAC rule
+    /// matching is keyed on the un-terminated form (`security/mac.rs:150`).
+    fn test_empty_arg_is_the_cwd_without_trailing_slash() -> TestResult {
+        test_assert_eq!(abs_path_in("/root/", "").unwrap(), "/root");
+        test_assert_eq!(abs_path_in("/", "").unwrap(), "/");
+        test_assert_eq!(abs_path_in("/a/b/", "/").unwrap(), "/");
+        TestResult::Pass
+    }
+
+    /// Non-canonical arguments are refused outright. `ManifoldFS::resolve_path`
+    /// filters empty components, so `//root/secret` reaches the same inode as
+    /// `/root/secret`; `resolve_path_from` follows real `..` directory
+    /// entries. Either would let a checked string and an opened file diverge,
+    /// so neither is accepted.
+    fn test_non_canonical_arguments_are_refused() -> TestResult {
+        for arg in ["//root", "/root//secret", "../root", "a/../../root", "./x", "x/"] {
+            test_assert!(
+                abs_path_in("/data/", arg).is_none(),
+                "non-canonical argument must not resolve"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// The bypass itself: an unprivileged shell reading `/root/secret`, by
+    /// absolute path or by name from that directory, is denied both ways.
+    fn test_root_secret_denied_for_unprivileged_shell() -> TestResult {
+        init_default_policy();
+        test_assert!(denied(1000, "/", "/root/secret", Permissions::R));
+        test_assert!(denied(1000, "/root/", "secret", Permissions::R));
+        test_assert!(denied(1000, "/", "/root", Permissions::W));
+        TestResult::Pass
+    }
+
+    /// `..` and `//` cannot walk out of an allowed directory into a denied
+    /// one — the refusal is on the argument form, before any lookup.
+    fn test_traversal_out_of_allowed_directory_denied() -> TestResult {
+        init_default_policy();
+        for arg in ["../root/secret", "//root/secret", "../../root/secret"] {
+            test_assert!(denied(1000, "/data/", arg, Permissions::R));
+        }
+        TestResult::Pass
+    }
+
+    /// uid 0 keeps its `security/mac.rs:110` bypass, and the allowed prefixes
+    /// stay usable for everyone — the gate subtracts only what a rule covers.
+    fn test_allowed_paths_and_root_are_not_broken() -> TestResult {
+        init_default_policy();
+        test_assert!(!denied(0, "/root/", "secret", Permissions::R));
+        test_assert!(!denied(1000, "/data/", "file", Permissions::R));
+        test_assert!(!denied(1000, "/tmp/", "file", Permissions::W));
+        test_assert!(!denied(1000, "/", "/data/file", Permissions::W));
+        TestResult::Pass
+    }
+
+    /// `/rootkit` is not inside `/root`; the gate must not over-deny either,
+    /// or it would report a lie about which files are protected.
+    fn test_sibling_prefix_is_not_denied() -> TestResult {
+        init_default_policy();
+        test_assert!(!denied(1000, "/", "/rootkit", Permissions::R));
+        test_assert_eq!(abs_path_in("/", "rootkit").unwrap(), "/rootkit");
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "shell::plain_name_resolves_against_cwd",
+            test_plain_name_resolves_against_cwd,
+        );
+        crate::testing::register_test(
+            "shell::empty_arg_is_the_cwd_without_trailing_slash",
+            test_empty_arg_is_the_cwd_without_trailing_slash,
+        );
+        crate::testing::register_test(
+            "shell::non_canonical_arguments_are_refused",
+            test_non_canonical_arguments_are_refused,
+        );
+        crate::testing::register_test(
+            "shell::root_secret_denied_for_unprivileged_shell",
+            test_root_secret_denied_for_unprivileged_shell,
+        );
+        crate::testing::register_test(
+            "shell::traversal_out_of_allowed_directory_denied",
+            test_traversal_out_of_allowed_directory_denied,
+        );
+        crate::testing::register_test(
+            "shell::allowed_paths_and_root_are_not_broken",
+            test_allowed_paths_and_root_are_not_broken,
+        );
+        crate::testing::register_test(
+            "shell::sibling_prefix_is_not_denied",
+            test_sibling_prefix_is_not_denied,
+        );
     }
 }
