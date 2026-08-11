@@ -19,6 +19,7 @@ pub mod seccomp;
 pub mod shadow;
 pub mod smap_smep;
 pub mod topcrypt_guard;
+pub mod topo_key;
 pub mod unsafe_audit;
 
 /// Initialize all security subsystems.
@@ -100,6 +101,7 @@ pub mod tests {
         super::kaslr::tests::register_all();
         super::features::tests::register_all();
         super::unsafe_audit::tests::register_all();
+        super::topo_key::tests::register_all();
         crate::testing::register_test("security::init", test_security_init_does_not_panic);
     }
 }
