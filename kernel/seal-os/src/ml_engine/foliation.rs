@@ -102,7 +102,9 @@ pub enum FoliationError {
     NoSuchSeq,
     /// Sequence reached its declared block budget.
     BudgetExceeded,
-    /// Every resident plaque is referenced; nothing may be collapsed.
+    /// Out of memory for a plaque: either every resident plaque is referenced
+    /// so nothing may be collapsed, or no physical frame could be obtained to
+    /// back the block. `frames_failed` separates the two after the fact.
     Exhausted,
     /// Leaf arena is full and no dead leaf could be reclaimed.
     LeafArenaFull,
@@ -153,7 +155,11 @@ impl Leaf {
 
 /// A resident KV block: one physical frame bound to one leaf.
 struct Plaque {
+    /// Owning leaf, or `NONE` when the slot is free.
     leaf: u16,
+    /// `Some` for every plaque with an owning leaf, and `None` only while the
+    /// slot sits on the free list. `admit` refuses rather than publish a leaf
+    /// it could not back, so residency implies a frame.
     frame: Option<PhysAddr>,
 }
 
@@ -470,13 +476,18 @@ impl Foliation {
 
     /// Release every plaque and return the frames. Used at teardown so the
     /// proof can show frames_freed == frames_backed.
+    ///
+    /// This is an elementary collapse of every resident leaf, not a shortcut
+    /// that only reclaims frames: dropping the frames while the leaves still
+    /// pointed at their slots would leave `leaf_resident` true for a block
+    /// `seq_frame` can no longer resolve, and would leave the pool reporting
+    /// itself full.
     pub fn teardown(&mut self) {
         for i in 0..self.plaques.len() {
-            if let Some(frame) = self.plaques[i].frame.take() {
-                topo_ram::free_frames(frame, 1);
-                self.stats.frames_freed += 1;
+            let leaf = self.plaques[i].leaf;
+            if leaf != NONE {
+                self.collapse(leaf);
             }
-            self.plaques[i].leaf = NONE;
         }
     }
 
@@ -633,6 +644,12 @@ impl Foliation {
         Some(idx)
     }
 
+    /// Bind a plaque to `leaf`, evicting a free face first if the pool is full.
+    ///
+    /// Either the leaf comes out resident with a frame behind it, or nothing
+    /// about the leaf changes and the caller gets an error. There is no third
+    /// outcome, which is what keeps `leaf_resident` and `seq_frame` from
+    /// disagreeing.
     fn admit(&mut self, leaf: u16) -> Result<(), FoliationError> {
         if self.free_slots.is_empty() {
             let victim = match self.pick_victim() {
@@ -650,16 +667,31 @@ impl Foliation {
         }
         let slot = self.free_slots.pop().ok_or(FoliationError::Exhausted)?;
         let cell = (self.leaves[leaf as usize].key % 8) as usize;
-        let frame = match topo_ram::proof_hint(ZoneHint::Low, cell) {
+        let allocation = match topo_ram::proof_hint(ZoneHint::Low, cell) {
             Some(hint) => topo_ram::alloc_frames(1, ZoneHint::Low, Some(&hint)),
             None => topo_ram::alloc_frames(1, ZoneHint::Low, None),
         };
-        if frame.is_some() {
-            self.stats.frames_backed += 1;
-        } else {
-            self.stats.frames_failed += 1;
-        }
-        self.plaques[slot as usize] = Plaque { leaf, frame };
+        let frame = match allocation {
+            Some(f) => f,
+            None => {
+                // No physical memory behind this plaque, so the leaf must not
+                // become resident. Recording it as resident anyway would make
+                // `leaf_resident` report true while `seq_frame` returns `None`,
+                // and `None` is what a caller reads as "no such block": the
+                // append would succeed, every later lookup of that block would
+                // silently miss, and the pool slot would stay consumed until
+                // eviction. Refusing hands the slot back and reports out of
+                // memory, which the caller may retry.
+                self.stats.frames_failed += 1;
+                self.free_slots.push(slot);
+                return Err(FoliationError::Exhausted);
+            }
+        };
+        self.stats.frames_backed += 1;
+        self.plaques[slot as usize] = Plaque {
+            leaf,
+            frame: Some(frame),
+        };
         self.leaves[leaf as usize].slot = slot;
         let parent = self.leaves[leaf as usize].parent;
         if parent != NONE {
@@ -1463,6 +1495,71 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Residency and backing must agree for every block, at every point.
+    ///
+    /// `leaf_resident` reports on `slot`, `seq_frame` reports on the plaque's
+    /// frame, and a caller cannot tell `seq_frame`'s `None` from "no such
+    /// block". Any state where one says resident and the other says nothing is
+    /// a silent lookup miss on an append that returned `Ok`.
+    ///
+    /// The two ways to reach that state are an admission that could not obtain
+    /// a frame, and a teardown that returns frames without collapsing the
+    /// leaves that point at them. The first is asserted here through
+    /// `frames_backed == admits`, since an unbacked admission is exactly an
+    /// admission with no frame behind it; it cannot be provoked from inside the
+    /// kernel because that needs the physical allocator to fail on demand. The
+    /// second is driven directly.
+    fn test_residency_implies_backing() -> TestResult {
+        let mut fol = Foliation::new(6, 64, 4, Policy::Foliation);
+        let id = fol.seq_create(4).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(17_000, 3) {
+            let _ = fol.seq_append(id, t);
+        }
+        // Churn so plaques are evicted and re-admitted under the same leaves.
+        for k in 0..4u32 {
+            if let Ok(other) = fol.seq_create(2) {
+                for &t in &prefix_tokens(18_000 + k * 1000, 2) {
+                    let _ = fol.seq_append(other, t);
+                }
+                let _ = fol.seq_release(other);
+            }
+        }
+        let s = fol.stats();
+        test_assert!(
+            s.frames_backed == s.admits,
+            "an admission was published with no frame behind it"
+        );
+        let held: Vec<u16> = (0..3).filter_map(|i| fol.seq_leaf(id, i)).collect();
+        test_assert_eq!(held.len(), 3);
+        for (i, leaf) in held.iter().enumerate() {
+            test_assert!(
+                fol.leaf_resident(*leaf) == fol.seq_frame(id, i).is_some(),
+                "residency and the block table disagree about a block"
+            );
+        }
+
+        fol.teardown();
+        test_assert_eq!(fol.resident(), 0);
+        for (i, leaf) in held.iter().enumerate() {
+            test_assert!(
+                !fol.leaf_resident(*leaf),
+                "teardown returned the frame but left the leaf resident"
+            );
+            test_assert!(
+                fol.seq_frame(id, i).is_none(),
+                "a torn-down block still resolves to a frame"
+            );
+        }
+        let s = fol.stats();
+        test_assert!(
+            s.frames_freed == s.frames_backed,
+            "teardown did not return every frame"
+        );
+        let _ = fol.seq_release(id);
+        TestResult::Pass
+    }
+
     /// Policy comparison on one fixed trace. Asserts only what must hold
     /// structurally — the trace is identical across policies and the offline
     /// optimum dominates — never that the foliation policy wins.
@@ -1522,6 +1619,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::refused_admission_leaves_no_leaf",
             test_refused_admission_leaves_no_leaf,
+        );
+        crate::testing::register_test(
+            "foliation::residency_implies_backing",
+            test_residency_implies_backing,
         );
         crate::testing::register_test(
             "foliation::policy_vs_lru_on_fixed_trace",
