@@ -686,9 +686,18 @@ pub mod tests {
         const PORT: u16 = 9102;
         let src = [192, 0, 2, 33];
         let dst = [255, 255, 255, 255];
+        // The mirror address must differ from `dst` *under the checksum*, not
+        // merely as an address. One's complement addition with end-around carry
+        // makes 0xFFFF an identity, so 255.255.255.255 and 0.0.0.0 sum
+        // identically — and `local_ip()` is 0.0.0.0 until DHCP completes, which
+        // it has not at test time. Comparing the segments is the only guard
+        // that means anything here.
+        let wrong_dst = [198, 51, 100, 7];
+        let probe_right = udp_segment(src, dst, 40_003, PORT, b"probe");
+        let probe_wrong = udp_segment(src, wrong_dst, 40_003, PORT, b"probe");
         test_assert!(
-            dst != crate::net::local_ip(),
-            "the fixture destination equals the local address, so this proves nothing"
+            probe_right[6..8] != probe_wrong[6..8],
+            "the two fixture destinations produce the same checksum, so this proves nothing"
         );
         let idx = crate::net::udp::socket();
         crate::net::udp::bind(idx, PORT);
