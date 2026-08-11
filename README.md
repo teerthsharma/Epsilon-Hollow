@@ -5038,6 +5038,68 @@ never run.
 
 Nine of five hundred and ninety-four. I looked at it for a while.
 
+## Four Bugs That Were Not There
+
+A thing I did not expect from putting a verification pass in front of every fix
+is how often the verification pass comes back and says there was nothing to fix.
+
+Four times now. Each one cost a full investigation. Each one was worth it, and I
+want to write them down, because a repository that only records its fixes is
+quietly claiming that every hunch it had was correct.
+
+**The doc comment that wasn't copy-pasted.** A report claimed `aegis-core`'s
+`lib.rs` opened with a doc comment pasted from another crate. The verifier ran
+`git show HEAD` and found the file had no doc comment at all. It then refused to
+write a fix, on the grounds that it would have had to invent a "before" state to
+have something to improve. I think about that refusal a lot. It would have been
+very easy to write a nice doc comment, commit it, and describe it as fixing a
+copy-paste error, and nobody would ever have known that the error did not exist.
+
+**The TLB shootdown that was innocent.** The Atlas boot proof was red, and I was
+confident it was a stale TLB entry in `map_page_inner` — a real hazard, in a
+function that genuinely has one. The evidence that refuted it was in the log I
+had already read: `charts_peak=0`. Not "the wrong chart was mapped." Zero charts.
+The subsystem had never loaded anything, ever, and the fault was a section header
+parser reading fields at the wrong offsets. My hypothesis was about the wrong
+half of the system, and the number that disproved it had been sitting in front of
+me the whole time.
+
+**The password hashes that were fine.** Same shape, a day later. The installer
+proof was red and I was sure it was `passwd_embedded_hashes`. The refutation was
+reading what `add_user` actually writes to disk. It was fine. The real defect was
+one layer down, in `ManifoldFS::write`, which accepted an `offset` parameter and
+then ignored it, so writing the second account destroyed the first.
+
+Two of the four were mine. Both were refuted by evidence I already had. This is
+worth being precise about: the failure mode is not that my sources were bad. It
+is that I formed a hypothesis, found it plausible, and did not go back and check
+it against the log I had read twenty minutes earlier.
+
+**The UDP sockets that never move.** A scout reported that the UDP socket table
+hands out array indices as handles, and that removal shifts entries so an old
+index names the wrong socket. Real defect class, correctly described, and the
+kind of thing that produces a use-after-free with a straight face.
+
+The verifier grepped the file for every operation that could shrink a `Vec`. Two
+hits. Both were `self.rx_buffer` — the datagram queue *inside* a single socket,
+not the table of sockets. The socket table has exactly one length-changing
+operation in the entire file, and it is a `push`. It has never removed anything.
+It cannot remove anything. There is no `close`.
+
+The scout had read `remove(0)` and pattern-matched to the defect. So would I
+have. So, I suspect, would you.
+
+The verifier also declined to add a generation-tagged handle scheme, on the
+grounds that it would protect against a removal path that does not exist. It did
+leave one note, which is the most useful sentence in the whole report: the day
+someone adds socket reclamation — and they will, because the table currently
+grows forever — they must not implement it with `Vec::remove`. That is the day
+this bug becomes real.
+
+It filed a warning about a bug that hasn't happened yet, then closed the ticket
+for the bug that hadn't happened yet. I find this an unreasonably good outcome
+for a process I mostly set up so I would stop trusting myself.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
