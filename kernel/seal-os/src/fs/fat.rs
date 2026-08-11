@@ -174,11 +174,30 @@ impl FatFs {
         Ok(())
     }
 
-    fn cluster_to_sector(&self, cluster: u32) -> u64 {
-        self.data_start + ((cluster.saturating_sub(2)) as u64) * (self.sectors_per_cluster as u64)
+    /// Rejects a cluster number that no well-formed volume can name.
+    ///
+    /// FAT numbers data clusters `2..=clusters + 1`: 0 and 1 are the reserved
+    /// media-descriptor entries, and anything above the volume's cluster count
+    /// addresses sectors outside the data region. Every cluster number this
+    /// driver handles arrives off the disk unverified — as a directory entry's
+    /// first cluster or as a FAT next-pointer — so the three places that turn
+    /// one into a disk address (`cluster_to_sector`, `read_fat_entry`,
+    /// `write_fat_entry`) check it here first. That covers the start of every
+    /// walk as well as each hop, without a check at each of the walks.
+    fn check_cluster(&self, cluster: u32) -> Result<(), VfsError> {
+        if cluster < 2 || cluster > self.clusters.saturating_add(1) {
+            return Err(VfsError::IoError);
+        }
+        Ok(())
+    }
+
+    fn cluster_to_sector(&self, cluster: u32) -> Result<u64, VfsError> {
+        self.check_cluster(cluster)?;
+        Ok(self.data_start + ((cluster - 2) as u64) * (self.sectors_per_cluster as u64))
     }
 
     fn read_fat_entry(&self, cluster: u32) -> Result<u32, VfsError> {
+        self.check_cluster(cluster)?;
         let bytes_per_sector = self.bytes_per_sector as u32;
         match self.fat_type {
             FatType::Fat12 => {
@@ -260,6 +279,11 @@ impl FatFs {
     /// uniformly. `steps` is threaded through by the caller so a walk that
     /// spans multiple loops (e.g. a seek loop followed by a read loop over
     /// the same chain) shares a single budget rather than resetting it.
+    ///
+    /// The cap alone is a poor defence on a large volume — a cluster pointing
+    /// at itself would still cost `self.clusters` FAT reads before tripping it
+    /// — so the pointer is rejected outright when it names its own cluster or
+    /// a cluster the volume does not have.
     fn next_cluster_bounded(
         &self,
         cluster: u32,
@@ -269,7 +293,14 @@ impl FatFs {
         if *steps > self.clusters {
             return Err(VfsError::IoError);
         }
-        self.next_cluster(cluster)
+        match self.next_cluster(cluster)? {
+            None => Ok(None),
+            Some(next) if next == cluster => Err(VfsError::IoError),
+            Some(next) => {
+                self.check_cluster(next)?;
+                Ok(Some(next))
+            }
+        }
     }
 
     fn read_file(&self, cluster: u32, buf: &mut [u8], offset: u64) -> Result<usize, VfsError> {
@@ -297,7 +328,7 @@ impl FatFs {
         while buf_written < buf.len() {
             let sector_in_cluster = sector_offset / self.bytes_per_sector as usize;
             let byte_in_sector = sector_offset % self.bytes_per_sector as usize;
-            let sector = self.cluster_to_sector(cluster) + sector_in_cluster as u64;
+            let sector = self.cluster_to_sector(cluster)? + sector_in_cluster as u64;
             let mut sector_buf = alloc::vec![0u8; self.bytes_per_sector as usize];
             block::read_block(self.dev_num, sector, &mut sector_buf)
                 .map_err(|_| VfsError::IoError)?;
@@ -395,6 +426,7 @@ impl FatFs {
     }
 
     fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), VfsError> {
+        self.check_cluster(cluster)?;
         let bytes_per_sector = self.bytes_per_sector as u32;
         match self.fat_type {
             FatType::Fat12 => {
@@ -491,7 +523,7 @@ impl FatFs {
         };
         self.write_fat_entry(c, eoc)?;
         // Zero the cluster.
-        let sector = self.cluster_to_sector(c);
+        let sector = self.cluster_to_sector(c)?;
         let zero = alloc::vec![0u8; self.bytes_per_sector as usize];
         for s in 0..self.sectors_per_cluster {
             block::write_block(self.dev_num, sector + s as u64, &zero)
@@ -545,7 +577,7 @@ impl FatFs {
         while buf_written < buf.len() {
             let sector_in_cluster = sector_offset / self.bytes_per_sector as usize;
             let byte_in_sector = sector_offset % self.bytes_per_sector as usize;
-            let sector = self.cluster_to_sector(cluster) + sector_in_cluster as u64;
+            let sector = self.cluster_to_sector(cluster)? + sector_in_cluster as u64;
             let mut sector_buf = alloc::vec![0u8; self.bytes_per_sector as usize];
             block::read_block(self.dev_num, sector, &mut sector_buf)
                 .map_err(|_| VfsError::IoError)?;
@@ -592,7 +624,7 @@ impl FatFs {
             let mut c = cluster;
             let mut steps = 0u32;
             loop {
-                let sector = self.cluster_to_sector(c);
+                let sector = self.cluster_to_sector(c)?;
                 for s in 0..self.sectors_per_cluster {
                     let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
                     block::read_block(self.dev_num, sector + s as u64, &mut buf)
@@ -627,7 +659,7 @@ impl FatFs {
                 (self.sectors_per_cluster as usize) * (self.bytes_per_sector as usize);
             let mut offset = 0;
             while offset < data.len() {
-                let sector = self.cluster_to_sector(c);
+                let sector = self.cluster_to_sector(c)?;
                 for s in 0..self.sectors_per_cluster {
                     let start = offset;
                     let end = core::cmp::min(start + self.bytes_per_sector as usize, data.len());
@@ -815,7 +847,7 @@ impl FatFs {
         let mut cluster = cluster;
         let mut steps = 0u32;
         loop {
-            let sector = self.cluster_to_sector(cluster);
+            let sector = self.cluster_to_sector(cluster)?;
             for s in 0..self.sectors_per_cluster {
                 let mut buf = alloc::vec![0u8; self.bytes_per_sector as usize];
                 block::read_block(self.dev_num, sector + s as u64, &mut buf)
@@ -838,15 +870,28 @@ impl FatFs {
             self.read_dir_cluster(self.root_cluster)?
         };
         queue.push_back(root_entries);
+        // "." points at the directory itself and ".." at its parent, so the
+        // loop below refuses to descend into either — but skipping them is not
+        // enough: any two directories whose entries name each other's cluster
+        // form the same endless descent under ordinary names. Remembering
+        // which directories have been walked bounds the search by the number
+        // of directories on the volume.
+        // ponytail: linear scan; a bitmap over clusters if directory counts
+        // ever make this show up in a profile.
+        let mut visited = alloc::vec![self.root_cluster];
 
         while let Some(entries) = queue.pop_front() {
             for e in entries {
                 if e.first_cluster == cluster {
                     return Ok(e);
                 }
-                // "." points at the directory itself and ".." at its parent;
-                // descending into either turns the walk into an endless cycle.
-                if e.attr & 0x10 != 0 && e.first_cluster >= 2 && e.name != "." && e.name != ".." {
+                if e.attr & 0x10 != 0
+                    && e.first_cluster >= 2
+                    && e.name != "."
+                    && e.name != ".."
+                    && !visited.contains(&e.first_cluster)
+                {
+                    visited.push(e.first_cluster);
                     let sub = self.read_dir_cluster(e.first_cluster)?;
                     queue.push_back(sub);
                 }
@@ -862,14 +907,15 @@ impl FatFs {
         } else {
             self.root_cluster
         })?;
-        queue.push_back((
-            root_data,
-            if self.fat_type != FatType::Fat32 {
-                0
-            } else {
-                self.root_cluster
-            },
-        ));
+        let root_cluster = if self.fat_type != FatType::Fat32 {
+            0
+        } else {
+            self.root_cluster
+        };
+        queue.push_back((root_data, root_cluster));
+        // Same cycle as in `find_entry_by_cluster`: two directories naming
+        // each other under ordinary names descend forever without this.
+        let mut visited = alloc::vec![root_cluster];
 
         while let Some((data, dir_cluster)) = queue.pop_front() {
             let mut offset = 0;
@@ -888,7 +934,12 @@ impl FatFs {
                     }
                     // Skip "." and ".." — a valid 8.3 name never starts with a
                     // dot, and descending into them cycles forever.
-                    if raw.attr & 0x10 != 0 && fc >= 2 && raw.name[0] != b'.' {
+                    if raw.attr & 0x10 != 0
+                        && fc >= 2
+                        && raw.name[0] != b'.'
+                        && !visited.contains(&fc)
+                    {
+                        visited.push(fc);
                         if let Ok(sub) = self.read_dir_raw(fc) {
                             queue.push_back((sub, fc));
                         }
@@ -1288,6 +1339,18 @@ pub mod tests {
             let mut data = self.data.lock();
             data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
         }
+
+        /// Writes a raw 8.3 directory entry at slot `index` of sector `lba`.
+        /// Only the fields the directory walks read are filled in.
+        fn set_dir_entry(&self, lba: u64, index: usize, name: &[u8; 8], attr: u8, first: u32) {
+            let off = lba as usize * self.sector_size as usize + index * 32;
+            let mut data = self.data.lock();
+            data[off..off + 8].copy_from_slice(name);
+            data[off + 8..off + 11].copy_from_slice(b"   ");
+            data[off + 11] = attr;
+            data[off + 20..off + 22].copy_from_slice(&((first >> 16) as u16).to_le_bytes());
+            data[off + 26..off + 28].copy_from_slice(&((first & 0xFFFF) as u16).to_le_bytes());
+        }
     }
 
     impl BlockDevice for TestDisk {
@@ -1376,6 +1439,115 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Lays out a two-directory cycle that uses no "." or ".." entry, so the
+    /// existing dot-name skip in the directory walks cannot see it:
+    ///
+    ///   root (sector 2) -> "A"    dir, cluster 2
+    ///   cluster 2        -> "B"    dir, cluster 3
+    ///   cluster 3        -> "BACK" dir, cluster 2
+    ///
+    /// Descending it endlessly yields A, B, A, B... Both FAT entries are EOC,
+    /// so the per-chain step cap never fires — the cycle is in the directory
+    /// tree, not in a single cluster chain.
+    fn make_cyclic_dir_tree(dev_num: u32) -> FatFs {
+        let (mut fs, disk) = make_fs(dev_num);
+        fs.root_dir_start = 2;
+        fs.data_start = 3;
+        fs.bpb.root_entries = 16;
+        disk.set_dir_entry(2, 0, b"A       ", 0x10, 2);
+        disk.set_dir_entry(3, 0, b"B       ", 0x10, 3);
+        disk.set_dir_entry(4, 0, b"BACK    ", 0x10, 2);
+        disk.set_fat16_entry(fs.fat_start, 2, 0xFFFF);
+        disk.set_fat16_entry(fs.fat_start, 3, 0xFFFF);
+        fs
+    }
+
+    fn test_self_referential_cluster_rejected_at_the_pointer() -> TestResult {
+        let (mut fs, disk) = make_fs(0xFA72);
+        // A volume big enough that the step cap is useless as a defence: a
+        // cluster pointing at itself would burn 2^20 FAT reads before the cap
+        // noticed, which on real hardware is a dead machine either way. The
+        // pointer itself has to be rejected.
+        fs.clusters = 1 << 20;
+        disk.set_fat16_entry(fs.fat_start, 5, 5);
+
+        let result = fs.read_dir_raw(5);
+        test_assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "a cluster pointing at itself must be rejected at the pointer, not by the step cap"
+        );
+        TestResult::Pass
+    }
+
+    fn test_next_pointer_past_volume_rejected() -> TestResult {
+        let (fs, disk) = make_fs(0xFA73);
+        // Cluster 12 is off the end of an 8-cluster volume but still lands on
+        // a sector the device happens to have, so the read succeeds and the
+        // walk silently serves data from outside the filesystem.
+        disk.set_fat16_entry(fs.fat_start, 2, 12);
+
+        let result = fs.read_dir_raw(2);
+        test_assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "a next pointer past the last cluster of the volume must be rejected"
+        );
+        TestResult::Pass
+    }
+
+    fn test_next_pointer_below_first_data_cluster_rejected() -> TestResult {
+        let (fs, disk) = make_fs(0xFA74);
+        // Clusters 0 and 1 are reserved FAT entries, never data. Following a
+        // pointer to one reads whatever sector the arithmetic lands on.
+        disk.set_fat16_entry(fs.fat_start, 2, 1);
+
+        let result = fs.read_dir_raw(2);
+        test_assert!(
+            matches!(result, Err(VfsError::IoError)),
+            "a next pointer below the first data cluster must be rejected"
+        );
+        TestResult::Pass
+    }
+
+    fn test_directory_cycle_does_not_hang_entry_search() -> TestResult {
+        let fs = make_cyclic_dir_tree(0xFA75);
+
+        // Cluster 9 exists on this volume but is in no directory, so the
+        // search has to exhaust the tree — which it can only do if it stops
+        // re-descending into directories it has already walked.
+        test_assert!(
+            matches!(fs.find_entry_by_cluster(9), Err(VfsError::NotFound)),
+            "an absent cluster must terminate the directory search, not cycle"
+        );
+        // Control: the cycle guard must not prune a directory that is really
+        // reachable. "B" lives at cluster 3, one level down.
+        match fs.find_entry_by_cluster(3) {
+            Ok(e) => test_assert_eq!(e.name, "B"),
+            Err(_) => return TestResult::Fail("reachable entry must still be found"),
+        }
+        TestResult::Pass
+    }
+
+    fn test_directory_cycle_does_not_hang_entry_location() -> TestResult {
+        let fs = make_cyclic_dir_tree(0xFA76);
+
+        test_assert!(
+            matches!(
+                fs.find_entry_location_by_cluster(9),
+                Err(VfsError::NotFound)
+            ),
+            "an absent cluster must terminate the location search, not cycle"
+        );
+        // Control: "B" is at slot 0 of the directory whose cluster is 2.
+        match fs.find_entry_location_by_cluster(3) {
+            Ok((dir_cluster, offset)) => {
+                test_assert_eq!(dir_cluster, 2);
+                test_assert_eq!(offset, 0);
+            }
+            Err(_) => return TestResult::Fail("reachable entry must still be located"),
+        }
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "fat::cyclic_chain_fails_closed_instead_of_hanging",
@@ -1384,6 +1556,26 @@ pub mod tests {
         crate::testing::register_test(
             "fat::valid_chain_within_cap_still_reads",
             test_valid_chain_within_cap_still_reads,
+        );
+        crate::testing::register_test(
+            "fat::self_referential_cluster_rejected_at_the_pointer",
+            test_self_referential_cluster_rejected_at_the_pointer,
+        );
+        crate::testing::register_test(
+            "fat::next_pointer_past_volume_rejected",
+            test_next_pointer_past_volume_rejected,
+        );
+        crate::testing::register_test(
+            "fat::next_pointer_below_first_data_cluster_rejected",
+            test_next_pointer_below_first_data_cluster_rejected,
+        );
+        crate::testing::register_test(
+            "fat::directory_cycle_does_not_hang_entry_search",
+            test_directory_cycle_does_not_hang_entry_search,
+        );
+        crate::testing::register_test(
+            "fat::directory_cycle_does_not_hang_entry_location",
+            test_directory_cycle_does_not_hang_entry_location,
         );
     }
 }

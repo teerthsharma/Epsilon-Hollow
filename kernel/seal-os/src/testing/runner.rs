@@ -27,6 +27,7 @@ pub fn test_main() -> ! {
     crate::fs::dir_hash::tests::register_all();
     crate::fs::ext2::tests::register_all();
     crate::fs::parity::tests::register_all();
+    crate::fs::fat::tests::register_all();
     crate::process::scheduler::tests::register_all();
     crate::process::elf::tests::register_all();
     crate::security::tests::register_all();
