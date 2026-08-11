@@ -217,17 +217,22 @@ impl TcpSocket {
         };
         match self.remote_ip {
             crate::net::IpAddr::V4(remote_ip) => {
-                let src_ip = crate::net::local_ip();
-                let mut pseudo = Vec::with_capacity(12 + 20 + payload.len());
-                pseudo.extend_from_slice(&src_ip);
-                pseudo.extend_from_slice(&remote_ip);
-                pseudo.push(0);
-                pseudo.push(6);
-                pseudo.extend_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
-                let hdr_bytes = hdr.to_bytes();
-                pseudo.extend_from_slice(&hdr_bytes);
-                pseudo.extend_from_slice(payload);
-                let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+                // The address `send_ipv4_packet` will stamp, which is 127.0.0.1
+                // on the loopback branch and not `local_ip()`. Summing
+                // `local_ip()` built a segment that verified against an address
+                // the datagram never carried, and `handle_tcp_packet` below now
+                // checks the one it does. See `ipv4::source_for`.
+                let src_ip = crate::net::ipv4::source_for(remote_ip);
+                let mut segment = Vec::with_capacity(20 + payload.len());
+                segment.extend_from_slice(&hdr.to_bytes());
+                segment.extend_from_slice(payload);
+                let cksum = crate::net::ipv4::transport_checksum(
+                    crate::net::IpAddr::V4(src_ip),
+                    crate::net::IpAddr::V4(remote_ip),
+                    6,
+                    &segment,
+                )
+                .unwrap_or(0);
                 unsafe {
                     core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
                 }
@@ -237,19 +242,20 @@ impl TcpSocket {
                 queue_tx(crate::net::IpAddr::V4(remote_ip), pkt);
             }
             crate::net::IpAddr::V6(remote_ip) => {
+                // `send_ipv6_packet` stamps `local_ip_v6()` on every datagram,
+                // its `::1` branch included, so no `source_for` counterpart is
+                // needed: the address it will stamp is this one.
                 let src_ip = crate::net::local_ip_v6();
-                let mut pseudo = Vec::with_capacity(40 + 20 + payload.len());
-                pseudo.extend_from_slice(&src_ip);
-                pseudo.extend_from_slice(&remote_ip);
-                pseudo.extend_from_slice(&((20 + payload.len()) as u32).to_be_bytes());
-                pseudo.push(0);
-                pseudo.push(0);
-                pseudo.push(0);
-                pseudo.push(6);
-                let hdr_bytes = hdr.to_bytes();
-                pseudo.extend_from_slice(&hdr_bytes);
-                pseudo.extend_from_slice(payload);
-                let cksum = crate::net::ipv4::internet_checksum(&pseudo);
+                let mut segment = Vec::with_capacity(20 + payload.len());
+                segment.extend_from_slice(&hdr.to_bytes());
+                segment.extend_from_slice(payload);
+                let cksum = crate::net::ipv4::transport_checksum(
+                    crate::net::IpAddr::V6(src_ip),
+                    crate::net::IpAddr::V6(remote_ip),
+                    6,
+                    &segment,
+                )
+                .unwrap_or(0);
                 unsafe {
                     core::ptr::addr_of_mut!(hdr.checksum).write(cksum);
                 }
@@ -1107,6 +1113,11 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     const PAYLOAD: &[u8] = b"tick";
 
     let remote = crate::net::IpAddr::V4([192, 0, 2, 1]);
+    // The address this fixture's segments are addressed to. A literal rather
+    // than `local_ip()`: the demux ignores the destination but the checksum does
+    // not, and a benchmark that read an address DHCP can change underneath it
+    // would not be reproducible.
+    let local = crate::net::IpAddr::V4([192, 0, 2, 2]);
     let remote_port = 80u16;
     let (base_len, fixture_port) = {
         let sockets = TCP_SOCKETS.lock();
@@ -1172,6 +1183,8 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     }
 
     let packet = make_tcp_packet(
+        remote,
+        local,
         remote_port,
         fixture_port,
         FLAG_ACK | FLAG_PSH,
@@ -1179,7 +1192,7 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
         1001,
         PAYLOAD,
     );
-    handle_tcp_packet(remote, &packet);
+    handle_tcp_packet(remote, local, &packet);
     let index_proof = tcp_flow_index_proof();
 
     let mut rx = [0u8; PAYLOAD.len()];
@@ -1206,8 +1219,17 @@ pub fn packet_fixture_proof() -> TcpPacketFixtureProof {
     drop(sockets);
 
     let fallback_remote = crate::net::IpAddr::V4([192, 0, 2, 99]);
-    let syn_packet = make_tcp_packet(81, fixture_port, FLAG_SYN, 900, 0, &[]);
-    handle_tcp_packet(fallback_remote, &syn_packet);
+    let syn_packet = make_tcp_packet(
+        fallback_remote,
+        local,
+        81,
+        fixture_port,
+        FLAG_SYN,
+        900,
+        0,
+        &[],
+    );
+    handle_tcp_packet(fallback_remote, local, &syn_packet);
     poll();
     let listener_index_proof = tcp_listener_index_proof();
 
@@ -1324,8 +1346,17 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             base_len
         };
 
-        let syn = make_tcp_packet(client_port, server_port, FLAG_SYN, client_seq, 0, &[]);
-        handle_tcp_packet(client_ip, &syn);
+        let syn = make_tcp_packet(
+            client_ip,
+            server_ip,
+            client_port,
+            server_port,
+            FLAG_SYN,
+            client_seq,
+            0,
+            &[],
+        );
+        handle_tcp_packet(client_ip, server_ip, &syn);
         let listener_proof = tcp_listener_index_proof();
         if listener_proof.hit {
             proof.listener_index_hit += 1;
@@ -1340,6 +1371,8 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         proof.listener_accept += 1;
 
         let syn_ack = make_tcp_packet(
+            server_ip,
+            client_ip,
             server_port,
             client_port,
             FLAG_SYN | FLAG_ACK,
@@ -1347,13 +1380,15 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             client_seq + 1,
             &[],
         );
-        handle_tcp_packet(server_ip, &syn_ack);
+        handle_tcp_packet(server_ip, client_ip, &syn_ack);
         let client_syn_ack_proof = tcp_flow_index_proof();
         proof.index_lookup_probes_max = proof
             .index_lookup_probes_max
             .max(client_syn_ack_proof.probes);
 
         let ack = make_tcp_packet(
+            client_ip,
+            server_ip,
             client_port,
             server_port,
             FLAG_ACK,
@@ -1361,10 +1396,12 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             server_seq + 1,
             &[],
         );
-        handle_tcp_packet(client_ip, &ack);
+        handle_tcp_packet(client_ip, server_ip, &ack);
 
         let payload = loopback_payload(conn);
         let data = make_tcp_packet(
+            client_ip,
+            server_ip,
             client_port,
             server_port,
             FLAG_ACK | FLAG_PSH,
@@ -1372,7 +1409,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             server_seq + 1,
             &payload,
         );
-        handle_tcp_packet(client_ip, &data);
+        handle_tcp_packet(client_ip, server_ip, &data);
         let server_data_proof = tcp_flow_index_proof();
         if server_data_proof.hit {
             proof.exact_flow += 1;
@@ -1385,6 +1422,8 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
         proof.server_rx += server_rx;
 
         let echo = make_tcp_packet(
+            server_ip,
+            client_ip,
             server_port,
             client_port,
             FLAG_ACK | FLAG_PSH,
@@ -1392,7 +1431,7 @@ pub fn loopback_echo_fixture_proof() -> TcpRoundTripProof {
             client_seq + 1 + payload.len() as u32,
             &server_buf[..server_rx],
         );
-        handle_tcp_packet(server_ip, &echo);
+        handle_tcp_packet(server_ip, client_ip, &echo);
         let client_echo_proof = tcp_flow_index_proof();
         if client_echo_proof.hit {
             proof.client_index_hit += 1;
@@ -1446,7 +1485,16 @@ fn cleanup_tcp_fixture(base_len: usize) -> bool {
     sockets.len() == base_len
 }
 
+/// A segment as it arrives at `handle_tcp_packet`, carrying the checksum a real
+/// sender computes over the pseudo-header for `src` -> `dst`.
+///
+/// The addresses are parameters rather than `local_ip()` so the fixtures stay
+/// deterministic and so each caller checksums against the pair it then delivers
+/// under: `handle_tcp_packet` verifies against the addresses it is handed, and a
+/// fixture that summed a different pair would be dropped before the demux.
 fn make_tcp_packet(
+    src: crate::net::IpAddr,
+    dst: crate::net::IpAddr,
     src_port: u16,
     dst_port: u16,
     flags: u16,
@@ -1454,7 +1502,7 @@ fn make_tcp_packet(
     ack: u32,
     payload: &[u8],
 ) -> Vec<u8> {
-    let hdr = TcpHeader {
+    let mut hdr = TcpHeader {
         src_port,
         dst_port,
         seq,
@@ -1467,6 +1515,9 @@ fn make_tcp_packet(
     let mut packet = Vec::with_capacity(20 + payload.len());
     packet.extend_from_slice(&hdr.to_bytes());
     packet.extend_from_slice(payload);
+    let cksum = crate::net::ipv4::transport_checksum(src, dst, 6, &packet).unwrap_or(0);
+    hdr.checksum = cksum;
+    packet[..20].copy_from_slice(&hdr.to_bytes());
     packet
 }
 
@@ -1516,8 +1567,25 @@ pub fn poll() {
     flush_tx();
 }
 
-pub fn handle_tcp_packet(src: crate::net::IpAddr, pkt: &[u8]) {
+/// `dst` is the destination the IP header carried. It is summed into the
+/// pseudo-header below, and it is not interchangeable with `local_ip()`: a
+/// segment addressed to any other address this host answers for would be
+/// refused, and over IPv4 `local_ip()` is 0.0.0.0 until DHCP completes.
+pub fn handle_tcp_packet(src: crate::net::IpAddr, dst: crate::net::IpAddr, pkt: &[u8]) {
     if pkt.len() < 20 {
+        return;
+    }
+    // RFC 793 section 3.1: the checksum covers the pseudo-header, the header and
+    // the data, and unlike UDP over IPv4 it is mandatory in both families --
+    // there is no "not computed" encoding to admit. Nothing else on this path
+    // checks a byte of the segment: the IPv4 header checksum covers the header
+    // alone and IPv6 has none at all, so without this an attacker who could
+    // corrupt a segment in flight, or a link that flipped a bit, drove the state
+    // machine below on whatever sequence numbers and flags came out.
+    //
+    // Checked before the header is parsed for anything but its length, so no
+    // field of an unverified segment reaches the demux.
+    if crate::net::ipv4::transport_checksum(src, dst, 6, pkt) != Some(0) {
         return;
     }
     // SAFETY: pkt is at least 20 bytes; read_unaligned avoids UB on unaligned pointers.
@@ -1710,18 +1778,20 @@ mod tests {
         idx
     }
 
+    /// Every case below delivers from `REMOTE` to `LOCAL`, and
+    /// `handle_tcp_packet` verifies the checksum against the pair it is handed,
+    /// so the fixture is checksummed against the same pair.
+    const REMOTE: crate::net::IpAddr = crate::net::IpAddr::V4([192, 168, 1, 1]);
+    const LOCAL: crate::net::IpAddr = crate::net::IpAddr::V4([192, 168, 1, 2]);
+
     fn make_tcp_header(flags: u16, seq: u32, ack: u32, dst_port: u16) -> Vec<u8> {
-        let hdr = TcpHeader {
-            src_port: 80,
-            dst_port,
-            seq,
-            ack,
-            data_offset_flags: (5u16 << 12) | flags,
-            window: 65535,
-            checksum: 0,
-            urgent: 0,
-        };
-        hdr.to_bytes().to_vec()
+        make_tcp_packet(REMOTE, LOCAL, 80, dst_port, flags, seq, ack, &[])
+    }
+
+    /// `make_tcp_header` with a payload. A segment's checksum covers its data,
+    /// so appending bytes to an already-stamped header leaves it wrong.
+    fn make_tcp_segment(flags: u16, seq: u32, ack: u32, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        make_tcp_packet(REMOTE, LOCAL, 80, dst_port, flags, seq, ack, payload)
     }
 
     #[test]
@@ -1734,7 +1804,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::Established);
         assert_eq!(sockets[idx].ack_num, 501);
@@ -1751,7 +1821,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::CloseWait);
         assert_eq!(sockets[idx].ack_num, 501);
@@ -1767,7 +1837,7 @@ mod tests {
         let idx = sockets.len();
         sockets.push(sock);
         drop(sockets);
-        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &pkt);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::TimeWait);
     }
@@ -1853,7 +1923,7 @@ mod tests {
 
         // Simulate an incoming SYN to port 8080
         let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
-        handle_tcp_packet(crate::net::IpAddr::V4([192, 168, 1, 1]), &syn_pkt);
+        handle_tcp_packet(REMOTE, LOCAL, &syn_pkt);
 
         // Process pending SYNs
         poll();
@@ -1871,15 +1941,14 @@ mod tests {
         bind(listener, 8080);
         listen(listener);
 
-        let remote = crate::net::IpAddr::V4([192, 168, 1, 1]);
+        let remote = REMOTE;
         let syn_pkt = make_tcp_header(FLAG_SYN, 500, 0, 8080);
-        handle_tcp_packet(remote, &syn_pkt);
+        handle_tcp_packet(remote, LOCAL, &syn_pkt);
         poll();
 
         let accepted = accept(listener).unwrap();
-        let mut data_pkt = make_tcp_header(FLAG_ACK | FLAG_PSH, 501, 1001, 8080);
-        data_pkt.extend_from_slice(b"tick");
-        handle_tcp_packet(remote, &data_pkt);
+        let data_pkt = make_tcp_segment(FLAG_ACK | FLAG_PSH, 501, 1001, 8080, b"tick");
+        handle_tcp_packet(remote, LOCAL, &data_pkt);
 
         assert_eq!(state(accepted), TcpState::Established);
         let mut buf = [0u8; 8];
@@ -1947,7 +2016,7 @@ mod tests {
     #[test]
     fn reset_in_window_aborts_established_socket() {
         reset_tcp_for_test();
-        let remote = crate::net::IpAddr::V4([192, 0, 2, 7]);
+        let remote = REMOTE;
         let mut sock = TcpSocket::new(9000);
         sock.remote_ip = remote;
         sock.remote_port = 80;
@@ -1958,16 +2027,15 @@ mod tests {
         assert_eq!(sock.retransmit_queue.len(), 1);
         let idx = push_indexed(sock);
 
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST, 700, 0, 9000));
+        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST, 700, 0, 9000));
 
         assert_eq!(state(idx), TcpState::Closed);
         assert!(TCP_SOCKETS.lock()[idx].retransmit_queue.is_empty());
 
         // The flow left the index with the socket, so a later segment for the
         // same four-tuple reaches nothing.
-        let mut data = make_tcp_header(FLAG_ACK | FLAG_PSH, 700, 5008, 9000);
-        data.extend_from_slice(b"after");
-        handle_tcp_packet(remote, &data);
+        let data = make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5008, 9000, b"after");
+        handle_tcp_packet(remote, LOCAL, &data);
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::Closed);
         assert!(sockets[idx].rx_buffer.is_empty());
@@ -1980,7 +2048,7 @@ mod tests {
     #[test]
     fn reset_out_of_window_is_ignored_at_established() {
         reset_tcp_for_test();
-        let remote = crate::net::IpAddr::V4([192, 0, 2, 11]);
+        let remote = REMOTE;
         let mut sock = TcpSocket::new(9010);
         sock.remote_ip = remote;
         sock.remote_port = 80;
@@ -1989,7 +2057,11 @@ mod tests {
         sock.ack_num = 700;
         let idx = push_indexed(sock);
 
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 5700, 5000, 9010));
+        handle_tcp_packet(
+            remote,
+            LOCAL,
+            &make_tcp_header(FLAG_RST | FLAG_ACK, 5700, 5000, 9010),
+        );
 
         let sockets = TCP_SOCKETS.lock();
         assert_eq!(sockets[idx].state, TcpState::Established);
@@ -2003,7 +2075,7 @@ mod tests {
     #[test]
     fn reset_at_syn_sent_aborts_only_when_it_acknowledges_the_syn() {
         reset_tcp_for_test();
-        let remote = crate::net::IpAddr::V4([192, 0, 2, 12]);
+        let remote = REMOTE;
         let mut idxs = [0usize; 3];
         for (n, slot) in idxs.iter_mut().enumerate() {
             let mut sock = TcpSocket::new(9020 + n as u16);
@@ -2012,9 +2084,9 @@ mod tests {
             *slot = push_indexed(sock);
         }
 
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 1001, 9020));
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST, 0, 0, 9021));
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 4242, 9022));
+        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 1001, 9020));
+        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST, 0, 0, 9021));
+        handle_tcp_packet(remote, LOCAL, &make_tcp_header(FLAG_RST | FLAG_ACK, 0, 4242, 9022));
 
         assert_eq!(state(idxs[0]), TcpState::Closed);
         assert_eq!(state(idxs[1]), TcpState::SynSent);
@@ -2082,7 +2154,7 @@ mod tests {
     #[test]
     fn established_accepts_only_the_next_expected_sequence() {
         reset_tcp_for_test();
-        let remote = crate::net::IpAddr::V4([192, 0, 2, 14]);
+        let remote = REMOTE;
         let mut sock = TcpSocket::new(9040);
         sock.remote_ip = remote;
         sock.remote_port = 80;
@@ -2091,16 +2163,18 @@ mod tests {
         sock.ack_num = 700;
         let idx = push_indexed(sock);
 
-        let mut in_order = make_tcp_header(FLAG_ACK | FLAG_PSH, 700, 5000, 9040);
-        in_order.extend_from_slice(b"abc");
-        handle_tcp_packet(remote, &in_order);
-        handle_tcp_packet(remote, &in_order);
+        let in_order = make_tcp_segment(FLAG_ACK | FLAG_PSH, 700, 5000, 9040, b"abc");
+        handle_tcp_packet(remote, LOCAL, &in_order);
+        handle_tcp_packet(remote, LOCAL, &in_order);
 
-        let mut injected = make_tcp_header(FLAG_ACK | FLAG_PSH, 60_000, 5000, 9040);
-        injected.extend_from_slice(b"evil");
-        handle_tcp_packet(remote, &injected);
+        let injected = make_tcp_segment(FLAG_ACK | FLAG_PSH, 60_000, 5000, 9040, b"evil");
+        handle_tcp_packet(remote, LOCAL, &injected);
 
-        handle_tcp_packet(remote, &make_tcp_header(FLAG_FIN | FLAG_ACK, 60_000, 5000, 9040));
+        handle_tcp_packet(
+            remote,
+            LOCAL,
+            &make_tcp_header(FLAG_FIN | FLAG_ACK, 60_000, 5000, 9040),
+        );
 
         let mut buf = [0u8; 16];
         let n = recv(idx, &mut buf);

@@ -95,7 +95,10 @@ pub fn send_tcp_packet(
 
     match remote_ip {
         crate::net::IpAddr::V4(remote_ip) => {
-            let src_ip = crate::net::local_ip();
+            // Must match the source `send_ipv4_packet` will stamp, which is the
+            // destination itself on loopback. Summing `local_ip()` here builds a
+            // checksum for a header the transmit path never emits.
+            let src_ip = crate::net::ipv4::source_for(remote_ip);
             let mut pseudo = Vec::with_capacity(12 + 20 + payload.len());
             pseudo.extend_from_slice(&src_ip);
             pseudo.extend_from_slice(&remote_ip);

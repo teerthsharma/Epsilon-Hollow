@@ -127,6 +127,78 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// The RFC 793 / RFC 768 / RFC 8200 section 8.1 transport checksum over
+/// `segment`, summed against the pseudo-header built from `src`, `dst` and
+/// `protocol`. `None` if the two addresses are not of the same family, which is
+/// not a packet any caller can produce and is refused rather than guessed at.
+///
+/// Both directions go through here. A sender stores the value returned; a
+/// receiver recomputes over the segment with its checksum field still in place
+/// and accepts only `Some(0)`, because a message that carries its own checksum
+/// sums to zero. That is the same direction-free shape `internet_checksum`
+/// carries for the IPv4 header, and the reason a single function serves both:
+/// four sites (`udp::send_datagram` and `tcp::send_tcp_packet`, each twice)
+/// assembled these bytes by hand, and a verifier that assembled a fifth copy
+/// could disagree with any of them and refuse this stack's own traffic.
+///
+/// The addresses are the ones the IP header carries, which is why both
+/// transport handlers take a destination: `local_ip()` is not a substitute. A
+/// DHCP offer arrives at 255.255.255.255 while `local_ip()` is still 0.0.0.0,
+/// and every ICMPv6-adjacent IPv6 message arrives at a multicast address.
+pub fn transport_checksum(
+    src: crate::net::IpAddr,
+    dst: crate::net::IpAddr,
+    protocol: u8,
+    segment: &[u8],
+) -> Option<u16> {
+    let mut pseudo = Vec::with_capacity(40 + segment.len());
+    match (src, dst) {
+        (crate::net::IpAddr::V4(src), crate::net::IpAddr::V4(dst)) => {
+            pseudo.extend_from_slice(&src);
+            pseudo.extend_from_slice(&dst);
+            pseudo.push(0);
+            pseudo.push(protocol);
+            pseudo.extend_from_slice(&(segment.len() as u16).to_be_bytes());
+        }
+        (crate::net::IpAddr::V6(src), crate::net::IpAddr::V6(dst)) => {
+            pseudo.extend_from_slice(&src);
+            pseudo.extend_from_slice(&dst);
+            pseudo.extend_from_slice(&(segment.len() as u32).to_be_bytes());
+            pseudo.push(0);
+            pseudo.push(0);
+            pseudo.push(0);
+            pseudo.push(protocol);
+        }
+        _ => return None,
+    }
+    pseudo.extend_from_slice(segment);
+    Some(internet_checksum(&pseudo))
+}
+
+/// The IPv4 loopback address. Only the host address is recognised, not the
+/// whole 127.0.0.0/8 block, because that is the only one `send_ipv4_packet`
+/// delivers in process.
+pub const LOOPBACK_V4: [u8; 4] = [127, 0, 0, 1];
+
+/// The source address `send_ipv4_packet` will stamp on a datagram to `dst`.
+///
+/// A transport checksum covers the source address, so a sender has to know it
+/// before the IP layer chooses it. The loopback branch below addresses its
+/// datagram from 127.0.0.1 rather than from `local_ip()` -- RFC 1122 section
+/// 3.2.1.3, and required here so `tcp::handle_tcp_packet` can key its flow index
+/// on a source that routes back. A transport that summed `local_ip()` anyway
+/// built a segment that verifies against an address nothing will ever see, and
+/// `handle_ipv4_packet` hands the datagram straight to a receiver that reads the
+/// address the header actually carries: the stack would refuse every loopback
+/// segment it built itself.
+pub fn source_for(dst: [u8; 4]) -> [u8; 4] {
+    if dst == LOOPBACK_V4 {
+        dst
+    } else {
+        crate::net::local_ip()
+    }
+}
+
 /// How deeply a loopback datagram may be delivered from inside the delivery of
 /// another before the stack drops it.
 ///
@@ -177,7 +249,7 @@ pub fn loopback_depth() -> usize {
 }
 
 pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
-    if dst == [127, 0, 0, 1] {
+    if dst == LOOPBACK_V4 {
         // Loopback
         let depth = LOOPBACK_DEPTH.load(Ordering::Relaxed);
         if depth >= LOOPBACK_MAX_DEPTH {
@@ -198,7 +270,11 @@ pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
         // `send_tcp_packet` handed the reply to the ARP path, which dropped it
         // for want of an entry. The checksum verified, so the datagram was
         // accepted -- and then went nowhere.
-        let src = dst;
+        //
+        // `source_for` is the same rule, published so a transport can sum the
+        // address this branch is about to stamp rather than the one it wishes
+        // were stamped.
+        let src = source_for(dst);
         let mut hdr = Ipv4Header::new(protocol, src, dst, payload.len());
         hdr.compute_checksum();
         let hdr_bytes = unsafe {
@@ -216,7 +292,7 @@ pub fn send_ipv4_packet(dst: [u8; 4], protocol: u8, payload: &[u8]) {
         return;
     }
 
-    let src = crate::net::local_ip();
+    let src = source_for(dst);
     let subnet = crate::net::subnet();
     let gateway = crate::net::gateway();
 
@@ -279,11 +355,23 @@ pub fn handle_ipv4_packet(pkt: &[u8]) {
     let payload = &pkt[ihl..total_len];
     let protocol = hdr.protocol;
     let src = hdr.src;
+    // TCP and UDP sum both addresses into their pseudo-header, so the
+    // destination travels with the datagram to the handler that has to check
+    // it. ICMP has no pseudo-header and takes only the source.
+    let dst = hdr.dst;
 
     match protocol {
         1 => crate::net::icmp::handle_icmp_packet(src, payload),
-        6 => crate::net::tcp::handle_tcp_packet(crate::net::IpAddr::V4(src), payload),
-        17 => crate::net::udp::handle_udp_packet(crate::net::IpAddr::V4(src), payload),
+        6 => crate::net::tcp::handle_tcp_packet(
+            crate::net::IpAddr::V4(src),
+            crate::net::IpAddr::V4(dst),
+            payload,
+        ),
+        17 => crate::net::udp::handle_udp_packet(
+            crate::net::IpAddr::V4(src),
+            crate::net::IpAddr::V4(dst),
+            payload,
+        ),
         _ => {
             // Unknown IPv4 protocol; drop silently
         }
@@ -383,6 +471,248 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The IPv4 header a transport segment arrives in, with a header checksum
+    /// that verifies so the datagram reaches the transport handler at all.
+    fn ipv4_frame(src: [u8; 4], dst: [u8; 4], protocol: u8, segment: &[u8]) -> Vec<u8> {
+        let mut pkt = vec![0u8; 20];
+        pkt[0] = 0x45;
+        pkt[2..4].copy_from_slice(&((20 + segment.len()) as u16).to_be_bytes());
+        pkt[8] = 64; // ttl
+        pkt[9] = protocol;
+        pkt[12..16].copy_from_slice(&src);
+        pkt[16..20].copy_from_slice(&dst);
+        let ck = internet_checksum(&pkt[..20]);
+        pkt[10..12].copy_from_slice(&ck.to_be_bytes());
+        pkt.extend_from_slice(segment);
+        pkt
+    }
+
+    /// The RFC 793 / RFC 768 pseudo-header followed by the segment: what a
+    /// sender sums, built here from the two addresses the IPv4 header carries.
+    fn pseudo_v4(src: [u8; 4], dst: [u8; 4], protocol: u8, segment: &[u8]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(12 + segment.len());
+        p.extend_from_slice(&src);
+        p.extend_from_slice(&dst);
+        p.push(0);
+        p.push(protocol);
+        p.extend_from_slice(&(segment.len() as u16).to_be_bytes());
+        p.extend_from_slice(segment);
+        p
+    }
+
+    /// `segment` with its checksum field recomputed at `offset`, exactly as a
+    /// sender would compute it. Used both to build sound fixtures and to repair
+    /// a deliberately corrupted one, so a corruption case and its control differ
+    /// in the checksum and nothing else.
+    fn stamped(
+        src: [u8; 4],
+        dst: [u8; 4],
+        protocol: u8,
+        offset: usize,
+        segment: &[u8],
+    ) -> Vec<u8> {
+        let mut seg = segment.to_vec();
+        seg[offset] = 0;
+        seg[offset + 1] = 0;
+        let ck = internet_checksum(&pseudo_v4(src, dst, protocol, &seg));
+        seg[offset..offset + 2].copy_from_slice(&ck.to_be_bytes());
+        seg
+    }
+
+    fn udp_segment(
+        src: [u8; 4],
+        dst: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut seg = Vec::with_capacity(8 + payload.len());
+        seg.extend_from_slice(&src_port.to_be_bytes());
+        seg.extend_from_slice(&dst_port.to_be_bytes());
+        seg.extend_from_slice(&((8 + payload.len()) as u16).to_be_bytes());
+        seg.extend_from_slice(&[0, 0]);
+        seg.extend_from_slice(payload);
+        stamped(src, dst, 17, 6, &seg)
+    }
+
+    /// `flags` is the raw RFC 793 flags octet -- 0x02 SYN, 0x10 ACK -- because
+    /// `net::tcp`'s constants are private to that module.
+    fn tcp_segment(
+        src: [u8; 4],
+        dst: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        flags: u16,
+        seq: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut seg = Vec::with_capacity(20 + payload.len());
+        seg.extend_from_slice(&src_port.to_be_bytes());
+        seg.extend_from_slice(&dst_port.to_be_bytes());
+        seg.extend_from_slice(&seq.to_be_bytes());
+        seg.extend_from_slice(&0u32.to_be_bytes()); // ack
+        seg.extend_from_slice(&((5u16 << 12) | flags).to_be_bytes());
+        seg.extend_from_slice(&65_535u16.to_be_bytes()); // window
+        seg.extend_from_slice(&[0, 0]); // checksum
+        seg.extend_from_slice(&[0, 0]); // urgent
+        seg.extend_from_slice(payload);
+        stamped(src, dst, 6, 16, &seg)
+    }
+
+    /// The IPv4 header checksum covers the header alone, so nothing whatever
+    /// checked a UDP payload on the way in: a datagram whose contents were
+    /// corrupted in flight was buffered and handed to a reader verbatim, and the
+    /// DHCP and DNS diversions at the top of `handle_udp_packet` took theirs on
+    /// the same terms.
+    ///
+    /// The datagram is checksummed first and corrupted afterwards, so it fails
+    /// for exactly one reason. The control is the same corrupted bytes with a
+    /// checksum recomputed over them, so a verifier that refuses everything
+    /// cannot pass this.
+    fn test_udp_checksum_verified_on_receive() -> TestResult {
+        const PORT: u16 = 9100;
+        let src = [192, 0, 2, 30];
+        let dst = crate::net::local_ip();
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let mut corrupt = udp_segment(src, dst, 40_000, PORT, b"payload");
+        corrupt[9] ^= 0x01; // one bit of the payload, checksum left stale
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &corrupt));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a UDP datagram whose checksum does not verify was delivered to a socket"
+        );
+
+        let repaired = stamped(src, dst, 17, 6, &corrupt);
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &repaired));
+        let got = crate::net::udp::recvfrom(idx, &mut buf);
+        test_assert!(
+            got.is_some(),
+            "the same datagram with a checksum matching its contents was not delivered"
+        );
+        test_assert!(
+            got.map(|(len, _, _)| buf[..len] == corrupt[8..]) == Some(true),
+            "the delivered payload is not the one that was checksummed"
+        );
+        TestResult::Pass
+    }
+
+    /// RFC 768: over IPv4 the UDP checksum is optional, and an all-zero field
+    /// means "not computed". Refusing those drops traffic from every sender that
+    /// omits it -- and a receiver that instead verified zero like any other
+    /// value would refuse them too, since a datagram almost never sums to zero.
+    ///
+    /// The control is the same datagram with the field set to something that is
+    /// neither zero nor correct: "not computed" is a specific encoding, not a
+    /// licence to skip the check.
+    fn test_udp_zero_checksum_accepted_over_ipv4() -> TestResult {
+        const PORT: u16 = 9101;
+        let src = [192, 0, 2, 31];
+        let dst = crate::net::local_ip();
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let mut seg = udp_segment(src, dst, 40_001, PORT, b"unchecked");
+        seg[6] = 0;
+        seg[7] = 0;
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &seg));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_some(),
+            "a UDP datagram carrying the RFC 768 'not computed' checksum of zero was refused"
+        );
+
+        seg[6] = 0;
+        seg[7] = 1;
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &seg));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a UDP datagram with a wrong non-zero checksum was accepted as if it were unchecked"
+        );
+        TestResult::Pass
+    }
+
+    /// Nothing verified a TCP segment either, so anything that could guess the
+    /// four-tuple could also corrupt it: a segment mangled in flight drove the
+    /// state machine on whatever sequence numbers and flags the corruption
+    /// produced.
+    ///
+    /// A SYN to a listener is the observable: it is answered by creating a
+    /// socket the listener will hand out, and `accept` reports it. The control
+    /// is the same segment with a checksum recomputed over it.
+    fn test_tcp_checksum_verified_on_receive() -> TestResult {
+        const PORT: u16 = 49_610;
+        let src = [192, 0, 2, 32];
+        // Deliberately not `local_ip()`: the demux ignores the destination, so
+        // a fixture addressed to this host would still pass if the verifier
+        // substituted `local_ip()` for the address the segment carried.
+        let dst = [198, 51, 100, 7];
+        test_assert!(
+            dst != crate::net::local_ip(),
+            "the fixture destination equals the local address, so this cannot tell the two apart"
+        );
+        let listener = crate::net::tcp::socket();
+        crate::net::tcp::bind(listener, PORT);
+        crate::net::tcp::listen(listener);
+
+        let mut corrupt = tcp_segment(src, dst, 40_002, PORT, 0x02, 900, &[]);
+        corrupt[7] ^= 0x01; // one bit of the sequence, checksum left stale
+        handle_ipv4_packet(&ipv4_frame(src, dst, 6, &corrupt));
+        crate::net::tcp::poll();
+        test_assert!(
+            crate::net::tcp::accept(listener).is_none(),
+            "a TCP SYN whose checksum does not verify opened a connection"
+        );
+
+        let repaired = stamped(src, dst, 6, 16, &corrupt);
+        handle_ipv4_packet(&ipv4_frame(src, dst, 6, &repaired));
+        crate::net::tcp::poll();
+        test_assert!(
+            crate::net::tcp::accept(listener).is_some(),
+            "the same SYN with a checksum matching its contents did not open a connection"
+        );
+        TestResult::Pass
+    }
+
+    /// The destination summed into the pseudo-header is the one the datagram
+    /// carried, not this host's address. QEMU's DHCP server answers a discover
+    /// at 255.255.255.255 while `local_ip()` is still 0.0.0.0, so a verifier
+    /// that substituted `local_ip()` would refuse the offer and leave the kernel
+    /// unaddressed -- it would pass every loopback test in this file and break
+    /// the machine at boot.
+    fn test_transport_checksum_uses_the_delivered_destination() -> TestResult {
+        const PORT: u16 = 9102;
+        let src = [192, 0, 2, 33];
+        let dst = [255, 255, 255, 255];
+        test_assert!(
+            dst != crate::net::local_ip(),
+            "the fixture destination equals the local address, so this proves nothing"
+        );
+        let idx = crate::net::udp::socket();
+        crate::net::udp::bind(idx, PORT);
+
+        let seg = udp_segment(src, dst, 40_003, PORT, b"broadcast");
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &seg));
+        let mut buf = [0u8; 32];
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_some(),
+            "a datagram checksummed against the address it was actually sent to was refused"
+        );
+
+        // The mirror image: the same datagram summed against this host's
+        // address instead must not verify, so the assertion above cannot pass
+        // by ignoring the destination altogether.
+        let wrong = udp_segment(src, crate::net::local_ip(), 40_003, PORT, b"broadcast");
+        handle_ipv4_packet(&ipv4_frame(src, dst, 17, &wrong));
+        test_assert!(
+            crate::net::udp::recvfrom(idx, &mut buf).is_none(),
+            "a datagram summed against an address other than the one it was sent to was accepted"
+        );
+        TestResult::Pass
+    }
+
     /// The loopback branch delivers on the caller's stack, so a re-entry is a
     /// second `handle_ipv4_packet` frame inside the first. Driving a whole TCP
     /// handshake across 127.0.0.1 exercises the deepest chain the stack can
@@ -455,6 +785,22 @@ pub mod tests {
     }
 
     pub fn register_all() {
+        crate::testing::register_test(
+            "ipv4::udp_checksum_verified_on_receive",
+            test_udp_checksum_verified_on_receive,
+        );
+        crate::testing::register_test(
+            "ipv4::udp_zero_checksum_accepted_over_ipv4",
+            test_udp_zero_checksum_accepted_over_ipv4,
+        );
+        crate::testing::register_test(
+            "ipv4::tcp_checksum_verified_on_receive",
+            test_tcp_checksum_verified_on_receive,
+        );
+        crate::testing::register_test(
+            "ipv4::transport_checksum_uses_the_delivered_destination",
+            test_transport_checksum_uses_the_delivered_destination,
+        );
         crate::testing::register_test("ipv4::total_len_zero_dropped", test_total_len_zero_dropped);
         crate::testing::register_test(
             "ipv4::total_len_below_ihl_dropped",
