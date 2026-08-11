@@ -13,6 +13,7 @@ use super::harness::run_all_tests_and_exit;
 pub fn test_main() -> ! {
     // Register all in-kernel tests from each module
     crate::apps::installer::tests::register_all();
+    crate::apps::shell::tests::register_all();
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
