@@ -710,10 +710,12 @@ pub mod tests {
             "a datagram checksummed against the address it was actually sent to was refused"
         );
 
-        // The mirror image: the same datagram summed against this host's
-        // address instead must not verify, so the assertion above cannot pass
-        // by ignoring the destination altogether.
-        let wrong = udp_segment(src, crate::net::local_ip(), 40_003, PORT, b"broadcast");
+        // The mirror image: the same datagram summed against a different
+        // address must not verify, so the assertion above cannot pass by
+        // ignoring the destination altogether. `wrong_dst` is used rather than
+        // `local_ip()` because the guard above only proves `wrong_dst` is
+        // distinguishable.
+        let wrong = udp_segment(src, wrong_dst, 40_003, PORT, b"broadcast");
         handle_ipv4_packet(&ipv4_frame(src, dst, 17, &wrong));
         test_assert!(
             crate::net::udp::recvfrom(idx, &mut buf).is_none(),
