@@ -449,6 +449,27 @@ impl Ext2Fs {
         Ok(())
     }
 
+    /// File blocks reachable through one triple-indirect pointer:
+    /// `ptrs_per_block^3`.
+    ///
+    /// `ptrs_per_block` is `block_size / 4`, so for every block size this file
+    /// accepts with `s_log_block_size >= 3` (8192, 16384, 32768) it is a power
+    /// of two >= 2048 and its cube is an exact multiple of `2^32`. Computed in
+    /// `u32` — with neither Cargo profile in this crate setting
+    /// `overflow-checks` — that wraps to exactly `0` in release, which turns
+    /// any bound built on it into "reject everything" or "bound nothing"
+    /// depending on which side of the comparison it lands. A `u64` cannot wrap
+    /// for any `ptrs_per_block` this file can produce (max `8192`, cube
+    /// `~5.5e11`).
+    ///
+    /// Both bounds that need this number — the read bound in
+    /// `get_disk_block_from_inode` and the write bound in
+    /// `get_or_allocate_data_block` — come from here, so a change to one
+    /// cannot leave the other computing a different capacity.
+    fn triple_indirect_capacity(ptrs_per_block: u32) -> u64 {
+        (ptrs_per_block as u64).pow(3)
+    }
+
     fn get_disk_block_from_inode(&self, inode: &Inode, file_block: u32) -> Result<u32, VfsError> {
         let ptrs_per_block = self.block_size / 4;
 
@@ -494,6 +515,29 @@ impl Ext2Fs {
         }
 
         file_block -= ptrs_per_block * ptrs_per_block;
+
+        // Triple indirect. The two branches above are guarded by the `if`
+        // that selects them; this one is the fall-through, so nothing has
+        // bounded `file_block` against what the block-pointer arrays can
+        // actually address. `read_inode_data` bounds the *size* against the
+        // volume's capacity (`checked_size`), which is a different and larger
+        // ceiling: a volume with more blocks than `12 + ptrs_per_block +
+        // ptrs_per_block^2 + ptrs_per_block^3` — 16,843,020 blocks, about
+        // 16 GiB, at the 1024-byte block size — can hold a size that clears
+        // `checked_size` and still names a file block no `i_block` entry
+        // reaches. `dind_idx` below then exceeds `ptrs_per_block`, and
+        // `buf[off]` indexes past the end of the block just read, which
+        // panics; both Cargo profiles here set `panic = "abort"`.
+        //
+        // Refused rather than reported as a hole (`Ok(0)`): a block the inode
+        // cannot address is corruption, and returning zeros would hand the
+        // caller fabricated file data. Checked before `i_block[14]` is read so
+        // the refusal does not depend on that pointer being populated, and
+        // before the block-sized buffer below is allocated.
+        if (file_block as u64) >= Self::triple_indirect_capacity(ptrs_per_block) {
+            return Err(VfsError::IoError);
+        }
+
         let tind_block = inode.i_block[14];
         if tind_block == 0 {
             return Ok(0);
@@ -770,16 +814,11 @@ impl Ext2Fs {
 
         // Triple indirect.
         rel -= ptrs_per_block * ptrs_per_block;
-        // `ptrs_per_block` is `block_size / 4`; for every block size this
-        // file accepts with `s_log_block_size >= 3` (8192, 16384, 32768),
-        // `ptrs_per_block` is a power of two >= 2048, so its cube is an
-        // exact multiple of `2^32` and a `u32` product wraps to `0`,
-        // permanently disabling this branch. Widen to `u64`, which cannot
-        // wrap for any `ptrs_per_block` this file can produce (max `8192`,
-        // cube `~5.5e11`, far under `u64::MAX`), so the comparison reflects
-        // the intended triple-indirect capacity bound rather than zero.
-        if (rel as u64) < (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64)
-        {
+        // A `u32` cube wraps to `0` on every block size >= 8192 and
+        // permanently disables this branch; `triple_indirect_capacity`
+        // computes it in `u64`, and is shared with the matching read bound in
+        // `get_disk_block_from_inode` so the two cannot disagree.
+        if (rel as u64) < Self::triple_indirect_capacity(ptrs_per_block) {
             let tind_block = self.get_or_allocate_indirect_block(inode, 14, block_incr)?;
 
             let mut cache = self.buffer_cache.lock();
@@ -2157,9 +2196,10 @@ pub mod tests {
                 "RED: the unfixed u32 guard rejects even rel == 0, proving the branch was unreachable"
             );
 
-            // Post-fix arithmetic: the exact `u64` product this file now computes.
-            let fixed_bound =
-                (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64);
+            // Post-fix arithmetic: the shipped function itself, not a copy of
+            // its expression — a local copy would keep passing if the file's
+            // own computation narrowed back to `u32`.
+            let fixed_bound = Ext2Fs::triple_indirect_capacity(ptrs_per_block);
             test_assert!(
                 (rel as u64) < fixed_bound,
                 "GREEN: the widened guard accepts rel == 0, restoring the triple-indirect branch"
@@ -2178,7 +2218,7 @@ pub mod tests {
     /// `rel`.
     fn test_triple_indirect_guard_still_bounded() -> TestResult {
         let ptrs_per_block = 1024u32 / 4; // 256
-        let cube = (ptrs_per_block as u64) * (ptrs_per_block as u64) * (ptrs_per_block as u64);
+        let cube = Ext2Fs::triple_indirect_capacity(ptrs_per_block);
         test_assert!(
             cube == 16_777_216,
             "known-value sanity check on the intended bound itself"
@@ -2193,6 +2233,82 @@ pub mod tests {
         test_assert!(
             !(out_of_range < cube),
             "the fix must still reject a rel at the true capacity boundary, not just avoid the u32 wrap"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: the defect this closes. `get_or_allocate_data_block` (write) has
+    /// carried a triple-indirect capacity guard since the branch was written;
+    /// `get_disk_block_from_inode` (read) never had one. Its triple-indirect
+    /// branch is the fall-through, so `file_block` arrives unbounded and
+    /// `dind_idx = file_block / ptrs_per_block^2` can exceed `ptrs_per_block`,
+    /// indexing `buf[off]` past the end of the block just read — a panic, and
+    /// both Cargo profiles here set `panic = "abort"`.
+    ///
+    /// The `checked_size` bound added for regular files does not close this:
+    /// its ceiling is the *volume's* capacity, and on any volume with more
+    /// blocks than `12 + 256 + 256^2 + 256^3 = 16_843_020` (about 16 GiB at
+    /// the 1024-byte block size) a size well inside that ceiling still names a
+    /// file block no `i_block` entry can address. Reproduced on a real mounted
+    /// image, 20,000,000 blocks of 1024 bytes, in the host harness for this
+    /// file:
+    ///
+    /// ```text
+    /// thread 'hosttests::unaddressable_file_block_is_refused_not_indexed' panicked at
+    /// kernel/seal-os/src/fs/ext2.rs:506:49:
+    /// index out of bounds: the len is 1024 but the index is 1024
+    /// ```
+    ///
+    /// This in-kernel form needs no block device: with `i_block[14] == 0` the
+    /// unfixed function returned `Ok(0)` — "hole", fabricated zero data for a
+    /// block the inode cannot reach — before touching the disk, and the guard
+    /// is placed ahead of that pointer read so the refusal is observable here.
+    fn test_unaddressable_file_block_is_refused() -> TestResult {
+        let fs = make_fs(4096, 0); // 1024-byte blocks, 256 pointers per block
+        let mut inode = make_dir_inode(0);
+        inode.i_mode = EXT2_S_IFREG;
+
+        let ptrs_per_block = 1024u32 / 4;
+        let first_unaddressable = 12
+            + ptrs_per_block
+            + ptrs_per_block * ptrs_per_block
+            + (Ext2Fs::triple_indirect_capacity(ptrs_per_block) as u32);
+        test_assert!(
+            first_unaddressable == 16_843_020,
+            "known-value sanity check on the capacity of 15 block pointers at 1024-byte blocks"
+        );
+
+        let result = fs.get_disk_block_from_inode(&inode, first_unaddressable);
+        test_assert!(
+            result.is_err(),
+            "a file block past triple-indirect capacity must be refused, not indexed and not reported as a hole"
+        );
+        TestResult::Pass
+    }
+
+    /// GREEN: the last block the pointers *do* reach must still resolve — the
+    /// guard is a capacity bound, not a blanket refusal of the triple-indirect
+    /// branch, and an off-by-one either way shows up here. `i_block[14] == 0`,
+    /// so a legitimately sparse file reads back as a hole exactly as before.
+    fn test_last_addressable_file_block_still_resolves() -> TestResult {
+        let fs = make_fs(4096, 0);
+        let mut inode = make_dir_inode(0);
+        inode.i_mode = EXT2_S_IFREG;
+
+        let ptrs_per_block = 1024u32 / 4;
+        let last_addressable = 11
+            + ptrs_per_block
+            + ptrs_per_block * ptrs_per_block
+            + (Ext2Fs::triple_indirect_capacity(ptrs_per_block) as u32);
+        test_assert!(
+            last_addressable == 16_843_019,
+            "known-value sanity check on the last addressable file block"
+        );
+
+        let result = fs.get_disk_block_from_inode(&inode, last_addressable);
+        test_assert!(
+            matches!(result, Ok(0)),
+            "the last addressable file block must still resolve, as a hole when i_block[14] is unset"
         );
         TestResult::Pass
     }
@@ -2610,6 +2726,14 @@ pub mod tests {
         crate::testing::register_test(
             "ext2::triple_indirect_guard_still_bounded",
             test_triple_indirect_guard_still_bounded,
+        );
+        crate::testing::register_test(
+            "ext2::unaddressable_file_block_is_refused",
+            test_unaddressable_file_block_is_refused,
+        );
+        crate::testing::register_test(
+            "ext2::last_addressable_file_block_still_resolves",
+            test_last_addressable_file_block_still_resolves,
         );
         crate::testing::register_test(
             "ext2::oversized_log_block_size_is_rejected",
