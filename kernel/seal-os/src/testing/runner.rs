@@ -18,6 +18,8 @@ pub fn test_main() -> ! {
     crate::wm::welcome::tests::register_all();
     crate::wm::taskbar::tests::register_all();
     crate::graphics::htek::tests::register_all();
+    crate::wm::compositor::tests::register_all();
+    crate::graphics::topo_render::tests::register_all();
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();

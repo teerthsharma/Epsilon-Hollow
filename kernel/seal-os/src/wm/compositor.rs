@@ -62,6 +62,16 @@ impl Rect {
     }
 }
 
+/// Width of the taskbar button that stands for one minimized window.
+const TASKBAR_BTN_W: u32 = 80;
+/// Gap between two adjacent taskbar buttons.
+const TASKBAR_BTN_GAP: u32 = 4;
+/// Left edge of the first taskbar button, clear of the start button.
+const TASKBAR_BTN_X0: u32 = 350;
+/// Columns held back at the right end of the taskbar for the clock and the
+/// power button. See `taskbar::power_button_rect`.
+const TASKBAR_BTN_RESERVED: u32 = 132;
+
 pub struct Compositor {
     windows: Vec<Window>,
     next_id: u32,
@@ -289,10 +299,12 @@ impl Compositor {
             .or_else(|| self.window_hit_any(mx, my));
 
         if let Some(idx) = hit {
-            // Focus this window
+            // Focus this window. `raise` keeps `idx` valid: it rewrites one
+            // `z_order` and never reorders `self.windows`.
             for w in &mut self.windows {
                 w.focused = false;
             }
+            self.raise(idx);
             self.windows[idx].focused = true;
             self.windows[idx].render_decorations();
             let win_id = self.windows[idx].id;
@@ -600,24 +612,51 @@ impl Compositor {
             .map(|(idx, _)| idx)
     }
 
+    /// Bring a window to the top of the paint order.
+    ///
+    /// `z_order` is assigned once, in `Window::new`, and both render paths sort
+    /// by it, so without a second writer the paint order is permanently
+    /// creation order: a clicked window took focus and every keystroke while an
+    /// older window kept painting over it, and the user typed into a window
+    /// they could not see. Only `self.windows[idx].z_order` is written — the
+    /// vector is not reordered, so an index held across this call stays valid.
+    fn raise(&mut self, idx: usize) {
+        let top = self.windows.iter().map(|w| w.z_order).max().unwrap_or(0);
+        if self.windows[idx].z_order < top {
+            // ponytail: z_order saturates at u32::MAX, after which raising
+            // stops working. It only advances when a window that is not
+            // already on top is raised, so reaching that takes 4.29e9 such
+            // clicks; renumber the stack by sort rank if it ever matters.
+            self.windows[idx].z_order = top.saturating_add(1);
+        }
+    }
+
+    /// Focus a window, restore it if it was minimized, and raise it.
+    ///
+    /// The chokepoint every focus change routes through, including the taskbar
+    /// restore path, so that exactly one window carries `focused` and the
+    /// focused window is the one on top.
     pub fn focus_window(&mut self, id: u32) {
+        // An unknown id leaves the focus where it is rather than clearing it
+        // off every window and leaving the desktop with none.
+        let Some(idx) = self.windows.iter().position(|w| w.id == id) else {
+            return;
+        };
         for w in &mut self.windows {
             w.focused = false;
         }
-        let dirty = self.window_mut(id).map(|win| {
-            win.state = WindowState::Normal;
-            win.focused = true;
-            win.render_decorations();
-            Rect {
-                x: win.x,
-                y: win.y,
-                w: win.width,
-                h: win.height,
-            }
-        });
-        if let Some(r) = dirty {
-            self.mark_dirty(r.x, r.y, r.w, r.h);
-        }
+        self.raise(idx);
+        let win = &mut self.windows[idx];
+        win.state = WindowState::Normal;
+        win.focused = true;
+        win.render_decorations();
+        let r = Rect {
+            x: win.x,
+            y: win.y,
+            w: win.width,
+            h: win.height,
+        };
+        self.mark_dirty(r.x, r.y, r.w, r.h);
     }
 
     pub fn window_count(&self) -> usize {
@@ -682,6 +721,23 @@ impl Compositor {
         cursor::set_shape(cursor::CursorShape::Arrow);
     }
 
+    /// Left edge of the taskbar button for the `n`th minimized window, or
+    /// `None` once the row has no room for another one.
+    ///
+    /// The single source of truth for that geometry, in the screen coordinates
+    /// `adopt_screen` took from the framebuffer: `draw_taskbar_indicators`
+    /// paints exactly these bands and `handle_taskbar_click` hit-tests exactly
+    /// these bands. The two used to bound themselves separately — the drawing
+    /// stopped where the clock begins, the hit-testing never stopped — so at
+    /// 1024x768 with eleven windows minimized, six buttons were painted, the
+    /// last ending at x=850, and a click anywhere in [854, 1018) on bare
+    /// taskbar restored a window that had no button.
+    fn taskbar_button_x(&self, n: u32) -> Option<u32> {
+        let x = TASKBAR_BTN_X0.checked_add(n.checked_mul(TASKBAR_BTN_W + TASKBAR_BTN_GAP)?)?;
+        let end_x = self.screen_w.saturating_sub(TASKBAR_BTN_RESERVED);
+        (x.saturating_add(TASKBAR_BTN_W) <= end_x).then_some(x)
+    }
+
     fn handle_taskbar_click(&mut self, mx: u32, my: u32) {
         let taskbar_h = taskbar::taskbar_height();
         let y = self.screen_h.saturating_sub(taskbar_h);
@@ -696,58 +752,44 @@ impl Compositor {
             .map(|w| w.id)
             .collect();
 
-        if minimized.is_empty() {
-            return;
-        }
-
-        let mut x = 350u32;
-        const BTN_W: u32 = 80;
-        for win_id in minimized {
-            if mx >= x && mx < x + BTN_W {
-                if let Some(idx) = self.windows.iter().position(|w| w.id == win_id) {
-                    self.windows[idx].state = WindowState::Normal;
-                    self.windows[idx].focused = true;
-                    self.windows[idx].render_decorations();
-                    let wx = self.windows[idx].x;
-                    let wy = self.windows[idx].y;
-                    let ww = self.windows[idx].width;
-                    let wh = self.windows[idx].height;
-                    self.mark_dirty(wx, wy, ww, wh);
-                }
+        for (n, win_id) in minimized.iter().enumerate() {
+            let Some(x) = self.taskbar_button_x(n as u32) else {
+                break;
+            };
+            if mx >= x && mx < x + TASKBAR_BTN_W {
+                // Restoring is a focus change, and focus changes go through one
+                // function: this loop used to set `focused` without clearing it
+                // on the others, leaving two windows claiming focus and sending
+                // the keystrokes to whichever had the lower z_order.
+                self.focus_window(*win_id);
                 break;
             }
-            x += BTN_W + 4;
         }
     }
 
     fn draw_taskbar_indicators(&self, fb: &Framebuffer) {
         let theme = themes::current_theme();
         let taskbar_h = taskbar::taskbar_height();
-        let y = fb.height.saturating_sub(taskbar_h);
+        // `screen_h`, not `fb.height`: `adopt_screen` has already taken both
+        // from this framebuffer, and reading the same field the click path
+        // reads is what keeps the drawn row and the clickable row identical.
+        let y = self.screen_h.saturating_sub(taskbar_h);
 
-        let minimized: Vec<_> = self
+        let minimized = self
             .windows
             .iter()
-            .filter(|w| w.state == WindowState::Minimized)
-            .collect();
+            .filter(|w| w.state == WindowState::Minimized);
 
-        if minimized.is_empty() {
-            return;
-        }
-
-        let mut x = 350u32;
-        const BTN_W: u32 = 80;
-        let end_x = fb.width.saturating_sub(132);
-        for win in minimized {
-            if x + BTN_W > end_x {
+        for (n, win) in minimized.enumerate() {
+            let Some(x) = self.taskbar_button_x(n as u32) else {
                 break;
-            }
+            };
             // Button background
-            fb.fill_rect(x, y + 4, BTN_W, 20, theme.bg);
-            fb.fill_rect(x, y + 4, BTN_W, 1, theme.border);
-            fb.fill_rect(x, y + 23, BTN_W, 1, 0);
+            fb.fill_rect(x, y + 4, TASKBAR_BTN_W, 20, theme.bg);
+            fb.fill_rect(x, y + 4, TASKBAR_BTN_W, 1, theme.border);
+            fb.fill_rect(x, y + 23, TASKBAR_BTN_W, 1, 0);
             fb.fill_rect(x, y + 4, 1, 20, theme.border);
-            fb.fill_rect(x + BTN_W - 1, y + 4, 1, 20, 0);
+            fb.fill_rect(x + TASKBAR_BTN_W - 1, y + 4, 1, 20, 0);
             // Accent strip on left
             fb.fill_rect(x, y + 4, 3, 20, theme.accent);
             // Draw truncated title
@@ -767,7 +809,6 @@ impl Compositor {
                     theme.fg,
                 );
             }
-            x += BTN_W + 4;
         }
     }
 }
@@ -775,5 +816,170 @@ impl Compositor {
 impl Default for Compositor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    /// A framebuffer whose pixels can be read back.
+    ///
+    /// The kernel offers no other way to get one: `Framebuffer::null()` reports
+    /// zero width and every drawing path bounds-checks against it, so a test
+    /// that wants to see what was painted has to supply its own storage. The
+    /// returned `Vec` must stay alive for as long as the framebuffer is used.
+    fn screen(w: u32, h: u32) -> (Vec<u32>, Framebuffer) {
+        let mut pixels = alloc::vec![0u32; (w as usize) * (h as usize)];
+        // SAFETY: `pixels` holds exactly `w * h` u32s, so the buffer is
+        // `w * 4` bytes per scanline at 32 bpp for `h` scanlines, matching the
+        // pitch and depth passed here. Moving the `Vec` out of this function
+        // does not move its heap allocation, and the caller holds it for the
+        // lifetime of the returned `Framebuffer`.
+        let fb = unsafe { Framebuffer::new(pixels.as_mut_ptr() as u64, w, h, w * 4, 32) };
+        (pixels, fb)
+    }
+
+    /// Park the cursor at an absolute screen position.
+    fn move_to(comp: &mut Compositor, x: i32, y: i32) {
+        let dx = x - comp.mouse.x;
+        let dy = y - comp.mouse.y;
+        comp.mouse_move(dx, dy, 0, 0);
+    }
+
+    /// The middle of the taskbar button row for a 768-pixel-tall screen.
+    fn taskbar_row_y() -> u32 {
+        768 - taskbar::taskbar_height() + 10
+    }
+
+    /// The draw loop stops once a button would run into the clock; the click
+    /// loop used to keep handing out 84-pixel bands past the end of the row.
+    /// At 1024x768 with eleven windows minimized, six buttons are painted and
+    /// the last ends at x=850, yet a click at x=856 — bare taskbar — restored
+    /// the seventh window.
+    fn test_taskbar_click_stops_where_the_row_stops() -> TestResult {
+        let (_pixels, fb) = screen(1024, 768);
+        let mut comp = Compositor::new();
+        for _ in 0..11 {
+            let id = comp.create_window("win", 10, 10, 100, 80);
+            comp.window_mut(id).unwrap().state = WindowState::Minimized;
+        }
+        comp.compose_full(&fb);
+
+        let row_y = taskbar_row_y();
+        // The accent strip of the sixth button, at x in [770, 773).
+        test_assert!(
+            fb.get_pixel(771, row_y) != 0,
+            "sixth taskbar button was not drawn"
+        );
+        // A seventh button would start at x=854 and is never painted.
+        test_assert_eq!(fb.get_pixel(855, row_y), 0);
+
+        move_to(&mut comp, 856, row_y as i32);
+        comp.mouse_click(true);
+        test_assert!(
+            comp.windows
+                .iter()
+                .all(|w| w.state == WindowState::Minimized),
+            "a click past the last drawn button restored a window"
+        );
+
+        // Control: the last button that is drawn still restores its window.
+        move_to(&mut comp, 772, row_y as i32);
+        comp.mouse_click(true);
+        test_assert_eq!(
+            comp.windows
+                .iter()
+                .filter(|w| w.state == WindowState::Minimized)
+                .count(),
+            10
+        );
+        TestResult::Pass
+    }
+
+    /// `handle_taskbar_click` set `focused` without clearing it anywhere else,
+    /// so a restore left two windows claiming focus. `focused_window_id` takes
+    /// the first match in ascending z_order, i.e. the older window: the
+    /// restored window drew the focused title bar while every keystroke went
+    /// to the other one.
+    fn test_taskbar_restore_focuses_one_window() -> TestResult {
+        let (_pixels, fb) = screen(1024, 768);
+        let mut comp = Compositor::new();
+        let first = comp.create_window("first", 10, 10, 200, 100);
+        let second = comp.create_window("second", 300, 10, 200, 100);
+        comp.window_mut(second).unwrap().state = WindowState::Minimized;
+        comp.compose_full(&fb);
+
+        // The first taskbar button spans x in [350, 430).
+        move_to(&mut comp, 360, taskbar_row_y() as i32);
+        comp.mouse_click(true);
+
+        test_assert_eq!(comp.windows.iter().filter(|w| w.focused).count(), 1);
+        test_assert_eq!(comp.focused_window_id(), second);
+        test_assert!(!comp.window_mut(first).unwrap().focused);
+        test_assert_eq!(
+            comp.window_mut(second).unwrap().state,
+            WindowState::Normal
+        );
+        TestResult::Pass
+    }
+
+    /// `z_order` was written once, in `Window::new`, and both render paths sort
+    /// by it, so paint order was permanently creation order. Clicking a window
+    /// another one overlaps gave it focus and every keystroke while the other
+    /// kept painting on top of it — the user typed into a window they could
+    /// not see.
+    fn test_click_raises_window_above_its_neighbour() -> TestResult {
+        const PROBE_X: u32 = 200;
+        const PROBE_Y: u32 = 174;
+        const LOWER_INK: u32 = 0x00FF_0000;
+        const UPPER_INK: u32 = 0x0000_FF00;
+
+        let (_pixels, fb) = screen(1024, 768);
+        let mut comp = Compositor::new();
+        let lower = comp.create_window("lower", 100, 100, 200, 200);
+        let upper = comp.create_window("upper", 150, 100, 200, 200);
+
+        // One client pixel from each window at the same screen point, inside
+        // the region where the two overlap.
+        for (id, ink) in [(lower, LOWER_INK), (upper, UPPER_INK)] {
+            let win = comp.window_mut(id).unwrap();
+            let (cx, cy) = (win.client_x(), win.client_y());
+            win.set_client_pixel(PROBE_X - cx, PROBE_Y - cy, ink);
+        }
+
+        comp.compose_full(&fb);
+        test_assert_eq!(fb.get_pixel(PROBE_X, PROBE_Y), UPPER_INK);
+
+        // Click the lower window where the upper one does not cover it.
+        move_to(&mut comp, 110, PROBE_Y as i32);
+        comp.mouse_click(true);
+        comp.mouse_click(false);
+        comp.compose_full(&fb);
+
+        test_assert_eq!(comp.focused_window_id(), lower);
+        test_assert_eq!(fb.get_pixel(PROBE_X, PROBE_Y), LOWER_INK);
+        test_assert!(
+            comp.window_mut(lower).unwrap().z_order > comp.window_mut(upper).unwrap().z_order,
+            "the clicked window did not come to the top of the paint order"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "compositor::taskbar_click_stops_where_the_row_stops",
+            test_taskbar_click_stops_where_the_row_stops,
+        );
+        crate::testing::register_test(
+            "compositor::taskbar_restore_focuses_one_window",
+            test_taskbar_restore_focuses_one_window,
+        );
+        crate::testing::register_test(
+            "compositor::click_raises_window_above_its_neighbour",
+            test_click_raises_window_above_its_neighbour,
+        );
     }
 }
