@@ -61,9 +61,9 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 629
+total 628
 justified 10
-unjustified 619
+unjustified 618
 files 85
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
@@ -123,7 +123,7 @@ file memory/swap.rs 5 0
 file memory/topo_ram.rs 2 0
 file memory/virt.rs 24 0
 file ml_engine/topo_asm.rs 2 0
-file net/arp.rs 3 0
+file net/arp.rs 2 0
 file net/icmp.rs 2 0
 file net/ipv4.rs 4 0
 file net/ipv6.rs 6 0
