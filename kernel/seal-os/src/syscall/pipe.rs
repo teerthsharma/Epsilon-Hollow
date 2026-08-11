@@ -7,7 +7,7 @@ use alloc::string::String;
 use core::sync::atomic::Ordering;
 
 use crate::fs::pipe::create_pipe;
-use crate::syscall::table::{FdEntry, SyscallResult, FILE_TABLE, NEXT_FD};
+use crate::syscall::table::{fd_lookup, FdEntry, SyscallResult, FILE_TABLE, NEXT_FD};
 
 pub const SYS_PIPE: u64 = 28;
 pub const SYS_DUP: u64 = 29;
@@ -25,6 +25,7 @@ pub fn dispatch_pipe(arg0: u64) -> SyscallResult {
 
     let fd_read = NEXT_FD.fetch_add(1, Ordering::SeqCst);
     let fd_write = NEXT_FD.fetch_add(1, Ordering::SeqCst);
+    let owner = crate::process::scheduler::current_task_id();
 
     let mut table = FILE_TABLE.lock();
     table.insert(
@@ -33,6 +34,7 @@ pub fn dispatch_pipe(arg0: u64) -> SyscallResult {
             handle: read_handle,
             path: String::from("pipe:r"),
             offset: 0,
+            owner,
         },
     );
     table.insert(
@@ -41,6 +43,7 @@ pub fn dispatch_pipe(arg0: u64) -> SyscallResult {
             handle: write_handle,
             path: String::from("pipe:w"),
             offset: 0,
+            owner,
         },
     );
     drop(table);
@@ -61,7 +64,7 @@ pub fn dispatch_pipe(arg0: u64) -> SyscallResult {
 pub fn dispatch_dup(arg0: u64) -> SyscallResult {
     let old_fd = arg0;
     let mut table = FILE_TABLE.lock();
-    let entry = match table.get(&old_fd) {
+    let entry = match fd_lookup(&table, old_fd) {
         Some(e) => e.clone(),
         None => return SyscallResult::err(9), // EBADF
     };
@@ -75,11 +78,18 @@ pub fn dispatch_dup2(arg0: u64, arg1: u64) -> SyscallResult {
     let old_fd = arg0;
     let new_fd = arg1;
     let mut table = FILE_TABLE.lock();
-    let entry = match table.get(&old_fd) {
+    let entry = match fd_lookup(&table, old_fd) {
         Some(e) => e.clone(),
         None => return SyscallResult::err(9), // EBADF
     };
-    let _ = table.remove(&new_fd);
+    // The target number is caller-supplied and the insert below silently
+    // replaces whatever occupies it, which would close another task's file.
+    // Only a free slot, or one the caller already owns, may be overwritten.
+    if table.contains_key(&new_fd) && fd_lookup(&table, new_fd).is_none() {
+        return SyscallResult::err(9); // EBADF
+    }
+    // `insert` replaces any entry already at `new_fd`, which is the close-then
+    // -reuse dup2 owes the caller for its own descriptor.
     table.insert(new_fd, entry);
     SyscallResult::ok(new_fd as i64)
 }
