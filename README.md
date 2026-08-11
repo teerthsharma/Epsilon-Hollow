@@ -6221,6 +6221,133 @@ The instruments were the whole job. You cannot fix what the instrument reports
 as fine, and every one of these three defects was, in its own way, an
 instrument reporting fine.
 
+## 455, And A Shell You Can Actually Type Into
+
+364 in the morning. 455 by the afternoon. The number is not the point, but the
+shape of how it moved is.
+
+It did not move by writing 91 tests. It moved by finding nine test *groups* that
+had been sitting in the tree, fully written, never once executed — because
+`kernel/seal-os` is in the workspace `exclude` list, so `cargo test --workspace`
+walks straight past it, and every `#[test]` inside it compiles to nothing. TCP
+had seventeen. The `.eph` package parser had three. Each was written by someone
+who believed they were adding coverage, and each was, in the sense that a
+parachute in a box on the ground is technically a parachute.
+
+Four of TCP's seventeen were also *broken*, which is how you know nobody had
+ever run them. Not broken subtly. One pushed a socket into `TCP_SOCKETS` without
+indexing it, so the socket existed and could not be found. One left `remote_ip`
+at `0.0.0.0` while the segment arrived from `192.168.1.1`, so indexing filed it
+under an address no packet carries. One left `ack_num` at zero while the FIN
+carried sequence 500 — that test predates the RFC 793 sequence check by months
+and quietly rotted the day that check landed. And one had no bug at all: it
+inherited an ESTABLISHED socket from the test *before* it, on exactly the
+four-tuple its own SYN used, and lost the race to its own predecessor.
+
+The agent I sent after them was told my diagnosis. It applied my diagnosis to one
+test, showed the test still red, and went and found the other two causes. Then it
+reported that the file has seventeen tests and I had said sixteen.
+
+**The remote one.**
+
+While bounding the ephemeral port allocator — `NEXT_TCP_PORT`, a `u16` that
+started at 40000 and got `*p += 1` with nothing watching — the agent noticed the
+allocation inside `poll()` was dead. It computed a port, built a socket with it,
+and then immediately overwrote `local_port` with the destination port from the
+packet. The number was thrown away.
+
+The counter still moved.
+
+Once per SYN. From anywhere. A remote peer could walk that counter to 65535 and
+past it, with no local socket involved, no connection established, and nothing in
+any log. In release the wrap is silent and the counter lands on **zero** — not on
+the floor of the ephemeral range, because nothing had ever named a floor — and
+then walks up through 0, 1, 2, and starts handing out 22, 80 and 443 to outgoing
+connections. Under `overflow-checks` it just aborts the kernel.
+
+The fix that mattered was deleting four lines that did nothing.
+
+**A shell that composes.**
+
+Three commits took the shell from one-command-per-line to something you can
+actually work in:
+
+```
+OUT=hits.txt
+peek serial.log | grep -i 'error' | sort -u | wc -l > $OUT
+```
+
+Pipelines, `<` and `>` and `>>`, then `wc`, `head`, `tail`, `sort`, `uniq`, `tr`,
+`cat` and `grep -vinc`, then `NAME=value`, `$NAME`, `${NAME}`, `export`, `unset`,
+`env`, `set`. Every one of those went through the same drill: write the
+assertion, break the code on purpose, confirm the assertion goes red, and — the
+part that kept catching people — check that it goes red in the *registry* and not
+only in the host harness, because the registry is what CI runs and the harness is
+what makes you feel good.
+
+The variables agent ran thirty-four mutations and killed thirty-four. Then it
+volunteered that four of the kills came from the harness alone, that those four
+are precisely the ordering decisions the whole design rests on, and that the
+table must not be read as coverage it does not have. Nobody asked it that.
+
+Its three self-caught failures are my favourite thing in this README. All three
+were handbook assertions, and all three were substring accidents:
+
+- `book.contains("export")` passed — because the word **exported** appears on the
+  `env` line.
+- `book.contains("NAME=value")` passed — because the `export` help line has a
+  parenthetical `(NAME=value works)`.
+- `help_for("set")` only checked the page was not the string "No help available",
+  so the page could lose every sentence about listing variables and still pass.
+
+Three tests asserting the presence of *letters* rather than the presence of
+documentation. Delete the entire feature from the handbook and two of them stay
+green. This is the taxonomy from earlier in this file, reappearing in the one
+place I would have sworn it could not: a test whose subject is a string
+literal I wrote myself, ten minutes earlier.
+
+**And one I did.**
+
+`ipv4::transport_checksum_uses_the_delivered_destination` sends a broadcast
+datagram, then sends the same datagram checksummed against a different address
+and requires the second to be refused. Its guard checked that the two addresses
+differed:
+
+```rust
+test_assert!(dst != crate::net::local_ip(), "...proves nothing");
+```
+
+They differ. `dst` is `255.255.255.255` and `local_ip()` is `0.0.0.0`, because
+DHCP has not run at test time. The assertion passed and the test failed in CI,
+and it took me embarrassingly long to see why, given the answer is a property of
+the internet checksum I had written a commit message about ninety minutes
+earlier: one's complement addition with end-around carry makes `0xFFFF` an
+identity. `x + 0xFFFF` overflows to `x - 1`, and the carry adds one back. Adding
+`0x0000` is an identity too.
+
+So `255.255.255.255` and `0.0.0.0` produce **byte-identical checksums**. The
+"wrong" datagram was correctly checksummed for the address it was delivered to.
+The kernel accepted it because it was valid.
+
+Address inequality does not imply checksum distinguishability. The agent that
+wrote this test had *proven* that exact fact one message earlier, when it
+demonstrated that swapping source and destination in the pseudo-header is an
+equivalent mutant no test can kill. It applied the insight to the mutation and
+not to its own fixture. So did I, reading the diff.
+
+Then I fixed it wrong. I added a `wrong_dst` that genuinely differs, added a
+guard comparing the two checksums, pushed it — and left the actual mirror
+datagram still being built from `local_ip()`. A guard proving a property of a
+value the assertion never used. A check that cannot fail, introduced in a commit
+whose entire subject was a check that could not fail, in a session whose entire
+subject was checks that cannot fail.
+
+455/455 now. The number is real, and every one of those assertions runs in QEMU on
+every push. But the honest summary of today is not that the kernel got better,
+though it did. It is that for about eleven hours the instruments were the work,
+and every single time I was sure I had finished fixing them, one of them turned
+out to be reporting fine.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
