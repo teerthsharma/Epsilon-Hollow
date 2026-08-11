@@ -5561,6 +5561,75 @@ That is the shape of every defect in this document, one last time, and this time
 the thing that caught it was the project's own test harness — working correctly,
 on the first occasion it was ever permitted to try.
 
+## Three Subsystems That Had Never Once Worked
+
+This is the finding I did not expect and still find slightly upsetting.
+
+Not "had a bug." Not "failed in an edge case." Three separate subsystems of this
+operating system had, from the day they were written until today, never
+successfully performed their function a single time. Each one reported success.
+Each one was wired into the boot, referenced in documentation, and visible in the
+logs. All three did nothing.
+
+**Atlas, the chart loader.** `relobj::parse()` read a section header's fields at
+the wrong offsets — it took the address where the file offset lives, and the file
+offset where the size lives. So the loader read garbage, rejected it, and moved
+on. The boot log had been printing `charts_peak=0` the entire time, on every boot,
+for the life of the subsystem. Zero charts. Not "sometimes fails to load a chart."
+It had never loaded one.
+
+**The filesystem's write path.** `ManifoldFS::write` took an `offset` parameter and
+ignored it, replacing the file contents on every call. The read path honoured its
+offset correctly. So writing the second user account to `/etc/passwd` destroyed
+the first, and the installer proof had been red for as long as it had existed.
+
+**The DNS resolver.** This one is my favourite, because the bug is four bytes wide
+and the consequence is total.
+
+A DNS answer's owner name is almost always a compression pointer — two bytes
+saying "the name is back at offset 12." The parser consumed those two bytes
+correctly. Then it also ran its *other* clause, the one that skips the single zero
+byte terminating an uncompressed name, and ate the high byte of the field that
+follows.
+
+The field that follows is the record type. It reads `0x0001` for an A record. Read
+one byte late, it reads `0x0100`. So the check for "is this an A record" was
+comparing 256 against 1, forever, and the answer was silently skipped.
+
+Every real resolver on Earth emits that pointer form. **No legitimate DNS response
+had ever been cached.** The resolver accepted the packet, validated the
+transaction ID, validated the source address, validated the port, validated the
+question echo — five checks, all passing, all correct — and then threw the answer
+away because it was reading the type field one byte too far along.
+
+### What these three have in common
+
+Nothing, technically. An ELF offset error, a discarded function parameter, and an
+off-by-one in a name parser. Different subsystems, different authors' moods,
+different decades of prior art to get wrong.
+
+What they share is that **none of them could fail loudly.** The chart loader
+returned "no charts." The write path returned success. The resolver returned "no
+answer for that name," which is a perfectly ordinary thing for a resolver to say.
+
+And the one mechanism that would have caught all three — a test suite running
+against a booted kernel — existed, was correctly written, was wired into CI, and
+had never executed, because it was gated behind a green build that had never
+happened.
+
+You can have every part of a verification pipeline and still verify nothing, if
+one link is a condition that is never true. I had twenty-seven proof gates and a
+test harness and 70,000 lines of kernel, and three of my subsystems were
+elaborately-decorated no-ops.
+
+The fix for the resolver, incidentally, was a deletion. The file already contained
+a correct name decoder that handles the pointer-versus-terminator distinction
+properly. Both skip loops now call it instead of open-coding it wrongly. Twenty-four
+lines removed.
+
+That is usually how it goes. The correct code was already there, twelve lines up,
+being ignored.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
