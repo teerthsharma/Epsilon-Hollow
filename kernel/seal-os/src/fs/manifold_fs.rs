@@ -89,6 +89,18 @@ pub struct ManifoldFS {
     total_teleports: u64,
     total_lookups: u64,
     activity_log: Vec<TheoremEvent>,
+    /// Per-node ownership as `(uid, gid)`, keyed by inode id. A node with no
+    /// entry is root-owned; see `ManifoldFS::owner`.
+    ///
+    /// ponytail: a side table rather than a field on `InodeMetadata`, so
+    /// ownership does not survive a remount. `Inode` and `InodeMetadata` are
+    /// built by struct literal in `fs/block_store.rs`, and the on-disk
+    /// `InodeRecord` would have to carry the two words as well; both are out of
+    /// this change's scope. The upgrade path is `uid`/`gid` on `InodeMetadata`
+    /// written into the eight bytes `InodeRecord::to_record` leaves zero at
+    /// offset 248..256, which existing disks already read back as root and so
+    /// needs no superblock version bump.
+    owners: BTreeMap<u64, (u32, u32)>,
     /// Optional ext2 backend for faithful raw-byte persistence.
     ext2_backend: Option<Mutex<Ext2Fs>>,
 }
@@ -277,6 +289,9 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            // Nothing on disk records an owner, so every restored node is
+            // root-owned. That is the fail-closed reading, not a guess.
+            owners: BTreeMap::new(),
             ext2_backend: None,
         };
         fs.update_entropy();
@@ -337,6 +352,7 @@ impl ManifoldFS {
             total_teleports: 0,
             total_lookups: 0,
             activity_log: Vec::new(),
+            owners: BTreeMap::new(),
             ext2_backend: None,
         }
     }
@@ -848,6 +864,35 @@ impl ManifoldFS {
         self.inodes.get(id)
     }
 
+    /// Ownership of the node `id` as `(uid, gid)`.
+    ///
+    /// A node with no recorded owner is reported as root-owned. Root is the
+    /// truthful answer for every node this kernel has created so far — nodes
+    /// are created by the boot task and `process::scheduler::current_uid`
+    /// returns 0 for the whole uptime — and it is also the only safe answer:
+    /// `security::manifold_acl::check_access` guards a root-owned node more
+    /// tightly than any other, so a missing owner narrows access rather than
+    /// widening it.
+    ///
+    /// This does not by itself make the filesystem multi-user. Nothing records
+    /// a non-root owner yet, because no creating task has a non-root identity
+    /// to record; see commit 67a5c1e for why that ordering is deliberate.
+    pub fn owner(&self, id: u64) -> (u32, u32) {
+        self.owners.get(&id).copied().unwrap_or((0, 0))
+    }
+
+    /// Record `uid` and `gid` as the owner of the node `id`.
+    ///
+    /// An id that no live inode holds is rejected, so a stale id cannot leave
+    /// an ownership entry behind for the slab to hand to a later node.
+    pub fn set_owner(&mut self, id: u64, uid: u32, gid: u32) -> Result<(), FsError> {
+        if self.inodes.get(id).is_none() {
+            return Err(FsError::NotFound);
+        }
+        self.owners.insert(id, (uid, gid));
+        Ok(())
+    }
+
     pub fn is_dir(&self, id: u64) -> bool {
         self.inodes
             .get(id)
@@ -919,6 +964,7 @@ impl ManifoldFS {
         self.dirs.remove(dir_id, name);
         self.unlink_child(dir_id, inode_id);
         self.inodes.free(inode_id);
+        self.owners.remove(&inode_id);
         self.update_entropy();
         self.path_cache.bump_generation();
         self.log_event("T1/TSS", format!("deleted '{}'", name));
@@ -1309,11 +1355,15 @@ impl FileSystem for ManifoldFS {
             InodeKind::File => VfsNodeType::File,
             InodeKind::Directory => VfsNodeType::Directory,
         };
+        // The node's recorded owner, or root when none was recorded. Reporting
+        // a fixed 0 here made every access check in the kernel decide on the
+        // same fabricated identity; see `ManifoldFS::owner`.
+        let (uid, gid) = self.owner(handle.inode);
         Ok(VfsNode {
             size: inode.metadata.original_size,
             permissions: inode.metadata.permissions,
-            uid: 0,
-            gid: 0,
+            uid,
+            gid,
             mode: inode.metadata.permissions,
             atime: inode.metadata.modified_ms,
             mtime: inode.metadata.modified_ms,
@@ -1727,6 +1777,62 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `stat` must report the ownership a node actually carries, and must
+    /// report root for a node whose owner was never recorded. A node with no
+    /// recorded owner is root-owned, never unowned: `manifold_acl` treats a
+    /// root-owned node as the guarded case, so the default has to fail closed.
+    fn test_stat_reports_recorded_owner() -> TestResult {
+        let mut fs = ManifoldFS::new();
+        let root = fs.root_id();
+        let id = fs.store_text("owned.txt", "data", root).unwrap();
+        let handle = VfsHandle {
+            fs_idx: 0,
+            inode: id,
+        };
+
+        // Nothing recorded yet: root, not unowned.
+        let node = match fs.stat(handle) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat of a fresh node failed"),
+        };
+        test_assert_eq!(node.uid, 0);
+        test_assert_eq!(node.gid, 0);
+
+        if fs.set_owner(id, 1000, 1000).is_err() {
+            return TestResult::Fail("set_owner rejected a live inode id");
+        }
+        let node = match fs.stat(handle) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat after set_owner failed"),
+        };
+        test_assert_eq!(node.uid, 1000);
+        test_assert_eq!(node.gid, 1000);
+        test_assert_eq!(fs.owner(id), (1000, 1000));
+
+        // Ownership is per node, not global.
+        let other = fs.store_text("unowned.txt", "data", root).unwrap();
+        let other_node = match fs.stat(VfsHandle {
+            fs_idx: 0,
+            inode: other,
+        }) {
+            Ok(node) => node,
+            Err(_) => return TestResult::Fail("stat of the sibling node failed"),
+        };
+        test_assert_eq!(other_node.uid, 0);
+        test_assert_eq!(other_node.gid, 0);
+
+        // A freed id keeps no ownership behind it, and cannot take one.
+        if fs.delete("owned.txt", root).is_err() {
+            return TestResult::Fail("delete of the owned node failed");
+        }
+        test_assert_eq!(fs.owner(id), (0, 0));
+        test_assert!(
+            fs.set_owner(id, 1000, 1000).is_err(),
+            "set_owner accepted an id no live inode holds"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
         crate::testing::register_test(
@@ -1755,6 +1861,10 @@ pub mod tests {
         crate::testing::register_test(
             "filesystem::write_honors_offset",
             test_write_honors_offset,
+        );
+        crate::testing::register_test(
+            "filesystem::stat_reports_recorded_owner",
+            test_stat_reports_recorded_owner,
         );
     }
 }
