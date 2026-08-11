@@ -562,9 +562,55 @@ pub fn with_vfs<F, R>(f: F) -> R
 where
     F: FnOnce(&Vfs) -> R,
 {
+    #[cfg(any(test, feature = "test-mode"))]
+    ensure_test_vfs();
     let guard = VFS.lock();
     let vfs = guard.as_ref().expect("VFS not initialized");
     f(vfs)
+}
+
+/// Mount a RAM-backed root the first time a `test-mode` build reaches
+/// `with_vfs` with no VFS.
+///
+/// `testing::runner::test_main()` is called from `kernel_main_continue`
+/// immediately after the entropy driver — layers before `fs::init_vfs()` runs
+/// — so under `test-mode` the VFS is never initialized at all. The first suite
+/// that touches a file (`bundle`, reaching the store through
+/// `pkg::ManifoldPkg::install_file`) hit the `expect` above, and with
+/// `panic = "abort"` that took down every suite registered after it: 23
+/// registration groups never executed.
+///
+/// Compiled only into test builds. The production boot path keeps the panic,
+/// because a kernel that quietly mounts an empty filesystem under a caller
+/// that expects the real disk is worse than one that stops. The mount is
+/// announced on serial so a test-mode run can never mistake this root for the
+/// real one.
+///
+/// Root only: the pseudo-filesystems `init_vfs` mounts at `/proc`, `/sys`,
+/// `/dev` and `/pipe` need driver state the harness has not brought up. A
+/// lookup under those prefixes routes to this root and returns `NotFound`,
+/// which a test can handle; it cannot abort the machine.
+///
+/// ponytail: on-first-use rather than an explicit call at the top of
+/// `test_main`, which is the honest place for it — `testing/runner.rs` is
+/// owned by another change this round. Upgrade path: call `fs::init_vfs()` (or
+/// this function) from `test_main` before `register_all`, then delete this.
+#[cfg(any(test, feature = "test-mode"))]
+fn ensure_test_vfs() {
+    let mut guard = VFS.lock();
+    if guard.is_some() {
+        return;
+    }
+    let mut v = Vfs::new();
+    let _ = v.mount(
+        "/",
+        Box::new(crate::fs::manifold_fs::ManifoldFS::new_ramfs()),
+    );
+    *guard = Some(v);
+    drop(guard);
+    crate::serial_println!(
+        "[VFS] test-mode: mounted ramfs root on first use (harness runs before fs::init_vfs)"
+    );
 }
 
 /// Returns `true` if the VFS has been initialized.
@@ -896,7 +942,48 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `testing::runner::test_main()` runs several boot layers before
+    /// `fs::init_vfs()`, so every suite reaches `with_vfs` with `VFS == None`.
+    /// Before `ensure_test_vfs`, that `expect` aborted the machine — under
+    /// `panic = "abort"` there is no unwinding, so the run stopped dead and
+    /// the 23 registration groups after `bundle` never executed. This asserts
+    /// the harness has a usable root, and asserts it in the `vfs` suite, which
+    /// registers before every suite that depends on it.
+    fn test_with_vfs_usable_before_init_vfs() -> TestResult {
+        test_assert!(
+            with_vfs(|vfs| !vfs.mounts.is_empty()),
+            "with_vfs must expose at least a root mount"
+        );
+        test_assert!(
+            is_vfs_initialized(),
+            "VFS must report initialized once with_vfs has returned"
+        );
+        // The root must hold bytes, not merely exist: this is the path
+        // `bundle`'s store provisioning takes through `pkg::install_file`.
+        let path = "/vfs-selftest.bin";
+        let handle = match with_vfs(|vfs| vfs.create(path))
+            .or_else(|_| with_vfs(|vfs| vfs.lookup_follow(path)))
+        {
+            Ok(h) => h,
+            Err(_) => return TestResult::Fail("root mount must accept a create"),
+        };
+        let bytes = b"seal";
+        test_assert_eq!(with_vfs(|vfs| vfs.write(handle, bytes, 0)).unwrap_or(0), 4);
+        let mut buf = [0u8; 4];
+        test_assert_eq!(
+            with_vfs(|vfs| vfs.read(handle, &mut buf, 0)).unwrap_or(0),
+            4
+        );
+        test_assert_eq!(&buf, bytes);
+        let _ = with_vfs(|vfs| vfs.unlink(path));
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "vfs::with_vfs_usable_before_init_vfs",
+            test_with_vfs_usable_before_init_vfs,
+        );
         crate::testing::register_test(
             "vfs::devfoo_is_not_inside_dev_mount",
             test_devfoo_is_not_inside_dev_mount,
