@@ -5167,6 +5167,75 @@ inside a job that had never executed.
 
 The audit works. It has always worked. It was just never *asked*.
 
+## The Gate That Reads The Documentation And Not The Code
+
+I have to write this section carefully, because the gate it is about scans this
+file, and if I name the thing plainly the gate will fail and you will not be
+reading this at all. So: there is a host scripting language, extremely popular,
+named after a comedy troupe. You know the one. I am going to call it **the
+language** for the next several paragraphs and we will both cope.
+
+`Verify Seal OS language hygiene` exists to keep host scripting out of a kernel
+that is supposed to be `no_std` Rust all the way down. Good goal. Real risk. I
+wrote it on purpose.
+
+It works by scanning `README.md`, `docs/`, `.github/workflows/`, and `scripts/`
+for a list of banned substrings, and failing if it finds one.
+
+Note the list of things it scans. Note, in particular, what is not on it.
+
+It does not scan source code.
+
+When it finally ran — twenty-one gates deep into a pipeline that had never
+reached this far — it produced seven findings. Three were prose in this README,
+in sentences making fun of *other people's* systems for linking a 400 MB runtime.
+Four were entries in `docs/` accurately stating that the `tests/` directory
+contains host tests written in the language, and that `epsilon_core` is a
+compatibility area for it.
+
+Those four are true. There are eighty-nine source files in that language in this
+repository. The gate cannot see a single one of them.
+
+So the sole thing this gate has ever caught, in its entire existence, is the
+documentation being honest about the contents of the repository it documents.
+
+I want to be fair to it. It does enforce something real: it stops a host runtime
+from being introduced *by documentation*, which is roughly how these things
+actually spread — a README suggests a helper script, someone writes the helper
+script, six months later the build depends on it. Catching that at the doc layer
+is not stupid.
+
+But a check that reads the description and never the thing being described is a
+particular kind of failure, and it is the same one this entire document has been
+circling: **two things that are each individually reasonable, disagreeing about
+what they are talking about.** The gate believes it is enforcing a property of
+the codebase. It is enforcing a property of the prose. Those were the same thing
+only for as long as nobody looked.
+
+There is an allowlist, `language_line_allowed`, containing entries like
+`host runner` and `host ci` — phrases that mark a mention as being about the
+quarantined host side rather than the kernel. So past me understood the problem
+and built the mechanism. Past me then never ran the gate, so the mechanism was
+never exercised, and the documentation drifted freely for however long
+`docs/repository-layout.md` has existed.
+
+The fix is not mine to make casually, because the honest options are:
+
+1. Reword the docs so they stop saying the tests are written in the language —
+   which makes them false, to make a light turn green.
+2. Extend the allowlist so accurate descriptions of the quarantined surface are
+   permitted — which is what the mechanism is for, and which requires deciding
+   exactly what remains catchable afterward.
+3. Make the gate scan source, at which point it finds eighty-nine files and the
+   conversation becomes a very different one.
+
+Option 1 is off the table. A repository that edits its own documentation into
+inaccuracy in order to satisfy its own automated check has invented a machine for
+lying to itself, and has done so with a straight face and a green checkmark.
+
+Option 3 is honest and enormous. Option 2 is honest and small. I know which one
+gets done first, and I know that is not the same as knowing which one is right.
+
 ## Final Words
 
 If you've read this far, congratulations. You now know more about Seal OS than 99% of humanity. You know its strengths, its weaknesses, its jokes, and my regrets.
