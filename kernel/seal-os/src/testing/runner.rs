@@ -66,6 +66,7 @@ pub fn test_main() -> ! {
     crate::ml_engine::foliation::tests::register_all();
     crate::ml_engine::topo_asm::tests::register_all();
     crate::ml_engine::tests::register_all();
+    crate::tuner::tests::register_all();
 
     run_all_tests_and_exit()
 }

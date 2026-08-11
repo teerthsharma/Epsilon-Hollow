@@ -45,9 +45,11 @@ pub mod net;
 #[cfg(not(test))]
 pub mod pkg;
 pub mod process;
+pub mod sandbox;
 pub mod security;
 pub mod sync;
 pub mod syscall;
+pub mod tuner;
 #[cfg(not(test))]
 pub mod wm;
 
