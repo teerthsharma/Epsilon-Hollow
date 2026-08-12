@@ -18,25 +18,36 @@ export default function ConsolePanel() {
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
+        <button
+          onClick={clearLogs}
+          className="hover:text-gov-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gov-accent rounded p-0.5 transition-colors"
+          aria-label="Clear console logs"
+          title="Clear console logs"
+        >
           <Trash2 size={10} />
         </button>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
-        {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
+        {logs.length === 0 ? (
+          <div className="text-gov-dim/50 italic h-full flex items-center justify-center">
+            Console is empty. Awaiting telemetry...
           </div>
-        ))}
+        ) : (
+          logs.map((log, i) => (
+            <div
+              key={i}
+              className={
+                log.includes("failed") || log.includes("error")
+                  ? "text-gov-error"
+                  : log.includes("complete") || log.includes("winner")
+                  ? "text-gov-ok"
+                  : "text-gov-accent/80"
+              }
+            >
+              {log}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
