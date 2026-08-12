@@ -186,6 +186,9 @@ export interface AppStore {
   setRunning: (r: boolean) => void;
 }
 
+// OPTIMIZATION: Do not destructure from useStore() directly (e.g., const { a, b } = useStore()).
+// Always use individual selectors (e.g., const a = useStore((s) => s.a)) to prevent components
+// from re-rendering on ANY store update.
 export const useStore = create<AppStore>((set) => ({
   datasets: [],
   selectedDataset: null,

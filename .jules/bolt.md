@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2024-08-12 - Fixed Zustand Full Store Subscription Re-renders
+**Learning:** In React with Zustand, destructuring multiple values from the full store at once (`const { a, b } = useStore();`) subscribes the component to the ENTIRE store. Any state change anywhere in the store causes these components to re-render, leading to massive O(N) performance hits (e.g., typing in a console updating logs causes the entire PipelineMixer to re-render).
+**Action:** Always use individual selectors (`const a = useStore((s) => s.a);`) for each property, ensuring the component only re-renders when those specific pieces of state change.
