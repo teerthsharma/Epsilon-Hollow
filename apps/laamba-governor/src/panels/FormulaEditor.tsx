@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
 import { Code, Play, Save, Wrench, BookOpen, X, Loader2, ChevronRight } from "lucide-react";
+import { useShallow } from 'zustand/react/shallow';
 
 const BUILTINS = [
   { name: "pca", sig: "pca(x, dim=3)", desc: "PCA projection" },
@@ -57,7 +58,8 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const { selectedDataset, addLog } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { selectedDataset, addLog  } = useStore(useShallow(s => ({ selectedDataset: s.selectedDataset, addLog: s.addLog })));
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);

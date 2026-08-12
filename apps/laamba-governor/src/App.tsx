@@ -10,9 +10,11 @@ import ParameterRoll from "./panels/ParameterRoll";
 import TopologyScope from "./panels/TopologyScope";
 import ConsolePanel from "./panels/ConsolePanel";
 import Toolbar from "./components/Toolbar";
+import { useShallow } from 'zustand/react/shallow';
 
 export default function App() {
-  const { setDatasets, addLog } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { setDatasets, addLog  } = useStore(useShallow(s => ({ setDatasets: s.setDatasets, addLog: s.addLog })));
 
   useEffect(() => {
     (async () => {

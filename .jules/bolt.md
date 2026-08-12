@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2026-08-10 - Prevented O(N) Rendering with Zustand useShallow
+**Learning:** In React applications using Zustand, destructuring from the full store (`const { a, b } = useStore()`) implicitly subscribes the component to the *entire* state object. This means any state update, even completely unrelated to `a` or `b`, will trigger a re-render of the component. In applications with many panels or frequent state updates, this creates a massive O(N) re-rendering bottleneck.
+**Action:** Always use individual selectors (`useStore(s => s.a)`) or `useShallow` (`useStore(useShallow(s => ({ a: s.a })))`) to explicitly restrict the component's subscription to only the state slices it actually depends on, preventing unnecessary global re-renders.

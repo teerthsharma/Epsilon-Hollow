@@ -14,6 +14,7 @@ import "reactflow/dist/style.css";
 import { Swords, Loader2, FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store";
+import { useShallow } from 'zustand/react/shallow';
 
 const ORIGINAL_STYLES: Record<string, any> = {
   src: { background: "#FF8C00", color: "#000", border: "none", width: 130, fontSize: 11, fontWeight: 700 },
@@ -63,7 +64,16 @@ const TOPO_MAP: Record<string, string> = {
 };
 
 export default function PipelineMixer() {
-  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore();
+  // ⚡ Bolt: Use useShallow to prevent unnecessary re-renders of the entire component when unrelated state changes. Impact: O(1) rendering instead of O(N) when other panels update.
+  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning  } = useStore(useShallow(s => ({
+    selectedDataset: s.selectedDataset,
+    setBattleResult: s.setBattleResult,
+    addLog: s.addLog,
+    addExperiment: s.addExperiment,
+    updateExperiment: s.updateExperiment,
+    isRunning: s.isRunning,
+    setRunning: s.setRunning
+  })));
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [templates, setTemplates] = useState<{ name: string; content: any }[]>([]);
