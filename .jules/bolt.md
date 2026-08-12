@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2026-08-08 - Prevent Full App Re-renders by using Zustand Atomic Selectors
+**Learning:** Destructuring multiple properties directly from `useStore()` without providing a selector makes the React component subscribe to every single state change in the Zustand store. If the store includes high-frequency data (like logs, streaming text, or 3D metrics), this causes unnecessary and expensive re-renders across the entire application interface.
+**Action:** When using Zustand, always use atomic, individual selectors (e.g. `const addLog = useStore(s => s.addLog)`) or explicitly type `useShallow` for group destructuring to ensure strict reference equality checks and isolate renders only to components actively depending on that specific state update.

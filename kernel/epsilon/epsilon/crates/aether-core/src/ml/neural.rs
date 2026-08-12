@@ -44,7 +44,7 @@ impl Activation {
         match self {
             Activation::Softmax => {
                 let data_borrow = x.data.lock();
-                let max_val = data_borrow.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+                let max_val = data_borrow.iter().fold(core::f64::NEG_INFINITY, |a, &b| a.max(b));
                 let mut sum = 0.0;
                 let data: Vec<f64> = data_borrow
                     .iter()
@@ -516,7 +516,7 @@ impl Default for TrainingResult {
     fn default() -> Self {
         Self {
             epochs: 0,
-            final_loss: f64::MAX,
+            final_loss: core::f64::MAX,
             converged: false,
             loss_history: Vec::new(),
         }

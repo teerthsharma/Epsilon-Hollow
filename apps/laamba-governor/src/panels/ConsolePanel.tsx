@@ -3,7 +3,8 @@ import { Terminal, Trash2 } from "lucide-react";
 import { useStore } from "../store";
 
 export default function ConsolePanel() {
-  const { logs, clearLogs } = useStore();
+  const logs = useStore(s => s.logs);
+  const clearLogs = useStore(s => s.clearLogs);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

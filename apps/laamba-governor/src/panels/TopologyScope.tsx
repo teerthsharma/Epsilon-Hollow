@@ -24,7 +24,8 @@ const TOPO_COLORS: Record<string, string> = {
 
 // ── Persistence Diagram (from vitals) ──
 function PersistenceDiagram() {
-  const { vitalsResult, analysisResult } = useStore();
+  const vitalsResult = useStore(s => s.vitalsResult);
+  const analysisResult = useStore(s => s.analysisResult);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -168,7 +169,8 @@ function PersistenceDiagram() {
 
 // ── Betti Curves (from vitals) ──
 function BettiCurves() {
-  const { vitalsResult, analysisResult } = useStore();
+  const vitalsResult = useStore(s => s.vitalsResult);
+  const analysisResult = useStore(s => s.analysisResult);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -305,7 +307,8 @@ function PointCloud({ data, color }: { data: number[][]; color: string }) {
 }
 
 function ManifoldViewer() {
-  const { vitalsResult, analysisResult } = useStore();
+  const vitalsResult = useStore(s => s.vitalsResult);
+  const analysisResult = useStore(s => s.analysisResult);
 
   // Use REAL data points from backend PCA, NOT synthetic RNG
   const points = useMemo(() => {
@@ -346,7 +349,8 @@ function ManifoldViewer() {
 
 // ── Convergence (from battle) ──
 function ConvergenceView() {
-  const { battleResult, analysisResult } = useStore();
+  const battleResult = useStore(s => s.battleResult);
+  const analysisResult = useStore(s => s.analysisResult);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
