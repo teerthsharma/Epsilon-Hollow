@@ -24,3 +24,8 @@
 ## 2024-08-04 - Accessible Focus States for Toolbar Buttons
 **Learning:** Found that icon-only buttons or primary action buttons in toolbars often lack clear keyboard focus indicators, making them difficult for keyboard navigators to use. Additionally, when these buttons are disabled, they simply show lower opacity but no `cursor-not-allowed` pointer, which can lead users to think their click simply didn't register.
 **Action:** When implementing toolbar buttons, always include `focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none` to ensure keyboard navigation is clear and accessible. Furthermore, always pair `disabled:opacity-50` with `disabled:cursor-not-allowed` for unambiguous disabled visual feedback.
+
+
+## 2024-08-13 - [Journaling and Git Hygiene Constraints]
+**Learning:** Overwriting `.jules/palette.md` using `>` in bash erases all previous critical learnings. Unintended lockfile generation (like `pnpm-lock.yaml`) pollutes the commit and violates size constraints. Routine work (like adding ARIA labels) shouldn't be journaled unless it reveals a unique project-specific pattern.
+**Action:** Always use append mode (`>>`) with a preceding double newline for journal entries. Always verify `git status` and actively remove untracked generated lockfiles before submitting.
