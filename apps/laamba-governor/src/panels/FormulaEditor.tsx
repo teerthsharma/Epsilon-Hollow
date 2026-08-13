@@ -57,7 +57,11 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const { selectedDataset, addLog } = useStore();
+    // ⚡ Bolt: Extract Zustand Selectors to Prevent Unnecessary Re-renders
+  // Extracting individual properties with selectors rather than destructuring the entire store
+  // prevents components from re-rendering whenever ANY unrelated state in the store changes.
+const selectedDataset = useStore(s => s.selectedDataset);
+  const addLog = useStore(s => s.addLog);
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);
