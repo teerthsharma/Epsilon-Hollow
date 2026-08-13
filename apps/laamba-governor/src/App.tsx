@@ -12,7 +12,11 @@ import ConsolePanel from "./panels/ConsolePanel";
 import Toolbar from "./components/Toolbar";
 
 export default function App() {
-  const { setDatasets, addLog } = useStore();
+    // ⚡ Bolt: Extract Zustand Selectors to Prevent Unnecessary Re-renders
+  // Extracting individual properties with selectors rather than destructuring the entire store
+  // prevents components from re-rendering whenever ANY unrelated state in the store changes.
+const setDatasets = useStore(s => s.setDatasets);
+  const addLog = useStore(s => s.addLog);
 
   useEffect(() => {
     (async () => {

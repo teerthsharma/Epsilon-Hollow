@@ -63,7 +63,16 @@ const TOPO_MAP: Record<string, string> = {
 };
 
 export default function PipelineMixer() {
-  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore();
+    // ⚡ Bolt: Extract Zustand Selectors to Prevent Unnecessary Re-renders
+  // Extracting individual properties with selectors rather than destructuring the entire store
+  // prevents components from re-rendering whenever ANY unrelated state in the store changes.
+const selectedDataset = useStore(s => s.selectedDataset);
+  const setBattleResult = useStore(s => s.setBattleResult);
+  const addLog = useStore(s => s.addLog);
+  const addExperiment = useStore(s => s.addExperiment);
+  const updateExperiment = useStore(s => s.updateExperiment);
+  const isRunning = useStore(s => s.isRunning);
+  const setRunning = useStore(s => s.setRunning);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [templates, setTemplates] = useState<{ name: string; content: any }[]>([]);

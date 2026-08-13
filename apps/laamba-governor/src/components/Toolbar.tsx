@@ -5,19 +5,20 @@ import { useState } from "react";
 import FormulaEditor from "../panels/FormulaEditor";
 
 export default function Toolbar() {
-  const {
-    selectedDataset,
-    isRunning,
-    setRunning,
-    addLog,
-    setBattleResult,
-    setAnalysisResult,
-    setRankResult,
-    setRegressResult,
-    setClassifyResult,
-    addExperiment,
-    updateExperiment,
-  } = useStore();
+    // ⚡ Bolt: Extract Zustand Selectors to Prevent Unnecessary Re-renders
+  // Extracting individual properties with selectors rather than destructuring the entire store
+  // prevents components from re-rendering whenever ANY unrelated state in the store changes.
+const selectedDataset = useStore(s => s.selectedDataset);
+  const isRunning = useStore(s => s.isRunning);
+  const setRunning = useStore(s => s.setRunning);
+  const addLog = useStore(s => s.addLog);
+  const setBattleResult = useStore(s => s.setBattleResult);
+  const setAnalysisResult = useStore(s => s.setAnalysisResult);
+  const setRankResult = useStore(s => s.setRankResult);
+  const setRegressResult = useStore(s => s.setRegressResult);
+  const setClassifyResult = useStore(s => s.setClassifyResult);
+  const addExperiment = useStore(s => s.addExperiment);
+  const updateExperiment = useStore(s => s.updateExperiment);
 
   const [showFormula, setShowFormula] = useState(false);
 
