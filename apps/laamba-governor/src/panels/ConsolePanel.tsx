@@ -18,7 +18,12 @@ export default function ConsolePanel() {
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
+        <button
+          onClick={clearLogs}
+          className="hover:text-gov-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gov-accent rounded p-1"
+          title="Clear console"
+          aria-label="Clear console"
+        >
           <Trash2 size={10} />
         </button>
       </div>
