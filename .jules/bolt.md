@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2024-10-25 - Extract Zustand Selectors in React App Root
+**Learning:** Found a full-store destructuring pattern `const { setDatasets, addLog } = useStore();` in the root `App.tsx` component using Zustand. In React, this anti-pattern subscribes the component to the entire store, causing the entire root component (and thus the whole app tree) to re-render unnecessarily whenever *any* state in the store changes, even if it's unrelated to the extracted functions.
+**Action:** When optimizing Zustand stores in React, always extract properties using individual selectors `useStore(s => s.property)` rather than destructuring the hook's return object directly, especially in top-level components, to maintain referential equality and prevent massive re-render cascades.
