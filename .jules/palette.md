@@ -24,3 +24,7 @@
 ## 2024-08-04 - Accessible Focus States for Toolbar Buttons
 **Learning:** Found that icon-only buttons or primary action buttons in toolbars often lack clear keyboard focus indicators, making them difficult for keyboard navigators to use. Additionally, when these buttons are disabled, they simply show lower opacity but no `cursor-not-allowed` pointer, which can lead users to think their click simply didn't register.
 **Action:** When implementing toolbar buttons, always include `focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none` to ensure keyboard navigation is clear and accessible. Furthermore, always pair `disabled:opacity-50` with `disabled:cursor-not-allowed` for unambiguous disabled visual feedback.
+
+## 2024-08-15 - ARIA Labels and Focus States for Icon-Only Buttons
+**Learning:** Found several icon-only buttons (like `Trash2` for clearing logs, `Plus` for importing CSV, `X` for closing editors) in the LAAMBA Governor application that lacked accessible labels and focus indicators, making them difficult to use for screen readers and keyboard users.
+**Action:** Always add explicit `aria-label` attributes and `title` tooltips to icon-only buttons. Furthermore, ensure robust keyboard accessibility by utilizing Tailwind's focus-visible utilities (e.g., `focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gov-accent`).
