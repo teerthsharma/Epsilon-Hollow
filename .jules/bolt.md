@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2024-08-15 - Zustand Selector Optimizations
+**Learning:** Destructuring directly from `useStore()` (e.g., `const { value } = useStore()`) subscribes the component to the *entire* state object, causing it to unnecessarily re-render whenever *any* state property changes (even unrelated ones like a high-frequency telemetry log).
+**Action:** Always extract individual selectors directly (e.g., `const value = useStore(s => s.value)`). This ensures the component only re-renders when the specifically requested slice of state changes, preventing large O(N) rendering trees from being needlessly evaluated.
