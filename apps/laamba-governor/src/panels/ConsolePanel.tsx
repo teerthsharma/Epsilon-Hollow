@@ -18,12 +18,25 @@ export default function ConsolePanel() {
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
+        <button
+          onClick={clearLogs}
+          className="hover:text-gov-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-gov-accent rounded"
+          title="Clear console logs"
+          aria-label="Clear console logs"
+        >
           <Trash2 size={10} />
         </button>
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
-        {logs.map((log, i) => (
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed"
+        role="log"
+        aria-live="polite"
+      >
+        {logs.length === 0 || (logs.length === 1 && logs[0] === "> Console cleared") ? (
+          <div className="text-gov-dim/50 italic select-none">Console is empty</div>
+        ) : (
+          logs.map((log, i) => (
           <div
             key={i}
             className={
@@ -36,7 +49,8 @@ export default function ConsolePanel() {
           >
             {log}
           </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
