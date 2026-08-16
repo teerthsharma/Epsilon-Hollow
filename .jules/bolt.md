@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2026-08-16 - Zustand State Slicing with useShallow
+**Learning:** Destructuring multiple properties directly from a Zustand `useStore` hook (e.g., `const { a, b } = useStore()`) implicitly subscribes the component to the entire store. This causes the component to re-render whenever *any* state in the store updates, even if the specific destructured properties haven't changed.
+**Action:** Always extract Zustand states either as individual selectors (`useStore(s => s.a)`) or group them using `useShallow` (`useStore(useShallow(s => ({ a: s.a, b: s.b })))`) to tightly scope the subscription and prevent unrelated state changes from causing re-renders.

@@ -1,8 +1,20 @@
+import { useShallow } from 'zustand/react/shallow';
 import { GitCommit, Trash2, BarChart3 } from "lucide-react";
-import { useStore } from "../store";
+import { useStore, type AppStore } from '../store';
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore(useShallow((s: AppStore) => ({
+    experiments: s.experiments,
+    analysisResult: s.analysisResult,
+    battleResult: s.battleResult,
+    regressResult: s.regressResult,
+    classifyResult: s.classifyResult,
+    setAnalysisResult: s.setAnalysisResult,
+    setBattleResult: s.setBattleResult,
+    setRegressResult: s.setRegressResult,
+    setClassifyResult: s.setClassifyResult
+  })));
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;

@@ -1,9 +1,14 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useEffect, useRef } from "react";
 import { Terminal, Trash2 } from "lucide-react";
-import { useStore } from "../store";
+import { useStore, type AppStore } from '../store';
 
 export default function ConsolePanel() {
-  const { logs, clearLogs } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { logs, clearLogs } = useStore(useShallow((s: AppStore) => ({
+    logs: s.logs,
+    clearLogs: s.clearLogs
+  })));
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

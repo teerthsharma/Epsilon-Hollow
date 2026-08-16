@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ReactFlow, {
   Background,
@@ -13,7 +14,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { Swords, Loader2, FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../store";
+import { useStore, type AppStore } from '../store';
 
 const ORIGINAL_STYLES: Record<string, any> = {
   src: { background: "#FF8C00", color: "#000", border: "none", width: 130, fontSize: 11, fontWeight: 700 },
@@ -63,7 +64,16 @@ const TOPO_MAP: Record<string, string> = {
 };
 
 export default function PipelineMixer() {
-  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { selectedDataset, setBattleResult, addLog, addExperiment, updateExperiment, isRunning, setRunning } = useStore(useShallow((s: AppStore) => ({
+    selectedDataset: s.selectedDataset,
+    setBattleResult: s.setBattleResult,
+    addLog: s.addLog,
+    addExperiment: s.addExperiment,
+    updateExperiment: s.updateExperiment,
+    isRunning: s.isRunning,
+    setRunning: s.setRunning
+  })));
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [templates, setTemplates] = useState<{ name: string; content: any }[]>([]);

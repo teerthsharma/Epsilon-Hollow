@@ -1,6 +1,7 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../store";
+import { useStore, type AppStore } from '../store';
 import { Code, Play, Save, Wrench, BookOpen, X, Loader2, ChevronRight } from "lucide-react";
 
 const BUILTINS = [
@@ -57,7 +58,11 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const { selectedDataset, addLog } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { selectedDataset, addLog } = useStore(useShallow((s: AppStore) => ({
+    selectedDataset: s.selectedDataset,
+    addLog: s.addLog
+  })));
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);

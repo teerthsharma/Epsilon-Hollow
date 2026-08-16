@@ -1,7 +1,8 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "./store";
+import { useStore, type AppStore } from './store';
 import SampleBay from "./panels/SampleBay";
 import EngineRack from "./panels/EngineRack";
 import PipelineMixer from "./panels/PipelineMixer";
@@ -12,7 +13,11 @@ import ConsolePanel from "./panels/ConsolePanel";
 import Toolbar from "./components/Toolbar";
 
 export default function App() {
-  const { setDatasets, addLog } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { setDatasets, addLog } = useStore(useShallow((s: AppStore) => ({
+    setDatasets: s.setDatasets,
+    addLog: s.addLog
+  })));
 
   useEffect(() => {
     (async () => {
