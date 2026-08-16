@@ -1,8 +1,9 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useState, useRef, useEffect, useMemo } from "react";
 import { Activity, Box, BarChart3, GitGraph } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useStore } from "../store";
+import { useStore, type AppStore } from '../store';
 import * as THREE from "three";
 
 const MODES = [
@@ -24,7 +25,11 @@ const TOPO_COLORS: Record<string, string> = {
 
 // ── Persistence Diagram (from vitals) ──
 function PersistenceDiagram() {
-  const { vitalsResult, analysisResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { vitalsResult, analysisResult } = useStore(useShallow((s: AppStore) => ({
+    vitalsResult: s.vitalsResult,
+    analysisResult: s.analysisResult
+  })));
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -168,7 +173,11 @@ function PersistenceDiagram() {
 
 // ── Betti Curves (from vitals) ──
 function BettiCurves() {
-  const { vitalsResult, analysisResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { vitalsResult, analysisResult } = useStore(useShallow((s: AppStore) => ({
+    vitalsResult: s.vitalsResult,
+    analysisResult: s.analysisResult
+  })));
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -305,7 +314,11 @@ function PointCloud({ data, color }: { data: number[][]; color: string }) {
 }
 
 function ManifoldViewer() {
-  const { vitalsResult, analysisResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { vitalsResult, analysisResult } = useStore(useShallow((s: AppStore) => ({
+    vitalsResult: s.vitalsResult,
+    analysisResult: s.analysisResult
+  })));
 
   // Use REAL data points from backend PCA, NOT synthetic RNG
   const points = useMemo(() => {
@@ -346,7 +359,11 @@ function ManifoldViewer() {
 
 // ── Convergence (from battle) ──
 function ConvergenceView() {
-  const { battleResult, analysisResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { battleResult, analysisResult } = useStore(useShallow((s: AppStore) => ({
+    battleResult: s.battleResult,
+    analysisResult: s.analysisResult
+  })));
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {

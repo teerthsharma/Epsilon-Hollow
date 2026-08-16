@@ -1,8 +1,17 @@
-import { useStore } from "../store";
+import { useShallow } from 'zustand/react/shallow';
+import { useStore, type AppStore } from '../store';
 import { Cpu, TrendingUp, Hash, Gauge, BarChart3, Tag } from "lucide-react";
 
 export default function ParameterRoll() {
-  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors using useShallow to prevent full-store re-renders on unrelated state changes
+  const { vitalsResult, analysisResult, battleResult, regressResult, classifyResult, selectedDataset } = useStore(useShallow((s: AppStore) => ({
+    vitalsResult: s.vitalsResult,
+    analysisResult: s.analysisResult,
+    battleResult: s.battleResult,
+    regressResult: s.regressResult,
+    classifyResult: s.classifyResult,
+    selectedDataset: s.selectedDataset
+  })));
 
   const vitals = vitalsResult?.vitals || analysisResult?.vitals;
   const analysis = analysisResult;
