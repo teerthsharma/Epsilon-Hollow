@@ -5,7 +5,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useStore, type Dataset } from "../store";
 
 export default function SampleBay() {
-  const { datasets, selectedDataset, selectDataset, setVitalsResult, addLog, setDatasets } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors to prevent full app re-renders
+  const datasets = useStore(s => s.datasets);
+  const selectedDataset = useStore(s => s.selectedDataset);
+  const selectDataset = useStore(s => s.selectDataset);
+  const setVitalsResult = useStore(s => s.setVitalsResult);
+  const addLog = useStore(s => s.addLog);
+  const setDatasets = useStore(s => s.setDatasets);
   const [loading, setLoading] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
