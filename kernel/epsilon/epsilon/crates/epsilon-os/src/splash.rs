@@ -36,7 +36,7 @@ pub fn print_splash(config: &LlmConfig, dim: usize, capacity: usize, theorems_pa
     println!("    ║  Geometrical Scientific Rust OS                ║");
     println!("    ║                                               ║");
     println!(
-        "    ║  Theorems: T1-T10 verified ({}/10)    ║",
+        "    ║  Theorems: T1-T10 verified ({})    ║",
         if theorems_passed == 10 {
             "10/10 ✓".to_string()
         } else {

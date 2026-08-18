@@ -284,17 +284,22 @@ fn handle_store(fs: &mut ManifoldFS, input: &str) {
     match fs.store_text(name, content, 0) {
         Ok(id) => {
             let payload_size = 64 * 3 * 8;
+            let (size_info, ratio_str) = if payload_size >= content.len() {
+                let expansion = payload_size as f64 / content.len().max(1) as f64;
+                (
+                    format!("{}B manifold", payload_size),
+                    format!("{:.1}x expansion", expansion),
+                )
+            } else {
+                let compression = content.len() as f64 / payload_size as f64;
+                (
+                    format!("{}B manifold", payload_size),
+                    format!("{:.1}x compression", compression),
+                )
+            };
             println!(
-                "  Stored '{}' → inode {} ({}B → {}B manifold, {:.0}x compression)",
-                name,
-                id,
-                content.len(),
-                payload_size,
-                if payload_size > 0 {
-                    content.len() as f64 / payload_size as f64
-                } else {
-                    0.0
-                }
+                "  Stored '{}' → inode {} ({}B → {}, {})",
+                name, id, content.len(), size_info, ratio_str,
             );
         }
         Err(e) => println!("  Error: {e}"),
@@ -392,18 +397,18 @@ fn handle_race(size_str: &str) {
     let bench = benchmark_transfer(size_bytes);
 
     println!(
-        "  Traditional cp:      {:>10} ({}/s)",
+        "  Traditional cp (model): {:>10} ({}/s, assumed 2GB/s)",
         format_duration_ns(bench.traditional_ns),
         format_bytes((size_bytes as f64 / (bench.traditional_ns as f64 / 1e9)) as u64)
     );
     println!(
-        "  Manifold teleport:   {:>10} (O(1), {} points × 3D × 8B = {}B payload)",
+        "  Manifold teleport:      {:>10} (O(1), {} points × 3D × 8B = {}B payload)",
         format_duration_ns(bench.teleport_ns),
         64,
         bench.payload_size
     );
     println!();
-    println!("  Speedup: {:.0}x", bench.speedup);
+    println!("  Speedup (model/measured): {:.0}x", bench.speedup);
     println!(
         "  Compression: {} → {} bytes ({:.0}x)",
         format_bytes(size_bytes),
