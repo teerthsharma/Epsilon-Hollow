@@ -20,6 +20,7 @@
 </p>
 
 <p align="center">
+  <a href="https://doi.org/10.5281/zenodo.20264206"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20264206-1682D4?style=flat-square" alt="DOI 10.5281/zenodo.20264206"></a>
   <a href=".github/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/teerthsharma/epsilon-hollow/ci.yml?branch=main&label=CI&style=flat-square" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/teerthsharma/epsilon-hollow?style=flat-square&color=00aaff" alt="License: MIT"></a>
   <a href="#build-and-run"><img src="https://img.shields.io/badge/rust-stable-orange?style=flat-square&logo=rust" alt="Rust stable"></a>
