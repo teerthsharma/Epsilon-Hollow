@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "Epsilon-Hollow (Seal OS): an operating system whose state is topology on the 2-sphere"
+abstract: >-
+  A bare-metal x86_64 microkernel research operating system, written
+  Rust-first as a no_std kernel with minimal assembly (AP trampoline,
+  CPU idle). No POSIX, no libc. Operating-system state is represented as
+  topology on the 2-sphere, and scheduling, memory, and device state are
+  read through that geometric representation rather than through
+  conventional table structures.
+authors:
+  - family-names: Sharma
+    given-names: Teerth
+    email: teerths57@gmail.com
+version: 0.1.1
+date-released: 2026-08-18
+url: "https://github.com/teerthsharma/Epsilon-Hollow"
+repository-code: "https://github.com/teerthsharma/Epsilon-Hollow"
+license: MIT
+keywords:
+  - operating systems
+  - microkernel
+  - bare metal
+  - x86-64
+  - Rust
+  - no_std
+  - computational topology
+  - geometric scheduling
