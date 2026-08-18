@@ -236,10 +236,13 @@ pub fn kernel_main(info: &BootInfo) -> ! {
     run_manifold_teleport_bench();
     run_manifold_lookup_bench();
 
-    // Layer 1.1: Bring up application processors (GS base for this_cpu)
-    cpu::smp::smp_init();
+    // Layer 1.1: BSP per-CPU data (GS base for this_cpu, needed by the idle
+    // stack switch below). AP bring-up is NOT here — it reads the ACPI MADT,
+    // which `drivers::acpi::init` does not parse until `kernel_main_continue`,
+    // so it runs from `cpu::smp::smp_start_aps()` after `init_scheduler()`.
+    cpu::smp::smp_init_bsp();
     serial_println!(
-        "[BOOT] SMP initialised, free frames = {}",
+        "[BOOT] SMP BSP initialised, free frames = {}",
         memory::phys::free_count()
     );
 
@@ -540,6 +543,31 @@ fn boot_graphical(fb: &'static Framebuffer) {
     serial_println!("[BOOT] Scheduler first yield start");
     process::scheduler::yield_current();
     serial_println!("[BOOT] Scheduler first yield returned");
+
+    // Layer 1.1b: application processors. This is the correct call site — it is
+    // the earliest point where every precondition holds: ACPI has parsed the
+    // MADT topology, the local APIC is up, a scheduler exists for an AP to tick
+    // once it leaves the trampoline, and `interrupts::ticks()` is advancing (the
+    // DHCP poll below depends on ticks the same way and sits on this same side).
+    //
+    // ponytail: the call is left commented out because arming it deadlocks the
+    // boot. Until 2026-08-18 `smp_init` ran at the top of `kernel_main`, ahead of
+    // `drivers::acpi::init`, so `acpi::cpu_count()` was read before it was
+    // written, the `cpu_count <= 1` early return always fired, and no AP ever
+    // started. That ordering bug was masking a second one. Measured with
+    // `-smp 4` on QEMU 11.1.0 + OVMF: the boot reaches
+    // `[BOOT] Scheduler first yield returned` and then stops, with the local APIC
+    // timer confirmed live (2 `[THERMAL]` lines) so the tick-spin is not the
+    // cause. Mechanism: `timer_handler_apic` calls `thermal_governor_step`, which
+    // `serial_println!`s under a global lock, and once an AP is ticking both CPUs
+    // take that lock from interrupt context.
+    // Ceiling: single-core forever, so per-CPU runqueues, work stealing, the
+    // reschedule IPI and the TLB shootdown IPI stay dead code.
+    // Upgrade path: make the timer handler's logging lock-free or drop it on
+    // contention (`try_lock` and skip), audit every `serial_println!` reachable
+    // from interrupt context for the same pattern, then uncomment this line and
+    // gate it on a boot proof asserting `[SMP] N CPUs online` with N > 1.
+    // cpu::smp::smp_start_aps();
 
     syscall::table::init_syscall_fs();
     serial_println!("[BOOT] Syscall FS ready");
@@ -2050,6 +2078,14 @@ fn boot_serial() {
     serial_println!("[BOOT] No framebuffer — serial-only mode");
     init_theorems();
     init_scheduler();
+    // ponytail: the serial-only path stays single-core. `smp_start_aps` needs
+    // `interrupts::ticks()` to be advancing, which on the graphical path is only
+    // true after the scheduler's first yield, and this path has no yield to
+    // anchor to. Ceiling: no AP ever starts when the firmware reports no
+    // framebuffer. Upgrade path: place the call after the first
+    // `yield_current()` here too, once a headless boot can be run under QEMU
+    // with `-display none` and a firmware that reports no GOP, which nothing in
+    // this tree can currently produce.
     init_manifold_pkg();
     init_aether_lang();
     init_drivers();
