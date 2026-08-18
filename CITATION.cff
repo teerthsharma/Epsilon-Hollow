@@ -13,8 +13,9 @@ authors:
   - family-names: Sharma
     given-names: Teerth
     email: teerths57@gmail.com
-version: 0.1.1
-date-released: 2026-08-18
+version: 0.4.7.5
+date-released: 2026-06-17
+doi: 10.5281/zenodo.20264206
 url: "https://github.com/teerthsharma/Epsilon-Hollow"
 repository-code: "https://github.com/teerthsharma/Epsilon-Hollow"
 license: MIT
