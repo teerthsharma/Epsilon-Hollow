@@ -29,12 +29,31 @@ pub static TLB_SHOOTDOWN_ACK: spin::Mutex<bool> = spin::Mutex::new(false);
 // SMP bring-up
 // ---------------------------------------------------------------------------
 
-pub fn smp_init() {
+/// Set up per-CPU data and the GS base for the BSP.
+///
+/// Split out of AP bring-up because the caller switches to the BSP idle stack
+/// via [`crate::cpu::this_cpu`] immediately afterwards, so this half has to run
+/// early — while [`smp_start_aps`] cannot, because it reads the ACPI topology
+/// that `drivers::acpi::init` has not parsed yet at that point.
+pub fn smp_init_bsp() {
     unsafe {
         super::init_bsp();
     }
     serial_println!("[SMP] BSP per-CPU data initialized");
+}
 
+/// Bring up the application processors.
+///
+/// Requires, in order: `drivers::acpi::init` (populates the MADT topology this
+/// reads), `drivers::interrupts::init` (the 10 ms INIT-to-STARTUP delay and the
+/// readiness timeouts below spin on `interrupts::ticks`), `drivers::apic::init`
+/// (`send_ipi` targets the local APIC), and `process::scheduler::init` (an AP's
+/// first act after the trampoline is to call `scheduler_tick`).
+///
+/// Calling this before ACPI silently reads a zeroed topology and returns having
+/// started nothing, which is what happened until 2026-08-18: the call sat ahead
+/// of `acpi::init` in `kernel_main`, so every AP path in this file was dead.
+pub fn smp_start_aps() {
     // Query ACPI for CPU topology.
     let cpu_count = crate::drivers::acpi::cpu_count();
     let apic_ids = crate::drivers::acpi::apic_ids();

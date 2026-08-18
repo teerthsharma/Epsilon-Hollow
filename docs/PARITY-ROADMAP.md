@@ -141,7 +141,25 @@ TLB shootdown IPI — is implemented, unit-covered, and **has never executed onc
 `FUTURE_PLAN.md` is honestly ticked as built, and every one of those ticks describes code that
 is dead at runtime.
 
-Fix the ordering, then re-run the SMP items and expect to find bugs that no one has met yet.
+**The ordering bug was masking a second one.** `smp_init` is now split: `smp_init_bsp()` keeps
+the per-CPU/GS-base setup at `lib.rs:240`, where the idle-stack switch immediately after it
+needs it, and `smp_start_aps()` holds the AP bring-up and is placed after the scheduler's first
+yield, which is the earliest point where ACPI, the local APIC, the scheduler and a live
+`interrupts::ticks()` all hold.
+
+Arming it deadlocks the boot. Measured with `-smp 4` on QEMU 11.1.0 with OVMF: the boot reaches
+`[BOOT] Scheduler first yield returned` and stops. The tick spin is not the cause — the local
+APIC timer is confirmed live by two `[THERMAL]` lines in the same log. The mechanism is that
+`timer_handler_apic` calls `thermal_governor_step`, which `serial_println!`s under a global
+lock; once an AP is ticking, both CPUs take that lock from interrupt context.
+
+So the call ships commented out with a `ponytail:` marker naming the ceiling and this upgrade
+path: make interrupt-context logging lock-free or drop it on contention with `try_lock`, audit
+every `serial_println!` reachable from an interrupt handler for the same pattern, then arm the
+call behind a boot proof asserting `[SMP] N CPUs online` with N > 1.
+
+Two bugs, then, not one — and the second is the reason to expect more. No line of AP code in
+this tree has ever run.
 
 ### G0.2 — Everything else in the loop
 
