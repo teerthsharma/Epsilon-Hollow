@@ -57,7 +57,9 @@ K = curvature_proxy(emb)
 `;
 
 export default function FormulaEditor({ onClose }: { onClose: () => void }) {
-  const { selectedDataset, addLog } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors to prevent full component re-renders on unrelated state updates
+  const selectedDataset = useStore((s) => s.selectedDataset);
+  const addLog = useStore((s) => s.addLog);
   const [source, setSource] = useState(DEFAULT_FORMULA);
   const [running, setRunning] = useState(false);
   const [building, setBuilding] = useState(false);
