@@ -2,7 +2,16 @@ import { GitCommit, Trash2, BarChart3 } from "lucide-react";
 import { useStore } from "../store";
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors to prevent full component re-renders on unrelated state updates
+  const experiments = useStore((s) => s.experiments);
+  const analysisResult = useStore((s) => s.analysisResult);
+  const battleResult = useStore((s) => s.battleResult);
+  const regressResult = useStore((s) => s.regressResult);
+  const classifyResult = useStore((s) => s.classifyResult);
+  const setAnalysisResult = useStore((s) => s.setAnalysisResult);
+  const setBattleResult = useStore((s) => s.setBattleResult);
+  const setRegressResult = useStore((s) => s.setRegressResult);
+  const setClassifyResult = useStore((s) => s.setClassifyResult);
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;
