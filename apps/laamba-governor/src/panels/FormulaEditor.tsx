@@ -126,7 +126,12 @@ export default function FormulaEditor({ onClose }: { onClose: () => void }) {
           <button onClick={() => setShowDocs(!showDocs)} className="text-gov-dim hover:text-gov-accent text-xs flex items-center gap-1">
             <BookOpen size={12} /> {showDocs ? "Hide" : "Docs"}
           </button>
-          <button onClick={onClose} className="text-gov-dim hover:text-gov-error">
+          <button
+            onClick={onClose}
+            className="text-gov-dim hover:text-gov-error focus-visible:ring-2 focus-visible:ring-gov-error focus-visible:outline-none rounded"
+            aria-label="Close Formula Editor"
+            title="Close Formula Editor"
+          >
             <X size={14} />
           </button>
         </div>
