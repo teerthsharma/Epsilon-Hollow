@@ -24,3 +24,6 @@
 ## 2024-08-04 - Accessible Focus States for Toolbar Buttons
 **Learning:** Found that icon-only buttons or primary action buttons in toolbars often lack clear keyboard focus indicators, making them difficult for keyboard navigators to use. Additionally, when these buttons are disabled, they simply show lower opacity but no `cursor-not-allowed` pointer, which can lead users to think their click simply didn't register.
 **Action:** When implementing toolbar buttons, always include `focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none` to ensure keyboard navigation is clear and accessible. Furthermore, always pair `disabled:opacity-50` with `disabled:cursor-not-allowed` for unambiguous disabled visual feedback.
+## 2024-05-24 - Accessibility on Icon-only Buttons
+**Learning:** Found several icon-only buttons (like clear console, close formula editor, and import CSV) lacking ARIA labels, making them inaccessible to screen readers. Also lacked proper focus styling for keyboard navigation.
+**Action:** Always add `aria-label`, `title`, and `focus-visible` ring styling to icon-only buttons to ensure they are accessible.
