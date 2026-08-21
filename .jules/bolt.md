@@ -28,3 +28,7 @@
 
 **Learning:** When using `seal()` on an object to change its properties from read-write-execute to read-execute, if the seal step fails or is skipped, the memory protections checks inside CI/Parsers will fail (`wx=fail` instead of `wx=text_rx_data_rw_nx`).
 **Action:** Always ensure that `image.seal()` is successfully called and validated during the initialization or grafting phase of chart objects.
+
+## 2024-06-03 - Zustand destructuring performance trap
+**Learning:** Destructuring directly from `useStore()` subscribes the component to the entire store, causing unnecessary re-renders on any state update.
+**Action:** Always use individual selector functions like `useStore(s => s.property)` to selectively subscribe to state.
