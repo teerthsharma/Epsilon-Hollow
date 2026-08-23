@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-cli"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "clap",
  "repl-core",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "libm",
  "nalgebra",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "aether-cli"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "clap",
  "repl-core",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "aether-core"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "heapless",
  "libm",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "aether-lang"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "aether-core",
  "bytemuck",
@@ -2741,7 +2741,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repl-core"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "aether-lang",
  "clap",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "seal-graph"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "aether-core",
  "libm",
@@ -3014,14 +3014,14 @@ dependencies = [
 
 [[package]]
 name = "seal-jit"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "seal-net80211"
-version = "0.1.1"
+version = "0.4.7"
 dependencies = [
  "aes",
  "ccm",
