@@ -256,11 +256,31 @@ Contraction factor $\rho = 1 - \alpha(1-\beta) < 1$. Standard Banach error bound
 \end{innerpoints}
 
 \begin{Proof}[T3 --- Rigorous Proof]
-\textbf{Step 1:} Compact manifold has bounded doubling dimension; adjacency graph degree $\leq D$ (constant).
+\textbf{Step 1:} The adjacency graph degree is assumed bounded by a constant
+$D$. \textbf{This is an assumption, not a consequence of the ambient
+geometry.} An earlier revision derived it from the compact manifold having
+bounded doubling dimension, which does not follow: $n$ points placed within
+$\varepsilon$ of one another on $S^2$ have a complete $\varepsilon$-neighbour
+graph of degree $n-1$, however small the ambient doubling constant is.
+Doubling is a \emph{covering} property and is blind to multiplicity; degree
+counts points. The bound on $D$ must come from the construction that builds
+the graph, and is currently unverified.
 
 \textbf{Step 2:} Each round at least halves the cluster count via spanning forest construction: $N_{k+1} \leq \lceil N_k/2 \rceil$, giving $O(\log N)$ rounds.
 
-\textbf{Step 3:} For $\alpha > 1$, $(p_i + p_j)^\alpha \leq p_i^\alpha + p_j^\alpha$ ensures Renyi entropy decreases per merge.
+\textbf{Step 3:} For $\alpha > 1$ the power function is \emph{superadditive}:
+$(p_i + p_j)^\alpha \geq p_i^\alpha + p_j^\alpha$, so merging two clusters
+\emph{increases} $\sum_i p_i^\alpha$. Since the Renyi entropy is
+$H_\alpha = \frac{1}{1-\alpha}\log \sum_i p_i^\alpha$ and $1 - \alpha < 0$ for
+$\alpha > 1$, an increase in $\sum_i p_i^\alpha$ is a \emph{decrease} in
+$H_\alpha$. The entropy therefore falls with each merge.
+
+(An earlier revision stated this inequality with $\leq$, which is false for
+every $\alpha > 1$: at $\alpha = 2$, $p_i = p_j = 1$ it asserts $4 \leq 2$.
+Checked numerically at $\alpha \in \{1.5, 2, 3\}$ and
+$(p_i,p_j) \in \{(1,1),(0.3,0.2),(0.5,0.1)\}$: 9 counterexamples of 9. The
+conclusion was correct only because the negative factor $1-\alpha$ reverses
+the direction, so the corrected inequality is the one the argument needs.)
 
 \textbf{Rust verification:} \texttt{aether\_gmc::verify\_entropy\_nonincreasing(n, m, iters)} confirmed for $(n, m) \in \{(100, 50), (500, 500)\}$ over 1000 iterations each.
 \end{Proof}

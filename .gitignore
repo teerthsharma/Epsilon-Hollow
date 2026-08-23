@@ -205,3 +205,16 @@ flamegraph*.svg
 *.bbl
 *.blg
 *.synctex.gz
+
+# Ralph loop telemetry — not source
+house-events.jsonl
+
+# Agent scaffolding and AI-run artefacts — kept locally, not part of the source
+.agents/
+.jules/
+**/.jules/
+docs/superpowers/
+apps/laamba-governor/docs/superpowers/
+docs/*-agents.md
+docs/*-agent-grid.md
+docs/*-status-report.md

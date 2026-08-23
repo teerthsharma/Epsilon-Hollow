@@ -41,6 +41,7 @@ pub mod governor;
 pub mod hyperbolic_capacity;
 pub mod hyperbolic_geometry;
 pub mod manifold;
+pub mod nettree;
 /// Memory subsystem primitives (Chebyshev liveness, GC, etc.).
 #[allow(missing_docs)] // Internal compute kernels; field semantics documented at module level.
 pub mod memory;

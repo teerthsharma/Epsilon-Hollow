@@ -6984,3 +6984,698 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
   <em>OS state is topology on S². No timelines. No excuses. Only geometry.</em>
 </p>
+
+
+---
+
+## `nettree` — Deleting Points Without Changing The Shape
+
+*(`kernel/epsilon/epsilon/crates/aether-core/src/nettree.rs`, 448 lines. Tests in `tests/house_nettree_invariants.rs`, `house_nettree_dimension.rs`, `house_relaxed_distance.rs`, `house_relaxed_entry_time.rs`. Every number below is in `.claude/RALPH_MATH_LEDGER.md` with the iteration that produced it.)*
+
+### The number that made this necessary
+
+Open `persistence.rs` and look at the presets. They are honest to the point of being rude:
+
+| preset | homology | `max_points` |
+|---|---|---|
+| `h0_only` | connected components | 512 |
+| `h1_dense` | components + loops | **128** |
+| `h2_default` | components + loops + voids | **48** |
+
+Forty-eight. This README opens by claiming OS state is a point cloud on S², and the ambition written into the mission is *n* in the tens of thousands. The engine that computes the shape of that cloud gives up at forty-eight points if you want to know about voids, and at a hundred and twenty-eight if you only want loops.
+
+Those caps are not timidity. They are a measurement, taken with `cargo run -p aether-core --example scale_probe --release` on one core of a Windows 11 box, and pasted into the doc comment where nobody can lose it:
+
+| dim | n | pairs | seconds |
+|---|---|---|---|
+| 2 | 50 | 19,650 | 1.859 |
+| 2 | 70 | 54,810 | **15.338** |
+| 1 | 120 | 7,141 | 2.202 |
+| 1 | 200 | 19,901 | **20.728** |
+
+Going from 50 points to 70 — a factor of 1.4 in *n* — costs a factor of 8.25 in time. That is what `O(n^(d+1))` feels like from the inside. At *n* = 10,000 and *d* = 2 you are not waiting longer; you are waiting for the heat death.
+
+### What the machine is actually doing, for people who have not met a Rips complex
+
+Take your points. Grow a ball of radius `α/2` around every one of them, simultaneously. Two balls touch when the points are `α` apart, so draw an edge. Three balls mutually touch, draw a filled triangle. Four, a tetrahedron. Sweep `α` from zero to infinity and you get a **filtration** — a nested family of shapes, each one containing the last, that starts as dust and ends as one solid blob.
+
+Holes appear during that sweep and later get filled in. A hole that survives across a long stretch of `α` is a real feature of the cloud; a hole that appears at `α = 0.31` and dies at `α = 0.32` is a sampling artefact. That is the whole idea of persistent homology, and it is genuinely beautiful. It is also the reason for the caps: the number of triangles is on the order of `n³` and the number of tetrahedra `n⁴`, and you have to build them all before you can throw any of them away.
+
+So the obvious move is to build fewer simplices. The non-obvious question is how you do that **without lying** — how you skip work and still get the same answer, or a provably close one, rather than a fast wrong one.
+
+### Sheehy's move, which is not the move you expect
+
+Sheehy (arXiv:1203.6786, *Discrete & Computational Geometry* 49(4):778–796, 2013) does not compute the complex more cleverly. He changes the **metric**.
+
+Here is the intuition, and it took me an embarrassingly long time to see it. At a coarse scale `α`, most of your points are redundant. If ten points sit inside a blob of diameter much smaller than `α`, the complex does not care which nine of them you throw away — the balls have swallowed the differences. The obstruction is that deleting a point *does* change the complex, in the small annoying way where a triangle loses a vertex and a hole flickers.
+
+Sheehy's fix is to give each point a **weight** that grows with `α`, and to measure distances in the inflated metric
+
+```
+d_α(p, q) = d(p, q) + w_p(α) + w_q(α)
+```
+
+The weight is a bribe. A point about to be deleted gets fattened just enough that the balls of its surviving neighbours cover everything it was covering, so its removal leaves no hole for the filtration to notice. Points then get **deleted as the scale grows**, and the diagram you compute on the shrinking point set interleaves with the true one to within a multiplicative `ε`.
+
+The weight function, transcribed from section 4 of the paper into `nettree.rs`:
+
+```
+w_p(α) = 0                              if α ≤ (1 − 2ε)·t_p
+       = (α − (1 − 2ε)·t_p) / 2         if (1 − 2ε)·t_p < α < t_p
+       = ε·α                            if t_p ≤ α
+```
+
+```
+  w_p(α)
+     │                                    ╱   slope ε
+     │                          ╱────────╯
+     │                      ╱   slope ½
+     │                  ╱
+     │────────────────╯
+     └────────────────┴─────────┴────────────────────  α
+          w = 0    (1−2ε)·t_p   t_p
+```
+
+Zero until just before the point's deletion time `t_p`, then a ramp at slope ½, then a gentler ramp at slope `ε` forever. It is continuous at both knees — at `α = t_p` the middle branch gives `(t_p − (1−2ε)t_p)/2 = ε·t_p`, which is exactly the third branch — and because `ε ≤ 1/3 < 1/2` the whole thing is ½-Lipschitz. That Lipschitz constant is not decoration; it is the hinge of the paper's Lemma 4.1, which is the reason any of this is a filtration at all.
+
+### One implementation problem the paper does not have
+
+`d_α` moves with `α`. It is not a distance matrix. You cannot hand it to a Rips builder, which wants one fixed number per pair.
+
+Lemma 4.1 says: if `d_α(p,q) ≤ α` and `α ≤ β`, then `d_β(p,q) ≤ β`. In words — once a pair is admitted it stays admitted. The set of admitting scales is an upward-closed ray, so its infimum is a well-defined **entry time**, and entry times *are* a distance matrix. `relaxed_entry_time` finds it by bisection on a predicate that Lemma 4.1 guarantees flips exactly once. Five properties are pinned, all green, including the one that matters most: set the deletion times far beyond the scale and the entry time collapses to the true distance, so the relaxed filtration degenerates to the exact Rips filtration. If that reduction failed, nothing else would be worth measuring.
+
+### The deletion times, and the two ways I got them wrong
+
+Everything above is scaffolding. `t_p` — when each point dies — is where the construction lives or dies with it. The paper, section 6, verbatim:
+
+> "For each `p` in `P` the deletion time `t_p` is defined as `t_p := (1 / (ε(1 − 2ε))) · rad(par(v_p))`."
+
+where `v_p` is the last node in the net-tree still represented by `p`. I shipped a "defensible monotone substitute" instead, documented at the time as carrying no inherited guarantee, and it was wrong in two independent ways:
+
+1. **The wrong node.** It is the radius of the **parent** of `v_p`, one level coarser. I used the node's own radius. Radii double per level, so this halved every deletion time.
+2. **No `ε` at all.** I omitted the factor `1 / (ε(1 − 2ε))` entirely. That factor is **9** at `ε = 1/3` and **22.2** at `ε = 0.05`.
+
+The second one is the whole ballgame, and it is worth stating slowly because it is the mechanism of the entire approximation. A smaller `ε` produces a **later** deletion time, so points are retained longer, so the sparse complex is closer to the dense one. That is *how* the approximation tightens as you ask for more accuracy. A deletion rule with no `ε` dependence cannot tighten, no matter how monotone and defensible it looks, and nothing else in the construction compensates for it.
+
+Measured, same fixture both times — regular circle, `n` = 40, H₁, bottleneck distance against the exact Rips diagram:
+
+| ε | bottleneck BEFORE | bottleneck AFTER | b/ε after |
+|---:|---:|---:|---:|
+| 0.0200 | 0.036368 | **0.000000** | 0.000 |
+| 0.0500 | 0.093790 | **0.000000** | 0.000 |
+| 0.1000 | 0.240529 | **0.000000** | 0.000 |
+| 0.2000 | 1.188009 | **0.065746** | 0.329 |
+| 0.3333 | 2.437642 | **0.065746** | 0.197 |
+
+At `ε = 1/3` — the largest value the paper permits — the error fell by a factor of **37**. Read the third column, not the second: `b/ε` *falls* as `ε` grows. That is what distinguishes a multiplicative interleaving from an implementation that happens to be small at one parameter, and before the fix it ran 1.82, 1.88, 2.41, 5.94, 7.31 in the wrong direction.
+
+The scale to judge that 0.065746 against is 1.782013, the exact H₁ death for a regular 40-gon, `2·sin(π·⌈40/3⌉/40)`, derived in closed form and matched by the oracle to 3.1e-6. So the worst measured error at the loosest legal `ε` is **3.7% of the feature it is measuring**, and below `ε = 0.1` the sparse diagram is not close to the Rips diagram, it **is** the Rips diagram. Bottleneck 0.000000. Exactly zero.
+
+Before the fix, at `ε = 1/3`, the error was 2.437642 against a feature scale of 1.782013 — the approximation was larger than the thing it approximated. It had not loosened. It had collapsed, and the ledger entry that recorded the collapse was written as a pinned assertion that would go **red** if anyone ever corrected the deletion times. Someone did. It went red. It forced this rewrite instead of letting a stale claim sit there looking fine.
+
+### Does it actually get smaller, though
+
+Accuracy is half of Theorem 9.3. The other half is size, and size is the entire point.
+
+**Circle, intrinsic dimension 1.** An edge belongs to the sparse filtration exactly when both endpoints are still alive at its entry time.
+
+| ε | fitted sparse exponent | fitted dense exponent | sparse/dense at n = 1024 |
+|---:|---:|---:|---:|
+| 0.1000 | **0.975** | 2.005 | 0.0505 |
+| 0.2000 | **1.011** | 2.005 | 0.0275 |
+| 0.3333 | **1.023** | 2.005 | 0.0201 |
+
+Sparse grows like `n^1.0`. Dense grows like `n^2.005`. **That 2.005 is the load-bearing number in the table** — it is the control. The dense edge count is known to be exactly `n(n−1)/2`, so if the fitting procedure could not recover 2.0 from it, the 0.975 next to it would be an artefact of the fit rather than a fact about the complex. It recovers 2.005. The ratio then halves at every doubling of *n* — 0.3046, 0.1575, 0.0797, 0.0401, 0.0201 — which is what linear-against-quadratic looks like when you watch it happen.
+
+**Sphere S², which is the case this OS actually cares about, and which took four tries to get right.** The quantity Sheehy's Lemma 9.2 bounds is not the degree of a point. It is `|E(p)|`, the neighbours of `p` that **outlive** `p` — each edge charged exactly once, to its shorter-lived endpoint. I measured the undirected degree instead, watched it grow 4.04× across a 16× range in *n*, and issued a verdict that the implementation violated the bounded-degree invariant. It does not. I was counting the wrong set.
+
+On the correct set, extended to *n* = 8192:
+
+| n | MAX \|E(p)\| | mean \|E(p)\| | max d/t_p | min sep/t_p |
+|---:|---:|---:|---:|---:|
+| 256 | 69 | 45.45 | 0.6666 | 0.05556 |
+| 512 | 78 | 49.94 | 0.6667 | 0.05556 |
+| 1024 | 82 | 52.53 | 0.6667 | 0.05559 |
+| 2048 | 94 | 57.74 | 0.6667 | 0.05556 |
+| 4096 | 95 | 56.25 | 0.6667 | 0.05557 |
+| 8192 | **90** | **55.83** | 0.6667 | 0.05556 |
+
+Per-doubling growth of MAX `|E(p)|`: 1.130, 1.051, 1.146, 1.011, **0.947**. **The last doubling decreased it.** The mean peaked at 57.74 and came back down. The maximum plateaus somewhere in 90 to 95 and sits there. Mean `|E(p)|` is total edges over *n*, so a flat mean is a linear edge count, stated as a plateau you can see rather than as an exponent you have to trust. At *n* = 8192 the sparse complex carries **1.36%** of the dense edges.
+
+The last two columns are Sheehy's own preconditions, checked pointwise instead of fitted:
+
+- **Containment.** `max d(p,q)/t_p = 0.6667` at every single *n*, against the paper's requirement of ≤ 1. Not declining, not drifting.
+- **Separation.** `min sep/t_p = 0.05556` at every single *n*. That is `1/18`. Sheehy's floor is `K_p·ε(1−2ε)`, which at `ε = 1/3` is `K_p/9`, so the measurement implies `K_p = 0.5` — a perfectly reasonable net-tree packing constant, arrived at by measurement rather than by hoping.
+
+Both constant to five significant figures across a **32× range in *n***. Constants that do not move are the most boring possible evidence and by a distance the most convincing.
+
+Triangles tell the same story with a longer detour: at *n* ≤ 192 the fitted exponent was 1.896 and I wrote down "nearly quadratic"; at *n* ≤ 2048 it was 1.161; at *n* ≤ 8192 the tail exponent is **0.923**, and triangles per point peak at 1416.97 (*n* = 2048) and fall to 1272.80 (*n* = 8192). Three successive positions on one question, two of them wrong, and what settled it was never a better argument — it was another doubling. More on that below, because it turns out to be a general disease.
+
+### The part that does not work, stated as plainly as the part that does
+
+Sheehy's section 10 uses the net-tree to find neighbours without examining all pairs, giving `O(n log n)` construction. **It is not achieved here.** Three attempts, all measured, all negative:
+
+| attempt | result at n = 2048 |
+|---|---|
+| descend from the root | 1027.15 ms against the linear scan's 8.48 ms — **0.01×** |
+| start the descent at the level matching the query radius | 958 ms. Still 0.01× |
+| order discovery by deletion time | 1467.07 ms against 1285.53 ms — 0.88× |
+
+The range query is *correct*: 1064 (query, radius) pairs agree with the scan exactly, across *n* = 32 to 256, radii 0.05 to 3.0, plus eight exact duplicates, a two-point set, and radius zero. It is simply a hundred times slower than the thing it replaced, and the reason is arithmetic rather than engineering. `t_p` is nine net radii at `ε = 1/3` and twenty-two at `ε = 0.05`, while S² has a chordal diameter of 2.0. At `ε = 1/3`, **40.6%** of query balls cover the entire sphere; at `ε = 0.05`, **100%** do. A spatial index cannot prune a query that legitimately wants everything, and it gets worse exactly as `ε` shrinks — which is the regime where the approximation is best.
+
+The selectivity of `E(p)` was never spatial. It is `t_q > t_p`. And reordering by deletion time cannot help either, because `Σ_p |{q : t_q > t_p}| = n(n−1)/2` — a permutation of the same comparisons. That one line of arithmetic was available before the implementation was written, which is the sort of thing you file under process rather than mathematics.
+
+So: **four of Sheehy's five claims are measured and hold in this implementation. The fifth needs the Har-Peled–Mendel net-tree with explicit parent pointers and bounded child counts, which is a different data structure and a real project.** Edge discovery is still `O(n²)` — quadratic work to find a set now demonstrated linear. The complex you get at the end is small. Getting it is not yet fast.
+
+---
+
+## Nine Defects, One Defect: The Local Hypothesis Was Never Load-Bearing
+
+The README already has a section on negative controls, and it states the rule once: **a gate that only checks the happy path passes when you delete the feature.** I have now audited the mathematics of this repository against that rule for thirty-three iterations, and found nine defects across four crates.
+
+I spent a while filing them as nine.
+
+They are one.
+
+> **The local hypothesis is not load-bearing.** Not that some local-implies-global step was invalid — the step is usually fine. The disease is that the conclusion holds *without the assumption*, or is forced by the code's own definitions. A hypothesis that cannot change the answer is not a hypothesis. It is a decoration attached to an answer that was already determined.
+
+That is the same organism as "a proof that cannot fail is not a proof," seen from the other end. A negative control asks whether your test can go red. This asks whether your *premise* could ever have mattered. Nine times the answer was no, and each time the number involved was reported to five decimal places, in a passing test, with a confident doc comment above it.
+
+### Instance: a function that returned its own type parameter
+
+`tss.rs`, the S² index this README's opening claim rests on:
+
+```rust
+/// Betti-0 number: by construction each Voronoi cell is one connected
+/// component, so beta_0 = K.
+pub fn betti_0(&self) -> u32 { K as u32 }
+```
+
+`K` centroids induce a Voronoi decomposition of S². The **union** of those cells is S², which is connected, so β₀ is 1 however finely you cut it. Adjacent cells share boundaries; a decomposition is not a disjoint union.
+
+The test asserted `betti_0() == 4` for `K = 4`, and `capacity() == 4` on the very next line. So a homology invariant and an allocation count were pinned to the same literal, one of them named after a homology group. Then it asserted `betti_0() == 8` for `K = 8` — **it explicitly pinned β₀ growing when the tiling is refined**, which is the clearest possible statement that the function counts cells. Measured for the fix: `K = 4` with one duplicated centroid leaves exactly **3** cells reachable over 4000 random queries, so `K` is not even a count of *occupied* cells. `betti_0()` now returns 1, `capacity()` still returns `K`, and nothing is lost except a lie.
+
+### Instance: assuming the sphere in order to derive the sphere
+
+The `epsilon` crate computed `β₂ = 2 − β₀ + β₁` and the surrounding doc claimed the hollow manifold was "**derived**, not assumed."
+
+That formula is the Euler characteristic rearranged with `χ = 2` substituted in. `χ = 2` **is** the sphere. The function assumes a sphere and then reports having found one.
+
+With `β₀ = 1` — any connected input — it reduces to `1 + β₁`, and `β₁ ≥ 0` always, so it can never return 0. It is structurally incapable of representing a non-sphere. The RED test, run against unmodified code:
+
+```
+DISC    n=49 -> b0=1 b1=108 b2=109   (true beta_2 = 0)
+SEGMENT n=10 -> b0=1 b1=0   b2=1     (true beta_2 = 0)
+```
+
+**Ten collinear points — a straight line — were reported as containing a spherical void.** And since it is exactly `1 + β₁` for connected input, the field carried no information beyond the field sitting next to it in the wire payload. The old test asserted `b0 == 1` and then `b2 >= 1`, which follows algebraically from the line above it. It could not fail. It never had.
+
+### Instance: a bound compared against itself
+
+Theorem T2, the spectral contraction mapping, ships a convergence check. The step is `(1−α)·state + α·pred`, so the error obeys `e_{n+1} = (1−α)·e_n` and the realised error **equals** `(1−α)^steps · e_0`. Not is bounded by. Equals. Measured ratio of realised error to "bound", five values of α, three step counts each:
+
+```
+alpha=0.10  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.25  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.50  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.75  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.90  steps=1,5,20   ratio = 1.00000000000000000
+```
+
+A ratio of exactly 1.0, fifteen times, is not a passing test. It is a function comparing a value to itself with extra steps. The designed misfire proves it: at `α = 0` the operator is the identity, the state never moves, and the old check cheerfully reported `converged = true`.
+
+The same shape turned up in the attention cost model, where a test compared `plan.cost_ratio` against `selection_dot_cost(..)/dense` — and `routing_plan` computes `cost_ratio` by calling `selection_dot_cost` with those exact arguments and dividing by that exact denominator. Measured difference: **0.00000000000000000e0**, against a tolerance that allowed 1e-12. Exactly zero is what an identity looks like. A real prediction-versus-measurement check does not come out bitwise equal, and if yours does, you have measured your own storage layer.
+
+### Instance: the one this effort wrote, while auditing for exactly this
+
+This is the one I would lead with if I were being honest about how hard the pattern is to see.
+
+Iteration 27 built a containment certificate for the sparse complex: every accepted edge must lie within `2·t_p`. It passed at every *n* with a reach ratio of exactly **0.1667**, unvarying. Its required misfire control — inflate every deletion time by 2× and confirm the check trips — **did not trip it**.
+
+Because an edge is accepted only when `d < min(t_p, t_q) ≤ max(t_p, t_q)`, so `d / (2·max(t_p,t_q)) < 1/2` **by construction, for every possible input**. The certificate was the acceptance predicate wearing a lab coat. A constant that never varies is not a measurement.
+
+That was the ninth instance, it was written by the audit that exists to find the pattern, and it was caught in the same iteration only because the misfire control was mandatory. Two of the three instruments built that iteration were faulty. The pattern is not a thing other people do.
+
+### Instance: a conjecture of my own, killed by a constant
+
+This one is the cleanest statement of the disease, because the mathematics was correct and the hypothesis was still worthless.
+
+The conjecture: OS state on S² is a congestion game, its load-balancing equilibrium keeps occupancy even, and **that equilibrium is what makes linear-size persistence legal**. Two lemmas underneath it, sent to fifteen blind adversarial verifiers, fifteen HOLDS, zero holes. The lemmas are fine.
+
+Sheehy's hypothesis is metric doubling: the minimum number of radius-`r` balls needed to cover any radius-`2r` ball, on the finite point set. S² with the chordal metric is exactly Ahlfors 2-regular — chordal ball area is exactly `πt²` for `0 ≤ t ≤ 2`, confirmed symbolically, by quadrature to 1e-16, and by Monte Carlo. A disjoint-cap area count gives at most **25** points in a maximal `(r/2)`-separated subset of any radius-`r` ball, **uniformly for all r > 0** — attained throughout `r ≤ 1.6`, falling to 16 at the diameter, and to 1 past `r = 8`. Doubling is inherited by arbitrary subsets, here with no loss at all, because the bound is an ambient area count.
+
+So **every** point configuration on S² satisfies Sheehy's hypothesis already, whatever the occupancies are, balanced or catastrophically lopsided. The equilibrium bought nothing. The topology was never expensive; there was nothing for the game theory to make cheap. The architectural claim survives — "OS state is topology on S²" really is what makes the linear bound legal — but it survives for a reason so much simpler than the conjecture that the conjecture was pure ornament. The sphere alone does it.
+
+The reason this instance is worth its own subsection: nothing was *wrong*. The lemmas hold. The game theory is real. The conclusion is true. And the hypothesis still had to be deleted, because deleting it changed nothing.
+
+### The general form, which has four instances of its own
+
+The same disease shows up in measurement rather than in code, and it cost more iterations than all the vacuous tests combined:
+
+> **A fitted exponent over a range where the constant has not settled measures the approach to the plateau, not the growth rate.** When a bound is `C·n` with `C` exponential in some parameter, no fit below the scale where `C` stops dominating is informative.
+
+Four instances on this branch. The clearest is the triangle count on S²: exponent **1.896** at *n* ≤ 192, recorded as "nearly quadratic"; **1.161** at *n* ≤ 2048; **0.923** at *n* ≤ 8192. The raw counts were correct at every stage — brute force and the adjacency reformulation agree exactly at *n* = 32, 48, 64, 96, 128 — so nothing was miscomputed. The exponent fitted over them simply was not a fact about the object. Sheehy's constant is `(1/ε)^O(kd)`, which at `k = 2`, `d ≈ 2`, `ε = 1/3` is `3^O(4)`: plausibly in the hundreds. Against *n* ≤ 192, the constant *is* the measurement.
+
+The honest response to an inconvenient exponent is another doubling, not a verdict. I issued the verdict twice.
+
+### How to tell, in one sentence
+
+Delete the hypothesis and see whether the conclusion moves.
+
+If `betti_0` still returns `K` when you rip out the Voronoi decomposition, it was never about the decomposition. If `β₂` still says "sphere" for ten points on a line, it never read the points. If the convergence check still passes for an operator that does not converge, it never checked convergence. If linear-size persistence is legal on S² whether or not the load is balanced, the balancing was scenery.
+
+The README already says a proof that cannot fail is not a proof. This is the same sentence pointed one level up: **an assumption that cannot change the answer is not an assumption.** Nine times, in four crates, across a codebase whose entire pitch is that the mathematics is real. It is real. It just needed a control on every single one of its premises, including the ones the audit itself was writing at the time.
+
+
+## Nine More Checks That Cannot Fail, And I Wrote The Ninth
+
+The taxonomy above has seven entries, all found in one day, all in the kernel.
+This is nine more, found by a bounded loop pointed at the *math* crates instead
+— `aether-core`, `epsilon`, `aether-verified`, the code the kernel's topology
+claims rest on. Different files, different week, same shape. Every one was
+green. Every one has a command beside it that produced the number.
+
+I am going to give the count away in the title, so: eight of these were waiting
+for me. The ninth I wrote myself, during the iteration whose entire stated
+purpose was finding the other eight.
+
+**1. The invariant that was not permutation invariant.**
+`topology::compute_betti_0`. The module doc says bytes are "a 1D point cloud on
+R", which makes the byte *values* the points and their positions irrelevant. The
+code walked consecutive *positions* and counted maximal runs of large gaps. Two
+errors stacked: the wrong quantity, and the wrong space.
+
+| input | returned | true beta_0 |
+| --- | ---: | ---: |
+| `[0x90; 64]` | 0 | 1 |
+| `[5]` | 1 | 1 |
+| `[5, 5]` | **0** | 1 |
+| 19 random bytes, order A | 3 | — |
+| the same 19 bytes, order B | 2 | — |
+
+Sixty-four points with zero connected components. Adding a second point at the
+same coordinate *removed* a component. And a homology invariant of a point cloud
+that changes when you shuffle the input is not an invariant of anything.
+
+The test was `test_uniform_data_low_density`, and it asserted `betti_0 == 0` for
+`[0x90; 64]`. The suite did not miss the defect. The suite **certified** it. The
+RED replacement failed 5 of its 6 assertions on unmodified code. The fix is a
+256-entry presence scan — `O(n + 256)`, no allocation, `no_std`, permutation
+invariant by construction, because a sort has no opinion about input order.
+
+**2. The formula that could not represent a non-sphere.** `epsilon`'s
+`compute_betti_2_euler` returned `2 - b0 + b1`. For any connected input `b0 = 1`,
+so the expression collapses to `1 + beta_1`, and `beta_1 >= 0` always. It cannot
+return zero. Not "rarely returns zero" — cannot.
+
+```
+DISC    n=49 -> b0=1 b1=108 b2=109   (true beta_2 = 0)
+SEGMENT n=10 -> b0=1 b1=0   b2=1     (true beta_2 = 0)
+```
+
+Ten collinear points. A straight line. Reported as containing a spherical void.
+
+Its test was named `test_betti_2_sphere_cloud_is_one`, and it asserted
+`b0 == 1`, and then on the next line asserted `b2 >= 1`. The second assertion
+follows algebraically from the first. It was not a test, it was the identity
+`1 + beta_1 >= 1` written in test syntax. The same identity also means the wire
+field `signature_b2` carries no information that `signature_b1` does not already
+carry, which nobody had noticed in either direction.
+
+**3. The function that returned its own type parameter.**
+
+```rust
+/// Betti-0 number: by construction each Voronoi cell is one connected
+/// component, so beta_0 = K.
+pub fn betti_0(&self) -> u32 {
+    K as u32
+}
+```
+
+The union of the Voronoi cells is `S^2`. `S^2` is connected. Cutting it more
+finely does not disconnect it, and adjacent cells share their boundaries. So
+beta_0 is 1, at every `K`, and the doc comment is the defect written out
+longhand.
+
+The test asserted `betti_0() == 4` at `K = 4`, and asserted `capacity() == 4` on
+the line immediately after — pinning two quantities to the same number with only
+one of them named after a homology group. Then it asserted `betti_0() == 8` at
+`K = 8`. That is a test which **explicitly pins a topological invariant growing
+when the tiling is refined**, and it had been green since it was written.
+
+The third RED assertion is my favourite: duplicate one centroid at `K = 4` and a
+cell becomes unreachable. Measured over 4000 random queries, exactly 3 cells were
+ever hit. `betti_0` still said 4. So the function was not even a correct count of
+*occupied* cells, which is the thing it was accidentally computing.
+
+**4. The bound that was the closed form of the thing it bounded.** Theorem T2's
+step is `(1 - alpha) * state + alpha * pred`, so the error obeys
+`e_{n+1} = (1 - alpha) e_n` and the realized error **equals**
+`(1-alpha)^steps * e_0`. The "theoretical error bound" `verify_convergence`
+compares against is that expression. Measured ratio of realized error to bound:
+
+```
+alpha=0.10 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.25 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.50 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.75 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.90 steps=1,5,20   ratio = 1.00000000000000000 (two at 0.99999999999999978)
+```
+
+Seventeen zeros. The only inputs that could ever flip the check are 1-ULP
+rounding events around 1e12.
+
+The designed misfire is the part worth keeping. At `alpha = 0` the step is the
+identity map: the state never moves, the operator has no convergence whatsoever,
+and `converged` came back **true**. A second defect fell out of the same reading
+— `TelemetryOperator::new(alpha_min, alpha_max, ..)` never checks the ordering,
+so `new(0.5, 0.1, 0.1, 0.9)` reported a Lipschitz constant of **0.5** against a
+measured worst per-step factor of **0.9**. Optimistic, in a contraction claim,
+which is the one direction that is not survivable.
+
+**5. The contract that was an assignment.** `tests/attention_contracts.rs:1044`
+asserts `plan.cost_ratio` against `selection_dot_cost(..) / dense_dot_cost(..)`.
+`routing_plan` computes `cost_ratio` at `src/attention.rs:164` by calling
+`selection_dot_cost` with those arguments and dividing by that denominator.
+
+Measured difference between the two sides: **0.00000000000000000e0**.
+
+Not "within the 1e-12 the assertion allows". Exactly zero, bitwise, because they
+are the same floating-point operations in the same order. The assertion's own
+failure message says "plan predicted X of dense, selector cost Y", which reads
+like a prediction checked against a measurement and is a variable checked against
+itself. Any error inside `selection_dot_cost` moves both sides together and is
+invisible to it.
+
+**6. The distance function that was zero on the fixture.**
+`great_circle_distance`. The index builds unit vectors as
+`[sin t cos p, sin t sin p, cos t]`, which is the **colatitude** convention, for
+which `cos d = cos(t1) cos(t2) + sin(t1) sin(t2) cos(p1 - p2)`. Both
+implementations computed `sin(t1) sin(t2) + cos(t1) cos(t2) cos(p1 - p2)` — the
+latitude formula, fed colatitude inputs, with `cos(p1 - p2)` on the wrong term.
+
+Two points on the equator, a quarter turn apart:
+
+| | value |
+| --- | --- |
+| correct | `1*1*cos(pi/2) + 0*0 = 0` -> `acos 0 = pi/2` |
+| implemented | `1*1 + 0*0*cos(pi/2) = 1` -> `acos 1 = 0` |
+
+**It returned 0 for two points a quarter turn apart.** Worst disagreement over
+2000 random pairs: **3.045645 radians**, against a maximum possible of pi.
+
+Here is why it lived. The only property test on the S2 index checked
+`d(p, p) = 0` and symmetry. Both of those are true under **both** conventions.
+They are not weak properties, they are properties *orthogonal to the defect*,
+which is worse, because they look like coverage. All 64 existing
+`aether_verified` tests passed before the fix and all 64 passed after it. The
+same wrong formula was sitting in two crates.
+
+The coda is that writing the mutation test which should have existed turned up
+something worse than the thing it was written for: the `acos` form loses about
+half its significant digits near zero separation, and at a true separation of
+1e-8 returned **exactly 0.0** — two distinct points reported as coincident. Both
+copies now use the haversine identity, where `d(p, p)` is exact to 1e-15.
+
+**7. The check that was not there at all.** `ml/convergence.rs`'s
+`ResidualAnalyzer::compute_betti` had zero tests. Not a weak test — none. It is
+load-bearing: `convergence.rs:131` decides convergence with
+`if self.is_betti_stable() && self.is_drift_stable()`.
+
+What it computes, now pinned: `beta_0 = ceil((sign_changes + 2) / 2)` walking the
+sequence in order, so it is not permutation invariant and cannot be an invariant
+of a point set. Residuals of 1e-12 and 1e9 produce identical output — only signs
+are read, magnitudes are discarded entirely. Empty input returns `(1, 0)`, where
+beta_0 of the empty space is 0.
+
+The honest verdict is that the *decision* may be fine, because `is_betti_stable`
+asks whether the numbers stop changing rather than what they are, and the
+stability of a sign-change count is a legitimate convergence signal. It is a
+naming defect wearing topology, and it ranks below the four above it. But it had
+no test, and "probably fine" is the thing this document exists to stop me saying.
+
+**8. The gate that scored its own build failures as wins.** The mutation gate
+applies a named one-line mutation, runs the crate's tests, and records whether
+anything went red. One mutation reverted a function to its old `acos` form —
+which no longer compiled, because `acos` had been dropped from the imports.
+Non-zero exit. Scored **CAUGHT**.
+
+A compile failure is not a test catching anything, and counting it inflates the
+suite by exactly one claim. The gate now reports `NOCOMPILE` as its own outcome
+and names those mutations for rewriting instead of banking them. That mutation
+was rewritten to `sqrt(h.clamp(1e-16, 1.0))`, which compiles and attacks the same
+precision property. Final state: **19 caught, 0 survived, 0 invalid, 2 documented
+equivalent mutants.**
+
+**9. The one I wrote, in the iteration about the other eight.** A containment
+certificate: every accepted edge should lie within `2 * t_p`. It passed at every
+`n` with a reach ratio of exactly **0.1667**, unvarying across five doublings.
+Its required-misfire control inflated every deletion time by 2x and **did not
+trip it**.
+
+The reason is structural and takes one line. An edge is accepted only when
+`d < min(t_p, t_q)`, and `min(t_p, t_q) <= max(t_p, t_q)`, therefore
+`d / (2 * max(t_p, t_q)) < 1/2` for every input that can reach the check. The
+threshold was 1.0. There is no failing input. There has never been a failing
+input. I wrote a check whose threshold is six times looser than the largest value
+its own acceptance predicate permits, and then reported the constant it produced
+as a measurement.
+
+### What the nine have in common, which is not what I expected
+
+| # | crate | what it asserted | what it could not detect |
+| ---: | --- | --- | --- |
+| 1 | aether-core | `betti_0([0x90;64]) == 0` | that beta_0 was a gap-run count |
+| 2 | epsilon | `b2 >= 1` after `b0 == 1` | that `b2` could never be 0 |
+| 3 | aether-core | `betti_0() == K` | that beta_0 grew under refinement |
+| 4 | aether-core | realized error `<=` its own closed form | an operator with zero contraction |
+| 5 | aether-core | `cost_ratio ==` the expression that set it | any error inside that expression |
+| 6 | aether-verified | `d(p,p) == 0`, symmetry | a formula wrong by up to 3.045645 rad |
+| 7 | aether-core | — | anything |
+| 8 | the gate | non-zero exit means CAUGHT | a mutation that does not build |
+| 9 | mine | `d / (2 max) < 1.0` | any input whatsoever |
+
+Rows 1, 2 and 3 are the same defect in three different crates: a quantity named
+after a homology group, computed as something else, guarded by a test that could
+not fail. Three in three is not a suspicion about this codebase. It is a rate.
+
+Row 9 is the argument for the required-misfire control, and I want to be exact
+about why. That certificate looked correct. It produced a number with four
+significant figures that did not vary across five doublings of `n`, which is the
+shape a stable measurement has and also the shape a constant has. Nothing about
+reading it would have caught it. The control caught it in one run, and the only
+reason it appears in this section rather than in a results table is that the
+control does not believe me and I have not found a way to argue with it.
+
+## The Loop That Kept Being Wrong About Itself
+
+The ledger for that loop is 2,563 lines. The most useful thing in it is not the
+ten repairs. It is the seven times it had to go back and correct something it had
+already written down as established.
+
+I am recording all seven, because a ledger that only accumulates wins is not
+evidence, and because the error rate of the thing doing the finding is a number
+the reader is entitled to.
+
+**1. The Theiler window that changed nothing.** The Lyapunov estimator failed its
+own ground truth in iteration 1: it reported the logistic map's exponent 4x too
+small and gave a damped exponential the wrong *sign*. I attributed that to a
+missing Theiler window, which is the standard fix for exactly this failure and
+is, here, irrelevant. Measured at n=1500, noise-free:
+
+| Theiler window | lambda |
+| ---: | ---: |
+| 0 | 0.6700 |
+| 10 | 0.6703 |
+| 30 | 0.6686 |
+
+Three thousandths, across a 30x change in the parameter I had blamed.
+
+The actual discriminator was the `R^2` of the fit over the scaling region, which
+I had not been computing at all:
+
+| series | lambda | R^2 | verdict |
+| --- | ---: | ---: | --- |
+| logistic r=4 (true 0.6931) | 0.5369 | 0.987 | CHAOS |
+| sine (true 0) | 0.0188 | 0.333 | reject |
+| damped decay (true < 0) | 0.0064 | 0.374 | reject |
+| white noise (control) | 0.0685 | 0.453 | reject — misfires as required |
+| shuffled logistic (control) | 0.0813 | 0.466 | reject — misfires as required |
+
+0.987 against a worst non-chaotic 0.466 is a margin of 0.52. Lambda alone cannot
+do this job at all: white noise returns 0.0685 and shuffled logistic 0.0813, both
+small positives that a sign test would have to guess at. I had the right symptom,
+the wrong organ, and the right instrument sitting unused in the same script.
+
+**2. "A bound must sometimes be strict."** I wrote a test asserting that, aimed
+at the T2 error bound in entry 4 above. It is false. For a linear contraction the
+closed form is *exact*, so a bound equal to the realized error at every alpha and
+every step count is not by itself evidence of anything wrong. The test was
+rewritten.
+
+The defect was never that the value is exact. It is that an exact value was used
+as a check on itself. Those are different sentences and I shipped the first one.
+
+**3. `BettiNumbers::default()`.** I asserted it is `(0, 0)`. It is `(1, 0)`. One
+line, in a test written to pin down a function that was wrong about topology.
+
+**4. "A selector cannot cost more than dense."** Also false, and this one is the
+repository being *better* than my premise. `selection_dot_cost` charges
+`cluster_count + candidates` per row — the honest cost of comparing against every
+cluster centroid to decide which clusters to take — and clamps to legal keys, so
+a routed selector can never bill for keys the causal mask forbids. At
+`budget = 4`, `clusters = 2`, `head_dim = 4`:
+
+| seq | dense | routed | ratio |
+| ---: | ---: | ---: | ---: |
+| 8 | 4.500 | 6.250 | 1.389 |
+| 16 | 8.500 | 7.312 | 0.860 |
+| 32 | 16.500 | 16.594 | 1.006 |
+| 64 | 32.500 | 33.844 | 1.041 |
+| 128 | 64.500 | 65.984 | 1.023 |
+
+Routing does not pay at these two parameter settings, the mechanism reports
+itself as not worthwhile, and that is the entire reason the threshold exists. I
+had flagged a cost model as broken for including an overhead a naive sparsity
+claim would have quietly dropped.
+
+**5. Three successive positions on one exponent, none of them reasoned.** The
+sparse complex's triangle count on the sphere, fitted as a power law in `n`:
+
+| iteration | range | exponent | what I wrote at the time |
+| ---: | --- | ---: | --- |
+| 23 | n <= 192 | 1.896 | "nearly quadratic" |
+| 24 | n <= 2048 | 1.161 | "corrected, still not linear" |
+| 32 | n <= 8192, tail | **0.923** | linear |
+
+Triangles per point peak at **1416.97** at n=2048 and fall to **1272.80** by
+n=8192. Every one of those three positions was overturned by another doubling of
+`n`, and not one of them was overturned by thinking harder about the points I
+already had.
+
+The general form, which now has four instances on this branch: when a bound is
+`C * n` with `C` exponential in some parameter, a fit taken below the scale where
+`C` stops dominating measures the approach to the plateau, not the growth rate.
+The honest response to an inconvenient exponent is another doubling, not a
+verdict. That lesson was learned first for `k = 1`, across iterations 22, 23 and
+28, and then it had to be learned all over again for `k = 2`.
+
+**6. The Lean audit accusation, withdrawn entirely.** I wrote that three theorems
+in `EpsilonTheorems.lean` are `True := trivial` while the executed audit only
+greps for `sorry`. The first half is true. The second half I repeated without
+opening the file.
+
+The check at `kernel/seal-mkimage/src/main.rs` strips Lean comments first, tests
+`sorry` / `admit` / `axiom` against the stripped source, and then **separately**
+detects `True := trivial`, failing unless a `placeholder`, `skeleton` or
+`deferred` marker appears within eight lines above it. All three carry one, and
+each names what is missing:
+
+```
+line  75  Statement-level placeholder until S^2 great-circle distance is imported.
+line 113  Statement-level placeholder until the entropy comparison model is imported.
+line 232  Statement-level placeholder until cache-tier locality is modeled in Lean.
+```
+
+The audit is *stronger* than the one I accused it of running. The only residual
+defect is the exact reverse of my claim: `lean/README.md:30` describes the audit
+as `grep -rn "sorry"` and thereby undersells what actually executes.
+
+The failure mode has a name now, and it is verifying half a claim and shipping
+the other half on the strength of the first half feeling right.
+
+**7. A verdict retracted one iteration after it was issued.** I measured the
+neighbourhood degree of the sparse filtration on the sphere, found it growing,
+and wrote: *the implementation violates the bounded-degree invariant*. I measured
+the **undirected** degree, which Sheehy does not bound.
+
+His `E(p)` lives on `N_{t_p} = {r : t_r > t_p}`, so it contains only the
+neighbours that **outlive** `p`. Each edge is charged exactly once, to its
+shorter-lived endpoint. That asymmetry is the entire mechanism by which the sum
+stays linear, and I counted every edge from both ends.
+
+| n | MAX undirected | MAX \|E(p)\| |
+| ---: | ---: | ---: |
+| 64 | 63 | 45 |
+| 128 | 127 | 63 |
+| 256 | 190 | 68 |
+| 512 | 288 | 82 |
+| 1024 | 370 | 83 |
+| 2048 | 513 | **93** |
+
+Over a 16x increase in `n` the undirected maximum grows **4.039x** and Sheehy's
+quantity grows **1.476x** — `n^0.50` against `n^0.14`. Withdrawn one iteration
+later, on a re-read of the primary source that cost less than either measurement.
+Extending to n=8192 then resolved it outright: `MAX |E(p)|` plateaus at 90 to 95,
+the last doubling **decreased** it, and both Lemma 9.2 preconditions are flat to
+five significant figures — containment `max d/t_p = 0.6667` at every `n` against
+a requirement of 1, separation `min sep/t_p = 0.05556 = 1/18` at every `n`.
+
+Those separation figures had also been measured over the undirected neighbourhood
+in the retracted iteration, where they appeared to decline: 0.00982, 0.00556,
+0.00556, 0.00278. That decline was an artefact of the wrong quantity, not a
+property of anything.
+
+Two of the three instruments built in that iteration were faulty. The other one
+was entry 9 of the section above.
+
+### And three attempts at a fast neighbour search, all measured, all negative
+
+Sheehy's section 10 uses the net-tree to answer neighbour queries in `O(n log n)`
+instead of scanning all pairs. This loop's own prompt claimed that construction.
+It was attempted three times.
+
+| attempt | idea | measured result |
+| ---: | --- | --- |
+| 1 | descend the net-tree from the root | **0.01x** — 8.48 ms scan against 1027.15 ms query at n=2048 |
+| 2 | start the descent at the level matching the query radius | 1027 ms to 958 ms. Still 0.01x |
+| 3 | order discovery by decreasing deletion time | 1.03x, 0.99x, 0.88x at n = 256, 1024, 4096 |
+
+The first is correct — 1064 (query, radius) pairs agree with the linear scan
+exactly, across n = 32 to 256, radii 0.05 to 3.0, plus eight exact duplicates and
+a two-point set. It is simply a hundred times slower than the thing it was built
+to replace, because cumulative reach at the top level is about `2 * r_top = 5.3`
+on a sphere whose every pairwise distance is at most 2, so the root test keeps
+every branch and the frontier expands to the full net at each level.
+
+The second failed for a reason worth stating: `t_p` is `rad(par(v_p))` divided by
+`eps(1 - 2 eps)`, which is a factor of 9 at `eps = 1/3` and 22.2 at `eps = 0.05`.
+At `eps = 1/3`, **40.6%** of the query balls cover the entire sphere. At
+`eps = 0.05`, **100%** do. No spatial index beats a linear scan when the query is
+"everything", and it gets worse in exactly the regime where the approximation is
+tightest.
+
+The third is the one I am embarrassed about, and it is a process failure rather
+than a reading failure. I argued that deletion ordering and spatial pruning would
+be complementary, implemented the ordering *without* the index that would exploit
+it, and measured no change. The arithmetic that kills it is one line:
+
+```
+sum over p of |{q : t_q > t_p}| = n(n-1)/2
+```
+
+Reordering a double loop is a permutation of the same comparisons. That line was
+available before a single character of the implementation was written, and I
+wrote the implementation first because I had already convinced myself.
+
+### The tally, since I am obliged to report it
+
+Ten repairs. Seven corrections to claims this loop had already recorded as
+established. Two of the seven were full retractions of a stated verdict rather
+than a refinement.
+
+What overturned them is the column I would put first if I could only keep one.
+Five went down to a measurement that was **run or extended** — a parameter sweep
+for the Theiler window, a ratio table for the strict bound, an executed test for
+the default, an executed cost comparison for the selector, two more doublings of
+`n` for the exponent. Two went down to **reading**: the audit's source for the
+Lean accusation, and Sheehy's own definition of `E(p)` for the degree verdict.
+
+Zero of the seven were overturned by arguing better about evidence already in
+hand. Every single time, the fix was to go and get one more number, or to open
+the file I had been describing from memory. That ratio is not flattering and it
+is not supposed to be.
+
+None of them were lying. All of them were unmeasured. That sentence appears
+earlier in this document about somebody else's code, and it turns out to
+generalise.
