@@ -111,6 +111,29 @@ MUTATIONS = [
     # is measured against. Section 5 of the loop prompt forbids CHANGING them;
     # these mutations are transient and restored in the `finally` block. The
     # question they answer is whether the oracle guards itself.
+    # --- Sheehy section 4, which had no mutant at all until iteration 45 ----
+    # The coverage map showed every test in house_relaxed_distance.rs and
+    # house_relaxed_entry_time.rs going green for all 31 mutations. Not because
+    # they cannot fail, but because `weight` - the function the whole sparse
+    # construction rests on - was never mutated.
+    ("weight-middle-slope", "aether-core", f"{AC}/nettree.rs",
+     "        0.5 * (alpha - knee)",
+     "        1.0 * (alpha - knee)",
+     "the middle weight piece doubles its slope, breaking the half-Lipschitz "
+     "bound and continuity at t"),
+
+    ("weight-eps-branch-unscaled", "aether-core", f"{AC}/nettree.rs",
+     "        eps * alpha",
+     "        alpha",
+     "the deleted-regime weight loses its eps factor, so d_alpha exceeds alpha "
+     "for every pair and nothing ever enters"),
+
+    ("verify-shape-length-cap", "aether-core", f"{AC}/topology.rs",
+     "    let max_assessable = (256.0 / DENSITY_MIN) as usize;",
+     "    let max_assessable = (256.0 * DENSITY_MIN) as usize;",
+     "the assessable-length cap collapses from 2560 to 25, so ordinary inputs "
+     "are declined instead of judged"),
+
     # --- corrections found by adversarial verification (iteration 44) ------
     # The interval probe formed `lo + hi` before halving, which overflows to
     # infinity for large deletion times and drops both weights into the eps
@@ -412,6 +435,7 @@ def _run(quick):
     print()
 
     results = []
+    killers = set()
 
     for mid, crate, relpath, old, new, breaks in MUTATIONS:
         path = os.path.join(ROOT, relpath)
@@ -439,7 +463,14 @@ def _run(quick):
             fh.write(original.replace(old_b, new_b, 1))
         try:
             target = f"-p {crate}" if quick else "--workspace"
-            proc = run(f"cargo test {target} 2>&1")
+            # --no-fail-fast is load-bearing for the coverage map, not a nicety.
+            # cargo stops running later test BINARIES once one target
+            # fails, so without it the gate only ever sees failures from
+            # the first failing binary and every later one is never run.
+            # That made 12 tests in house_relaxed_distance.rs and
+            # house_relaxed_entry_time.rs look permanently green: they
+            # were not passing, they were not being executed.
+            proc = run(f"cargo test {target} --no-fail-fast 2>&1")
             names = [ln.split(" ... ")[0].replace("test ", "").strip()
                      for ln in proc.stdout.splitlines()
                      if " ... FAILED" in ln]
@@ -447,6 +478,7 @@ def _run(quick):
                               or "could not compile" in proc.stdout)
             if names:
                 verdict, detail = "CAUGHT", f"{len(names)} test(s), first: {names[0]}"
+                killers.update(names)
             elif compile_failed:
                 verdict = "NOCOMPILE"
                 detail = "does not compile - not a valid mutation, rewrite it"
@@ -460,6 +492,44 @@ def _run(quick):
             os.remove(backup)
         results.append((mid, verdict, detail, breaks))
         print(f"{verdict:9} {mid:34} {detail}")
+
+    # Which tests are load-bearing? A mutation gate proves each MUTANT is
+    # caught. It says nothing about a test that no mutant can make fail, and
+    # this effort has already shipped five checks that could not fail. This is
+    # the inverse map: every test in the effort's own files that never went red
+    # for any of the 31 mutations.
+    if "--coverage" in sys.argv:
+        import glob
+        import re
+
+        never = []
+        for path in sorted(glob.glob(os.path.join(ROOT, "kernel", "**", "tests",
+                                                  "house_*.rs"), recursive=True)):
+            body = open(path, encoding="utf-8", errors="replace").read()
+            names_in_file = re.findall(r"fn\s+([a-z0-9_]+)\s*\(", body)
+            tests = [n for n in names_in_file
+                     if re.search(r"#\[test\][^#]*?fn\s+" + n + r"\s*\(", body,
+                                  re.S)]
+            for t in tests:
+                if not any(t == k or k.endswith("::" + t) for k in killers):
+                    never.append(os.path.basename(path) + "::" + t)
+        print()
+        print(f"COVERAGE - {len(killers)} distinct tests went red for at least "
+              f"one mutation")
+        if quick:
+            print("  NOTE: --quick runs only the mutated crate's tests, so a")
+            print("  mutation in one crate can never redden a test in another.")
+            print("  Part of the list below is an artefact of that, not a")
+            print("  property of the tests. Run without --quick for a true map.")
+        if never:
+            print(f"{len(never)} test(s) in this effort never went red for any "
+                  f"mutation. Each is either guarding something no mutant "
+                  f"expresses, or is unfalsifiable:")
+            for n in never:
+                print("  " + n)
+        else:
+            print("every test in the effort's own files is killed by "
+                  "some mutation")
 
     survived = [r for r in results if r[1] == "SURVIVED"]
     skipped = [r for r in results if r[1] == "SKIP"]

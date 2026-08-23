@@ -36,7 +36,16 @@ fn sphere(n: usize) -> Vec<ManifoldPoint<3>> {
 /// discovery is unsound, not merely unhelpful.
 #[test]
 fn lemma_d_filter_never_drops_an_admitted_pair() {
+    // Counted separately, because most admissions cannot falsify anything.
+    // The chordal diameter of the unit sphere is 2.0, so at alpha_max = 2.0
+    // the assertion `d <= alpha_max` holds for EVERY pair by the diameter
+    // alone and no input can break it. Those rows still exercise the code,
+    // but counting them toward a non-vacuity threshold inflates it by two
+    // orders of magnitude: n = 512 at alpha_max = 2.0 alone contributes
+    // 130,816 unfalsifiable pairs. The threshold is asserted on the
+    // falsifiable count only.
     let mut admitted_total = 0usize;
+    let mut falsifiable = 0usize;
     for &eps in &[1.0 / 3.0, 0.1] {
         for &n in &[128usize, 512] {
             let pts = sphere(n);
@@ -48,6 +57,9 @@ fn lemma_d_filter_never_drops_an_admitted_pair() {
                         let entry = relaxed_entry_time_exact(d, t[i], t[j], eps);
                         if entry <= alpha_max {
                             admitted_total += 1;
+                            if alpha_max < 2.0 {
+                                falsifiable += 1;
+                            }
                             assert!(
                                 d <= alpha_max + 1e-12,
                                 "pair ({i},{j}) is admitted at {entry} <= {alpha_max} \
@@ -60,11 +72,15 @@ fn lemma_d_filter_never_drops_an_admitted_pair() {
             }
         }
     }
-    println!("Lemma D checked against {admitted_total} admitted pairs");
+    println!(
+        "Lemma D checked against {admitted_total} admitted pairs, of which \
+         {falsifiable} were at a radius below the sphere diameter and could \
+         therefore have failed"
+    );
     assert!(
-        admitted_total > 1000,
-        "only {admitted_total} pairs were admitted anywhere in the sweep, so this \
-         test proves almost nothing; widen alpha_max"
+        falsifiable > 1000,
+        "only {falsifiable} of {admitted_total} admissions were falsifiable; \
+         the rest hold by the diameter of the sphere and prove nothing"
     );
 }
 
