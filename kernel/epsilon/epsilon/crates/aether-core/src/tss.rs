@@ -546,11 +546,33 @@ impl<const K: usize> SphericalVoronoiIndex<K> {
         K
     }
 
-    /// Betti-0 number: by construction each Voronoi cell is one connected
-    /// component, so β₀ = K.
+    /// Betti-0 of the region this index covers: `1` whenever `K >= 1`, and `0`
+    /// for the empty index.
+    ///
+    /// The `K` centroids induce a Voronoi decomposition of `S²`. The **union**
+    /// of the cells is `S²`, which is connected, so the covered space has one
+    /// connected component regardless of how many cells it was cut into.
+    ///
+    /// This previously returned `K`, justified as "each Voronoi cell is one
+    /// connected component". That treats the decomposition as a disjoint union,
+    /// which it is not — adjacent cells share boundaries. Three consequences
+    /// made the old value untenable, each pinned in
+    /// `tests/house_voronoi_betti0.rs`:
+    ///
+    /// * a topological invariant of the covered space cannot change when the
+    ///   tiling is refined, yet `K` grew with `K` by construction;
+    /// * with duplicate centroids some cells are unreachable — measured, `K = 4`
+    ///   with one duplicated centroid leaves **3** cells reachable — so `K` is
+    ///   not a count of occupied cells either;
+    /// * the old value was exactly [`Self::capacity`], and the test asserting it
+    ///   compared a function against its own type parameter, so it could not
+    ///   fail.
+    ///
+    /// Callers who wanted the cell count should use [`Self::capacity`], which is
+    /// unchanged and returns `K`.
     #[inline]
     pub fn betti_0(&self) -> u32 {
-        K as u32
+        u32::from(K > 0)
     }
 }
 
@@ -615,12 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn betti_0_equals_k() {
+    fn betti_0_is_one_and_capacity_is_k() {
+        // These are different quantities and must not be asserted to the same
+        // number. The tiling covers a connected S², so beta_0 = 1; the cell
+        // count is K. The previous version asserted both were 4, which made
+        // beta_0 a restatement of the type parameter.
         let idx4 = SphericalVoronoiIndex::<4>::new(k4_centroids());
-        assert_eq!(idx4.betti_0(), 4);
+        assert_eq!(idx4.betti_0(), 1);
         assert_eq!(idx4.capacity(), 4);
         let idx8 = SphericalVoronoiIndex::<8>::new(k8_centroids());
-        assert_eq!(idx8.betti_0(), 8);
+        assert_eq!(idx8.betti_0(), 1, "refining the tiling does not create components");
         assert_eq!(idx8.capacity(), 8);
     }
 
