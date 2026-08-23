@@ -190,9 +190,27 @@ impl<const D: usize> SparseGraph<D> {
         (0..n).filter(|&i| find(&mut parent, i) == i).count() as u32
     }
 
-    /// Estimate Î²â‚ (cycles) using Euler characteristic approximation.
+    /// The first Betti number **of this graph**: `E - V + beta_0`.
     ///
-    /// Î²â‚ â‰ˆ E - V + Î²â‚€ (ignoring higher homology)
+    /// This was documented as an approximation, "beta_1 ~ E - V + beta_0
+    /// (ignoring higher homology)". The identity is not an approximation. For a
+    /// 1-complex it is exact, and `tests/house_betti2_is_not_an_euler_solve.rs`
+    /// asserts it against an independently counted edge set: E = 558, V = 48,
+    /// beta_0 = 1, and this function returns 511.
+    ///
+    /// What "approximation" was standing in for is a real and much larger gap,
+    /// and calling it precision loss understated it. A [`SparseGraph`] holds no
+    /// 2-cells, so every triangle of mutually adjacent points contributes an
+    /// independent cycle here that is *filled* in the Vietoris-Rips complex over
+    /// the same points. The two numbers are not close and do not converge: on
+    /// those same 48 points sampled from a flat disc at `epsilon = 0.9`, this
+    /// returns **511** while the Rips complex over the identical points has
+    /// `beta_1 = 0`, because a disc is contractible.
+    ///
+    /// So this is the exact `beta_1` of the graph, and the graph is not the
+    /// space. For the homology of the point cloud, route to
+    /// `aether_core::persistence`, which builds the 2-simplices and reduces the
+    /// boundary matrix rather than counting edges.
     pub fn estimate_betti_1(&self) -> u32 {
         let v = self.point_count as i32;
         let mut e = 0i32;
@@ -254,11 +272,17 @@ impl<const D: usize> SparseGraph<D> {
     /// The third component is **not** `beta_2`; see [`Self::euler_defect`].
     /// The true `beta_2` of this 1-skeleton is 0 — [`Self::betti_2`].
     pub fn full_shape(&self) -> (u32, u32, u32) {
-        let b0 = self.compute_betti_0();
-        let b1 = self.estimate_betti_1();
-        let b2i: i32 = 2i32 - b0 as i32 + b1 as i32;
-        let b2 = if b2i > 0 { b2i as u32 } else { 0 };
-        (b0, b1, b2)
+        // The third slot is the Euler defect, delegated rather than recomputed.
+        // It used to inline `2 - b0 + b1` here, a second copy of the expression
+        // in `euler_defect`. Renaming that function and documenting it honestly
+        // therefore left this copy - and the value reaching
+        // `ManifoldPayload::signature_b2` - completely untouched, which is the
+        // form the repair's own gate failed to catch.
+        (
+            self.compute_betti_0(),
+            self.estimate_betti_1(),
+            self.euler_defect(),
+        )
     }
 
     /// The second Betti number of this complex, which is 0 for every input.

@@ -299,7 +299,11 @@ fn handle_store(fs: &mut ManifoldFS, input: &str) {
             };
             println!(
                 "  Stored '{}' → inode {} ({}B → {}, {})",
-                name, id, content.len(), size_info, ratio_str,
+                name,
+                id,
+                content.len(),
+                size_info,
+                ratio_str,
             );
         }
         Err(e) => println!("  Error: {e}"),

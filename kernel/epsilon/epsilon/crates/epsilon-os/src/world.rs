@@ -553,7 +553,20 @@ pub fn verify_theorems() -> Vec<(&'static str, bool)> {
     {
         let theta = aether_tss::theta_min_from_epsilon(0.1);
         let pm = aether_tss::p_max(0.5);
-        let centroids = [(0.0, 0.0), (1.2, 0.0), (0.0, 1.2)];
+        // Three points along a meridian, where the great-circle distance is
+        // just the colatitude difference: 1.2, 2.4 and 1.2, all above the 0.5
+        // separation floor.
+        //
+        // This fixture used to be [(0.0, 0.0), (1.2, 0.0), (0.0, 1.2)], which
+        // was written for the LATITUDE convention. `great_circle_distance` was
+        // repaired to the colatitude convention the rest of the crate uses, and
+        // under colatitude `(0.0, 0.0)` and `(0.0, 1.2)` are the same point -
+        // both the north pole, where longitude carries no information. Their
+        // separation is exactly 0, so `verify_separation` correctly refused
+        // them and T1_TSS had been failing ever since. The theorem check was
+        // right and its fixture was stale, the same way
+        // `test_topo_betti_real_call` pinned the pre-repair beta_0.
+        let centroids = [(0.0, 0.0), (1.2, 0.0), (2.4, 0.0)];
         let ok = aether_tss::verify_packing_bound(centroids.len(), 0.5)
             && aether_tss::verify_separation(&centroids, 0.5);
         results.push(("T1_TSS", ok && pm > 1.0 && theta > 0.0));

@@ -62,29 +62,40 @@ const DENSITY_MIN: f64 = 0.1;
 /// uncalibrated and why the underlying ratio is unsound at length.
 const DENSITY_MAX: f64 = 0.6;
 
-/// Maximum allowed Betti-1 (loop complexity) per window
-const MAX_BETTI_1: u32 = 10;
+/// Maximum allowed value of the oscillation statistic per window.
+///
+/// Named `MAX_BETTI_1` until iteration 42, when the quantity it bounds was
+/// shown not to be a Betti number. The threshold and the behaviour are
+/// unchanged; only the claim about what is being counted is. Like
+/// [`DENSITY_MIN`], the value 10 is uncalibrated.
+const MAX_OSCILLATION: u32 = 10;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Topological Shape Signature
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Shape signature: (β₀, β₁) tuple from Persistent Homology
+/// Shape signature: β₀ and an oscillation statistic.
+///
+/// The second component was labelled β₁ and is not one - see
+/// [`oscillation_count`]. For byte data under the one-dimensional metric the
+/// true β₁ is identically zero, which [`betti_1`] states and proves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TopologicalShape {
     /// β₀: Number of connected components (0-dimensional holes)
     pub betti_0: u32,
 
-    /// β₁: Number of loops/cycles (1-dimensional holes)
-    pub betti_1: u32,
+    /// Oscillation statistic: overlapping 4-windows that return near their
+    /// start. Grows with sample count and depends on arrival order, so it is a
+    /// signal about the byte sequence, not a homology rank.
+    pub oscillation: u32,
 
     /// Density: β₀ / data_length (normalized clustering)
     pub density: f64,
 }
 
 impl TopologicalShape {
-    /// Create a shape from Betti numbers
-    pub fn new(betti_0: u32, betti_1: u32, data_len: usize) -> Self {
+    /// Create a shape from β₀ and the oscillation statistic.
+    pub fn new(betti_0: u32, oscillation: u32, data_len: usize) -> Self {
         let density = if data_len > 0 {
             betti_0 as f64 / data_len as f64
         } else {
@@ -93,15 +104,15 @@ impl TopologicalShape {
 
         Self {
             betti_0,
-            betti_1,
+            oscillation,
             density,
         }
     }
 
-    /// L2 distance between shape feature vectors (β₀, β₁, density).
+    /// L2 distance between shape feature vectors (β₀, oscillation, density).
     pub fn distance(&self, other: &Self) -> f64 {
         let d0 = libm::pow(self.betti_0 as f64 - other.betti_0 as f64, 2.0);
-        let d1 = libm::pow(self.betti_1 as f64 - other.betti_1 as f64, 2.0);
+        let d1 = libm::pow(self.oscillation as f64 - other.oscillation as f64, 2.0);
         let dd = libm::pow(self.density - other.density, 2.0);
 
         libm::sqrt(d0 + d1 + dd)
@@ -180,17 +191,26 @@ pub fn betti_0_filtration(data: &[u8]) -> Vec<(i16, u32)> {
         .collect()
 }
 
-/// Compute β₁ (loops/cycles) via local pattern detection
+/// Count overlapping 4-windows whose last value returns close to the first.
 ///
-/// This approximates 1-dimensional homology by detecting "oscillation" patterns
-/// in the byte stream - sequences that return to similar values.
+/// This was called `compute_betti_1` and documented as approximating
+/// 1-dimensional homology. It does not, and cannot, for two reasons visible in
+/// its own output:
 ///
-/// # Arguments
-/// * `data` - Binary data to analyze
+/// * **It grows with sample count.** On `[0, 60, 120, 0]` repeated it returns
+///   1, 2, 4, 8, 16, 32 at lengths 4, 8, 16, 32, 64, 128 - exactly `n / 4`.
+///   Sampling the same shape more densely cannot change a homology rank.
+/// * **It depends on arrival order.** A point cloud carries no order, so any
+///   permutation is a relabeling and a provable no-op against homology. A
+///   stride permutation of that same input moves the value from 4 to 7.
 ///
-/// # Returns
-/// β₁: Approximate number of loops/cycles
-pub fn compute_betti_1(data: &[u8]) -> u32 {
+/// Both are asserted in `tests/house_betti1_is_not_a_rank.rs`.
+///
+/// The statistic is kept because it is a usable signal about a byte *sequence*,
+/// responding to periodicity, and because [`verify_shape`] rejects on it. Only
+/// the claim that it measures homology is withdrawn. For the true β₁ of byte
+/// data, see [`betti_1`].
+pub fn oscillation_count(data: &[u8]) -> u32 {
     if data.len() < 4 {
         return 0;
     }
@@ -218,12 +238,37 @@ pub fn compute_betti_1(data: &[u8]) -> u32 {
     loops
 }
 
+/// β₁ of byte data under the one-dimensional metric: identically zero.
+///
+/// # Why this is not a placeholder
+///
+/// The bytes are points on a line. Order the distinct values
+/// `x_1 < ... < x_n`. In the Rips graph at scale `t` the neighbours of `x_1`
+/// are exactly the values in `(x_1, x_1 + t]`; any two of those differ by at
+/// most `t`, so they are pairwise adjacent. Hence `N[x_1]` is a clique, `x_1`
+/// is a simplicial vertex, its closed star is a full simplex, and deleting it
+/// is an elementary collapse. Induct: every component collapses to a point, so
+/// `H_1 = 0` at every scale.
+///
+/// This is the same shape of correction as the `epsilon` crate's β₂, which
+/// could not return 0 for a cloud that is not a sphere. A rank no input can
+/// move is worth stating explicitly, because the alternative is a function
+/// returning a plausible non-zero number for a space that has no loops.
+///
+/// `tests/house_betti1_is_not_a_rank.rs` does not take the argument on trust:
+/// it runs the crate's own persistent homology over the byte values and
+/// requires zero H1 bars across 5 corpora at 7 radii each. A disagreement would
+/// indict either this proof or `persistence.rs`.
+pub fn betti_1(_data: &[u8]) -> u32 {
+    0
+}
+
 /// Compute full topological shape signature
 pub fn compute_shape(data: &[u8]) -> TopologicalShape {
     let betti_0 = compute_betti_0(data);
-    let betti_1 = compute_betti_1(data);
+    let oscillation = oscillation_count(data);
 
-    TopologicalShape::new(betti_0, betti_1, data.len())
+    TopologicalShape::new(betti_0, oscillation, data.len())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -318,11 +363,15 @@ pub fn verify_shape(data: &[u8]) -> VerifyResult {
         };
     }
 
-    // Check loop complexity
-    if shape.betti_1 > MAX_BETTI_1 {
+    // Check oscillation complexity. This branch decides a rejection, so it
+    // keeps the same quantity and the same threshold it always had: the repair
+    // in iteration 42 corrected what the quantity is called, not what it does.
+    // Substituting the true β₁ here would make the branch unreachable, trading
+    // a mislabelled check for a vacuous one.
+    if shape.oscillation > MAX_OSCILLATION {
         return VerifyResult::ExcessiveLoops {
-            count: shape.betti_1,
-            max: MAX_BETTI_1,
+            count: shape.oscillation,
+            max: MAX_OSCILLATION,
         };
     }
 
@@ -398,7 +447,7 @@ mod tests {
     #[test]
     fn test_empty_data() {
         assert_eq!(compute_betti_0(&[]), 0);
-        assert_eq!(compute_betti_1(&[]), 0);
+        assert_eq!(oscillation_count(&[]), 0);
     }
 
     #[test]
