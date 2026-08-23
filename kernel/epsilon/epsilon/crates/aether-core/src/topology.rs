@@ -33,10 +33,33 @@ const CLUSTER_THRESHOLD: i16 = 15;
 /// Sliding window size for topology analysis
 const WINDOW_SIZE: usize = 64;
 
-/// Minimum density for valid code (β₀ / len)
+/// Minimum density for valid code (β₀ / len).
+///
+/// # This threshold is not calibrated, and the ratio it thresholds is unsound
+///
+/// `β₀` counts clusters of *distinct byte values*, so it is bounded above by
+/// 256 for every input. `len` is unbounded. The ratio `β₀ / len` therefore has
+/// a ceiling of `256 / len`, which falls below `DENSITY_MIN` once
+/// `len > 2560` — past that length **every input is rejected regardless of
+/// content**. Measured: a 4096-byte input has a maximum achievable density of
+/// 0.0625.
+///
+/// A second limit compounds it. At `CLUSTER_THRESHOLD = 15` on a 256-wide value
+/// space, any input long enough to populate most byte values has no gap
+/// exceeding the threshold, so `β₀` collapses to 1. Measured: uniformly random
+/// input of 256, 1024 and 4096 bytes all give `β₀ = 1`.
+///
+/// Both numbers below are inherited from the version of `compute_betti_0_at`
+/// that counted gap *runs* rather than components. Recalibrating them requires
+/// a labelled corpus that does not exist in this repository, and inventing
+/// replacements would repeat the defect being repaired. They are left as they
+/// stand, documented, until such a corpus exists. Callers should prefer
+/// [`verify_sliding_window`], which applies the check per `WINDOW_SIZE` window
+/// where the ratio is at least well-scaled.
 const DENSITY_MIN: f64 = 0.1;
 
-/// Maximum density for valid code
+/// Maximum density for valid code. See [`DENSITY_MIN`] for why this pair is
+/// uncalibrated and why the underlying ratio is unsound at length.
 const DENSITY_MAX: f64 = 0.6;
 
 /// Maximum allowed Betti-1 (loop complexity) per window
@@ -91,27 +114,49 @@ impl TopologicalShape {
 
 /// Compute β₀ (connected components) at a given threshold.
 ///
-/// Treats bytes as a 1D point cloud on ℝ and counts "gaps" exceeding
-/// the threshold as component boundaries (1D Vietoris-Rips at scale ε).
+/// Bytes are a point cloud on ℝ. β₀ is the number of connected components of
+/// the 1-dimensional Vietoris-Rips complex at scale `threshold`: sort the
+/// values, and every consecutive gap exceeding `threshold` separates one
+/// component from the next, so
+///
+/// ```text
+/// β₀ = (number of gaps exceeding the threshold) + 1
+/// ```
+///
+/// The `+ 1` is the whole content of the formula — `k` gaps cut a line into
+/// `k + 1` pieces. Dropping it is the named mutant that
+/// `tests/house_betti0_bytes.rs` exists to kill.
+///
+/// Sorting is what makes this a homology invariant: a point cloud has no
+/// intrinsic order, so β₀ cannot depend on the order the bytes arrive in.
+/// Because the values are bytes, sorting is a 256-entry presence scan rather
+/// than a comparison sort — O(n + 256), no allocation, `no_std` safe.
 pub fn compute_betti_0_at(data: &[u8], threshold: i16) -> u32 {
-    if data.len() < 2 {
-        return if data.is_empty() { 0 } else { 1 };
+    if data.is_empty() {
+        return 0;
+    }
+
+    let mut present = [false; 256];
+    for &byte in data {
+        present[byte as usize] = true;
     }
 
     let mut components = 0u32;
-    let mut in_component = false;
+    let mut previous: Option<i16> = None;
 
-    for window in data.windows(2) {
-        let dist = (window[0] as i16 - window[1] as i16).abs();
-
-        if dist > threshold {
-            if !in_component {
-                components += 1;
-                in_component = true;
-            }
-        } else {
-            in_component = false;
+    for (value, &seen) in present.iter().enumerate() {
+        if !seen {
+            continue;
         }
+        let value = value as i16;
+        match previous {
+            // The first occupied value opens the first component: this is the
+            // `+ 1` in `gaps + 1`.
+            None => components = 1,
+            Some(p) if value - p > threshold => components += 1,
+            Some(_) => {}
+        }
+        previous = Some(value);
     }
 
     components
@@ -327,13 +372,30 @@ mod tests {
     }
 
     #[test]
-    fn test_uniform_data_low_density() {
-        // NOP sled simulation: all same byte
+    fn test_uniform_data_is_one_component() {
+        // NOP sled simulation: all same byte. Every point sits at the same
+        // value, so the cloud has exactly one component. This previously
+        // asserted 0, which pinned the `gaps` / `gaps + 1` defect in place.
         let nop_sled = [0x90u8; 64];
         let shape = compute_shape(&nop_sled);
+        assert_eq!(shape.betti_0, 1);
+    }
 
-        // Uniform data should have 0 gaps
-        assert_eq!(shape.betti_0, 0);
+    #[test]
+    fn betti_0_is_bounded_by_the_alphabet() {
+        // beta_0 counts clusters of *distinct byte values*, so it can never
+        // exceed 256 however long the input is. This is the bound that makes
+        // `density = beta_0 / len` unusable at length; see DENSITY_MIN.
+        let mut s: u64 = 0x1234_5678_9ABC_DEF0;
+        let long: Vec<u8> = (0..8192)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 7;
+                s ^= s << 17;
+                (s % 256) as u8
+            })
+            .collect();
+        assert!(compute_betti_0(&long) <= 256);
     }
 
     #[test]
