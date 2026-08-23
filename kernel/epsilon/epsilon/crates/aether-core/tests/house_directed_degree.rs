@@ -10,12 +10,14 @@ use aether_core::nettree::{relaxed_entry_time, NetTree};
 
 fn sphere(n: usize) -> Vec<ManifoldPoint<3>> {
     let ga = core::f64::consts::PI * (3.0 - 5.0f64.sqrt());
-    (0..n).map(|i| {
-        let y = 1.0 - 2.0 * (i as f64) / ((n.max(2) - 1) as f64);
-        let r = (1.0 - y * y).max(0.0).sqrt();
-        let t = ga * (i as f64);
-        ManifoldPoint::new([t.cos() * r, y, t.sin() * r])
-    }).collect()
+    (0..n)
+        .map(|i| {
+            let y = 1.0 - 2.0 * (i as f64) / ((n.max(2) - 1) as f64);
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let t = ga * (i as f64);
+            ManifoldPoint::new([t.cos() * r, y, t.sin() * r])
+        })
+        .collect()
 }
 
 /// (max undirected degree, max |E(p)| as Sheehy defines it, mean |E(p)|)
@@ -28,13 +30,22 @@ fn degrees(pts: &[ManifoldPoint<3>], eps: f64) -> (usize, usize, f64) {
         for j in (i + 1)..n {
             let d = pts[i].distance(&pts[j]);
             let lim = t[i].min(t[j]);
-            if d >= lim { continue; }
-            if relaxed_entry_time(d, t[i], t[j], eps) >= lim { continue; }
+            if d >= lim {
+                continue;
+            }
+            if relaxed_entry_time(d, t[i], t[j], eps) >= lim {
+                continue;
+            }
             undirected[i] += 1;
             undirected[j] += 1;
             // Charge the edge to the SHORTER-lived endpoint: q must outlive p.
-            if t[i] < t[j] { sheehy[i] += 1; } else if t[j] < t[i] { sheehy[j] += 1; }
-            else { sheehy[i] += 1; }   // tie: charge one side, arbitrarily but consistently
+            if t[i] < t[j] {
+                sheehy[i] += 1;
+            } else if t[j] < t[i] {
+                sheehy[j] += 1;
+            } else {
+                sheehy[i] += 1;
+            } // tie: charge one side, arbitrarily but consistently
         }
     }
     (
@@ -48,7 +59,10 @@ fn degrees(pts: &[ManifoldPoint<3>], eps: f64) -> (usize, usize, f64) {
 fn sheehy_degree_versus_undirected_degree() {
     let eps = 1.0 / 3.0;
     println!("=== sphere S2, eps = {eps:.4} ===");
-    println!("{:>6} {:>16} {:>16} {:>16}", "n", "MAX undirected", "MAX |E(p)|", "mean |E(p)|");
+    println!(
+        "{:>6} {:>16} {:>16} {:>16}",
+        "n", "MAX undirected", "MAX |E(p)|", "mean |E(p)|"
+    );
     let mut sh = Vec::new();
     for &n in &[64usize, 128, 256, 512, 1024, 2048] {
         let (u, s, m) = degrees(&sphere(n), eps);
@@ -58,6 +72,9 @@ fn sheehy_degree_versus_undirected_degree() {
     println!();
     let a = sh[1].1 as f64;
     let b = sh[sh.len() - 1].1 as f64;
-    println!("MAX |E(p)| from n=128 to n=2048 (16x more points): {a} -> {b}, ratio {:.3}", b / a);
+    println!(
+        "MAX |E(p)| from n=128 to n=2048 (16x more points): {a} -> {b}, ratio {:.3}",
+        b / a
+    );
     println!("(iteration 27 measured the undirected column: 127 -> 513, ratio 4.039)");
 }

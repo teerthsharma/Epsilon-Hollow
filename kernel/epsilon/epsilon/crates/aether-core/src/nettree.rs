@@ -56,9 +56,16 @@ impl NetTree {
     /// Returns an empty tree for empty input.
     pub fn build<const D: usize>(points: &[ManifoldPoint<D>], tau: f64) -> Self {
         if points.is_empty() {
-            return Self { levels: Vec::new(), radii: Vec::new() };
+            return Self {
+                levels: Vec::new(),
+                radii: Vec::new(),
+            };
         }
-        let tau = if tau.is_finite() && tau >= 1.5 { tau } else { 2.0 };
+        let tau = if tau.is_finite() && tau >= 1.5 {
+            tau
+        } else {
+            2.0
+        };
 
         // Smallest positive interpoint distance; `None` when all coincide.
         let mut min_positive = f64::INFINITY;
@@ -71,7 +78,11 @@ impl NetTree {
             }
         }
         // All points coincident, or a single point: any positive radius works.
-        let mut radius = if min_positive.is_finite() { min_positive / 2.0 } else { 1.0 };
+        let mut radius = if min_positive.is_finite() {
+            min_positive / 2.0
+        } else {
+            1.0
+        };
 
         let mut levels: Vec<Vec<usize>> = Vec::new();
         let mut radii: Vec<f64> = Vec::new();
@@ -121,7 +132,9 @@ fn greedy_net<const D: usize>(
 ) -> Vec<usize> {
     let mut net: Vec<usize> = Vec::new();
     for &c in candidates {
-        let covered = net.iter().any(|&k| points[c].distance(&points[k]) <= radius);
+        let covered = net
+            .iter()
+            .any(|&k| points[c].distance(&points[k]) <= radius);
         if !covered {
             net.push(c);
         }
@@ -154,8 +167,16 @@ fn greedy_net<const D: usize>(
 ///
 /// `eps` is clamped to `(0, 1/3]`, the range the paper assumes throughout.
 pub fn weight(alpha: f64, deletion_time: f64, eps: f64) -> f64 {
-    let eps = if eps.is_finite() && eps > 0.0 && eps <= 1.0 / 3.0 { eps } else { 1.0 / 3.0 };
-    let t = if deletion_time.is_finite() && deletion_time > 0.0 { deletion_time } else { 0.0 };
+    let eps = if eps.is_finite() && eps > 0.0 && eps <= 1.0 / 3.0 {
+        eps
+    } else {
+        1.0 / 3.0
+    };
+    let t = if deletion_time.is_finite() && deletion_time > 0.0 {
+        deletion_time
+    } else {
+        0.0
+    };
     let knee = (1.0 - 2.0 * eps) * t;
 
     if alpha <= knee {
@@ -212,7 +233,11 @@ impl NetTree {
     /// Points that survive to the root have no parent; they take the coarsest
     /// radius, scaled the same way.
     pub fn deletion_times(&self, point_count: usize, eps: f64) -> Vec<f64> {
-        let eps = if eps.is_finite() && eps > 0.0 && eps <= 1.0 / 3.0 { eps } else { 1.0 / 3.0 };
+        let eps = if eps.is_finite() && eps > 0.0 && eps <= 1.0 / 3.0 {
+            eps
+        } else {
+            1.0 / 3.0
+        };
         let scale = 1.0 / (eps * (1.0 - 2.0 * eps));
 
         // Last level at which each point is still a net representative.

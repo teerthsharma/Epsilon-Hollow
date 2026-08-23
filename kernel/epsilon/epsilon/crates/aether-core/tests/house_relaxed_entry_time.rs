@@ -11,7 +11,12 @@ const EPSS: [f64; 4] = [0.05, 0.1, 0.2, 1.0 / 3.0];
 
 fn rng(seed: u64) -> impl FnMut() -> f64 {
     let mut s = seed;
-    move || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; ((s >> 11) as f64) / ((1u64 << 53) as f64) }
+    move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64) / ((1u64 << 53) as f64)
+    }
 }
 
 #[test]
@@ -23,13 +28,20 @@ fn the_entry_time_admits_and_the_instant_before_does_not() {
         for _ in 0..3000 {
             let (d, tp, tq) = (3.0 * u() + 1e-6, 4.0 * u(), 4.0 * u());
             let a = relaxed_entry_time(d, tp, tq, e);
-            assert!(a.is_finite(), "entry time not finite for d={d} tp={tp} tq={tq}");
-            assert!(relaxed_distance(d, a, tp, tq, e) <= a + 1e-9,
-                "not admitted at its own entry time: d={d} tp={tp} tq={tq} alpha={a}");
+            assert!(
+                a.is_finite(),
+                "entry time not finite for d={d} tp={tp} tq={tq}"
+            );
+            assert!(
+                relaxed_distance(d, a, tp, tq, e) <= a + 1e-9,
+                "not admitted at its own entry time: d={d} tp={tp} tq={tq} alpha={a}"
+            );
             let below = a * (1.0 - 1e-6) - 1e-9;
             if below > 0.0 {
-                assert!(relaxed_distance(d, below, tp, tq, e) > below,
-                    "admitted strictly below the entry time: d={d} tp={tp} tq={tq} alpha={below}");
+                assert!(
+                    relaxed_distance(d, below, tp, tq, e) > below,
+                    "admitted strictly below the entry time: d={d} tp={tp} tq={tq} alpha={below}"
+                );
             }
         }
     }
@@ -43,7 +55,10 @@ fn the_entry_time_is_never_earlier_than_the_true_distance() {
         for _ in 0..3000 {
             let (d, tp, tq) = (3.0 * u() + 1e-6, 4.0 * u(), 4.0 * u());
             let a = relaxed_entry_time(d, tp, tq, e);
-            assert!(a >= d - 1e-9, "entered at {a}, earlier than the true distance {d}");
+            assert!(
+                a >= d - 1e-9,
+                "entered at {a}, earlier than the true distance {d}"
+            );
         }
     }
 }
@@ -58,8 +73,10 @@ fn zero_weight_recovers_the_exact_rips_value() {
         for &d in &[0.1f64, 0.5, 1.0, 2.5] {
             let far = 1e6;
             let a = relaxed_entry_time(d, far, far, e);
-            assert!((a - d).abs() < 1e-9,
-                "eps={e} d={d}: entry time {a} should equal the true distance");
+            assert!(
+                (a - d).abs() < 1e-9,
+                "eps={e} d={d}: entry time {a} should equal the true distance"
+            );
         }
     }
 }
@@ -74,9 +91,14 @@ fn the_entry_time_is_monotone_in_the_true_distance() {
             let (tp, tq) = (4.0 * u(), 4.0 * u());
             let d1 = 3.0 * u() + 1e-6;
             let d2 = d1 + 2.0 * u();
-            let (a1, a2) = (relaxed_entry_time(d1, tp, tq, e), relaxed_entry_time(d2, tp, tq, e));
-            assert!(a2 >= a1 - 1e-9,
-                "monotonicity broken: d {d1}->{d2} gave entry {a1}->{a2}");
+            let (a1, a2) = (
+                relaxed_entry_time(d1, tp, tq, e),
+                relaxed_entry_time(d2, tp, tq, e),
+            );
+            assert!(
+                a2 >= a1 - 1e-9,
+                "monotonicity broken: d {d1}->{d2} gave entry {a1}->{a2}"
+            );
         }
     }
 }
@@ -93,8 +115,10 @@ fn a_shorter_deletion_time_never_makes_a_pair_enter_earlier() {
             let t_short = t_long * u();
             let a_long = relaxed_entry_time(d, t_long, t_long, e);
             let a_short = relaxed_entry_time(d, t_short, t_short, e);
-            assert!(a_short >= a_long - 1e-9,
-                "deleting sooner made the pair enter earlier: {a_short} < {a_long}");
+            assert!(
+                a_short >= a_long - 1e-9,
+                "deleting sooner made the pair enter earlier: {a_short} < {a_long}"
+            );
         }
     }
 }
@@ -107,8 +131,10 @@ fn malformed_distances_are_rejected_rather_than_silently_accepted() {
     // loosening the bound and surviving.
     for &bad in &[-1e-9f64, -0.5, -1.0, -1e9, f64::NAN, f64::NEG_INFINITY] {
         let a = relaxed_entry_time(bad, 1.0, 1.0, 0.1);
-        assert!(a.is_infinite() && a > 0.0,
-            "malformed distance {bad} produced entry time {a}, not +inf");
+        assert!(
+            a.is_infinite() && a > 0.0,
+            "malformed distance {bad} produced entry time {a}, not +inf"
+        );
     }
     // And a distance of exactly zero is legitimate: coincident points.
     let z = relaxed_entry_time(0.0, 1.0, 1.0, 0.1);
@@ -127,8 +153,10 @@ fn the_early_exit_cannot_report_a_time_below_the_true_distance() {
             let d = 4.0 * u() + 1e-9;
             let (tp, tq) = (5.0 * u(), 5.0 * u());
             let a = relaxed_entry_time(d, tp, tq, e);
-            assert!(a >= d - 1e-12,
-                "entry {a} below the true distance {d} (tp={tp} tq={tq} eps={e})");
+            assert!(
+                a >= d - 1e-12,
+                "entry {a} below the true distance {d} (tp={tp} tq={tq} eps={e})"
+            );
         }
     }
 }

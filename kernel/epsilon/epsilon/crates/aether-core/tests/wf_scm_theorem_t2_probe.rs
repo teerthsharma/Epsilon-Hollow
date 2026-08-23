@@ -1,7 +1,11 @@
 use aether_core::scm::{LatentPredictor, SpectralContractionVerifier, TelemetryOperator};
 
 fn l2(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f64>()
+        .sqrt()
 }
 
 /// Q1: can `ConvergenceVerification::converged` ever be false for alpha in [0,1]?
@@ -33,7 +37,10 @@ fn probe_can_converged_ever_be_false() {
             }
         }
     }
-    println!("PROBE converged==false in {}/{} configurations", false_count, total);
+    println!(
+        "PROBE converged==false in {}/{} configurations",
+        false_count, total
+    );
 
     // The headline case: alpha = 0 is NOT a contraction, the state never moves.
     let v0 = SpectralContractionVerifier::<2>::new(0.0);
@@ -57,8 +64,12 @@ fn probe_can_converged_ever_be_false() {
     let mut fail = vec![];
     for ai in 0..=100 {
         let alpha = ai as f64 / 100.0;
-        let rep = SpectralContractionVerifier::<2>::new(alpha)
-            .full_verification([10.0, -10.0], [0.0, 0.0], 5, 1e-6);
+        let rep = SpectralContractionVerifier::<2>::new(alpha).full_verification(
+            [10.0, -10.0],
+            [0.0, 0.0],
+            5,
+            1e-6,
+        );
         if !rep.theorem_holds {
             fail.push(alpha);
         }
@@ -117,5 +128,8 @@ fn probe_latent_predictor_attractor() {
         "PROBE predicted analytic offset (1-a)/a * W*a = {}",
         (1.0 - alpha) / alpha
     );
-    println!("PROBE distance from claimed attractor S_pred = {}", l2(&s, &pred));
+    println!(
+        "PROBE distance from claimed attractor S_pred = {}",
+        l2(&s, &pred)
+    );
 }

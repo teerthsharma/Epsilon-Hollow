@@ -117,7 +117,9 @@ fn probe_gmc_theorem_holds_can_ever_be_false() {
     // Deterministic LCG so the sweep is reproducible.
     let mut s: u64 = 0x2545_F491_4F6C_DD1D;
     let mut next = move || {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (s >> 33) as u32
     };
     let mut runs = 0;

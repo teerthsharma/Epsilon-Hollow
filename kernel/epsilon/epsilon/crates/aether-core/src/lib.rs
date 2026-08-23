@@ -41,7 +41,6 @@ pub mod governor;
 pub mod hyperbolic_capacity;
 pub mod hyperbolic_geometry;
 pub mod manifold;
-pub mod nettree;
 /// Memory subsystem primitives (Chebyshev liveness, GC, etc.).
 #[allow(missing_docs)] // Internal compute kernels; field semantics documented at module level.
 pub mod memory;
@@ -51,6 +50,7 @@ pub mod meta_controller;
 #[allow(rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags)]
 // Notation in field comments uses bracket pseudo-indexing.
 pub mod ml;
+pub mod nettree;
 /// OS-level integration primitives (page tables, syscalls).
 #[allow(missing_docs)] // Internal OS scaffolding; not part of stable public API surface.
 pub mod os;

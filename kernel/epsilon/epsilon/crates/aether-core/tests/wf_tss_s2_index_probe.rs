@@ -20,8 +20,8 @@ fn gcd_true_colatitude(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
 
 fn k8() -> [(f64, f64); 8] {
     let mut c = [(0.0, 0.0); 8];
-    for i in 0..8 {
-        c[i] = (PI / 2.0, i as f64 * (2.0 * PI / 8.0));
+    for (i, slot) in c.iter_mut().enumerate() {
+        *slot = (PI / 2.0, i as f64 * (2.0 * PI / 8.0));
     }
     c
 }
@@ -31,7 +31,10 @@ fn probe_a_equatorial_fixture_makes_distance_constant() {
     let c = k8();
     // The fixture used by tss.rs tests AND by tests/proptest_tss.rs.
     for &(qt, qp) in &[(0.3, 0.7), (1.9, 4.4), (2.7, 0.1), (0.9, 5.9)] {
-        let ds: Vec<f64> = c.iter().map(|&(t, p)| gcd_as_written(qt, qp, t, p)).collect();
+        let ds: Vec<f64> = c
+            .iter()
+            .map(|&(t, p)| gcd_as_written(qt, qp, t, p))
+            .collect();
         let spread = ds.iter().cloned().fold(f64::MIN, f64::max)
             - ds.iter().cloned().fold(f64::MAX, f64::min);
         let truth: Vec<f64> = c
@@ -53,7 +56,9 @@ fn probe_b_locate_always_returns_zero_on_the_fixture() {
     let mut hist = [0usize; 8];
     let mut q = 0u64;
     for _ in 0..20000 {
-        q = q.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        q = q
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let theta = ((q >> 33) as f64 / (1u64 << 31) as f64) * PI;
         let phi = ((q & 0xFFFF_FFFF) as f64 / (1u64 << 32) as f64) * 2.0 * PI;
         hist[idx.locate((theta, phi))] += 1;
@@ -72,14 +77,19 @@ fn probe_c_betti0_with_duplicate_centroids() {
     let mut hist = [0usize; 4];
     let mut q = 0u64;
     for _ in 0..20000 {
-        q = q.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        q = q
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let theta = ((q >> 33) as f64 / (1u64 << 31) as f64) * PI;
         let phi = ((q & 0xFFFF_FFFF) as f64 / (1u64 << 32) as f64) * 2.0 * PI;
         hist[idx.locate((theta, phi))] += 1;
     }
     println!("duplicate-centroid histogram: {hist:?}");
-    println!("betti_0() = {} (nonempty cells = {})", idx.betti_0(),
-             hist.iter().filter(|&&n| n > 0).count());
+    println!(
+        "betti_0() = {} (nonempty cells = {})",
+        idx.betti_0(),
+        hist.iter().filter(|&&n| n > 0).count()
+    );
 }
 
 #[test]
@@ -94,7 +104,10 @@ fn probe_d_grid_hash_phi_clamp_collapses_cells() {
     );
     // phi values fed to hash():
     for (i, &(_, p)) in c.iter().enumerate() {
-        println!("  centroid {i}: phi={p:.4}  (hash clamps phi to [-PI,PI]; PI={:.4})", PI);
+        println!(
+            "  centroid {i}: phi={p:.4}  (hash clamps phi to [-PI,PI]; PI={:.4})",
+            PI
+        );
     }
 }
 
@@ -102,15 +115,23 @@ fn probe_d_grid_hash_phi_clamp_collapses_cells() {
 fn probe_e_grid_and_voronoi_disagree() {
     // Generic, non-degenerate centroids.
     let c: [(f64, f64); 8] = [
-        (0.4, 0.2), (1.1, 1.3), (2.2, 2.5), (2.9, 0.9),
-        (0.8, 4.0), (1.7, 5.2), (2.5, 3.6), (1.3, 2.9),
+        (0.4, 0.2),
+        (1.1, 1.3),
+        (2.2, 2.5),
+        (2.9, 0.9),
+        (0.8, 4.0),
+        (1.7, 5.2),
+        (2.5, 3.6),
+        (1.3, 2.9),
     ];
     let vor = SphericalVoronoiIndex::<8>::new(c);
     let mut grid = SphericalGridHashIndex::<8>::new(c);
     let (mut disagree, mut grid_wrong, mut n) = (0usize, 0usize, 0usize);
     let mut q = 0u64;
     for _ in 0..5000 {
-        q = q.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        q = q
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let theta = ((q >> 33) as f64 / (1u64 << 31) as f64) * PI;
         let phi = ((q & 0xFFFF_FFFF) as f64 / (1u64 << 32) as f64) * 2.0 * PI;
         let v = vor.locate((theta, phi));
@@ -120,10 +141,17 @@ fn probe_e_grid_and_voronoi_disagree() {
         let mut bd = f64::MAX;
         for (i, &(t, p)) in c.iter().enumerate() {
             let d = gcd_true_colatitude(theta, phi, t, p);
-            if d < bd { bd = d; best = i; }
+            if d < bd {
+                bd = d;
+                best = i;
+            }
         }
-        if v != g { disagree += 1; }
-        if g != best { grid_wrong += 1; }
+        if v != g {
+            disagree += 1;
+        }
+        if g != best {
+            grid_wrong += 1;
+        }
         n += 1;
     }
     println!("queries={n}  voronoi!=grid: {disagree}  grid!=true-nearest: {grid_wrong}");
@@ -144,14 +172,22 @@ fn probe_f_bounded_retrieval_is_a_tautology() {
     // Absurd centroid count P=1e9; the "speedup" is unchanged.
     let a = tss_retrieval_bound(1_000_000, 1_000, 5, 128);
     let b = tss_retrieval_bound(1_000_000, 1_000_000_000, 5, 128);
-    println!("P=1e3 speedup_vs_hnsw={:.4}  P=1e9 speedup_vs_hnsw={:.4}", a.speedup_vs_hnsw, b.speedup_vs_hnsw);
-    println!("P=1e3 speedup_vs_brute={:.4} P=1e9 speedup_vs_brute={:.4}", a.speedup_vs_brute, b.speedup_vs_brute);
+    println!(
+        "P=1e3 speedup_vs_hnsw={:.4}  P=1e9 speedup_vs_hnsw={:.4}",
+        a.speedup_vs_hnsw, b.speedup_vs_hnsw
+    );
+    println!(
+        "P=1e3 speedup_vs_brute={:.4} P=1e9 speedup_vs_brute={:.4}",
+        a.speedup_vs_brute, b.speedup_vs_brute
+    );
 
     // And theorem_holds with a deliberately absurd theta_min / packing.
     let v = TssVerifier::<4>::new([(0.5, 0.0), (1.0, 1.5), (2.0, 3.0), (2.5, 4.5)], 0.1);
     let rep = v.full_verification(1_000, 4, 16);
-    println!("report: theta_min={} p_max={} sep={} pack={} holds={}",
-        rep.theta_min, rep.p_max, rep.separation_holds, rep.packing_holds, rep.theorem_holds);
+    println!(
+        "report: theta_min={} p_max={} sep={} pack={} holds={}",
+        rep.theta_min, rep.p_max, rep.separation_holds, rep.packing_holds, rep.theorem_holds
+    );
 }
 
 #[test]
@@ -172,6 +208,8 @@ fn probe_g_separation_check_uses_the_same_wrong_metric() {
     }
     // verify_separation demanding 0.5 rad on a pair that is truly PI apart:
     let pair = [(PI / 2.0, 0.0), (PI / 2.0, PI)];
-    println!("verify_separation(theta_min=0.5) on a truly-antipodal-on-equator pair = {}",
-        verify_separation(&pair, 0.5));
+    println!(
+        "verify_separation(theta_min=0.5) on a truly-antipodal-on-equator pair = {}",
+        verify_separation(&pair, 0.5)
+    );
 }

@@ -11,10 +11,18 @@ fn alpha_zero_must_not_report_convergence() {
     let start = [10.0, 10.0, 10.0, 10.0];
     let pred = [0.0, 0.0, 0.0, 0.0];
     let r = v.verify_convergence(start, pred, 50, 1e-6);
-    println!("alpha=0: initial={} final={} bound={} converged={}",
-        r.initial_error, r.final_error, r.theoretical_error_bound, r.converged);
-    assert_eq!(r.final_error, r.initial_error, "alpha=0 must not move the state");
-    assert!(!r.converged, "alpha=0 does not converge; the check reported that it did");
+    println!(
+        "alpha=0: initial={} final={} bound={} converged={}",
+        r.initial_error, r.final_error, r.theoretical_error_bound, r.converged
+    );
+    assert_eq!(
+        r.final_error, r.initial_error,
+        "alpha=0 must not move the state"
+    );
+    assert!(
+        !r.converged,
+        "alpha=0 does not converge; the check reported that it did"
+    );
 }
 
 #[test]
@@ -28,8 +36,10 @@ fn the_predicted_error_is_exact_and_converged_does_not_consult_it() {
         for &steps in &[1usize, 5, 20] {
             let r = v.verify_convergence([3.0, -4.0, 12.0], [0.0, 0.0, 0.0], steps, 1e-12);
             let ratio = r.final_error / r.theoretical_error_bound;
-            assert!((ratio - 1.0).abs() < 1e-12,
-                "alpha={alpha} steps={steps}: predicted value is not exact, ratio={ratio}");
+            assert!(
+                (ratio - 1.0).abs() < 1e-12,
+                "alpha={alpha} steps={steps}: predicted value is not exact, ratio={ratio}"
+            );
         }
     }
 
@@ -38,8 +48,10 @@ fn the_predicted_error_is_exact_and_converged_does_not_consult_it() {
     // has NOT reached tolerance, so an honest check reports false.
     let v = SpectralContractionVerifier::<3>::new(0.5);
     let r = v.verify_convergence([1000.0, 0.0, 0.0], [0.0, 0.0, 0.0], 2, 1e-9);
-    println!("alpha=0.5 steps=2 tol=1e-9: final={:.6} predicted={:.6} converged={}",
-        r.final_error, r.theoretical_error_bound, r.converged);
+    println!(
+        "alpha=0.5 steps=2 tol=1e-9: final={:.6} predicted={:.6} converged={}",
+        r.final_error, r.theoretical_error_bound, r.converged
+    );
     assert!((r.final_error / r.theoretical_error_bound - 1.0).abs() < 1e-12);
     assert!(!r.converged,
         "two steps from 1000 cannot reach 1e-9; converged must be false, so it          cannot be reading the predicted value");
@@ -58,7 +70,9 @@ fn telemetry_lipschitz_must_be_the_true_worst_case() {
         worst = worst.max(1.0 - a);
     }
     println!("TelemetryOperator(0.5,0.1,0.1,0.9): reported={reported} measured_worst={worst}");
-    assert!(reported >= worst - 1e-12,
+    assert!(
+        reported >= worst - 1e-12,
         "reported Lipschitz {reported} is below the measured worst case {worst}: \
-         the constant is optimistic and the contraction claim is unsound");
+         the constant is optimistic and the contraction claim is unsound"
+    );
 }

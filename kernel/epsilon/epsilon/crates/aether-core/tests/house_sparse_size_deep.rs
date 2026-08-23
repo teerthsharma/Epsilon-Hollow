@@ -6,19 +6,23 @@ use aether_core::nettree::{relaxed_entry_time, NetTree};
 
 fn sphere(n: usize) -> Vec<ManifoldPoint<3>> {
     let ga = core::f64::consts::PI * (3.0 - 5.0f64.sqrt());
-    (0..n).map(|i| {
-        let y = 1.0 - 2.0 * (i as f64) / ((n.max(2) - 1) as f64);
-        let r = (1.0 - y * y).max(0.0).sqrt();
-        let t = ga * (i as f64);
-        ManifoldPoint::new([t.cos() * r, y, t.sin() * r])
-    }).collect()
+    (0..n)
+        .map(|i| {
+            let y = 1.0 - 2.0 * (i as f64) / ((n.max(2) - 1) as f64);
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let t = ga * (i as f64);
+            ManifoldPoint::new([t.cos() * r, y, t.sin() * r])
+        })
+        .collect()
 }
 
 fn circle(n: usize) -> Vec<ManifoldPoint<2>> {
-    (0..n).map(|i| {
-        let t = 2.0 * core::f64::consts::PI * (i as f64) / (n as f64);
-        ManifoldPoint::new([t.cos(), t.sin()])
-    }).collect()
+    (0..n)
+        .map(|i| {
+            let t = 2.0 * core::f64::consts::PI * (i as f64) / (n as f64);
+            ManifoldPoint::new([t.cos(), t.sin()])
+        })
+        .collect()
 }
 
 /// Entry times for every pair, plus deletion times.
@@ -40,7 +44,9 @@ fn sparse_edges(a: &[f64], t: &[f64], n: usize) -> usize {
     let mut c = 0;
     for i in 0..n {
         for j in (i + 1)..n {
-            if a[i * n + j] < t[i].min(t[j]) { c += 1; }
+            if a[i * n + j] < t[i].min(t[j]) {
+                c += 1;
+            }
         }
     }
     c
@@ -53,10 +59,14 @@ fn sparse_triangles(a: &[f64], t: &[f64], n: usize) -> usize {
     for i in 0..n {
         for j in (i + 1)..n {
             let aij = a[i * n + j];
-            if aij >= t[i].min(t[j]) { continue; }
+            if aij >= t[i].min(t[j]) {
+                continue;
+            }
             for k in (j + 1)..n {
                 let e = aij.max(a[i * n + k]).max(a[j * n + k]);
-                if e < t[i].min(t[j]).min(t[k]) { c += 1; }
+                if e < t[i].min(t[j]).min(t[k]) {
+                    c += 1;
+                }
             }
         }
     }
@@ -91,8 +101,10 @@ fn question_a_does_the_sphere_exponent_fall_with_n() {
     println!("  exponent over the last three: {tail:.3}");
     // The question is whether the TAIL is closer to 1 than the whole range.
     // Report either way; assert only that it does not diverge upward.
-    assert!(tail <= all + 0.05,
-        "the tail exponent {tail:.3} exceeds the full-range {all:.3}: not converging");
+    assert!(
+        tail <= all + 0.05,
+        "the tail exponent {tail:.3} exceeds the full-range {all:.3}: not converging"
+    );
 }
 
 #[test]
@@ -100,17 +112,25 @@ fn question_b_does_the_linear_claim_survive_at_k_equals_two() {
     let eps = 1.0 / 3.0;
     for (name, build) in [("circle", 0usize), ("sphere", 1usize)] {
         println!("=== {name}, triangles, eps = {eps:.4} ===");
-        println!("{:>6} {:>12} {:>12} {:>12}", "n", "sparse tri", "dense tri", "tri/n");
+        println!(
+            "{:>6} {:>12} {:>12} {:>12}",
+            "n", "sparse tri", "dense tri", "tri/n"
+        );
         let mut sp = Vec::new();
         for &n in &[48usize, 64, 96, 128, 192] {
             let (a, t) = if build == 0 {
-                let p = circle(n); tables(&p, eps)
+                let p = circle(n);
+                tables(&p, eps)
             } else {
-                let p = sphere(n); tables(&p, eps)
+                let p = sphere(n);
+                tables(&p, eps)
             };
             let tri = sparse_triangles(&a, &t, n);
             let dense = n * (n - 1) * (n - 2) / 6;
-            println!("{n:>6} {tri:>12} {dense:>12} {:>12.2}", tri as f64 / n as f64);
+            println!(
+                "{n:>6} {tri:>12} {dense:>12} {:>12.2}",
+                tri as f64 / n as f64
+            );
             sp.push((n as f64, tri.max(1) as f64));
         }
         println!("  fitted exponent: {:.3}", exponent(&sp));

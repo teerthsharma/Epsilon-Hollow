@@ -36,20 +36,26 @@ fn probe_contraction_rate_vs_measured() {
     // The analyzer's own simulation, per the in-file test.
     let a = GovernorConvergenceAnalyzer::new(alpha, beta, dt, 0.1, 0.9, 0.3);
     let s = a.simulate_constant(500, 0.5, 0.2);
-    println!("sim: init={} final={} empirical={} theoretical={}",
-        s.initial_error, s.final_error, s.empirical_rate, s.theoretical_rate);
+    println!(
+        "sim: init={} final={} empirical={} theoretical={}",
+        s.initial_error, s.final_error, s.empirical_rate, s.theoretical_rate
+    );
 
     // Does rho depend on the plant at all? Vary the operating point.
     for (r_target, delta) in [(0.3, 0.2), (1000.0, 0.2), (0.3, 50.0)] {
         let a2 = GovernorConvergenceAnalyzer::new(alpha, beta, dt, 1e-6, 1e6, r_target);
         let s2 = a2.simulate_constant(500, 0.5, delta);
-        println!("r_target={r_target} delta={delta}: empirical={} theoretical={} (identical rho)",
-            s2.empirical_rate, s2.theoretical_rate);
+        println!(
+            "r_target={r_target} delta={delta}: empirical={} theoretical={} (identical rho)",
+            s2.empirical_rate, s2.theoretical_rate
+        );
     }
 
     let t = a.theoretical_analysis();
-    println!("lyapunov={} contraction={} (rho^2 < rho forced for rho in (0,1))",
-        t.lyapunov_rate, t.contraction_rate);
+    println!(
+        "lyapunov={} contraction={} (rho^2 < rho forced for rho in (0,1))",
+        t.lyapunov_rate, t.contraction_rate
+    );
 }
 
 #[test]
@@ -83,20 +89,26 @@ fn probe_theorem_holds_is_falsifiable() {
     // empirical = (final/initial)^(1/200). Solve for the ratio at the window edge.
     let theo = contraction_rate(0.01, 0.05, 1.0);
     let edge = theo - 0.05;
-    println!("theoretical={theo}, window low edge={edge}, ratio needed to fail low = {}",
-        libm::pow(edge, 200.0));
+    println!(
+        "theoretical={theo}, window low edge={edge}, ratio needed to fail low = {}",
+        libm::pow(edge, 200.0)
+    );
 }
 
 #[test]
 fn probe_gain_margin_semantics() {
     let a = GovernorConvergenceAnalyzer::new(0.01, 0.05, 1.0, 0.1, 0.9, 0.3);
     for row in a.gain_tuning_table() {
-        println!("{}: alpha={} beta={} margin={} stable={} rho={}",
-            row.label, row.alpha, row.beta, row.gain_margin, row.stable, row.contraction_rate);
+        println!(
+            "{}: alpha={} beta={} margin={} stable={} rho={}",
+            row.label, row.alpha, row.beta, row.gain_margin, row.stable, row.contraction_rate
+        );
     }
     // Does the "stable" flag ever go false at the real governor's dt?
     let fast = GovernorConvergenceAnalyzer::new(0.01, 0.05, 0.01, 0.1, 0.9, 0.3);
     let tf = fast.theoretical_analysis();
-    println!("dt=0.01 (manifold_fs value): margin={} stable={} rho={}",
-        tf.gain_margin, tf.gain_margin_stable, tf.contraction_rate);
+    println!(
+        "dt=0.01 (manifold_fs value): margin={} stable={} rho={}",
+        tf.gain_margin, tf.gain_margin_stable, tf.contraction_rate
+    );
 }
