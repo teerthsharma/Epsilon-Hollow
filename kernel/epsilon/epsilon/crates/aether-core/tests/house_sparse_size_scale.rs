@@ -74,7 +74,7 @@ fn sphere_triangles_at_scale() {
     println!("=== sphere S2 triangles, eps = {eps:.4} ===");
     println!("{:>6} {:>12} {:>12} {:>12}", "n", "sparse tri", "tri/n", "edges/n");
     let mut tri = Vec::new();
-    for &n in &[64usize, 128, 256, 512, 1024, 2048] {
+    for &n in &[64usize, 128, 256, 512, 1024, 2048, 4096, 8192] {
         let p = sphere(n);
         let (adj, t) = sparse_adjacency(&p, eps);
         let e: usize = adj.iter().map(|r| r.len()).sum();
