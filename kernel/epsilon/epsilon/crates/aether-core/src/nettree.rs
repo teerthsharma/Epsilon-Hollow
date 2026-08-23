@@ -366,9 +366,26 @@ impl NetTree {
             return Vec::new();
         }
         let top = self.levels() - 1;
-        // Start from the root net, keep the slots whose subtree can reach.
-        let mut frontier: Vec<usize> = (0..self.levels[top].len()).collect();
+
+        // Start at the COARSEST level whose radius is still at or below the
+        // query radius, rather than at the root.
+        //
+        // Descending from the root prunes nothing: cumulative reach there is
+        // about twice the top radius, which on a unit sphere exceeds the whole
+        // diameter, so every branch survives the first test and the frontier
+        // expands to the full net at each level. Measured, that made the query
+        // 100x slower than a linear scan.
+        //
+        // Starting where `r_l <= radius` keeps the reach comparable to the
+        // radius, so the packing bound limits how many net points survive the
+        // filter. Correctness is unaffected: every point lies within the
+        // cumulative reach of some level-`l` net point, so filtering the whole
+        // level-`l` net by `radius + reach[l]` cannot miss one.
         let mut level = top;
+        while level > 0 && self.radii[level] > radius {
+            level -= 1;
+        }
+        let mut frontier: Vec<usize> = (0..self.levels[level].len()).collect();
 
         // Cumulative reach: a point at the bottom sits within `r_0` of its
         // level-0 net point, which sits within `r_1` of its level-1 ancestor,
