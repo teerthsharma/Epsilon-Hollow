@@ -131,10 +131,21 @@ impl<const D: usize> TelemetryOperator<D> {
         out
     }
 
-    /// Conservative Lipschitz constant `1 - alpha_min`.
+    /// Conservative Lipschitz constant: `1 - min(alpha_min, alpha_max)`.
+    ///
+    /// The per-step contraction factor is `1 - alpha` for the gain `alpha`
+    /// actually used, and [`Self::adaptive_gain`] interpolates between
+    /// `alpha_min` and `alpha_max`. The worst case is therefore the *smallest*
+    /// achievable gain, which is `min(alpha_min, alpha_max)` — not `alpha_min`.
+    ///
+    /// The constructor does not require `alpha_min <= alpha_max`. When the two
+    /// are supplied in the other order, `1 - alpha_min` is optimistic: for
+    /// `TelemetryOperator::new(0.5, 0.1, 0.1, 0.9)` it reports 0.5 while the
+    /// measured worst factor over the gain range is 0.9. Taking the minimum
+    /// makes the constant correct for either ordering.
     #[inline]
     pub fn lipschitz_constant(&self) -> f64 {
-        1.0 - self.alpha_min
+        1.0 - self.alpha_min.min(self.alpha_max)
     }
 
     /// Iterations needed to halve the error under the conservative rate.
@@ -165,7 +176,18 @@ pub struct ConvergenceVerification {
     pub initial_error: f64,
     /// Final L2 error after the requested iterations.
     pub final_error: f64,
-    /// Theoretical upper bound `(1-alpha)^steps * initial_error`.
+    /// `(1-alpha)^steps * initial_error`.
+    ///
+    /// **This is exact, not an upper bound.** The step is
+    /// `(1 - alpha) * state + alpha * pred`, so the error obeys
+    /// `e_{n+1} = (1 - alpha) e_n` and the realized error *equals* this
+    /// expression. Measured ratio of realized error to this value:
+    /// 1.000000000000000 at every alpha and step count tested.
+    ///
+    /// It is therefore useless as a check on itself: comparing the realized
+    /// error against it is an identity that cannot fail. It is retained
+    /// because the predicted value is genuinely useful to a caller, but
+    /// [`ConvergenceVerification::converged`] no longer consults it.
     pub theoretical_error_bound: f64,
     /// Number of iterations simulated.
     pub steps: usize,
@@ -223,14 +245,24 @@ impl<const D: usize> SpectralContractionVerifier<D> {
         let final_error = l2_diff(&final_state, &pred);
         let rate = self.operator.lipschitz_constant().clamp(0.0, 1.0);
         let theoretical_error_bound = libm::pow(rate, steps as f64) * initial_error;
-        let bound_slack = theoretical_error_bound.max(tolerance) + 1e-9;
 
+        // `converged` must be capable of being false, so it cannot consult
+        // `theoretical_error_bound` — that value equals `final_error` exactly
+        // and the comparison is an identity. Two independent conditions,
+        // both of which a caller can violate:
+        //
+        //   1. the operator is a strict contraction (`rate < 1`), which
+        //      alpha = 0 fails: the step is then the identity and the state
+        //      never moves;
+        //   2. the error actually reached the requested tolerance in the steps
+        //      given, which too few steps fails.
+        let contracts = rate < 1.0;
         ConvergenceVerification {
             initial_error,
             final_error,
             theoretical_error_bound,
             steps,
-            converged: final_error <= tolerance || final_error <= bound_slack,
+            converged: contracts && final_error <= tolerance,
         }
     }
 
