@@ -8250,3 +8250,125 @@ iterations of self-review had turned up.
 The workspace is now green with no allowances at all: 756 tests, 0 failures, 0
 formatting diffs, 0 clippy warnings, 0 rustdoc warnings. It is the first time in
 this effort that sentence has been true without a footnote.
+
+## The Verdict, With The Abstentions Left In
+
+Forty-five iterations. This is what holds, what does not, and what was never
+settled either way.
+
+### What was built
+
+`nettree.rs`. A hierarchical net-tree with packing and covering asserted at every
+level; Sheehy's weight function from section 4 transcribed verbatim; the deletion
+times from section 6, `t_p = rad(par(v_p)) / (eps(1 - 2 eps))`; and an entry time
+that is now solved in closed form rather than by two hundred halvings, 46.6x
+faster on 115,200 evaluations, agreeing with the retained bisection to
+3.331e-16 across a 2,880-tuple sweep.
+
+The approximation half works. Below `eps = 0.1` the relaxed diagram is
+**exactly** the Rips diagram, bottleneck distance 0.000000. At `eps = 1/3` it is
+0.065746, a 37x improvement once section 6 was transcribed correctly.
+
+The size half holds where it was measured. Sparse edge and triangle counts fit
+exponents of 0.975 to 1.023 on the circle against a dense control that fits
+2.005, and on the sphere `max |E(p)|` plateaus between 90 and 95 with the final
+doubling *decreasing*.
+
+### What does not work, stated as plainly as what does
+
+**Sheehy's section 10 is not implemented, and three attempts died measured.**
+Root descent ran 100x slower than the linear scan it was built to replace,
+because cumulative reach at the top level exceeds the sphere's diameter and no
+branch is ever pruned. Level-matching the descent moved 1027 ms to 958 ms.
+Ordering discovery by deletion time is a permutation of the same comparisons -
+`sum over p of |{q : t_q > t_p}| = n(n-1)/2` - and measured 1.03x, 0.99x, 0.88x.
+Edge discovery remains `O(n^2)`.
+
+The closed form is a constant. It does not move an exponent. Lemma D makes the
+candidate set indexable at a fixed radius in principle, and the measurement says
+what that is worth: at `alpha_max = 0.75` the filter keeps 13.98% of pairs and
+at 0.20 it keeps 0.80%, but **`kept %` is constant in n**, so the saving is a
+factor and not an order.
+
+### Is any single mathematical statement here new
+
+No, and that is a literature answer rather than a modest one.
+
+Prior art was found for four of five claims searched: net-tree box counting is
+standard, Lemma A and Lemma C are Rosenthal 1973 and textbook load balancing,
+and `T ~ 1/lambda` appears verbatim in arXiv:2606.13092. The fifth - gating
+kernel speculation on a measured predictability horizon - returned nothing in two
+searches, which is **weak evidence of absence and not a novelty claim**.
+
+The search that would settle it has a name and was not run: ISCA, MICRO and
+ASPLOS proceedings for chaos or Lyapunov exponents in prefetch and speculation
+gating. Until that is done, the honest status of that one statement is unknown,
+not new.
+
+One conjecture of this effort's own was refuted outright. The Occupancy Flow
+bridge argued that a congestion-game equilibrium would buy a doubling bound on
+`S^2`. It does not: `S^2` is Ahlfors 2-regular under the chordal metric with
+doubling constant at most 25 unconditionally, so equilibrium contributed nothing
+to the static bound and the conjecture was withdrawn rather than weakened.
+
+### The error rate, since this document is obliged to report it
+
+Sixteen defects repaired, each with a named mutant that kills the repair.
+Corrections to claims this effort had already recorded as established: eleven.
+Three of those were full retractions rather than refinements - the accusation
+that the Lean audit was a `grep sorry`, the bounded-degree verdict that measured
+the undirected degree instead of Sheehy's `E(p)`, and the beta_2 arity argument
+aimed at inputs the code does not receive.
+
+What overturned them is the column worth keeping. Nine went down to a measurement
+that was run or extended, or to opening a file that had been described from
+memory. **Zero were overturned by arguing better about evidence already in hand.**
+
+The exception is the last round, and it is the most useful data point here. Four
+claims went to twelve adversarial verifiers with instructions to refute. They
+found a numerical bug in a function this document had already certified at a
+worst relative gap of 3.331e-16 - the sweep capped deletion times at 50 and could
+not reach the input where the answer is 8.7% wrong - three tests that could not
+fail including the flagship one, and an argument built against a function that
+does not exist. Eight iterations of self-review had found none of them.
+
+Five checks written during this effort could not fail, and two of those were
+written while auditing for exactly that. The count is not a confession; it is the
+measured rate at which this failure mode recurs when nobody is attacking.
+
+### Abstentions, shipped plainly
+
+**Scale.** Every certification here is validated at `n <= 128`, because
+`bottleneck_distance` is cubic in bar count, H1 bars grow like `n^2 / 2`, and
+`n = 120` was killed at 600 seconds. The deliverable claims `n` in the tens of
+thousands. **The refutability of every claim here drops to zero at exactly the
+scale the claim is about.** Subsampled cross-validation is strictly weaker than
+the theorem asserts.
+
+**Calibration.** `DENSITY_MIN`, `DENSITY_MAX` and `MAX_OSCILLATION` are
+uncalibrated. Their values are 0.1, 0.6 and 10, and no labelled corpus in this
+repository justifies any of them. `verify_shape` is a gate whose thresholds are
+guesses, and the honest position is that it decides nothing defensible until a
+corpus exists.
+
+**The torus.** The repair plan asked for a torus sample. Forty-eight points
+resolve one 1-cycle rather than two and no 2-cycle, against a true `(1, 2, 1)`.
+That case is reported at five radii and **not** certified.
+
+**The wire.** `ManifoldPayload::signature_b2` still carries the Euler defect
+under a name that says `beta_2`. Its documentation states plainly that it is not
+`beta_2` and that for connected graphs it is `signature_b1 + 1` and therefore
+redundant. Renaming it is a wire-format change and was left as the maintainer's
+decision rather than taken unilaterally.
+
+**Coverage.** Seventy-one tests in this effort never went red for any mutation.
+Two families of that were genuine gaps and are closed. The rest are observation
+probes and negative-result records, plus an artefact of running the gate in
+`--quick` mode, where a mutation in one crate cannot redden a test in another.
+The list is printed rather than summarised so that nobody counts a probe as
+evidence.
+
+**Not run.** `cargo audit` and `cargo deny` need network. The QEMU UEFI boot
+smoke test needs QEMU. `cargo +nightly clippy` and `miri` need the nightly
+toolchain. Their status is unverified, not assumed, and `ci_parity.sh` prints
+that list every run rather than quietly omitting it.
