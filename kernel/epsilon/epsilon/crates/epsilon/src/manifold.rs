@@ -213,13 +213,29 @@ impl<const D: usize> SparseGraph<D> {
         }
     }
 
-    /// Estimate beta2 using the Euler characteristic identity for S2.
+    /// Euler defect: `2 - chi`, where `chi = beta_0 - beta_1` is the Euler
+    /// characteristic of this graph.
     ///
-    /// For any space homeomorphic to S2, the Euler characteristic satisfies:
-    /// `chi(S2) = 2 => beta0 - beta1 + beta2 = 2 => beta2 = 2 - beta0 + beta1`
+    /// **This is not beta_2.** A [`SparseGraph`] is a 1-skeleton — it has
+    /// vertices and edges and no 2-cells — so `H_2` of the complex it
+    /// represents is identically zero for every input, at every epsilon. See
+    /// [`Self::betti_2`].
     ///
-    /// For degenerate inputs (disconnected graph) the result is clamped to 0.
-    pub fn compute_betti_2_euler(&self) -> u32 {
+    /// The identity `beta_0 - beta_1 + beta_2 = 2` holds for a space
+    /// *homeomorphic to S2*. Solving it for `beta_2` assumes that conclusion
+    /// rather than deriving it, and the resulting quantity cannot represent a
+    /// non-sphere: for any connected graph it equals `1 + beta_1`, so it is
+    /// never zero and carries no information beyond
+    /// [`Self::estimate_betti_1`]. A straight line of collinear points returns
+    /// 1 from this function; its true `beta_2` is 0.
+    ///
+    /// It is retained under an honest name because it is a legitimate graph
+    /// invariant and is transmitted as a matching signature in
+    /// [`ManifoldPayload`]. It must not be read as homology.
+    ///
+    /// Negative values are clamped to 0, which loses the sign; that behaviour
+    /// is preserved for wire compatibility.
+    pub fn euler_defect(&self) -> u32 {
         if self.point_count == 0 {
             return 0;
         }
@@ -233,13 +249,31 @@ impl<const D: usize> SparseGraph<D> {
         }
     }
 
-    /// Full topological shape signature: (beta0, beta1, beta2).
+    /// Signature triple `(beta_0, beta_1, euler_defect)`.
+    ///
+    /// The third component is **not** `beta_2`; see [`Self::euler_defect`].
+    /// The true `beta_2` of this 1-skeleton is 0 — [`Self::betti_2`].
     pub fn full_shape(&self) -> (u32, u32, u32) {
         let b0 = self.compute_betti_0();
         let b1 = self.estimate_betti_1();
         let b2i: i32 = 2i32 - b0 as i32 + b1 as i32;
         let b2 = if b2i > 0 { b2i as u32 } else { 0 };
         (b0, b1, b2)
+    }
+
+    /// The second Betti number of this complex, which is 0 for every input.
+    ///
+    /// [`SparseGraph`] stores vertices and an epsilon-neighbour relation and
+    /// nothing else, so the complex it represents is 1-dimensional. The chain
+    /// group `C_2` is trivial, hence `H_2 = 0` identically — independent of the
+    /// points, of `epsilon`, and of the point count.
+    ///
+    /// Computing a genuine `beta_2` requires 2-simplices. `aether_core`'s
+    /// `persistence` module builds them and reduces the boundary matrix
+    /// exactly; route there rather than inferring `beta_2` from an Euler
+    /// identity.
+    pub fn betti_2(&self) -> u32 {
+        0
     }
 
     /// Topological shape signature: (Î²â‚€, Î²â‚).
@@ -298,8 +332,13 @@ pub struct ManifoldPayload<const D: usize> {
     pub signature_b0: u32,
     /// b1 Betti number (independent loop count).
     pub signature_b1: u32,
-    /// β₂ derived from Euler characteristic identity: 2 − β₀ + β₁.
-    /// For a well-sampled S² point cloud this equals 1.
+    /// Euler defect `2 - chi = 2 - beta_0 + beta_1`, clamped at 0.
+    ///
+    /// **Not beta_2.** The graph is a 1-skeleton, so its true beta_2 is 0 for
+    /// every input. For connected graphs this field equals `signature_b1 + 1`
+    /// and is therefore redundant with the field above; it is retained only for
+    /// wire compatibility as a matching signature. See
+    /// [`SparseGraph::euler_defect`].
     pub signature_b2: u32,
     /// Inherited liveness score from source agent (for Chebyshev guard)
     pub liveness_anchor: f64,
@@ -586,13 +625,11 @@ mod tests {
     // ─── Betti-2 Tests ────────────────────────────────────────────────────────
 
     #[test]
-    fn test_betti_2_sphere_cloud_is_one() {
-        // A well-connected cluster on S²: β₀=1, β₁≥0, β₂ = 2 − 1 + β₁
-        // With a dense cluster β₁ will be > 0 → β₂ = 1 for a sphere.
-        // We specifically build a ring-shaped cluster to drive β₁ = 0
-        // so β₂ = 2 − 1 + 0 = 1 exactly.
+    fn euler_defect_equals_one_plus_b1_for_connected_graphs() {
+        // The identity that makes the old `beta_2` field redundant, pinned.
+        // Named mutant this kills: "treat the Euler defect as beta_2", which
+        // would have to return 0 for some connected input and never can.
         let mut g = SparseGraph::<3>::new(1.5);
-        // 6 points forming a connected chain (β₁ = 0 with this ε radius)
         g.add_point(EpsilonPoint::new([1.0, 0.0, 0.0]));
         g.add_point(EpsilonPoint::new([0.0, 1.0, 0.0]));
         g.add_point(EpsilonPoint::new([0.0, 0.0, 1.0]));
@@ -600,11 +637,14 @@ mod tests {
         g.add_point(EpsilonPoint::new([0.0, -1.0, 0.0]));
         g.add_point(EpsilonPoint::new([0.0, 0.0, -1.0]));
 
-        let (b0, _b1, b2) = g.full_shape();
-        assert_eq!(b0, 1, "Shell must be connected (β₀=1)");
-        // β₂ = 2 − β₀ + β₁; for a well-formed S² cloud we expect β₂ ≥ 1
-        // (exact value depends on edge count; lower bound holds for connected β₁=0)
-        assert!(b2 >= 1, "S² point cloud must have β₂ ≥ 1, got {}", b2);
+        let (b0, b1, defect) = g.full_shape();
+        assert_eq!(b0, 1, "shell must be connected");
+        assert_eq!(
+            defect,
+            b1 + 1,
+            "for a connected graph the Euler defect is exactly 1 + beta_1"
+        );
+        assert_eq!(g.betti_2(), 0, "H_2 of a 1-skeleton is identically 0");
     }
 
     #[test]

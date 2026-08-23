@@ -48,14 +48,19 @@
 //! This gives Betti numbers β₀=1, β₁=0, β₂=1.
 //!
 //! A sufficiently dense point cloud on S² recovers this signature via the
-//! Vietoris-Rips filtration. The hollow manifold is **derived**, not assumed.
+//! Vietoris-Rips filtration — but only if a genuine filtration is built. The
+//! graph-level signature in [`crate::manifold`] does **not** derive the hollow
+//! manifold: its third component is an Euler defect computed by assuming
+//! `chi = 2`, which presupposes the sphere rather than detecting it. Exact
+//! `beta_2` requires 2-simplices; see `aether_core::persistence`.
 //!
 //! ## 4. Minimum Density Bound
 //!
-//! By Niyogi-Smale-Weinberger: for S² with reach τ=1, we need an ε-dense
-//! sample with ε < τ/2 = 0.5 for topological recovery. In practice this
-//! requires at minimum 20 tokens for adequate angular coverage.
-//! See: `MIN_TOKENS`.
+//! Niyogi-Smale-Weinberger give a probabilistic sample-size bound for
+//! recovering the homology of a manifold from a noisy sample, in terms of the
+//! reach and a confidence parameter. It does not yield a specific token count.
+//! `MIN_TOKENS` is an operational floor chosen for angular coverage, not a
+//! consequence of that theorem. See: `MIN_TOKENS`.
 //!
 //! ═══════════════════════════════════════════════════════════════════════════════
 
@@ -69,8 +74,10 @@ use crate::manifold::{EpsilonPoint, ManifoldPayload, SparseGraph};
 
 /// Minimum token count for sufficient angular coverage of S².
 ///
-/// Derived from Niyogi-Smale-Weinberger: ε-dense sample of unit S² with
-/// ε < 0.5 requires at least this many uniformly distributed points.
+/// Operational floor for angular coverage of S². **Not derived from
+/// Niyogi-Smale-Weinberger**, whose bound is probabilistic and stated in terms
+/// of the reach and a confidence parameter; it does not produce this number.
+/// Chosen empirically and unvalidated against a stated recovery probability.
 pub const MIN_TOKENS: usize = 20;
 
 /// Epsilon for the ε-neighborhood graph (sparse attention radius on S²).
