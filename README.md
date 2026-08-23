@@ -7640,10 +7640,26 @@ every branch and the frontier expands to the full net at each level.
 
 The second failed for a reason worth stating: `t_p` is `rad(par(v_p))` divided by
 `eps(1 - 2 eps)`, which is a factor of 9 at `eps = 1/3` and 22.2 at `eps = 0.05`.
-At `eps = 1/3`, **40.6%** of the query balls cover the entire sphere. At
-`eps = 0.05`, **100%** do. No spatial index beats a linear scan when the query is
-"everything", and it gets worse in exactly the regime where the approximation is
-tightest.
+The share of query balls that cover the entire sphere is therefore large, and
+it moves with both `eps` **and** `n`:
+
+| n | eps = 1/3 | eps = 0.1 | eps = 0.05 |
+| ---: | ---: | ---: | ---: |
+| 256 | 99.2% | 99.2% | 100.0% |
+| 1024 | 40.6% | 40.6% | 99.8% |
+| 4096 | 11.9% | 11.9% | 39.6% |
+
+No spatial index beats a linear scan when the query is "everything", and at
+every fixed `n` the problem gets worse as `eps` shrinks - which is exactly the
+regime where the approximation is tightest.
+
+**An earlier version of this paragraph quoted 40.6% for `eps = 1/3` against 100%
+for `eps = 0.05` and read them as a comparison.** They are the `n = 1024` and
+`n = 256` rows respectively, so the comparison held `n` constant nowhere and took
+the most favourable row on one side. The trend it asserted does survive at fixed
+`n` - 40.6% to 99.8% at 1024, 11.9% to 39.6% at 4096 - but the two numbers as
+printed did not establish it. The full table is above so the reader can pick
+their own row, which is what should have been printed the first time.
 
 The third is the one I am embarrassed about, and it is a process failure rather
 than a reading failure. I argued that deletion ordering and spatial pruning would
@@ -7679,3 +7695,558 @@ is not supposed to be.
 None of them were lying. All of them were unmeasured. That sentence appears
 earlier in this document about somebody else's code, and it turns out to
 generalise.
+
+## Two Hundred Halvings To Find A Root That Was Already Written Down
+
+`relaxed_entry_time` answers one question: given two points at distance `d`, with
+deletion times `t_p` and `t_q`, at what scale does the pair enter the sparse
+filtration? Sheehy's relaxed distance moves with the scale, so the answer is not
+a table lookup — it is the least `alpha` satisfying
+
+```
+d + w_p(alpha) + w_q(alpha) <= alpha
+```
+
+Lemma 4.1 says the set of admitting `alpha` is an upward-closed ray, so there is
+a single crossing and bisection finds it. That is what the function did: bracket,
+then halve two hundred times. It is correct, it is obviously correct, and it is
+the inner loop of an all-pairs scan.
+
+It is also unnecessary, and the reason is written three functions above it.
+
+### The weight has three pieces and all three are straight lines
+
+Here is Sheehy's weight, transcribed from section 4 and unchanged since:
+
+```
+w_p(alpha) = 0                             if alpha <= (1 - 2 eps) t_p
+           = (alpha - (1 - 2 eps) t_p) / 2 if (1 - 2 eps) t_p < alpha < t_p
+           = eps * alpha                   if t_p <= alpha
+```
+
+Slopes `0`, `1/2`, `eps`. Nothing else. So
+
+```
+g(alpha) = d + w_p(alpha) + w_q(alpha) - alpha
+```
+
+is affine on every interval cut out by the four breakpoints `(1-2eps)t_p`, `t_p`,
+`(1-2eps)t_q`, `t_q` — at most five pieces — and on each piece its slope is
+`a_p + a_q - 1`, where each `a` is one of those three numbers.
+
+Now write out every slope that can occur. The largest is `1/2 + 1/2 - 1 = 0`.
+Every other combination is strictly negative, because `eps <= 1/3`. So `g` is
+non-increasing on the whole ray.
+
+That is Lemma 4.1. Not a consequence of it, not a check consistent with it —
+**it is the same statement**, arrived at by adding two slopes instead of by
+citing a paper. The monotonicity the bisection depends on is a fact about the
+arithmetic of `0`, `1/2` and `eps`, and once it is seen that way the root is a
+division:
+
+```
+alpha* = -c / s        on the first piece where g reaches zero
+```
+
+There are at most five pieces to try, and the last one always succeeds, because
+on `[max(t_p, t_q), infinity)` both weights are `eps * alpha`, the slope is
+`2 eps - 1 <= -1/3`, and the root is
+
+```
+entry time = d / (1 - 2 eps)
+```
+
+That last line is the most useful thing in this section. Above both deletion
+times, the entry time of a pair does not depend on the deletion times at all.
+
+### Three statements, and what each one is for
+
+**Lemma D.** Both weights are non-negative, so `d_alpha >= d` for every `alpha`,
+so the entry time is never below the true distance. A pair can appear in a
+filtration truncated at `alpha_max` only when `d <= alpha_max`.
+
+That converts edge discovery from a question about `t_p` and `t_q` into a
+**fixed-radius** geometric query, with no false negatives. Which matters, because
+the previous section of this document records three attempts at a fast neighbour
+search dying on exactly this point: the per-point radius `t_p` is 9 to 22 times a
+net radius and covers the whole sphere for most points. `alpha_max` is not.
+
+**Lemma E.** Once `alpha >= max(t_p, t_q)`, admission reads
+`d + 2 eps alpha <= alpha`, so the entry time is `d / (1 - 2 eps)` exactly.
+Closed form, not a limit. Exercised on 1,287 of the 2,880 swept argument tuples
+that reach that regime.
+
+**Lemma F.** With both deletion times far beyond the scale, both weights vanish
+and the entry time **is** `d`. The relaxed filtration degenerates to the exact
+Rips filtration. This is the reduction the entire construction has to satisfy,
+and it is the first thing worth checking in anybody's implementation of it.
+
+### Does the closed form actually agree
+
+The bisection is kept. It is not dead code and it is not a fallback — it is the
+oracle. `tests/house_entry_time_closed_form.rs` sweeps 2,880 argument tuples
+covering every ordering of the four breakpoints, including the degenerate ones
+the input clamps produce, and requires the two to agree.
+
+| quantity | measured |
+| --- | ---: |
+| tuples swept | 2,880 |
+| tuples where the two disagree | **0** |
+| worst relative gap | **3.331e-16** |
+| tuples reaching the `eps` regime (Lemma E) | 1,287 |
+| bisection, 115,200 evaluations | 85.95 ms |
+| closed form, same evaluations | **1.84 ms** |
+| ratio | **46.6x** |
+
+`3.331e-16` is one and a half machine epsilons. The two functions agree to the
+last bit a double can carry, and the accumulated sums over all 115,200
+evaluations match to the three decimals the test prints. Both figures come from
+one run of `cargo test -p aether-core --test house_entry_time_closed_form` on the
+development machine; the ratio is hardware-dependent and the test asserts only
+that the closed form is not slower, which is the outcome that would invalidate
+the change.
+
+This is the shape of gate `stratum` and `foliation` already use, and it is the
+shape worth trusting: a reference implementation allowed to be slow, and a fast
+path required to reproduce it. Three named mutants attack the fast path
+specifically — flip the sign of the root, sample the affine piece at the interval
+endpoint instead of inside it, drop the intercept that makes the middle piece
+meet the knee.
+
+### What this is not
+
+It is a constant. It is 46.6 times, it is measured, and it does not change a
+single exponent. Edge discovery is still an all-pairs scan, and this makes each
+pair cheaper rather than removing pairs. Lemma D opens the door to removing them
+— a fixed radius is indexable in a way `t_p` was not — but on a bounded sphere
+with `n` growing, the number of pairs within a fixed `alpha_max` still grows
+quadratically, and nothing here says otherwise. Section 10 remains dead.
+
+The request that produced this was "either calculate the trajectory linearly or
+have a constant to it". This is the constant, honestly labelled.
+
+## The Fourth Instrument That Could Not Fail
+
+Four checks in this repository have now reported success while measuring nothing.
+Counting them in public beats discovering a fifth the same way.
+
+| instrument | what it could not see | how it was caught |
+| --- | --- | --- |
+| `ci_parity.sh` failure counter | every test failure, always | its own required-misfire self-test |
+| gate summary parser | `3 skipped` sitting next to `0 survived` | reading it |
+| gate fragment matcher | the entire H2 filtration path | Wilson |
+| gate exit code | `1 did not compile`, exiting 0 | this section |
+
+The third should worry a reader most. `max6`'s body contains `max3`'s body as a
+**prefix**, the driver used "replace the first occurrence", and `max3` comes
+first in the file. So for its whole life the gate mutated `max3` twice and `max6`
+never, while printing `19 caught, 0 survived`. `max6` computes the filtration
+value of a tetrahedron, which is the birth coordinate of every H2 bar this crate
+produces.
+
+Patching that one instance would have guaranteed a fifth. So the gate now runs
+`audit_fragments()` before it mutates anything, and refuses to start unless every
+target fragment occurs in its file **exactly once** and no fragment is a
+substring of another.
+
+Run against the tree as it stood, it reproduced Wilson's finding by two
+independent routes before a single mutation executed:
+
+```
+oracle-rips-max3-to-min: fragment occurs 2 times in .../persistence.rs;
+    only the first is mutated, the rest are unguarded
+oracle-rips-max3-to-min's fragment is contained in oracle-rips-max6-to-min's
+    in .../persistence.rs; the shorter one shadows it
+```
+
+Then it did something better, which is why this section exists. When the
+closed-form entry time above was added, its input guard was copied from the
+bisection instead of shared with it. The audit failed on that change, in the same
+run, before any test executed:
+
+```
+sparse-liveness-dropped: fragment occurs 2 times in .../nettree.rs
+```
+
+The fix was not to re-anchor the mutant. It was to notice the guard had been
+duplicated and extract it, so one mutant now covers both call sites and the
+duplication is gone. **A check that catches its own author on the day it is
+written is worth more than one that catches somebody else in a year.**
+
+### And a gate that poisoned the tree when you killed it
+
+The driver mutates a source file, runs the tests, and restores it in a `finally`.
+Kill it mid-run and the `finally` never executes: the mutation stays on disk, the
+process is gone, and nothing anywhere says so. Two copies running concurrently
+plus a timeout produced exactly that, and left a live mutation sitting in
+`nettree.rs`.
+
+The obvious fix is to handle `SIGTERM` and let the existing `finally` unwind. It
+does not work here, and the only reason that is known is that it was tried and
+then tested by killing a running gate: on Windows a `terminate()` is
+`TerminateProcess`, which delivers no signal and runs no handler. The mutation
+was still there, with the handler installed.
+
+So the guarantee moved off the process and onto the disk. A byte copy is written
+beside the file before the mutation and deleted only after the restore, and
+`recover_pending()` runs at startup. It is a write-ahead log for a test script,
+which is more ceremony than a test script deserves, and it is the only version of
+this that survives a kill it cannot intercept.
+
+Three separate kills, three recoveries. Only one was observed printing its
+own message - `RECOVERED ... restored .../aether_tss.rs` - because Python
+buffers stdout when piped and the other two runs were killed before the buffer
+flushed. Those two are confirmed by the weaker evidence that the file returned
+to unmodified in `git status` and its backup was gone. The message now flushes
+on write, since a recovery notice lost to buffering is the same silent failure
+this whole section is about.
+
+## A Homology Rank That Grew When You Sampled Harder
+
+`compute_betti_1` had a docstring saying it approximates 1-dimensional homology.
+Here is what it returned on `[0, 60, 120, 0]`, repeated:
+
+| length | 4 | 8 | 16 | 32 | 64 | 128 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| β₁ | 1 | 2 | 4 | 8 | 16 | 32 |
+
+That is `n / 4`. It is the same three-value pattern the whole way down; only the
+number of times it was written out changed. If sampling a circle twice as
+densely doubles the number of holes you find, you are not counting holes.
+
+There is a second disqualification, and it is the one this repository has
+already written down elsewhere. A point cloud has no order. Any permutation of
+the samples is a relabeling, and a relabeling is a provable no-op against
+persistent homology — the crate asserts exactly that for β₀ in
+`proptest_manifold_topology.rs::betti_0_is_permutation_invariant`. Apply a stride
+permutation to a 16-byte input and this function moves from 4 to 7.
+
+So it slid a window along a sequence and counted oscillations. Which is a fine
+thing to do. It is not β₁, and the two are not close.
+
+### What β₁ actually is here, and why it is boring
+
+The bytes are numbers between 0 and 255. They are points **on a line**. So:
+
+Order the distinct values `x_1 < ... < x_n`. In the Rips graph at scale `t`, the
+neighbours of `x_1` are exactly the values in `(x_1, x_1 + t]`. Any two of those
+differ by at most `t`, so they are all adjacent to each other. `N[x_1]` is a
+clique, `x_1` is a simplicial vertex, its closed star is a full simplex, and
+deleting it is an elementary collapse. Induct.
+
+Every component collapses to a point. `H₁ = 0`, at every scale, for every input.
+
+You cannot make a loop out of points on a line. It took four lines to say and it
+is completely rigid: no threshold, no tolerance, no parameter to tune, no input
+that escapes it.
+
+That is the same correction the `epsilon` crate's β₂ needed — a function that
+was structurally unable to return zero for a space with no voids. The failure
+mode is identical and worth naming: **a quantity that cannot take the value the
+mathematics forces will return a plausible number instead**, and a plausible
+number is much harder to notice than a crash.
+
+### The proof gets checked against the crate's own machinery
+
+The collapse argument above is four lines and could be wrong. So the test does
+not assume it: it builds the distance matrix over the byte values, runs
+`persistent_homology_from_distances`, and requires zero H1 bars. Five corpora,
+seven radii each, from 0.5 to 200.
+
+**Total H1 bars found: 0.**
+
+That test passed on its first run, *before* the repair — which is the point. It
+was checking the mathematics, not the new code. If it had found a bar, either
+the argument above is wrong or `persistence.rs` is, and both are things worth
+finding out on a Tuesday.
+
+### One exact number instead of one inequality
+
+The statistic survives under its own name, `oscillation_count`, because it is a
+real signal about a byte *sequence* and because `verify_shape` rejects on it.
+And it now has an exact form rather than a hand-wave:
+
+For a period-3 repetition of three values further apart than the tolerance,
+every 4-window qualifies, so
+
+```
+oscillation_count = len - 3
+```
+
+Checked at every length from 4 to 64. This matters because the obvious test —
+"it grows with length" — passes for `len - 3` and passes for `len / 4`, and
+`len / 4` is the bug. An exact form distinguishes them; an inequality does not.
+This document has made that mistake before, with a death radius that converged to
+`sqrt(3)` from above under both `floor` and `ceil`.
+
+### The branch nobody had ever tested
+
+`verify_shape` rejects data whose oscillation exceeds 10. The repair kept that
+branch pointed at the statistic rather than the true β₁, with a comment
+explaining that substituting β₁ would make the branch unreachable.
+
+That comment is worth nothing unless the branch is reachable *now*. So: is it?
+
+Before this work, **no assertion anywhere in the repository exercised
+`ExcessiveLoops`**. Zero coverage. The justification was resting on an untested
+claim, which is the exact failure this document keeps cataloguing.
+
+The window turns out to be narrow, and the two constraints fight each other.
+Rejection needs `density = β₀ / len` inside `[0.1, 0.6]` *and* the statistic above
+10. A period-3 pattern gives `β₀ = 3` and, by the exact form above, a statistic of
+`len - 3`. So
+
+```
+3 / len >= 0.1     and     len - 3 > 10       =>      14 <= len <= 30
+```
+
+Seventeen lengths, out of every possible input. At `len = 21`: β₀ 3, density
+0.1429, oscillation 18, rejected. The branch is live, and now something says so.
+
+### And the failing test that was blamed on someone else
+
+`cargo test --workspace` had exactly one failure. `ci_parity.sh` had excused it
+since iteration 36, in these words: "fails on origin/main as well, at 23 passed
+and 1 failed. It is reported, not counted."
+
+It asserts `Betti([0, 50, 100])[0] == 1.0`, with the inline comment "has one
+large-gap component per compute_betti_0 logic".
+
+Three values, gaps of 50, threshold 15. That is three isolated components. β₀ is
+**3**, and the "compute_betti_0 logic" the comment appeals to is the gap-run
+counting that was itself the first defect this whole effort repaired. The
+assertion outlived the code it was pinning.
+
+The part that stings: the comment three lines above the call already read
+`-> gaps > 15 -> 3 components -> [3.0, 0.0]`. Somebody corrected the comment and
+left the assertion. Both were sitting in the same function, four lines apart, for
+six iterations, while a script called it pre-existing and moved on.
+
+It now asserts 3.0. It also asserts the second slot is 0.0, which nothing checked
+before — and the interpreter, which used to return a **hardcoded** `0.0` there,
+now reads it from the function that proves it is zero. Same value. One of them is
+a fact and the other was a guess that happened to be right.
+
+The tolerance is gone from `ci_parity.sh`. An allowance for a failure that no
+longer exists is the fifth blind instrument, and this document is already
+carrying four.
+
+## Twelve Verifiers, Nine Refutations, And The Worst One Was Mine
+
+Before writing any of the prose above, four load-bearing claims went out to three
+adversarial verifiers each — one attacking the deduction, one attacking the
+hypotheses, one attacking the evidence — all instructed to refute and to default
+to refuted when the evidence looked thin.
+
+| claim | verdict |
+| --- | --- |
+| the closed-form entry time | **refuted** 2/3 |
+| a line has no loops | **refuted** 3/3 |
+| the β₂ arity argument | **refuted** 3/3 |
+| the exact forms | contested 1/3 |
+
+Default-to-refute inflates that column, so the tally is not the finding. What
+follows is what survived reading every gap.
+
+### The one that was a real bug, in code that shipped with a table
+
+The closed-form entry time sampled each interval at its midpoint, written
+`0.5 * (lo + hi)`.
+
+That forms the sum first. Once `lo + hi` exceeds `f64::MAX` it is infinity, and
+`weight_affine(inf, ...)` falls through both of its guards and reports the `eps`
+piece for both points — whatever piece the interval is actually in. The walk then
+reads the wrong slope and can step straight over the least root.
+
+It is reachable with finite arguments. `1e308 + 1.11111e308` is already too big.
+The verifier handed over the input and it reproduced on the first run:
+
+```
+d = 9.2e307, t_p = 1e308, t_q = 1.11111e308, eps = 0.05
+returned 1.0222e308, least root 9.4e307, relative gap 8.747e-2
+```
+
+**8.7% late.** Not a rounding artefact.
+
+The section above this one reports "0 disagreements across 2,880 tuples, worst
+relative gap 3.331e-16". Every number in it is true. It is also not evidence,
+and this is the part worth keeping: the sweep caps deletion times at 50 and
+infinity, so it never enters the regime where the arithmetic breaks. **A control
+that cannot reach the failure is not a control**, however many digits it prints.
+
+The fix is to halve the width instead of the sum — `lo + 0.5 * (hi - lo)` — and
+the new test checks against a from-scratch least-root scan rather than against
+the bisection, because the bisection brackets by doubling and has the same range
+problem.
+
+### Three tests that could not fail, one of them the flagship
+
+All three verifiers on the line-has-no-loops claim agreed the mathematics is
+right. `H₁ = 0` for points on a line stands. What they took apart was the
+evidence, and they were correct every time.
+
+The claim in the docstring was:
+
+> it runs the crate's own persistent homology over the byte values and requires
+> zero H1 bars across 5 corpora at 7 radii each. A disagreement would indict
+> either this proof or `persistence.rs`.
+
+**The test never called `betti_1`.** It computed persistent homology, asserted
+the answer was 0, and never once mentioned the function it was written to
+justify. Delete the collapse argument, return any constant, and it passes. It
+was verifying the mathematics — genuinely, and that has value — while the
+docstring claimed it was tying the mathematics to the implementation.
+
+That is the exact defect this document names as characteristic of the codebase,
+in the test written to demonstrate the fix for it. One line of `assert_eq!` closes
+it.
+
+Two more of the same shape: the no-growth test is `0 == 0` for every input, since
+`betti_1` never reads its argument; and Lemma D's test passes unchanged for a
+function that returns infinity for everything.
+
+### And the one that was properly wrong
+
+The β₂ argument. This one deserves the space.
+
+`b2 = 2 - b0 + b1` assumes the space is a sphere, imposes `χ = 2`, and solves.
+The argument written against it was: a disc and a sphere both have `β₀ = 1` and
+`β₁ = 0` and differ in `β₂`, so a function of `(β₀, β₁)` alone cannot be `β₂` —
+no constant repairs it, because the inputs do not determine the output.
+
+The logic is valid. The measurements are real. It is still wrong, because
+**those are not the inputs**.
+
+Those `(β₀, β₁)` are Vietoris–Rips invariants of the point cloud. `euler_defect`
+never sees them. It reads `SparseGraph::compute_betti_0` and
+`SparseGraph::estimate_betti_1` — the invariants of the 1-skeleton — and on that
+domain the disc is `(1, 511)`, not `(1, 0)`. The disc and the sphere do not
+collide on the inputs the code consumes. The counterexample was constructed
+against a function that does not exist.
+
+Same file. Same day. The header of that file explains that the repository's
+characteristic defect is a hypothesis that is not load-bearing.
+
+It gets one degree worse. The file labelled this line a "vacuity control":
+
+```rust
+assert_eq!(defect, imposed_chi_two(gb0, gb1));
+```
+
+That is an algebraic identity. It cannot fail for any point set at any epsilon.
+A vacuity control that is itself vacuous, sitting under a comment explaining
+vacuity.
+
+**The argument that works** needs no second sample and no collision. On a
+connected graph `β₀ = 1`, so
+
+```
+euler_defect = 2 - 1 + β₁ = 1 + β₁ ≥ 1
+```
+
+It is bounded strictly below by 1 and can never be 0. The true β₂ of a connected
+contractible sample **is** 0. So it disagrees on every connected contractible
+input. The defect is that the quantity has the wrong **range** — not that `χ` has
+the wrong value — and stating it that way makes clear no tuning helps.
+
+The disc still supplies the number. 48 points, ε = 0.9: `β₀ = 1`, `β₁ = 511`,
+Euler defect **512**, true β₂ **0**. Five hundred and twelve spherical voids in a
+flat disc.
+
+### The critic asked the question none of the twelve asked
+
+A thirteenth agent was given the verdicts and asked only: what did nobody look
+at?
+
+All three verifiers argued about whether the arity argument transferred to the
+code. **None asked whether the repair reached the value.**
+
+It had not. `SparseGraph::full_shape` computed `2 - b0 + b1` inline — a second
+copy of the expression that `euler_defect` holds — and `ManifoldPayload::from_graph`
+assigned that copy to `signature_b2`. Renaming the function and rewriting its
+docstring changed neither the copy nor the number on the wire. The payload still
+carried 512 for the disc.
+
+Two verifiers had read that file. The question "is the thing you renamed the
+thing that runs?" was not on anyone's list.
+
+### The hyperbolic ceiling, which was set by the wrong constant entirely
+
+`PoincareBall::unit().distance(origin, [r, 0])` returned **12.206067645522225**
+for every `r` at or past `1 - 1e-5`. Not approximately that number. Exactly it,
+every time, because `2 atanh(1 - 1e-5) = ln(199999)`.
+
+There are two clamps in that file. `DISTANCE_ARG_MARGIN = 1e-7` sits right next
+to the `atanh` call and looks like the one that sets the ceiling. It is not, and
+it never was.
+
+The Möbius-difference norm was separately clamped to
+`max_norm = 1/√c − BALL_MARGIN`, so `arg ≤ 1 − √c·1e-5`, which is tighter than
+`1 − 1e-7` for every curvature above `1e-4`. Measured: the ball-margin ceiling is
+12.206067645522225, the arg-margin ceiling is 16.81124278204462, and the gap of
+4.605 is the distance the second clamp was never allowed to cover.
+
+`BALL_MARGIN` exists to keep *projected points* strictly inside the ball. It is
+not a statement about how large a distance may be, and it had been acting as one.
+The norm helper has exactly one caller, so the clamp came out and the margin was
+retuned to `1e-15`, putting the ceiling where f64 resolution puts it. `project`
+is untouched and still keeps every point strictly inside, asserted separately so
+that raising the ceiling could not be achieved by weakening the thing the margin
+is actually for.
+
+After: `r = 1 - 1e-12` returns **28.324190418452805**, strictly increasing across
+eight probes.
+
+One number not to overstate, since this section is about overstated numbers.
+28.324190418452805 is **not** `ln(2e12) = 28.324168296488494`. The 2.2e-5 gap is
+not implementation error: `fl(1 - 1e-12)` is `0.999999999999`, whose real
+distance from 1 is `9.999778782798785e-13`. The argument sits 4504 ulps below 1,
+so the boundary gap carries a relative error near `1.1e-4`. The function returns
+the right distance for the point that can actually be represented.
+
+### Removing an allowance surfaced the next failure, on schedule
+
+The section above argues that an allowance kept after the thing it excused is
+gone will hide the next failure behind it. That was a prediction, and it paid out
+within the hour.
+
+With the excused test failure removed, `cargo test --workspace` surfaced
+`test_verify_theorems_all_pass` failing on `T1_TSS`. A clean worktree at HEAD
+confirms it fails there too — it had been sitting behind the tolerance.
+
+The fixture is `[(0.0, 0.0), (1.2, 0.0), (0.0, 1.2)]` in (colatitude, longitude).
+Under colatitude, `(0.0, 0.0)` and `(0.0, 1.2)` are **the same point** — both the
+north pole, where longitude means nothing. Their separation is exactly zero, and
+`verify_separation` refused them, correctly, every time it ran.
+
+The fixture was written for the latitude convention that the great-circle repair
+replaced. It has been stale since that repair, and the theorem check was right
+the whole time. Three points along a meridian fix it, where great-circle distance
+is just the colatitude difference and a reader can check 1.2, 2.4, 1.2 by hand.
+
+Second stale fixture pinning pre-repair behaviour, after the β₀ one.
+
+### The hour lost to running two things at once
+
+Running `cargo test --workspace` while `ci_parity.sh` was in its mutation-gate
+step produced two failures in `house_geodesic_convention.rs`. Great-circle tests.
+Nothing whatsoever wrong with great circles — the gate simply had `nettree.rs`
+mutated at that instant.
+
+That is the worst possible symptom: the hazard shows up as *unrelated tests
+failing*, which reads as a regression in whatever the other command was checking.
+The gate now takes a lock and refuses to start while one is held, naming the file
+to remove if the holder is dead. It cannot stop an unrelated cargo command, and
+the message says so rather than implying the tree is safe.
+
+### What the round costs to state plainly
+
+Nine of this effort's corrections came from running a measurement or opening a
+file. This is the first that came from handing the claims to someone whose job
+was to break them, and it found a numerical bug, three unfalsifiable tests, and
+one argument that was aimed at the wrong function — none of which eight
+iterations of self-review had turned up.
+
+The workspace is now green with no allowances at all: 756 tests, 0 failures, 0
+formatting diffs, 0 clippy warnings, 0 rustdoc warnings. It is the first time in
+this effort that sentence has been true without a footnote.
