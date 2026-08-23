@@ -19,6 +19,64 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
+# ---- SELF-TEST -------------------------------------------------------------
+# Every parser below is fed input it MUST flag. A counter that reports zero on
+# known-bad input reports zero on everything, which is how this script's own
+# failure counter shipped broken: `awk -F'[ ;]'` on a "test result" line yields
+# an EMPTY field after "passed;", so the naive $6 was "" for every input and the
+# failed count was always 0.
+#
+# Three checks written during this work could not fail. Two were caught by a
+# required-misfire control and one by hand. This runs the control on the
+# controls.
+if [ "${1:-}" = "--self-test" ]; then
+  st_fail=0
+  chk() { # name, actual, expected-nonzero
+    if [ "$2" -gt 0 ]; then printf '%-46s %s
+' "$1" "ok (flags $2)"
+    else printf '%-46s %s
+' "$1" "BROKEN — reported 0 on known-bad input"; st_fail=1; fi
+  }
+
+  sample_fail='test result: FAILED. 23 passed; 1 failed; 0 ignored; 0 measured'
+  chk "failure counter sees a failure"       "$(printf '%s' "$sample_fail" | grep -oE '[0-9]+ failed' | awk '{f+=$1} END{print f+0}')"
+
+  sample_pass='test result: ok. 351 passed; 0 failed; 0 ignored; 0 measured'
+  chk "pass counter sees passes"       "$(printf '%s' "$sample_pass" | grep -oE '[0-9]+ passed' | awk '{p+=$1} END{print p+0}')"
+
+  chk "fmt counter sees a diff"       "$(printf 'Diff in /x/y.rs:1:
+Diff in /x/z.rs:9:
+' | grep -c '^Diff in')"
+
+  chk "clippy counter sees a warning"       "$(printf 'warning: unused import
+error: bad
+' | grep -cE '^(warning|error)')"
+
+  chk "doc counter sees a warning"       "$(printf 'warning: public documentation links to private item
+' | grep -cE '^warning')"
+
+  # The mutation-gate branch must NOT accept a summary reporting survivors.
+  bad_gate='17 caught, 2 survived, 0 did not compile, 0 skipped'
+  case "$bad_gate" in
+    *"0 survived"*) printf '%-46s %s
+' "gate parser rejects survivors" "BROKEN — accepted survivors"; st_fail=1 ;;
+    *)              printf '%-46s %s
+' "gate parser rejects survivors" "ok" ;;
+  esac
+  # ...and must NOT accept one reporting skips, which silently stop guarding a file.
+  skip_gate='19 caught, 0 survived, 0 did not compile, 3 skipped'
+  case "$skip_gate" in
+    *"0 skipped"*) printf '%-46s %s
+' "gate parser rejects skips" "BROKEN — accepted skips"; st_fail=1 ;;
+    *)             printf '%-46s %s
+' "gate parser rejects skips" "ok" ;;
+  esac
+
+  echo
+  [ "$st_fail" -eq 0 ] && echo "SELF-TEST OK — every counter flags known-bad input"                        || echo "SELF-TEST FAILED — a counter cannot detect its own failure mode"
+  exit "$st_fail"
+fi
+
 fail=0
 note() { printf '%-46s %s\n' "$1" "$2"; }
 
@@ -94,7 +152,8 @@ fi
 if [ -f scripts/math_mutation_gate.py ]; then
   line=$(python scripts/math_mutation_gate.py --quick 2>&1 | grep -E 'caught,' | tail -1)
   case "$line" in
-    *"0 survived"*) note "mutation gate" "ok — $line" ;;
+    *"0 survived"*"0 skipped"*) note "mutation gate" "ok — $line" ;;
+    *"skipped"*)    note "mutation gate" "FAIL — skipped mutations stop guarding their file: $line"; fail=1 ;;
     "")             note "mutation gate" "FAIL (no summary line)"; fail=1 ;;
     *)              note "mutation gate" "FAIL — $line"; fail=1 ;;
   esac
