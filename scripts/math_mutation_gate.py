@@ -128,10 +128,19 @@ MUTATIONS = [
      "        while let Some(&low) = column.first() {",
      "reduction pivots on the lowest index instead of the highest"),
 
-    ("oracle-rips-max-to-min", "aether-core", f"{AC}/persistence.rs",
+    ("oracle-rips-max3-to-min", "aether-core", f"{AC}/persistence.rs",
      "    a.max(b).max(c)",
      "    a.min(b).min(c)",
      "triangle enters at its shortest edge, not its longest"),
+
+    # max3's fragment is a strict PREFIX of max6's, and replace(old, new, 1)
+    # takes the first match, so an unanchored "a.max(b).max(c)" only ever
+    # mutated max3. max6 computes the tetrahedron filtration value and drives
+    # every H2 bar; it was unguarded until this entry existed.
+    ("oracle-rips-max6-to-min", "aether-core", f"{AC}/persistence.rs",
+     "    a.max(b).max(c).max(d).max(e).max(f)",
+     "    a.min(b).min(c).min(d).min(e).min(f)",
+     "tetrahedron enters at its shortest edge: every H2 birth is wrong"),
 
     ("oracle-betti-halfopen", "aether-core", f"{AC}/persistence.rs",
      "pair.death.map(|death| radius < death).unwrap_or(true)",
@@ -164,13 +173,19 @@ def main():
             results.append((mid, "SKIP", "file missing", breaks))
             print(f"{'SKIP':9} {mid:34} file missing")
             continue
-        original = io.open(path, encoding="utf-8").read()
-        if old not in original:
+        # Binary I/O: text mode rewrites LF as CRLF on Windows, so the
+        # "restored exactly as found" guarantee held only up to line
+        # endings and left files showing as modified in git status.
+        with open(path, "rb") as fh:
+            original = fh.read()
+        old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
+        if old_b not in original:
             results.append((mid, "SKIP", "fragment not found - source moved", breaks))
             print(f"{'SKIP':9} {mid:34} fragment not found - source moved")
             continue
 
-        io.open(path, "w", encoding="utf-8").write(original.replace(old, new, 1))
+        with open(path, "wb") as fh:
+            fh.write(original.replace(old_b, new_b, 1))
         try:
             target = f"-p {crate}" if quick else "--workspace"
             proc = run(f"cargo test {target} 2>&1")
@@ -189,7 +204,8 @@ def main():
             else:
                 verdict, detail = "SURVIVED", "NO TEST DETECTED THIS"
         finally:
-            io.open(path, "w", encoding="utf-8").write(original)
+            with open(path, "wb") as fh:
+                fh.write(original)
         results.append((mid, verdict, detail, breaks))
         print(f"{verdict:9} {mid:34} {detail}")
 
