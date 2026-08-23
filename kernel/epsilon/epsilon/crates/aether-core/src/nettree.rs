@@ -262,6 +262,16 @@ impl NetTree {
     }
 }
 
+/// Whether a true distance can carry an entry time at all.
+///
+/// Shared by the bisection and the closed form so the two cannot diverge on
+/// what they reject. It was duplicated when the closed form was added, which
+/// left the gate mutating only the first copy - the fragment audit in
+/// `scripts/math_mutation_gate.py` caught that before the mutation ran.
+fn is_admissible_distance(d: f64) -> bool {
+    d.is_finite() && d >= 0.0
+}
+
 /// The filtration value of a pair under the relaxed distance: the smallest
 /// `alpha` at which `d_alpha(p, q) <= alpha`.
 ///
@@ -272,9 +282,19 @@ impl NetTree {
 /// well-defined entry time and the resulting complex is a genuine filtration.
 ///
 /// Solved by bisection on the monotone predicate `d_alpha(p,q) <= alpha`, which
-/// Lemma 4.1 guarantees flips exactly once. The weight is piecewise linear with
-/// slopes `0`, `1/2` and `eps`, all below 1, so `alpha - d_alpha` is strictly
-/// increasing and a bracket always exists.
+/// Lemma 4.1 guarantees flips exactly once.
+///
+/// The justification here used to read "slopes `0`, `1/2` and `eps`, all below
+/// 1, so `alpha - d_alpha` is strictly increasing". That is wrong, and
+/// [`relaxed_entry_time_exact`] below states the opposite correctly: the slope
+/// of `alpha - d_alpha` is `1 - (a_p + a_q)`, and when **both** points sit in
+/// the `1/2` piece that is exactly `0`. The function is non-decreasing, not
+/// strictly increasing, and it is genuinely flat on an interval of positive
+/// width whenever the two knees overlap.
+///
+/// A bracket still always exists, for a different reason: above
+/// `max(t_p, t_q)` both weights are `eps * alpha`, so the slope is
+/// `1 - 2 eps >= 1/3 > 0` and `alpha - d_alpha` grows without bound there.
 ///
 /// Properties asserted in `tests/house_relaxed_entry_time.rs`:
 ///
@@ -289,7 +309,7 @@ impl NetTree {
 ///   filtration;
 /// * a shorter deletion time never makes a pair enter earlier.
 pub fn relaxed_entry_time(d: f64, t_p: f64, t_q: f64, eps: f64) -> f64 {
-    if !d.is_finite() || d < 0.0 {
+    if !is_admissible_distance(d) {
         return f64::INFINITY;
     }
     let admits = |a: f64| relaxed_distance(d, a, t_p, t_q, eps) <= a;
@@ -319,6 +339,152 @@ pub fn relaxed_entry_time(d: f64, t_p: f64, t_q: f64, eps: f64) -> f64 {
         }
     }
     hi
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// The entry time in closed form
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// `eps` as `weight` interprets it. Factored out so the closed form below and
+/// the bisection cannot disagree about their own inputs — an earlier defect in
+/// this crate was two functions clamping the same argument differently.
+fn clamped_eps(eps: f64) -> f64 {
+    if eps.is_finite() && eps > 0.0 && eps <= 1.0 / 3.0 {
+        eps
+    } else {
+        1.0 / 3.0
+    }
+}
+
+/// `deletion_time` as `weight` interprets it.
+fn clamped_deletion_time(t: f64) -> f64 {
+    if t.is_finite() && t > 0.0 {
+        t
+    } else {
+        0.0
+    }
+}
+
+/// The affine coefficients `(slope, intercept)` of `weight(., t, eps)` on the
+/// piece containing `alpha`, so that `weight(alpha) = slope * alpha + intercept`.
+///
+/// Sheehy's weight is piecewise linear with exactly three pieces and slopes
+/// `0`, `1/2`, `eps`. This reports which piece `alpha` lands in; it is the whole
+/// content of the closed form below.
+fn weight_affine(alpha: f64, t: f64, eps: f64) -> (f64, f64) {
+    let knee = (1.0 - 2.0 * eps) * t;
+    if alpha <= knee {
+        (0.0, 0.0)
+    } else if alpha < t {
+        (0.5, -0.5 * knee)
+    } else {
+        (eps, 0.0)
+    }
+}
+
+/// `relaxed_entry_time` without bisection: the exact root, in closed form.
+///
+/// # Why a closed form exists
+///
+/// Write `g(alpha) = d_alpha(p,q) - alpha`. The entry time is the least
+/// non-negative root of `g <= 0`. Since `d_alpha = d + w_p(alpha) + w_q(alpha)`
+/// and each weight is affine on each of its three pieces, `g` is affine on every
+/// interval cut out by the four breakpoints
+///
+/// ```text
+///     (1 - 2 eps) t_p,   t_p,   (1 - 2 eps) t_q,   t_q
+/// ```
+///
+/// On such an interval `g(alpha) = c + s alpha` with `s = a_p + a_q - 1`, where
+/// each `a` is one of `0`, `1/2`, `eps`. **Every attainable slope is at most
+/// zero**: the largest is `1/2 + 1/2 - 1 = 0` and the rest are strictly
+/// negative, since `eps <= 1/3`. So `g` is non-increasing on the whole ray —
+/// which is Sheehy's Lemma 4.1 restated as a slope condition rather than an
+/// asserted monotonicity — and the first interval on which `g` reaches zero
+/// contains the entry time, at `alpha = -c/s`.
+///
+/// The final interval `[max(t_p, t_q), infinity)` has both weights in the
+/// `eps alpha` piece, so `s = 2 eps - 1 < 0` and the root is always attained:
+///
+/// ```text
+///     entry time = d / (1 - 2 eps)      once alpha >= max(t_p, t_q)
+/// ```
+///
+/// A root therefore always exists, and the walk below cannot fall off the end.
+///
+/// # Agreement with the bisection
+///
+/// [`relaxed_entry_time`] is retained as the reference implementation and is not
+/// deleted: `tests/house_entry_time_closed_form.rs` requires the two to agree on
+/// a swept grid, which is the control on this function. The closed form is the
+/// one to call; the bisection is the one to check it against.
+pub fn relaxed_entry_time_exact(d: f64, t_p: f64, t_q: f64, eps: f64) -> f64 {
+    if !is_admissible_distance(d) {
+        return f64::INFINITY;
+    }
+    let eps = clamped_eps(eps);
+    let tp = clamped_deletion_time(t_p);
+    let tq = clamped_deletion_time(t_q);
+
+    let mut cuts = [0.0, (1.0 - 2.0 * eps) * tp, tp, (1.0 - 2.0 * eps) * tq, tq];
+    cuts.sort_by(|a, b| a.partial_cmp(b).expect("all breakpoints are finite"));
+
+    for i in 0..cuts.len() {
+        let lo = cuts[i];
+        let hi = if i + 1 < cuts.len() {
+            cuts[i + 1]
+        } else {
+            f64::INFINITY
+        };
+        if hi <= lo && hi.is_finite() {
+            continue; // duplicate breakpoint: the interval is empty
+        }
+        // Sample the piece strictly inside the interval. Evaluating at `lo`
+        // would pick the piece to its LEFT, because the weight's first branch
+        // closes on its knee (`alpha <= knee`).
+        //
+        // The width is halved, never the sum. `0.5 * (lo + hi)` forms `lo + hi`
+        // first, which overflows to infinity once the two exceed `f64::MAX` -
+        // reachable with finite arguments, since `1e308 + 1.11111e308` already
+        // does. `weight_affine(inf, ..)` then falls through both guards and
+        // reports the `eps` piece for both points whatever piece the interval is
+        // really in, so the walk reads the wrong slope and can step over the
+        // least root. Measured at `d = 9.2e307, t_p = 1e308, t_q = 1.11111e308,
+        // eps = 0.05`: 1.0222e308 returned against a true least root of
+        // 9.4e307, 8.7% late. `hi - lo` cannot overflow, both being finite and
+        // non-negative with `hi > lo`.
+        //
+        // On the unbounded final interval `lo` is `max(t_p, t_q)` after
+        // sorting, and at `alpha = t` the weight is already in its `eps` piece
+        // for both points, so `lo` is the correct probe there - except when
+        // both deletion times clamped to zero, where every positive alpha sits
+        // in the `eps` piece and `1.0` serves.
+        let probe = if hi.is_finite() {
+            lo + 0.5 * (hi - lo)
+        } else if lo > 0.0 {
+            lo
+        } else {
+            1.0
+        };
+        let (a_p, b_p) = weight_affine(probe, tp, eps);
+        let (a_q, b_q) = weight_affine(probe, tq, eps);
+        let s = a_p + a_q - 1.0;
+        let c = d + b_p + b_q;
+
+        // Admitted at the left endpoint already: nothing earlier can admit,
+        // because previous intervals were walked and rejected.
+        if c + s * lo <= 0.0 {
+            return lo;
+        }
+        if s < 0.0 {
+            let root = -c / s;
+            if root <= hi {
+                return root;
+            }
+        }
+    }
+    // Unreachable: the last interval has slope `2 eps - 1 <= -1/3`.
+    d / (1.0 - 2.0 * eps)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

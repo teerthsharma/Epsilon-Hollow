@@ -87,6 +87,7 @@ pub use persistence::{
 };
 pub use scm::{LatentPredictor, SpectralContractionOperator};
 pub use topology::{
-    compute_betti_0, compute_betti_1, compute_shape, verify_shape, TopologicalShape, VerifyResult,
+    betti_1, compute_betti_0, compute_shape, oscillation_count, verify_shape, TopologicalShape,
+    VerifyResult,
 };
 pub use tss::SphericalVoronoiIndex;

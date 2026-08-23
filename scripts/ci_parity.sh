@@ -63,6 +63,15 @@ error: bad
     *)              printf '%-46s %s
 ' "gate parser rejects survivors" "ok" ;;
   esac
+  # ...and must NOT accept one the compiler rejected, which proves nothing.
+  nc_gate='19 caught, 0 survived, 1 did not compile, 0 skipped'
+  case "$nc_gate" in
+    *"0 did not compile"*) printf '%-46s %s
+' "gate parser rejects non-compiling" "BROKEN - accepted a rejected mutation"; st_fail=1 ;;
+    *)                     printf '%-46s %s
+' "gate parser rejects non-compiling" "ok" ;;
+  esac
+
   # ...and must NOT accept one reporting skips, which silently stop guarding a file.
   skip_gate='19 caught, 0 survived, 0 did not compile, 3 skipped'
   case "$skip_gate" in
@@ -81,18 +90,17 @@ fail=0
 note() { printf '%-46s %s\n' "$1" "$2"; }
 
 # ---- formatting -------------------------------------------------------------
-# Reported as a delta against origin/main, because this repository has a
-# pre-existing failure and an absolute count would be unreadable.
-base_fmt=0
-if git rev-parse --verify -q origin/main >/dev/null; then
-  base_fmt=$(git stash list >/dev/null 2>&1; echo 1)
-fi
+# The single pre-existing violation this allowed for was in
+# epsilon-os/src/main.rs and is repaired, so the threshold is now zero. It was
+# written as "at most 1" against origin/main; an allowance kept after the thing
+# it excused is gone hides the next violation behind it, which is the same
+# defect as the tolerated test failure removed below.
 fmt_now=$(cargo fmt --all -- --check 2>&1 | grep -c '^Diff in')
-if [ "$fmt_now" -gt 1 ]; then
-  note "cargo fmt --all -- --check" "FAIL ($fmt_now files; origin/main has 1)"
+if [ "$fmt_now" -gt 0 ]; then
+  note "cargo fmt --all -- --check" "FAIL ($fmt_now files need formatting)"
   fail=1
 else
-  note "cargo fmt --all -- --check" "ok ($fmt_now, matches origin/main)"
+  note "cargo fmt --all -- --check" "ok (0)"
 fi
 
 # ---- clippy, CI's flags -----------------------------------------------------
@@ -114,20 +122,23 @@ else
 fi
 
 # ---- workspace tests --------------------------------------------------------
-# aether-lang::interpreter::tests::test_topo_betti_real_call fails on
-# origin/main as well, at 23 passed and 1 failed. It is reported, not counted.
+# There is no longer a tolerated failure here. test_topo_betti_real_call was
+# excused as pre-existing for six iterations; it was in fact a stale assertion
+# pinning the beta_0 defect this effort had already repaired - it asserted
+# beta_0([0,50,100]) == 1 where three values separated by gaps of 50 against a
+# threshold of 15 give 3. Repaired in iteration 42, so the tolerance is gone.
+# An allowance for a failure that no longer exists hides the next one.
 # The obvious awk parse is wrong and silently reports zero failures: splitting
 # on '[ ;]' makes the field after "passed;" empty, so a naive $6 is always "".
 # This grabs the number immediately preceding the word, which is unambiguous.
 out=$(cargo test --workspace 2>&1)
 passed=$(printf '%s' "$out" | grep -oE '[0-9]+ passed' | awk '{p+=$1} END{print p+0}')
 failed=$(printf '%s' "$out" | grep -oE '[0-9]+ failed' | awk '{f+=$1} END{print f+0}')
-known=$(printf '%s' "$out" | grep -c 'test_topo_betti_real_call ... FAILED')
-if [ "$failed" -gt "$known" ]; then
-  note "cargo test --workspace" "FAIL ($passed passed, $failed failed, $known known-preexisting)"
+if [ "$failed" -gt 0 ]; then
+  note "cargo test --workspace" "FAIL ($passed passed, $failed failed)"
   fail=1
 else
-  note "cargo test --workspace" "ok ($passed passed, $failed failed, all pre-existing)"
+  note "cargo test --workspace" "ok ($passed passed, 0 failed)"
 fi
 
 # ---- no_std build of the math crate ----------------------------------------
@@ -152,7 +163,8 @@ fi
 if [ -f scripts/math_mutation_gate.py ]; then
   line=$(python scripts/math_mutation_gate.py --quick 2>&1 | grep -E 'caught,' | tail -1)
   case "$line" in
-    *"0 survived"*"0 skipped"*) note "mutation gate" "ok — $line" ;;
+    *"0 survived"*"0 did not compile"*"0 skipped"*) note "mutation gate" "ok - $line" ;;
+    *"did not compile"*) note "mutation gate" "FAIL - a mutation the compiler rejected proves nothing: $line"; fail=1 ;;
     *"skipped"*)    note "mutation gate" "FAIL — skipped mutations stop guarding their file: $line"; fail=1 ;;
     "")             note "mutation gate" "FAIL (no summary line)"; fail=1 ;;
     *)              note "mutation gate" "FAIL — $line"; fail=1 ;;

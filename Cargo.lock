@@ -883,6 +883,7 @@ dependencies = [
 name = "epsilon"
 version = "0.1.0"
 dependencies = [
+ "aether-core",
  "libm",
  "serde",
  "serde-big-array",

@@ -29,6 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AC = "kernel/epsilon/epsilon/crates/aether-core/src"
 EP = "kernel/epsilon/epsilon/crates/epsilon/src"
 AV = "kernel/aether/aether-verified/src"
+EO = "kernel/epsilon/epsilon/crates/epsilon-os/src"
 
 # (id, crate, file, original fragment, mutated fragment, what it breaks)
 MUTATIONS = [
@@ -94,8 +95,8 @@ MUTATIONS = [
      "uses the node's own radius instead of its parent's"),
 
     ("sparse-liveness-dropped", "aether-core", f"{AC}/nettree.rs",
-     "    if !d.is_finite() || d < 0.0 {",
-     "    if !d.is_finite() || d < -1.0 {",
+     "    d.is_finite() && d >= 0.0",
+     "    d.is_finite() && d >= -1.0",
      "entry time accepts negative distances: sparsification predicate corrupted"),
 
     # EQUIVALENT MUTANT - retained, not counted. Changing the early-exit probe
@@ -110,6 +111,82 @@ MUTATIONS = [
     # is measured against. Section 5 of the loop prompt forbids CHANGING them;
     # these mutations are transient and restored in the `finally` block. The
     # question they answer is whether the oracle guards itself.
+    # --- corrections found by adversarial verification (iteration 44) ------
+    # The interval probe formed `lo + hi` before halving, which overflows to
+    # infinity for large deletion times and drops both weights into the eps
+    # piece. Found by a verifier, not by the sweep, which caps t at 50.
+    ("entry-exact-probe-overflow", "aether-core", f"{AC}/nettree.rs",
+     "            lo + 0.5 * (hi - lo)",
+     "            0.5 * (lo + hi)",
+     "interval probe overflows for large deletion times: returns a root 8.7% "
+     "late at d=9.2e307, t_p=1e308, t_q=1.11111e308, eps=0.05"),
+
+    ("hyperbolic-restore-ball-clamp", "aether-core", f"{AC}/hyperbolic_geometry.rs",
+     "        sqrt(sum)" + chr(10) + "    }",
+     "        sqrt(sum).min(self.max_norm)" + chr(10) + "    }",
+     "hyperbolic distance saturates at 2 atanh(1 - BALL_MARGIN) = "
+     "12.206067645522225 for every point past the knee"),
+
+    ("tss-fixture-latitude-points", "epsilon-os", f"{EO}/world.rs",
+     "        let centroids = [(0.0, 0.0), (1.2, 0.0), (2.4, 0.0)];",
+     "        let centroids = [(0.0, 0.0), (1.2, 0.0), (0.0, 1.2)];",
+     "T1_TSS fixture reverts to latitude-convention points, two of which are "
+     "the same pole under colatitude"),
+
+    # --- beta_2 is not an Euler solve (iteration 43) -----------------------
+    ("betti-2-euler-solve-restored", "epsilon", f"{EP}/manifold.rs",
+     "    pub fn betti_2(&self) -> u32 {" + chr(10) + "        0" + chr(10) + "    }",
+     "    pub fn betti_2(&self) -> u32 {" + chr(10) + "        self.euler_defect()"
+     + chr(10) + "    }",
+     "beta_2 solves the Euler identity again: reports 512 spherical voids in a "
+     "flat disc"),
+
+    ("estimate-betti1-drops-components", "epsilon", f"{EP}/manifold.rs",
+     "        let b1 = e - v + b0;",
+     "        let b1 = e - v;",
+     "graph beta_1 loses its component term, so E - V + beta_0 no longer holds"),
+
+    # --- beta_1 is not a rank (iteration 42) -------------------------------
+    ("betti-1-returns-the-statistic", "aether-core", f"{AC}/topology.rs",
+     "pub fn betti_1(_data: &[u8]) -> u32 {" + chr(10) + "    0" + chr(10) + "}",
+     "pub fn betti_1(_data: &[u8]) -> u32 {" + chr(10)
+     + "    oscillation_count(_data)" + chr(10) + "}",
+     "beta_1 reports the window statistic again: grows with sample count and "
+     "depends on arrival order"),
+
+    ("shape-uses-true-betti1", "aether-core", f"{AC}/topology.rs",
+     "    let oscillation = oscillation_count(data);",
+     "    let oscillation = betti_1(data);",
+     "TopologicalShape carries the identically-zero beta_1, which makes the "
+     "MAX_OSCILLATION branch of verify_shape unreachable"),
+
+    ("oscillation-window-width", "aether-core", f"{AC}/topology.rs",
+     "    for window in data.windows(4) {",
+     "    for window in data.windows(5) {",
+     "the oscillation statistic scans 5-windows, so its exact closed form on a "
+     "period-3 pattern moves from len-3 to len-4"),
+
+    # --- the closed-form entry time (iteration 41) ------------------------
+    # The bisection is retained as the reference implementation; these check
+    # that the closed form is genuinely doing the work rather than agreeing by
+    # luck. Each is a one-line edit to an affine coefficient or a root.
+    ("entry-exact-root-sign", "aether-core", f"{AC}/nettree.rs",
+     "            let root = -c / s;",
+     "            let root = c / s;",
+     "closed-form root takes the wrong sign of the affine solve"),
+
+    ("entry-exact-probe-at-endpoint", "aether-core", f"{AC}/nettree.rs",
+     "            lo + 0.5 * (hi - lo)",
+     "            lo",
+     "affine piece sampled at the left endpoint, which belongs to the piece "
+     "before it: every interval reads the wrong slope"),
+
+    ("entry-exact-drop-knee-intercept", "aether-core", f"{AC}/nettree.rs",
+     "        (0.5, -0.5 * knee)",
+     "        (0.5, 0.0)",
+     "middle weight piece loses its intercept, so it no longer meets the "
+     "flat piece at the knee"),
+
     ("oracle-face-before-coface", "aether-core", f"{AC}/persistence.rs",
      "        .then(a.dimension.cmp(&b.dimension))",
      "        .then(b.dimension.cmp(&a.dimension))",
@@ -129,8 +206,8 @@ MUTATIONS = [
      "reduction pivots on the lowest index instead of the highest"),
 
     ("oracle-rips-max3-to-min", "aether-core", f"{AC}/persistence.rs",
-     "    a.max(b).max(c)",
-     "    a.min(b).min(c)",
+     "    a.max(b).max(c)" + chr(10) + "}",
+     "    a.min(b).min(c)" + chr(10) + "}",
      "triangle enters at its shortest edge, not its longest"),
 
     # max3's fragment is a strict PREFIX of max6's, and replace(old, new, 1)
@@ -159,12 +236,181 @@ MUTATIONS = [
 ]
 
 
+NL = chr(10)  # written as chr(10) so no escape survives a shell round trip
+CRLF = chr(13) + chr(10)
+
+
+LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".gate.lock")
+
+
+def acquire_lock():
+    """Refuse to start while another gate run, or any other cargo build, is live.
+
+    This gate edits shared source files in place. Anything else compiling the
+    workspace at the same time sees a mutated tree, and the symptom is
+    *unrelated tests failing* - which reads as a regression in whatever the
+    other command was checking. That has happened twice: once from two gate
+    runs launched concurrently, once from a `cargo test --workspace` run
+    started while `ci_parity.sh` was in its gate step, which reported two
+    great-circle failures that had nothing to do with great circles.
+
+    The lock only stops a second *gate*. It cannot stop an unrelated cargo
+    command, so the message says what the hazard is rather than implying the
+    tree is protected.
+    """
+    try:
+        fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            with open(LOCK_PATH) as fh:
+                held_by = fh.read().strip()
+        except OSError:
+            held_by = "unknown"
+        print("ANOTHER GATE RUN HOLDS THE LOCK (pid " + held_by + ").")
+        print()
+        print("This gate rewrites source files in place, so two runs corrupt")
+        print("each other and any concurrent cargo build sees a mutated tree.")
+        print("If no gate is actually running, the previous one was killed:")
+        print("  rm " + LOCK_PATH)
+        print("and rerun - startup recovery will restore any mutated file.")
+        return False
+    os.write(fd, str(os.getpid()).encode("ascii"))
+    os.close(fd)
+    return True
+
+
+def release_lock():
+    try:
+        os.remove(LOCK_PATH)
+    except OSError:
+        pass
+
+
+def as_bytes(fragment, body):
+    """Encode a fragment to match the line endings `body` actually uses.
+
+    A fragment anchored on a newline is the only way to disambiguate a target
+    that is a prefix of another. Encoded naively it cannot match a CRLF file,
+    which turns a real guard into a silent SKIP. Returns whichever encoding
+    occurs in `body`, preferring LF.
+    """
+    lf = fragment.encode("utf-8")
+    if lf in body:
+        return lf
+    crlf = fragment.replace(NL, CRLF).encode("utf-8")
+    return crlf if crlf in body else lf
+
+
+def audit_fragments():
+    """Check every mutation targets exactly what it claims to target.
+
+    Two failure modes, both silent, both of which this gate shipped with:
+
+    * **Prefix collision.** max6 contains max3 as a prefix, and
+      replace(old, new, 1) takes the first match. Every run mutated max3
+      twice over and left the entire H2 filtration path unguarded, while the
+      summary line reported 19 caught, 0 survived.
+    * **Ambiguous target.** A fragment occurring more than once mutates only
+      the first site. The others are unguarded and nothing says so.
+
+    Returns a list of problems. Empty means every fragment resolves to exactly
+    one site and no fragment shadows another.
+    """
+    problems = []
+    seen = {}
+    for mid, _crate, relpath, old, _new, _breaks in MUTATIONS:
+        path = os.path.join(ROOT, relpath)
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as fh:
+            body = fh.read()
+        n = body.count(as_bytes(old, body))
+        if n == 0:
+            problems.append(mid + ": fragment absent from " + relpath)
+        elif n > 1:
+            problems.append(
+                mid + ": fragment occurs " + str(n) + " times in " + relpath
+                + "; only the first is mutated, the rest are unguarded")
+        seen.setdefault(relpath, []).append((mid, old))
+
+    for relpath, entries in seen.items():
+        for i, (mid_a, old_a) in enumerate(entries):
+            for mid_b, old_b in entries[i + 1:]:
+                if old_a != old_b and (old_a in old_b or old_b in old_a):
+                    short, long_ = ((mid_a, mid_b) if len(old_a) < len(old_b)
+                                    else (mid_b, mid_a))
+                    problems.append(
+                        short + "'s fragment is contained in " + long_
+                        + "'s in " + relpath + "; the shorter one shadows it")
+    return problems
+
+
+BACKUP_SUFFIX = ".gate-backup"
+
+
+def recover_pending():
+    """Restore any file a previous run left mutated, before doing anything.
+
+    A gate killed mid-mutation leaves the source mutated and reports nothing;
+    the next reader sees a poisoned tree with no indication why. The obvious
+    fix - handle SIGTERM and let the existing try/finally unwind - does not
+    work here: on Windows a terminate() is TerminateProcess, which delivers no
+    signal and runs no handler. Verified by killing a live run, which still
+    left a mutation in scm.rs with the handler installed.
+
+    So the guarantee is moved off the process and onto the disk. A byte copy
+    of the original is written before the mutation and removed only after the
+    restore, which makes recovery independent of how the process died.
+    """
+    recovered = []
+    for _mid, _crate, relpath, _old, _new, _breaks in MUTATIONS:
+        path = os.path.join(ROOT, relpath)
+        backup = path + BACKUP_SUFFIX
+        if not os.path.exists(backup):
+            continue
+        with open(backup, "rb") as fh:
+            body = fh.read()
+        with open(path, "wb") as fh:
+            fh.write(body)
+        os.remove(backup)
+        if relpath not in recovered:
+            recovered.append(relpath)
+    for relpath in recovered:
+        print("RECOVERED  a previous run was killed mid-mutation; restored "
+              + relpath, flush=True)
+    if recovered:
+        print()
+
+
 def run(cmd):
     return subprocess.run(cmd, cwd=ROOT, shell=True, capture_output=True, text=True)
 
 
 def main():
     quick = "--quick" in sys.argv
+    if not acquire_lock():
+        return 3
+    try:
+        return _run(quick)
+    finally:
+        release_lock()
+
+
+def _run(quick):
+    recover_pending()
+
+    # A mutation that does not resolve to exactly one site proves nothing,
+    # and says nothing about it. Audit before running anything.
+    problems = audit_fragments()
+    if problems:
+        print("FRAGMENT AUDIT FAILED - mutations that miss their target:")
+        for pr in problems:
+            print("  " + pr)
+        return 2
+    print("fragment audit: " + str(len(MUTATIONS))
+          + " mutations, each resolving to exactly one site")
+    print()
+
     results = []
 
     for mid, crate, relpath, old, new, breaks in MUTATIONS:
@@ -178,12 +424,17 @@ def main():
         # endings and left files showing as modified in git status.
         with open(path, "rb") as fh:
             original = fh.read()
-        old_b, new_b = old.encode("utf-8"), new.encode("utf-8")
+        old_b = as_bytes(old, original)
+        new_b = (new.replace(NL, CRLF).encode("utf-8")
+                 if CRLF.encode("utf-8") in old_b else new.encode("utf-8"))
         if old_b not in original:
             results.append((mid, "SKIP", "fragment not found - source moved", breaks))
             print(f"{'SKIP':9} {mid:34} fragment not found - source moved")
             continue
 
+        backup = path + BACKUP_SUFFIX
+        with open(backup, "wb") as fh:
+            fh.write(original)
         with open(path, "wb") as fh:
             fh.write(original.replace(old_b, new_b, 1))
         try:
@@ -206,6 +457,7 @@ def main():
         finally:
             with open(path, "wb") as fh:
                 fh.write(original)
+            os.remove(backup)
         results.append((mid, verdict, detail, breaks))
         print(f"{verdict:9} {mid:34} {detail}")
 
@@ -234,7 +486,10 @@ def main():
         print("GAPS - these mutations were not detected by any test:")
         for mid, _, _, breaks in survived:
             print(f"  {mid}: {breaks}")
-    return 1 if survived else 0
+    # A skipped or non-compiling mutation proves nothing about the tests,
+    # so it must not exit clean. This returned 0 for both and the
+    # ci_parity gate then read the run as a pass.
+    return 1 if (survived or skipped or nocomp) else 0
 
 
 if __name__ == "__main__":

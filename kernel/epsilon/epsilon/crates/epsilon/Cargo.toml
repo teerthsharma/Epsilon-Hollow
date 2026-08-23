@@ -17,5 +17,12 @@ libm = { workspace = true }
 serde-big-array = { version = "0.5", optional = true }
 serde = { workspace = true, optional = true }
 
+# aether-core supplies the exact boundary-matrix reduction this crate's
+# beta_2 claim is checked against. Test-only: the published artifact
+# gains no runtime dependency, and aether-core does not depend on
+# epsilon, so there is no cycle.
+[dev-dependencies]
+aether-core = { path = "../aether-core" }
+
 [features]
 serde = ["dep:serde", "dep:serde-big-array"]

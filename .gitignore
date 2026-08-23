@@ -218,3 +218,9 @@ apps/laamba-governor/docs/superpowers/
 docs/*-agents.md
 docs/*-agent-grid.md
 docs/*-status-report.md
+
+# transient byte copies written by scripts/math_mutation_gate.py
+*.gate-backup
+
+# lock held by scripts/math_mutation_gate.py while it is rewriting sources
+scripts/.gate.lock

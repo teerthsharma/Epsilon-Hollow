@@ -2118,9 +2118,14 @@ impl Interpreter {
                     }
                 }
                 let betti0 = aether_core::topology::compute_betti_0(&bytes);
+                // beta_1 was a hardcoded 0.0 here. It is still zero, but it is
+                // now read from the function that proves it: byte values are
+                // points on a line, every Rips complex on a line collapses, so
+                // H_1 vanishes at every scale. Derived, not written down.
+                let betti1 = aether_core::topology::betti_1(&bytes);
                 Ok(Value::List(vec![
                     Value::Num(betti0 as f64),
-                    Value::Num(0.0),
+                    Value::Num(f64::from(betti1)),
                 ]))
             }
             NativeFunction::Print => {
@@ -3704,9 +3709,20 @@ mod tests {
         if let Value::List(vs) = val {
             assert_eq!(vs.len(), 2);
             if let Value::Num(b0) = vs[0] {
-                assert_eq!(b0, 1.0); // [0,50,100] has one large-gap component per compute_betti_0 logic
+                // Three values, both gaps of 50 against CLUSTER_THRESHOLD = 15,
+                // so three isolated components. This asserted 1.0 and cited
+                // "compute_betti_0 logic" - the gap-run counting that was
+                // itself the defect, repaired earlier in this effort. The
+                // assertion outlived the code it pinned and was the workspace's
+                // only failing test.
+                assert_eq!(b0, 3.0);
             } else {
                 panic!("b0 not a number");
+            }
+            if let Value::Num(b1) = vs[1] {
+                assert_eq!(b1, 0.0, "one-dimensional data has no 1-cycles");
+            } else {
+                panic!("b1 not a number");
             }
         } else {
             panic!("Expected list from Betti");

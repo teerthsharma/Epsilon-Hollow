@@ -7,7 +7,24 @@ use libm::{fabs, log, sqrt, tanh};
 
 const EPS: f64 = 1e-12;
 const BALL_MARGIN: f64 = 1e-5;
-const DISTANCE_ARG_MARGIN: f64 = 1e-7;
+/// How close to the boundary `atanh` is allowed to be evaluated.
+///
+/// Hyperbolic distance is unbounded, so any f64 implementation has a ceiling
+/// and the only question is where. This margin sets it:
+/// `d_max = 2 atanh(1 - DISTANCE_ARG_MARGIN)`.
+///
+/// It was `1e-7`, and it never governed anything. The Mobius-difference norm
+/// was separately clamped to `max_norm = 1/sqrt(c) - BALL_MARGIN`, giving
+/// `arg <= 1 - sqrt(c) * 1e-5`, which is tighter than `1 - 1e-7` for every
+/// curvature above `1e-4`. The real ceiling was therefore
+/// `2 atanh(1 - 1e-5) = ln(199999) = 12.206067645522225`, and every point past
+/// `r = 1 - 1e-5` returned exactly that value - not approximately, exactly.
+///
+/// At `1e-15` the ceiling is set by what f64 can separate near 1 rather than by
+/// a projection margin chosen for a different purpose. Measured ceiling and
+/// strict monotonicity below it are asserted in
+/// `tests/house_hyperbolic_saturation.rs`.
+const DISTANCE_ARG_MARGIN: f64 = 1e-15;
 const EXP_ARG_MAX: f64 = 15.0;
 
 /// Errors returned by slice-oriented hyperbolic geometry APIs.
@@ -390,7 +407,16 @@ impl PoincareBall {
             sum += value * value;
         }
 
-        sqrt(sum).min(self.max_norm)
+        // Not clamped to `max_norm`. This helper has one caller,
+        // `distance_slice`, and clamping here capped every hyperbolic distance
+        // at `2 atanh(1 - BALL_MARGIN) = 12.206067645522225` regardless of how
+        // close the points were to the boundary, which destroyed monotonicity
+        // past `r = 1 - 1e-5`. `BALL_MARGIN` exists to keep *projected points*
+        // strictly inside the ball, which `project` still does; it is not a
+        // statement about how large a distance may be. The caller clamps the
+        // `atanh` argument with `DISTANCE_ARG_MARGIN`, which is what bounds the
+        // result and is documented where it is defined.
+        sqrt(sum)
     }
 }
 
