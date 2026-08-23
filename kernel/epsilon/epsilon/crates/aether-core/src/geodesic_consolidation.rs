@@ -7,7 +7,7 @@
 //! theorem slice. It provides bounded cluster-entropy accounting and a
 //! fixed-capacity S2 centroid merge loop suitable for Rust/Aether runtime gates.
 
-use libm::{asin, cos, log, sin, sqrt};
+use libm::{asin, log, sin, sqrt};
 
 const LOG2: f64 = core::f64::consts::LN_2;
 const ENTROPY_EPS: f64 = 1e-10;

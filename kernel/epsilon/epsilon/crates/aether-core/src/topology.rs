@@ -254,6 +254,25 @@ pub enum VerifyResult {
         max: u32,
     },
 
+    /// The density criterion cannot be applied at this length.
+    ///
+    /// `beta_0` counts clusters of distinct byte **values**, so it is bounded by
+    /// 256 for every input, while `len` is unbounded. `density = beta_0 / len`
+    /// therefore has a ceiling of `256 / len`, which falls below
+    /// [`DENSITY_MIN`] once `len` exceeds 2560. Past that length no input of any
+    /// content can pass, so reporting [`Self::InvalidDensity`] would be a
+    /// guaranteed false rejection rather than a verdict.
+    ///
+    /// The gate declines instead. Callers wanting a verdict on long input
+    /// should use [`verify_sliding_window`], which applies the criterion per
+    /// `WINDOW_SIZE` window where the ratio is well scaled.
+    LengthOutOfRange {
+        /// Length of the supplied input.
+        len: usize,
+        /// Longest input at which the density criterion can still be satisfied.
+        max_assessable: usize,
+    },
+
     /// Shape too different from reference
     ShapeMismatch {
         /// Topological distance to the reference shape.
@@ -280,6 +299,17 @@ pub fn verify_shape(data: &[u8]) -> VerifyResult {
     let shape = compute_shape(data);
 
     // Check density bounds
+    // Past this length the density ceiling of `256 / len` sits below
+    // `DENSITY_MIN`, so no content can pass and a rejection would carry no
+    // information. Decline rather than reject.
+    let max_assessable = (256.0 / DENSITY_MIN) as usize;
+    if data.len() > max_assessable {
+        return VerifyResult::LengthOutOfRange {
+            len: data.len(),
+            max_assessable,
+        };
+    }
+
     if shape.density < DENSITY_MIN || shape.density > DENSITY_MAX {
         return VerifyResult::InvalidDensity {
             actual: shape.density,
