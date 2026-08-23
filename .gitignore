@@ -205,3 +205,6 @@ flamegraph*.svg
 *.bbl
 *.blg
 *.synctex.gz
+
+# Ralph loop telemetry — not source
+house-events.jsonl
