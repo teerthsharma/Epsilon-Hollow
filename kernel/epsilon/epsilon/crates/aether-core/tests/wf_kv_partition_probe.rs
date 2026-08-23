@@ -1,7 +1,8 @@
 //! Scratch probe. Observation only.
 
 use aether_core::attention::{
-    dense_dot_cost, routing_plan, select_mask, selection_dot_cost, single_linkage_clusters, Selector,
+    dense_dot_cost, routing_plan, select_mask, selection_dot_cost, single_linkage_clusters,
+    Selector,
 };
 use aether_core::persistent_kv_partition::BettiGuidedPartitioner;
 
@@ -28,8 +29,14 @@ fn probe_perfect_locality_is_structurally_forced() {
 fn probe_latency_random_is_input_independent() {
     let a = BettiGuidedPartitioner::new(80.0, 512.0).partition(&[1_u64, 2, 3, 4], 1);
     let b = BettiGuidedPartitioner::new(80.0, 512.0).partition(&[9_u64; 4], 1 << 30);
-    println!("random_a={:.6} random_b={:.6}", a.latency_random_ns, b.latency_random_ns);
-    println!("betti_a={:.6} betti_b={:.6}", a.latency_betti_ns, b.latency_betti_ns);
+    println!(
+        "random_a={:.6} random_b={:.6}",
+        a.latency_random_ns, b.latency_random_ns
+    );
+    println!(
+        "betti_a={:.6} betti_b={:.6}",
+        a.latency_betti_ns, b.latency_betti_ns
+    );
 }
 
 // ── attention: does the reported cost match the path actually run? ────────────

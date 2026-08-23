@@ -63,17 +63,27 @@ fn relaxed_diagram_error_tracks_epsilon() {
     println!("exact: longest H1 persistence {exact_h1:.6}, closed-form death {expect_death:.6}");
 
     println!();
-    println!("{:>8} {:>12} {:>14} {:>12}", "eps", "longest H1", "bottleneck", "b / eps");
+    println!(
+        "{:>8} {:>12} {:>14} {:>12}",
+        "eps", "longest H1", "bottleneck", "b / eps"
+    );
     let mut prev = 0.0f64;
     for &eps in &[0.02f64, 0.05, 0.1, 0.2, 1.0 / 3.0] {
         let m = relaxed_matrix(&pts, eps);
         let relaxed = persistent_homology_from_distances(&m, n, cfg(n)).unwrap();
         let b = bottleneck_distance(&exact, &relaxed, 1);
-        println!("{eps:>8.4} {:>12.6} {:>14.6} {:>12.3}", longest_h1(&relaxed), b, b / eps);
+        println!(
+            "{eps:>8.4} {:>12.6} {:>14.6} {:>12.3}",
+            longest_h1(&relaxed),
+            b,
+            b / eps
+        );
 
         // The error must not shrink as the approximation is loosened.
-        assert!(b >= prev - 1e-9,
-            "bottleneck error fell when eps grew: {prev:.6} -> {b:.6} at eps={eps}");
+        assert!(
+            b >= prev - 1e-9,
+            "bottleneck error fell when eps grew: {prev:.6} -> {b:.6} at eps={eps}"
+        );
         prev = b;
     }
 
@@ -89,10 +99,14 @@ fn relaxed_diagram_error_tracks_epsilon() {
         let m = relaxed_matrix(&pts, eps);
         let d = persistent_homology_from_distances(&m, n, cfg(n)).unwrap();
         let b = bottleneck_distance(&exact, &d, 1);
-        assert!(b <= eps + 1e-9,
-            "eps={eps}: bottleneck {b:.6} exceeds eps; the interleaving is not multiplicative");
-        assert!(b < expect_death,
-            "eps={eps}: bottleneck {b:.6} reaches the whole feature scale {expect_death:.6}");
+        assert!(
+            b <= eps + 1e-9,
+            "eps={eps}: bottleneck {b:.6} exceeds eps; the interleaving is not multiplicative"
+        );
+        assert!(
+            b < expect_death,
+            "eps={eps}: bottleneck {b:.6} reaches the whole feature scale {expect_death:.6}"
+        );
     }
 
     // EXACT PIN, not a bound. `b <= eps` has slack — it cannot detect a 2x
@@ -128,6 +142,9 @@ fn tiny_epsilon_recovers_the_exact_diagram() {
         let relaxed = persistent_homology_from_distances(&m, n, cfg(n)).unwrap();
         let b = bottleneck_distance(&exact, &relaxed, 1);
         println!("eps={eps:.0e}: bottleneck to exact = {b:.3e}");
-        assert!(b < 1e-3, "eps={eps:.0e} did not recover the exact diagram: {b}");
+        assert!(
+            b < 1e-3,
+            "eps={eps:.0e} did not recover the exact diagram: {b}"
+        );
     }
 }

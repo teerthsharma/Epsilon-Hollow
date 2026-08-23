@@ -25,25 +25,38 @@ fn the_document_inequality_is_false_at_every_tested_point() {
     let mut counterexamples = 0;
     for &alpha in &[1.5f64, 2.0, 3.0] {
         for &(pi, pj) in &[(1.0f64, 1.0f64), (0.3, 0.2), (0.5, 0.1)] {
-            if !old_claim_holds(pi, pj, alpha) { counterexamples += 1; }
-            assert!(superadditive(pi, pj, alpha),
-                "superadditivity failed at alpha={alpha} pi={pi} pj={pj}");
+            if !old_claim_holds(pi, pj, alpha) {
+                counterexamples += 1;
+            }
+            assert!(
+                superadditive(pi, pj, alpha),
+                "superadditivity failed at alpha={alpha} pi={pi} pj={pj}"
+            );
         }
     }
     println!("counterexamples to the document's `<=`: {counterexamples} of 9");
-    assert_eq!(counterexamples, 9,
-        "the reversed claim must fail at every tested point; got {counterexamples}/9");
+    assert_eq!(
+        counterexamples, 9,
+        "the reversed claim must fail at every tested point; got {counterexamples}/9"
+    );
 }
 
 #[test]
 fn superadditivity_holds_across_alpha_and_magnitudes() {
-    let mut s: u64 = 0xC0FFEE_1234_5678;
-    let mut u = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; ((s >> 11) as f64) / ((1u64 << 53) as f64) };
+    let mut s: u64 = 0x00C0_FFEE_1234_5678;
+    let mut u = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64) / ((1u64 << 53) as f64)
+    };
     for _ in 0..5000 {
-        let alpha = 1.0 + 4.0 * u();          // alpha in (1, 5]
+        let alpha = 1.0 + 4.0 * u(); // alpha in (1, 5]
         let (pi, pj) = (u() + 1e-6, u() + 1e-6);
-        assert!(superadditive(pi, pj, alpha),
-            "superadditivity failed: alpha={alpha} pi={pi} pj={pj}");
+        assert!(
+            superadditive(pi, pj, alpha),
+            "superadditivity failed: alpha={alpha} pi={pi} pj={pj}"
+        );
     }
 }
 
@@ -53,9 +66,16 @@ fn renyi_entropy_falls_for_every_alpha_above_one_not_just_two() {
     // the document claims the result for all alpha > 1. Exercise the general
     // form the document actually asserts.
     for &alpha in &[1.01f64, 1.5, 2.0, 3.0, 5.0, 10.0] {
-        for &(a, b, n) in &[(100usize, 50usize, 1000usize), (500, 500, 1000), (1, 1, 3), (7, 11, 40)] {
-            assert!(verify_renyi_nonincreasing(a, b, n, alpha),
-                "Renyi entropy rose on merge: alpha={alpha} a={a} b={b} n={n}");
+        for &(a, b, n) in &[
+            (100usize, 50usize, 1000usize),
+            (500, 500, 1000),
+            (1, 1, 3),
+            (7, 11, 40),
+        ] {
+            assert!(
+                verify_renyi_nonincreasing(a, b, n, alpha),
+                "Renyi entropy rose on merge: alpha={alpha} a={a} b={b} n={n}"
+            );
         }
     }
 }

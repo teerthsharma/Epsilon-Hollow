@@ -259,7 +259,7 @@ pub enum VerifyResult {
     /// `beta_0` counts clusters of distinct byte **values**, so it is bounded by
     /// 256 for every input, while `len` is unbounded. `density = beta_0 / len`
     /// therefore has a ceiling of `256 / len`, which falls below
-    /// [`DENSITY_MIN`] once `len` exceeds 2560. Past that length no input of any
+    /// `DENSITY_MIN` once `len` exceeds 2560. Past that length no input of any
     /// content can pass, so reporting [`Self::InvalidDensity`] would be a
     /// guaranteed false rejection rather than a verdict.
     ///

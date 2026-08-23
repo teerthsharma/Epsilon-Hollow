@@ -22,17 +22,28 @@ fn disc(k: i32, step: f64) -> Vec<EpsilonPoint<3>> {
 
 /// A straight line segment. Contractible: beta_0 = 1, beta_1 = 0, beta_2 = 0.
 fn segment(n: usize, step: f64) -> Vec<EpsilonPoint<3>> {
-    (0..n).map(|i| EpsilonPoint::new([i as f64 * step, 0.0, 0.0])).collect()
+    (0..n)
+        .map(|i| EpsilonPoint::new([i as f64 * step, 0.0, 0.0]))
+        .collect()
 }
 
 #[test]
 fn disc_is_not_a_sphere_so_betti_2_must_be_zero() {
     let pts = disc(4, 1.0);
     let mut g = SparseGraph::<3>::new(1.5);
-    for p in &pts { g.add_point(*p); }
+    for p in &pts {
+        g.add_point(*p);
+    }
     let (b0, b1, defect) = g.full_shape();
     let b2 = g.betti_2();
-    println!("DISC   n={} -> b0={} b1={} euler_defect={} betti_2={}", pts.len(), b0, b1, defect, b2);
+    println!(
+        "DISC   n={} -> b0={} b1={} euler_defect={} betti_2={}",
+        pts.len(),
+        b0,
+        b1,
+        defect,
+        b2
+    );
     assert_eq!(b0, 1, "disc is connected");
     assert_eq!(b2, 0, "a filled planar disc has H2 = 0; got beta_2 = {b2}");
     assert_eq!(defect, b1 + 1, "euler defect is 1 + b1 on connected input");
@@ -42,14 +53,26 @@ fn disc_is_not_a_sphere_so_betti_2_must_be_zero() {
 fn segment_is_not_a_sphere_so_betti_2_must_be_zero() {
     let pts = segment(10, 1.0);
     let mut g = SparseGraph::<3>::new(1.5);
-    for p in &pts { g.add_point(*p); }
+    for p in &pts {
+        g.add_point(*p);
+    }
     let (b0, b1, defect) = g.full_shape();
     let b2 = g.betti_2();
-    println!("SEGMENT n={} -> b0={} b1={} euler_defect={} betti_2={}", pts.len(), b0, b1, defect, b2);
+    println!(
+        "SEGMENT n={} -> b0={} b1={} euler_defect={} betti_2={}",
+        pts.len(),
+        b0,
+        b1,
+        defect,
+        b2
+    );
     assert_eq!(b0, 1, "segment is connected");
     assert_eq!(b1, 0, "a path graph has cycle rank 0");
     assert_eq!(b2, 0, "a line segment has H2 = 0; got beta_2 = {b2}");
-    assert_eq!(defect, 1, "euler defect of a path graph is 2 - 1 + 0 = 1, and it is NOT beta_2");
+    assert_eq!(
+        defect, 1,
+        "euler defect of a path graph is 2 - 1 + 0 = 1, and it is NOT beta_2"
+    );
 }
 
 /// The mutant this test kills: "assume chi = 2 and solve for beta_2".
@@ -60,10 +83,15 @@ fn betti_2_of_a_one_skeleton_is_identically_zero() {
     // H_2 of any 1-dimensional simplicial complex is 0, for every input.
     for eps in [0.5f64, 1.5, 3.0, 100.0] {
         let mut g = SparseGraph::<3>::new(eps);
-        for p in &disc(3, 1.0) { g.add_point(*p); }
+        for p in &disc(3, 1.0) {
+            g.add_point(*p);
+        }
         let b2 = g.betti_2();
         let (_, _, defect) = g.full_shape();
         println!("eps={:6} -> betti_2={} euler_defect={}", eps, b2, defect);
-        assert_eq!(b2, 0, "SparseGraph is a 1-skeleton; H2 is identically 0, but eps={eps} gave beta_2={b2}");
+        assert_eq!(
+            b2, 0,
+            "SparseGraph is a 1-skeleton; H2 is identically 0, but eps={eps} gave beta_2={b2}"
+        );
     }
 }

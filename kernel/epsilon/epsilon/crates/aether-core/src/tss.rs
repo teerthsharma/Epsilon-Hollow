@@ -646,7 +646,11 @@ mod tests {
         assert_eq!(idx4.betti_0(), 1);
         assert_eq!(idx4.capacity(), 4);
         let idx8 = SphericalVoronoiIndex::<8>::new(k8_centroids());
-        assert_eq!(idx8.betti_0(), 1, "refining the tiling does not create components");
+        assert_eq!(
+            idx8.betti_0(),
+            1,
+            "refining the tiling does not create components"
+        );
         assert_eq!(idx8.capacity(), 8);
     }
 

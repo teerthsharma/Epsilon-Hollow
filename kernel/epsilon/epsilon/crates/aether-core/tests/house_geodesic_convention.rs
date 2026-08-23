@@ -19,14 +19,21 @@ fn equator_quarter_turn_is_not_zero() {
     let (a, b) = ((PI / 2.0, 0.0), (PI / 2.0, PI / 2.0));
     let got = great_circle_distance(a, b);
     println!("equator, 90 deg apart -> {got:.6} (want {:.6})", PI / 2.0);
-    assert!((got - PI / 2.0).abs() < 1e-9,
-        "returned {got} for two points a quarter turn apart");
+    assert!(
+        (got - PI / 2.0).abs() < 1e-9,
+        "returned {got} for two points a quarter turn apart"
+    );
 }
 
 #[test]
 fn agrees_with_the_colatitude_convention_on_random_pairs() {
     let mut s: u64 = 0xA5A5_1234_DEAD_BEEF;
-    let mut u = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; ((s >> 11) as f64) / ((1u64 << 53) as f64) };
+    let mut u = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64) / ((1u64 << 53) as f64)
+    };
     let mut worst = 0.0f64;
     for _ in 0..2000 {
         let a = (PI * u(), 2.0 * PI * u());
@@ -34,20 +41,37 @@ fn agrees_with_the_colatitude_convention_on_random_pairs() {
         worst = worst.max((great_circle_distance(a, b) - colatitude_truth(a, b)).abs());
     }
     println!("worst disagreement over 2000 pairs: {worst:.6}");
-    assert!(worst < 1e-9, "disagrees with the index convention by up to {worst} rad");
+    assert!(
+        worst < 1e-9,
+        "disagrees with the index convention by up to {worst} rad"
+    );
 }
 
 #[test]
 fn metric_basics_hold() {
-    let mut s: u64 = 0x0FF1CE_5EED;
-    let mut u = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17; ((s >> 11) as f64) / ((1u64 << 53) as f64) };
+    let mut s: u64 = 0x0FF1_CE5E_ED00;
+    let mut u = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64) / ((1u64 << 53) as f64)
+    };
     for _ in 0..500 {
         let a = (PI * u(), 2.0 * PI * u());
         let b = (PI * u(), 2.0 * PI * u());
         let d = great_circle_distance(a, b);
-        assert!(great_circle_distance(a, a).abs() < 1e-15, "d(p,p) must be 0");
-        assert!((d - great_circle_distance(b, a)).abs() < 1e-12, "must be symmetric");
-        assert!((0.0..=PI + 1e-9).contains(&d), "distance {d} outside [0, pi]");
+        assert!(
+            great_circle_distance(a, a).abs() < 1e-15,
+            "d(p,p) must be 0"
+        );
+        assert!(
+            (d - great_circle_distance(b, a)).abs() < 1e-12,
+            "must be symmetric"
+        );
+        assert!(
+            (0.0..=PI + 1e-9).contains(&d),
+            "distance {d} outside [0, pi]"
+        );
     }
 }
 
@@ -62,8 +86,13 @@ fn small_separations_survive_the_regime_a_separation_check_operates_in() {
         let d = great_circle_distance((theta, 0.0), (theta + sep, 0.0));
         let rel = (d - sep).abs() / sep;
         println!("true {sep:.0e} -> {d:.6e}  relative error {rel:.2e}");
-        assert!(rel < 1e-6,
-            "separation {sep:.0e} came back as {d:.6e}, relative error {rel:.2e}");
-        assert!(d > 0.0, "two distinct points {sep:.0e} apart reported as coincident");
+        assert!(
+            rel < 1e-6,
+            "separation {sep:.0e} came back as {d:.6e}, relative error {rel:.2e}"
+        );
+        assert!(
+            d > 0.0,
+            "two distinct points {sep:.0e} apart reported as coincident"
+        );
     }
 }

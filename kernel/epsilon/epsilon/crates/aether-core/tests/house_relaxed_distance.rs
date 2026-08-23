@@ -5,22 +5,29 @@ use aether_core::nettree::{relaxed_distance, weight};
 
 fn rng(seed: u64) -> impl FnMut() -> f64 {
     let mut s = seed;
-    move || { s^=s<<13; s^=s>>7; s^=s<<17; ((s>>11) as f64)/((1u64<<53) as f64) }
+    move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        ((s >> 11) as f64) / ((1u64 << 53) as f64)
+    }
 }
 
-const EPSS: [f64; 4] = [0.05, 0.1, 0.2, 1.0/3.0];
+const EPSS: [f64; 4] = [0.05, 0.1, 0.2, 1.0 / 3.0];
 
 #[test]
 fn weight_is_continuous_at_both_breakpoints() {
     for &e in &EPSS {
         for &t in &[0.0f64, 0.5, 1.0, 7.3] {
-            let b1 = (1.0 - 2.0*e) * t;
+            let b1 = (1.0 - 2.0 * e) * t;
             for &brk in &[b1, t] {
                 let h = 1e-9;
                 let (lo, hi) = (weight(brk - h, t, e), weight(brk + h, t, e));
                 let at = weight(brk, t, e);
-                assert!((lo - at).abs() < 1e-6 && (hi - at).abs() < 1e-6,
-                    "eps={e} t={t}: discontinuity at {brk}: {lo} / {at} / {hi}");
+                assert!(
+                    (lo - at).abs() < 1e-6 && (hi - at).abs() < 1e-6,
+                    "eps={e} t={t}: discontinuity at {brk}: {lo} / {at} / {hi}"
+                );
             }
         }
     }
@@ -32,11 +39,13 @@ fn weight_is_half_lipschitz_in_alpha() {
     let mut u = rng(4242);
     for &e in &EPSS {
         for _ in 0..4000 {
-            let t = 5.0*u();
-            let (a, b) = (5.0*u(), 5.0*u());
-            let d = (weight(a,t,e) - weight(b,t,e)).abs();
-            assert!(d <= 0.5*(a-b).abs() + 1e-12,
-                "eps={e} t={t}: |w({a})-w({b})|={d} > 0.5*|a-b|");
+            let t = 5.0 * u();
+            let (a, b) = (5.0 * u(), 5.0 * u());
+            let d = (weight(a, t, e) - weight(b, t, e)).abs();
+            assert!(
+                d <= 0.5 * (a - b).abs() + 1e-12,
+                "eps={e} t={t}: |w({a})-w({b})|={d} > 0.5*|a-b|"
+            );
         }
     }
 }
@@ -48,15 +57,20 @@ fn relaxed_distance_dominates_and_is_monotone() {
     let mut u = rng(77);
     for &e in &EPSS {
         for _ in 0..2000 {
-            let (d, tp, tq) = (3.0*u(), 4.0*u(), 4.0*u());
-            assert!((relaxed_distance(d, 0.0, tp, tq, e) - d).abs() < 1e-12,
-                "d_0 must equal d");
+            let (d, tp, tq) = (3.0 * u(), 4.0 * u(), 4.0 * u());
+            assert!(
+                (relaxed_distance(d, 0.0, tp, tq, e) - d).abs() < 1e-12,
+                "d_0 must equal d"
+            );
             let mut prev = d;
             let mut a = 0.0;
             for _ in 0..60 {
                 a += 0.1;
                 let cur = relaxed_distance(d, a, tp, tq, e);
-                assert!(cur >= prev - 1e-12, "not monotone at alpha={a}: {prev} -> {cur}");
+                assert!(
+                    cur >= prev - 1e-12,
+                    "not monotone at alpha={a}: {prev} -> {cur}"
+                );
                 assert!(cur >= d - 1e-12, "relaxed distance fell below d");
                 prev = cur;
             }
@@ -71,17 +85,24 @@ fn lemma_4_1_holds() {
     let mut exercised = 0u32;
     for &e in &EPSS {
         for _ in 0..6000 {
-            let (d, tp, tq) = (3.0*u(), 4.0*u(), 4.0*u());
-            let a = 4.0*u();
-            if relaxed_distance(d, a, tp, tq, e) > a { continue; }   // hypothesis fails
+            let (d, tp, tq) = (3.0 * u(), 4.0 * u(), 4.0 * u());
+            let a = 4.0 * u();
+            if relaxed_distance(d, a, tp, tq, e) > a {
+                continue;
+            } // hypothesis fails
             exercised += 1;
-            let b = a + 4.0*u();
+            let b = a + 4.0 * u();
             let db = relaxed_distance(d, b, tp, tq, e);
-            assert!(db <= b + 1e-12,
-                "Lemma 4.1 violated: eps={e} d={d} tp={tp} tq={tq} alpha={a} beta={b} -> {db}");
+            assert!(
+                db <= b + 1e-12,
+                "Lemma 4.1 violated: eps={e} d={d} tp={tp} tq={tq} alpha={a} beta={b} -> {db}"
+            );
         }
     }
-    assert!(exercised > 500, "hypothesis almost never held; test was near-vacuous ({exercised} cases)");
+    assert!(
+        exercised > 500,
+        "hypothesis almost never held; test was near-vacuous ({exercised} cases)"
+    );
     println!("Lemma 4.1 exercised on {exercised} cases where the hypothesis actually held");
 }
 
@@ -92,13 +113,17 @@ fn the_sandwich_both_directions() {
     let mut u = rng(8888);
     for &e in &EPSS {
         for _ in 0..4000 {
-            let a = 4.0*u() + 0.01;
-            let (tp, tq) = (4.0*u(), 4.0*u());
-            let d = (1.0 - 2.0*e) * a * u();          // d <= (1-2eps)*alpha
+            let a = 4.0 * u() + 0.01;
+            let (tp, tq) = (4.0 * u(), 4.0 * u());
+            let d = (1.0 - 2.0 * e) * a * u(); // d <= (1-2eps)*alpha
             let da = relaxed_distance(d, a, tp, tq, e);
-            assert!(da <= a + 1e-9,
-                "forward sandwich failed: eps={e} d={d} alpha={a} -> {da}");
-            if da <= a { assert!(d <= a + 1e-12, "reverse sandwich failed"); }
+            assert!(
+                da <= a + 1e-9,
+                "forward sandwich failed: eps={e} d={d} alpha={a} -> {da}"
+            );
+            if da <= a {
+                assert!(d <= a + 1e-12, "reverse sandwich failed");
+            }
         }
     }
 }

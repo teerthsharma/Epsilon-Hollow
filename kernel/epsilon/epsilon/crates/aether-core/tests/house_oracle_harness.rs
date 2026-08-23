@@ -1,7 +1,7 @@
 //! Iteration 5 — exact-oracle ground truth. Observes and prints; the gate is read
 //! off the printed values. persistence.rs and diagram.rs are untouched.
-use aether_core::persistence::{persistent_homology, ComplexKind, PersistenceConfig};
 use aether_core::manifold::ManifoldPoint;
+use aether_core::persistence::{persistent_homology, ComplexKind, PersistenceConfig};
 
 fn cfg(dim: usize, max_points: usize) -> PersistenceConfig {
     PersistenceConfig {
@@ -14,18 +14,24 @@ fn cfg(dim: usize, max_points: usize) -> PersistenceConfig {
 }
 
 /// Longest finite bar in a dimension, as (birth, death, persistence).
-fn longest(d: &aether_core::persistence::PersistenceDiagram, dim: usize) -> Option<(f64, f64, f64)> {
-    d.pairs.iter()
+fn longest(
+    d: &aether_core::persistence::PersistenceDiagram,
+    dim: usize,
+) -> Option<(f64, f64, f64)> {
+    d.pairs
+        .iter()
         .filter(|p| p.dimension == dim)
         .filter_map(|p| p.death.map(|dd| (p.birth, dd, dd - p.birth)))
-        .fold(None, |acc: Option<(f64,f64,f64)>, b| match acc {
+        .fold(None, |acc: Option<(f64, f64, f64)>, b| match acc {
             Some(a) if a.2 >= b.2 => Some(a),
             _ => Some(b),
         })
 }
 
 fn count_long(d: &aether_core::persistence::PersistenceDiagram, dim: usize, thresh: f64) -> usize {
-    d.pairs.iter().filter(|p| p.dimension == dim)
+    d.pairs
+        .iter()
+        .filter(|p| p.dimension == dim)
         .filter(|p| p.death.map(|dd| dd - p.birth > thresh).unwrap_or(true))
         .count()
 }
@@ -66,32 +72,50 @@ fn oracle_ground_truth() {
             })
             .collect();
         let d = persistent_homology(&pts, cfg(2, 48)).unwrap();
-        println!("n={:3}  #H2 bars={}  longest H2={:?}  #long H2(>0.15)={}  #long H1(>0.30)={}",
+        println!(
+            "n={:3}  #H2 bars={}  longest H2={:?}  #long H2(>0.15)={}  #long H1(>0.30)={}",
             n,
             d.pairs.iter().filter(|p| p.dimension == 2).count(),
-            longest(&d, 2).map(|(b,dd,p)| (format!("{:.4}",b), format!("{:.4}",dd), format!("{:.4}",p))),
+            longest(&d, 2).map(|(b, dd, p)| (
+                format!("{:.4}", b),
+                format!("{:.4}", dd),
+                format!("{:.4}", p)
+            )),
             count_long(&d, 2, 0.15),
-            count_long(&d, 1, 0.30));
+            count_long(&d, 1, 0.30)
+        );
     }
 
     // ---- 3. GAUSSIAN BLOB: negative control, no long bars above H0 ----
     println!();
     println!("=== GAUSSIAN BLOB (negative control): expect NO long H1 ===");
     let mut s: u64 = 0x2545F4914F6CDD1D;
-    let mut nx = || { s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+    let mut nx = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
         let u = ((s >> 11) as f64) / ((1u64 << 53) as f64);
-        (u - 0.5) * 2.0 };
+        (u - 0.5) * 2.0
+    };
     for &n in &[40usize, 80] {
         let pts: Vec<ManifoldPoint<2>> = (0..n)
-            .map(|_| { let (a, b) = (nx(), nx()); let (c, d2) = (nx(), nx());
-                ManifoldPoint::new([(a + b + c) / 3.0, (d2 + nx() + nx()) / 3.0]) })
+            .map(|_| {
+                let (a, b) = (nx(), nx());
+                let (c, d2) = (nx(), nx());
+                ManifoldPoint::new([(a + b + c) / 3.0, (d2 + nx() + nx()) / 3.0])
+            })
             .collect();
         let d = persistent_homology(&pts, cfg(1, 128)).unwrap();
-        let sp = pts.iter().flat_map(|p| (0..2).map(move |k| p.coords[k]))
+        let sp = pts
+            .iter()
+            .flat_map(|p| (0..2).map(move |k| p.coords[k]))
             .fold(f64::MIN, f64::max);
-        println!("n={:3} spread~{:.3}  longest H1={:?}  #H1 bars={}",
-            n, sp,
-            longest(&d, 1).map(|(_,_,p)| format!("{:.5}", p)),
-            d.pairs.iter().filter(|p| p.dimension == 1).count());
+        println!(
+            "n={:3} spread~{:.3}  longest H1={:?}  #H1 bars={}",
+            n,
+            sp,
+            longest(&d, 1).map(|(_, _, p)| format!("{:.5}", p)),
+            d.pairs.iter().filter(|p| p.dimension == 1).count()
+        );
     }
 }
