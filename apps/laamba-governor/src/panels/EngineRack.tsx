@@ -19,7 +19,16 @@ interface EngineInfo {
 }
 
 export default function EngineRack() {
-  const { activeEngine, setActiveEngine, selectedDataset, selectDataset, addLog, setAnalysisResult, setEngineResult, addExperiment, updateExperiment } = useStore();
+  // ⚡ Bolt: Extract Zustand Selectors to prevent unnecessary re-renders
+  const activeEngine = useStore((s) => s.activeEngine);
+  const setActiveEngine = useStore((s) => s.setActiveEngine);
+  const selectedDataset = useStore((s) => s.selectedDataset);
+  const selectDataset = useStore((s) => s.selectDataset);
+  const addLog = useStore((s) => s.addLog);
+  const setAnalysisResult = useStore((s) => s.setAnalysisResult);
+  const setEngineResult = useStore((s) => s.setEngineResult);
+  const addExperiment = useStore((s) => s.addExperiment);
+  const updateExperiment = useStore((s) => s.updateExperiment);
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [running, setRunning] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
