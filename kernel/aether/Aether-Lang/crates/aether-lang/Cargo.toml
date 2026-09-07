@@ -38,7 +38,7 @@ full = ["std", "gpu", "net", "ml"]
 aether-core = { path = "../../../../epsilon/epsilon/crates/aether-core", default-features = false }
 libm = { workspace = true }
 heapless = { workspace = true }
-reqwest = { version = "0.11", features = ["blocking", "rustls-tls"], default-features = false, optional = true }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false, optional = true }
 safetensors = { version = "0.3", optional = true }
 wgpu = { version = "0.17", optional = true }
 pollster = { version = "0.3", optional = true }
@@ -46,7 +46,7 @@ bytemuck = { version = "1.13", features = ["derive"], optional = true }
 candle-core = { version = "0.3.3", optional = true }
 candle-transformers = { version = "0.3.3", optional = true }
 tokenizers = { version = "0.15.2", optional = true }
-hf-hub = { version = "0.3.2", features = ["tokio"], optional = true }
+hf-hub = { version = "0.4.0", features = ["tokio"], optional = true }
 rand = { version = "0.8.5", default-features = false, features = ["alloc", "small_rng"] }
 pyo3 = { version = "0.29.0", features = ["extension-module"], optional = true }
 
