@@ -151,7 +151,8 @@ export default function EngineRack() {
               <button
                 onClick={(e) => { e.stopPropagation(); handleRun(eng); }}
                 disabled={isRunning}
-                className="shrink-0 p-1 rounded hover:bg-gov-accent/20 disabled:opacity-50"
+                className="shrink-0 p-1 rounded hover:bg-gov-accent/20 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none"
+                aria-label={isDrop ? "Drop dataset to run" : "Run analysis"}
                 title={isDrop ? "Drop dataset to run" : "Run analysis"}
               >
                 {isRunning ? (
