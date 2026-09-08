@@ -1,9 +1,16 @@
-import { useEffect, useRef } from "react";
-import { Terminal, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Terminal, Trash2, Check } from "lucide-react";
 import { useStore } from "../store";
 
 export default function ConsolePanel() {
   const { logs, clearLogs } = useStore();
+  const [cleared, setCleared] = useState(false);
+
+  const handleClear = () => {
+    clearLogs();
+    setCleared(true);
+    setTimeout(() => setCleared(false), 2000);
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -18,8 +25,16 @@ export default function ConsolePanel() {
         <Terminal size={10} /> Console
         <span className="text-[9px] text-gov-dim/50">{logs.length} lines</span>
         <div className="flex-1" />
-        <button onClick={clearLogs} className="hover:text-gov-accent">
-          <Trash2 size={10} />
+        <button
+          onClick={handleClear}
+          aria-label="Clear console logs"
+          title="Clear console logs"
+          className="hover:text-gov-error focus-visible:ring-2 focus-visible:ring-gov-error focus-visible:outline-none rounded transition-colors"
+        >
+          {cleared ? <Check size={10} className="text-gov-ok" /> : <Trash2 size={10} />}
+          <span className="sr-only" aria-live="polite">
+            {cleared ? "Console cleared" : ""}
+          </span>
         </button>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
