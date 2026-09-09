@@ -123,7 +123,8 @@ export default function SampleBay() {
         <span>Sample Bay</span>
         <button
           onClick={handleImportClick}
-          className="flex items-center gap-1 text-[10px] text-gov-dim hover:text-gov-accent"
+          aria-label="Import CSV"
+          className="flex items-center gap-1 text-[10px] text-gov-dim hover:text-gov-accent focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none rounded"
           title="Import CSV"
         >
           <Plus size={10} />
