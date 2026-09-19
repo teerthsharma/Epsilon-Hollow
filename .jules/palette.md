@@ -1,0 +1,3 @@
+## 2024-09-19 - Missing aria-labels and focus indicators on icon-only utility buttons
+**Learning:** Icon-only buttons using lucide-react in utility panels (like the Console clear button) frequently lack aria-labels, titles, and `focus-visible` states, making them inaccessible to keyboard and screen reader users. Destructive actions need `gov-error` colors instead of the standard accent color for better user feedback.
+**Action:** Applied an `aria-label`, a `title`, and `focus-visible:ring-2 focus-visible:ring-gov-error focus-visible:outline-none` classes to the destructive button. Look out for other icon-only panel headers in the future.
