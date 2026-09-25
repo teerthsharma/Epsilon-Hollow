@@ -71,6 +71,7 @@ pub mod spectral_entropy;
 pub mod state;
 pub mod thermodynamic_plasticity;
 pub mod topology;
+pub mod trajectory_shape;
 /// Topological State Synchronization (TSS): O(1)-amortized spherical Voronoi index.
 pub mod tss;
 pub mod world_model_horizon;

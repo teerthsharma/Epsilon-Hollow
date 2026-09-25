@@ -22,9 +22,11 @@
 //! Let `v_t` be validation loss. Its Takens delay embedding is
 //! `p_t = (v_t, v_{t-1}, v_{t-2}) ∈ ℝ³` (`aether_core::manifold::TimeDelayEmbedder`).
 //!
-//! * A **monotone** trajectory never revisits a value range, so `{p_t}` is a
-//!   simple arc and the Vietoris–Rips 1-skeleton at the connectivity scale is a
-//!   path: cycle rank 0.
+//! * A **monotone** trajectory never revisits a value range, so it has no fold.
+//!   `{p_t}` is a simple arc — but *not* a straight one: a monotone delay
+//!   polyline turns by up to 90° wherever the slope changes, so its Rips
+//!   1-skeleton is not a path in general. The zero is certified by checking
+//!   monotonicity directly, not read off the complex.
 //! * An **overfitting** trajectory is U-shaped: validation descends, turns, and
 //!   climbs back through value ranges it already visited. At value `v` the
 //!   descending point is `(v, v+s, v+2s)` and the ascending point is
@@ -45,9 +47,19 @@
 //!
 //! ## What is claimed, and what is not
 //!
-//! **Claimed and tested**: a monotone trajectory yields `loop_score == 0`
-//! exactly, at any sampling density, at any scale. A fold yields
-//! `loop_score > 0`.
+//! **Claimed and tested**: a monotone window yields `loop_score == 0` exactly,
+//! at any sampling density, at any scale — by certificate:
+//! `aether_core::trajectory_shape::fold_score` checks monotonicity in O(n) and
+//! returns 0 before any complex is built. A fold yields `loop_score > 0`.
+//!
+//! **Refuted, and why the certificate exists**: this used to be claimed as a
+//! property of the Rips cycle rank itself, on the argument that a monotone arc's
+//! next-nearest point is `2·ε*` away. That holds only for a straight arc. The
+//! staircase `v_t = v_{t−1} − (0.05 if t % 3 == 0 else 0.001)` from `v = 10`
+//! over 128 steps is strictly decreasing and scored `loop_score = 0.969` — and,
+//! with training loss on a widening gap below it, the verdict `Overfit`. The
+//! host test `monotone_staircase_scores_no_fold` in
+//! `aether-core/tests/trajectory_shape.rs` pins it.
 //!
 //! **Not claimed**: `loop_score > 0` does *not* imply a fold. A converged run
 //! sitting in a noise ball also revisits its own neighbourhood constantly and
@@ -115,6 +127,11 @@
 //! Union-find over the same `is_neighbor` predicate is used instead, and β₁
 //! reuses the Euler-characteristic identity `β₁ = E − V + β₀` that
 //! `estimate_betti_1` applies.
+//!
+//! The geometry itself — arc-length resampling, MST statistics, cycle rank,
+//! participation ratio, quartile drift — lives in
+//! `aether_core::trajectory_shape`. This crate is outside the Cargo workspace
+//! and its unit tests never run; that module's host tests do.
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -122,6 +139,10 @@ use alloc::string::String;
 use spin::Mutex;
 
 use aether_core::manifold::{ManifoldPoint, TimeDelayEmbedder};
+pub use aether_core::trajectory_shape::LOOP_SCALE_MARGIN;
+use aether_core::trajectory_shape::{
+    fold_score, mst_edge_stats, participation_ratio, quartile_drift, MAX_POINTS,
+};
 
 // ── Sizing ──────────────────────────────────────────────────────────────────
 
@@ -129,28 +150,12 @@ use aether_core::manifold::{ManifoldPoint, TimeDelayEmbedder};
 /// filtration cost. 64 points at τ=1 covers ~66 training steps of trajectory.
 pub const STRATUM_WINDOW: usize = 64;
 
+// The geometry kernels size their stack buffers by `MAX_POINTS`.
+const _: () = assert!(STRATUM_WINDOW <= MAX_POINTS);
+
 /// Delay-embedding dimension. 3 is the smallest dimension in which a planar
 /// fold of a 1-D signal embeds without self-intersection.
-const EMBED_DIM: usize = 3;
-
-/// Scale at which cycle rank is evaluated, as a multiple of the H₀ death scale
-/// `ε*` (the largest edge of the minimum spanning tree — the single-linkage
-/// merge height at which the cloud becomes one component).
-///
-/// The value is derived, not tuned. After arc-length reparameterisation, points
-/// along an arm are `ε*` apart, so:
-///
-/// * the two arms of a fold sit `√5/√3 ≈ 1.291 · ε*` apart (see the module
-///   thesis) — the margin must exceed this for a fold to register;
-/// * on a monotone arc the next-nearest point in time is `2 · ε*` away — the
-///   margin must stay below this or *every* arc registers as a lattice of
-///   triangles and the signal saturates.
-///
-/// 1.5 is the midpoint of `(1.291, 2.0)`. The upper cliff is not theoretical:
-/// sweeping this constant on the embedded fixtures shows `monotone_line` and
-/// `monotone_exp` scoring exactly 0.0 for every value below 2.0 and jumping to
-/// 0.969 at 2.0.
-pub const LOOP_SCALE_MARGIN: f64 = 1.5;
+const EMBED_DIM: usize = aether_core::trajectory_shape::EMBED_DIM;
 
 /// Below this a length is treated as zero.
 const EPS_FLOOR: f64 = 1e-12;
@@ -212,7 +217,8 @@ pub struct FitSignals {
     pub points: usize,
     /// Cycle rank of the Rips 1-skeleton at `LOOP_SCALE_MARGIN · ε*` on the
     /// arc-length-reparameterised cloud, normalised by point count. Exactly 0
-    /// for a monotone trajectory. The fold signal.
+    /// for a monotone window, by a direct monotonicity certificate rather than
+    /// by the complex. The fold signal.
     pub loop_score: f64,
     /// H₀ death scale `ε*` divided by the cloud's RMS radius, measured on the
     /// reparameterised cloud. Small = an extended path; near or above 1 = a
@@ -282,8 +288,8 @@ pub struct FitCalibration {
     ///
     /// Basis: one noise-induced recurrence contributes `1/n = 0.0156` at n = 64.
     /// 0.125 requires 8 recurrence edges, i.e. the two arms of the fold overlap
-    /// over roughly 8 steps. Measured: the embedded fold fixture scores 1.0 and
-    /// both monotone controls score exactly 0.0.
+    /// over roughly 8 steps. Measured: the embedded fold fixture scores 0.875
+    /// and both monotone controls score exactly 0.0.
     pub loop_min: f64,
     /// Minimum residual drift for a fold to read as *divergence* rather than
     /// recovery.
@@ -666,13 +672,9 @@ impl FitStream {
             };
             // Reparameterise by arc length so a varying step size cannot
             // masquerade as topology, then measure the fold.
-            let mut resampled = [ManifoldPoint::<EMBED_DIM>::zero(); STRATUM_WINDOW];
-            let m = arc_resample(raw, &mut resampled);
-            let cloud = &resampled[..m];
-            let (eps_star, _) = mst_edge_stats(cloud);
+            let (eps_star, loop_score) = fold_score(raw);
             sig.h0_death = eps_star / radius;
-            let cyc = cycle_rank(cloud, eps_star * LOOP_SCALE_MARGIN);
-            sig.loop_score = (cyc as f64 / m as f64).min(1.0);
+            sig.loop_score = loop_score;
         }
 
         let mut train = [0.0f64; STRATUM_WINDOW];
@@ -726,192 +728,6 @@ pub fn classify(sig: &FitSignals, cal: &FitCalibration) -> Regime {
         return Regime::Underfit;
     }
     Regime::WellFit
-}
-
-// ── Geometry ────────────────────────────────────────────────────────────────
-
-/// Resample the polyline through `pts` at uniform arc length. Returns the number
-/// of points written to `out`. Degenerate input is copied through unchanged.
-fn arc_resample(
-    pts: &[ManifoldPoint<EMBED_DIM>],
-    out: &mut [ManifoldPoint<EMBED_DIM>; STRATUM_WINDOW],
-) -> usize {
-    let n = pts.len();
-    if n < 3 {
-        out[..n].copy_from_slice(pts);
-        return n;
-    }
-    let mut cum = [0.0f64; STRATUM_WINDOW];
-    for i in 1..n {
-        cum[i] = cum[i - 1] + pts[i - 1].distance(&pts[i]);
-    }
-    let total = cum[n - 1];
-    if total < EPS_FLOOR {
-        out[..n].copy_from_slice(pts);
-        return n;
-    }
-    let mut seg = 0usize;
-    for k in 0..n {
-        let target = total * k as f64 / (n - 1) as f64;
-        while seg + 2 < n && cum[seg + 1] < target {
-            seg += 1;
-        }
-        let (a, b) = (cum[seg], cum[seg + 1]);
-        let f = if b - a < EPS_FLOOR {
-            0.0
-        } else {
-            ((target - a) / (b - a)).clamp(0.0, 1.0)
-        };
-        let mut c = [0.0f64; EMBED_DIM];
-        for d in 0..EMBED_DIM {
-            c[d] = pts[seg].coords[d] + f * (pts[seg + 1].coords[d] - pts[seg].coords[d]);
-        }
-        out[k] = ManifoldPoint::new(c);
-    }
-    n
-}
-
-/// Minimum spanning tree edge statistics by Prim's algorithm, O(n²).
-///
-/// Returns `(max_edge, median_edge)`. The maximum is the H₀ death scale `ε*`:
-/// the single-linkage merge height at which the last connected component dies,
-/// i.e. the exact endpoint of the longest finite H₀ persistence bar.
-fn mst_edge_stats(pts: &[ManifoldPoint<EMBED_DIM>]) -> (f64, f64) {
-    let n = pts.len();
-    if n < 2 {
-        return (0.0, 0.0);
-    }
-    let mut included = [false; STRATUM_WINDOW];
-    let mut key = [f64::INFINITY; STRATUM_WINDOW];
-    let mut edges = [0.0f64; STRATUM_WINDOW];
-    let mut count = 0usize;
-    key[0] = 0.0;
-    for _ in 0..n {
-        let mut best = usize::MAX;
-        let mut best_key = f64::INFINITY;
-        for i in 0..n {
-            if !included[i] && key[i] < best_key {
-                best_key = key[i];
-                best = i;
-            }
-        }
-        if best == usize::MAX {
-            break;
-        }
-        included[best] = true;
-        if best_key.is_finite() && best_key > 0.0 {
-            edges[count] = best_key;
-            count += 1;
-        }
-        for i in 0..n {
-            if !included[i] {
-                let d = pts[best].distance(&pts[i]);
-                if d < key[i] {
-                    key[i] = d;
-                }
-            }
-        }
-    }
-    if count == 0 {
-        return (0.0, 0.0);
-    }
-    edges[..count].sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-    (edges[count - 1], edges[count / 2])
-}
-
-fn uf_find(parent: &mut [usize; STRATUM_WINDOW], mut x: usize) -> usize {
-    while parent[x] != x {
-        parent[x] = parent[parent[x]];
-        x = parent[x];
-    }
-    x
-}
-
-/// Cycle rank `E − V + β₀` of the Vietoris–Rips 1-skeleton at scale `eps`, with
-/// β₀ counted exactly by union-find. This upper-bounds Rips β₁: filling
-/// 2-simplices can only kill cycles, never create them.
-fn cycle_rank(pts: &[ManifoldPoint<EMBED_DIM>], eps: f64) -> u32 {
-    let n = pts.len();
-    if n == 0 {
-        return 0;
-    }
-    let mut parent = [0usize; STRATUM_WINDOW];
-    for (i, slot) in parent.iter_mut().enumerate().take(n) {
-        *slot = i;
-    }
-    let mut edges: u64 = 0;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if pts[i].is_neighbor(&pts[j], eps) {
-                edges += 1;
-                let (a, b) = (uf_find(&mut parent, i), uf_find(&mut parent, j));
-                if a != b {
-                    parent[a] = b;
-                }
-            }
-        }
-    }
-    let mut b0 = 0u32;
-    for i in 0..n {
-        if uf_find(&mut parent, i) == i {
-            b0 += 1;
-        }
-    }
-    let cyc = edges as i64 - n as i64 + b0 as i64;
-    if cyc > 0 {
-        cyc as u32
-    } else {
-        0
-    }
-}
-
-/// Participation ratio of the delay-embedding covariance of `x`.
-///
-/// `C` is symmetric Toeplitz in the autocovariances `c₀, c₁, c₂`, so
-/// `tr(C) = 3c₀`, `‖C‖_F² = 3c₀² + 4c₁² + 2c₂²`, and
-/// `PR = tr(C)²/(3‖C‖_F²) = 3c₀²/(3c₀² + 4c₁² + 2c₂²) ∈ [1/3, 1]`.
-/// A constant signal has `c₀ = 0` and is reported as 1.0 — a flat loss is
-/// converged, not a trend.
-fn participation_ratio(x: &[f64]) -> f64 {
-    let n = x.len();
-    if n < EMBED_DIM {
-        return 1.0;
-    }
-    let mean = x.iter().sum::<f64>() / n as f64;
-    let cov = |lag: usize| -> f64 {
-        let m = n - lag;
-        let mut acc = 0.0;
-        for i in 0..m {
-            acc += (x[i] - mean) * (x[i + lag] - mean);
-        }
-        acc / m as f64
-    };
-    let (c0, c1, c2) = (cov(0), cov(1), cov(2));
-    let denom = 3.0 * c0 * c0 + 4.0 * c1 * c1 + 2.0 * c2 * c2;
-    if denom < EPS_FLOOR {
-        return 1.0;
-    }
-    (3.0 * c0 * c0 / denom).clamp(1.0 / 3.0, 1.0)
-}
-
-/// Late-quartile mean minus early-quartile mean, normalised to (−1, 1) by the
-/// sum of their magnitudes. Scale equivariant, bounded even under geometric
-/// blow-up, and robust to single-step spikes in a way an endpoint difference is
-/// not.
-fn quartile_drift(x: &[f64]) -> f64 {
-    let n = x.len();
-    if n < 4 {
-        return 0.0;
-    }
-    let q = n / 4;
-    let early: f64 = x[..q].iter().sum::<f64>() / q as f64;
-    let late: f64 = x[n - q..].iter().sum::<f64>() / q as f64;
-    let denom = libm::fabs(early) + libm::fabs(late);
-    if denom < EPS_FLOOR {
-        0.0
-    } else {
-        ((late - early) / denom).clamp(-1.0, 1.0)
-    }
 }
 
 // ── Registry / ABI backing ──────────────────────────────────────────────────
@@ -1305,6 +1121,28 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The counterexample to the old Rips-only argument: a strictly falling
+    /// staircase whose delay polyline turns 90° at every drop. With training
+    /// loss on a widening gap below it the drift gate is open, so before the
+    /// monotonicity certificate this read `loop = 0.969` and `Overfit`.
+    fn test_monotone_staircase_is_not_overfit() -> TestResult {
+        let mut s = FitStream::new(DEFAULT_CALIBRATION);
+        let mut v = 10.0;
+        for t in 0..PROOF_STEPS {
+            v -= if t % 3 == 0 { 0.05 } else { 0.001 };
+            s.observe(v - 0.02 - 0.001 * t as f64, v);
+        }
+        test_assert!(
+            s.signals().loop_score == 0.0,
+            "a monotone staircase must have loop_score exactly 0"
+        );
+        test_assert!(
+            s.regime() != Regime::Overfit,
+            "a monotone run is not a fold"
+        );
+        TestResult::Pass
+    }
+
     fn test_incremental_matches_batch() -> TestResult {
         let (batch_regime, batch_sig) = run_case(ProofCase::Overfit);
         let mut split = FitStream::new(DEFAULT_CALIBRATION);
@@ -1634,6 +1472,10 @@ pub mod tests {
             test_negative_control_not_flagged,
         );
         crate::testing::register_test("stratum::monotone_has_no_fold", test_monotone_has_no_fold);
+        crate::testing::register_test(
+            "stratum::monotone_staircase_is_not_overfit",
+            test_monotone_staircase_is_not_overfit,
+        );
         crate::testing::register_test(
             "stratum::incremental_matches_batch",
             test_incremental_matches_batch,

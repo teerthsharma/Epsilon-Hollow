@@ -814,7 +814,9 @@ Three is not a vibe. It is the smallest dimension in which a planar fold of a 1-
 
 Now the two cases, which is where the geometry earns its keep.
 
-**Monotone run.** `v_t` never returns to a value range it has left. The point cloud `{p_t}` is a simple arc. The Vietoris–Rips 1-skeleton at the connectivity scale is a path graph. A path graph has cycle rank exactly **0**. Not approximately zero. Zero, as an integer, by the Euler characteristic.
+**Monotone run.** `v_t` never returns to a value range it has left, so there is no fold, and `loop_score` is exactly **0** — by a certificate, not by the complex. `trajectory_shape::fold_score` checks in O(n) that the window never turns back and returns 0 before a single edge is built.
+
+This paragraph used to argue the zero from the complex: the cloud is a simple arc, the Rips 1-skeleton at the connectivity scale is a path graph, a path graph has cycle rank 0. **That was false.** The arc is simple but not straight. A monotone delay polyline turns by up to 90° wherever the slope changes, the chord across such a corner is `√2·ε*`, which is under the `1.5·ε*` scale, and every corner closed a triangle. The counterexample: `v` starting at 10, falling 0.001 per step with a 0.05 drop every third step, 128 steps, training loss `v − 0.02 − 0.001·t` — strictly decreasing validation, `loop_score = 0.969`, verdict **`Overfit`**. A drop every eighth step scored 0.141; a single drop at step 30 of a 66-step run scored 0.016 (one spurious cycle in 64 points). The host test `monotone_staircase_scores_no_fold` in `aether-core/tests/trajectory_shape.rs` pins all three at 0.
 
 **Overfitting run.** `v_t` descends, turns at some step, and climbs back. Say the local step is `s`. At validation value `v`, the *descending* point sits at:
 
@@ -866,10 +868,12 @@ After arc-length reparameterisation (see the second defect below), points along 
 | Bound | Value | Why |
 |---|---|---|
 | **Floor** | `√5/√3 = 1.291 · ε*` | Below this the two arms of a fold never connect and the loop never registers. Every overfit is invisible. |
-| **Ceiling** | `2.0 · ε*` | At or above this, the *next-nearest point in time* on a plain monotone arc connects, every arc becomes a lattice of triangles, and the signal saturates to garbage. |
-| **Chosen** | **1.5** | Midpoint of `(1.291, 2.0)`. Maximum distance from both failure modes. |
+| **Ceiling** | `√3 = 1.732 · ε*` | On a stretch where the loss only falls, every delay segment lies in one closed orthant of ℝ³, so a chord spanning `k` resampled steps is at least `k·ε*/√3`. The two-step chords (`k = 2`) are filled by a Rips triangle and quotiented out of the count; the first chord that can close a spurious cycle spans three steps and needs `√3`. |
+| **Chosen** | **1.5** | Inside `(1.291, 1.732)`. |
 
-**And the ceiling is measured, not assumed.** This is the part I like. Sweeping the constant across the embedded fixtures produces a cliff you can see with your eyes:
+The ceiling used to be `2.0`, on the claim that the next-nearest point in time on a monotone arc is `2·ε*` away. That is true of a straight arc only; the staircase above breaks it at 1.5. On that staircase, with two-step chords quotiented out, the count is 0.0 for every margin from 1.3 to 1.8 and 0.953 at 1.9. Monotone windows no longer depend on the ceiling at all — the certificate zeroes them first — so it now protects only windows that are monotone apart from noise (`jittered_staircase_is_not_a_fold`).
+
+The original sweep, on the two straight-ish fixtures, which is why the `2.0` ceiling looked right:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -879,7 +883,7 @@ After arc-length reparameterisation (see the second defect below), points along 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-Exactly `0.0` for every value below 2.0. Then, at 2.0, a jump to `0.969` — not a drift, not a gradual degradation, a cliff. That is the shape a real threshold has when the underlying quantity is combinatorial rather than continuous, and finding it was the moment I stopped worrying that I had picked 1.5 because it was a round number between two other numbers. I had, initially. It turned out to be right for a reason I had to go and measure afterwards, which is the correct order of operations reversed.
+Exactly `0.0` for every value below 2.0. Then, at 2.0, a jump to `0.969` — a cliff. It was real for those two fixtures and wrong as a general bound: neither fixture has a corner, so neither could show that a corner closes a triangle at `√2`. A sweep over the fixtures one already has measures the fixtures one already has.
 
 ### Underfit is a completely different animal
 
@@ -932,7 +936,7 @@ Read those two fields together, because that is the entire argument compressed i
 
 **And the gate requires `naive_gap_baseline_flagged=yes`.** If the naive baseline ever *stops* misfiring on that control, the proof **fails**. I built a gate that fails when my own subsystem becomes unnecessary. It felt genuinely terrible to write and it is the most honest thing in the file.
 
-### Two real defects, caught before shipping, both now regression-tested
+### Three real defects, all now regression-tested
 
 I am including these not for humility points but because the fixtures that catch them are the best documentation of what the thing actually measures.
 
@@ -960,6 +964,10 @@ I am including these not for humility points but because the fixtures that catch
 
 Both controls now sit in `MONOTONE_CASES` and the proof emits `monotone_loop_zero=ok` — a hard requirement that both score **exactly** `0.0`, not "near zero", not "below the threshold". Exactly zero, checked with `!= 0.0`.
 
+#### Defect 3 — the staircase that was a fold
+
+A strictly decreasing staircase read as `Overfit` with `loop_score = 0.969` (the construction section has the fixture). The two monotone controls could not catch it: both are smooth, and the false argument — "a monotone arc's next-nearest point is `2·ε*` away" — is true of smooth arcs. **The fix** is two parts. A monotone window is certified `loop_score = 0` by an O(n) check before the complex is built. And the cycle count quotients out every two-step chord that bounds a Rips triangle, which keeps it an upper bound on β₁ while removing the corner triangles, so a staircase with jitter larger than its slow step (no longer monotone, so no certificate) stays below `loop_min`. The fold fixture moved from 1.0 to 0.875, still seven times `loop_min`.
+
 ### The decision cascade, in order, because the order is load-bearing
 
 ```
@@ -985,7 +993,7 @@ Every one of these is settable at runtime through `SYS_FIT_CALIBRATE`. A constan
 
 | Field | Default | Basis | Measured against |
 |---|---|---|---|
-| `loop_min` | 0.125 | one noise recurrence contributes `1/n = 0.0156` at n=64, so 0.125 demands ~8 overlapping recurrence edges | fold fixture 1.0; both monotone controls exactly 0.0 |
+| `loop_min` | 0.125 | one noise recurrence contributes `1/n = 0.0156` at n=64, so 0.125 demands ~8 overlapping recurrence edges | fold fixture 0.875; both monotone controls exactly 0.0 |
 | `resid_rise_min` | 0.05 | drift is bounded in (−1,1); 0.05 ≈ late quartile mean 10% above early, below which the estimator is inside its own sampling noise | supplies the orientation H₁ cannot |
 | `spread_trend_max` | 0.45 | the PR floor is exactly 1/3 ≈ 0.333; 0.45 allows ~35% above the floor before "converged" | underfit fixture 0.353, converged fixture 0.814 |
 | `collapse_shatter_min` | 100.0 | largest single step two orders of magnitude above typical is a jump, not a trajectory | smooth fixtures 1.0–2.1, diverging fixture **1.1 × 10⁴** |
@@ -1016,7 +1024,7 @@ What each field is actually asserting:
 | Field | Assertion | Fails when |
 |---|---|---|
 | `correct=7/7` | every fixture classified as its ground truth | any regime is misread |
-| `monotone_loop_zero=ok` | both monotone controls score **exactly** 0.0 | the arc-length reparameterisation regresses (defect 2 returns) |
+| `monotone_loop_zero=ok` | both monotone controls score **exactly** 0.0 | the monotonicity certificate is removed (the arc-length reparameterisation of defect 2 is no longer what zeroes them; the staircase of defect 3 is covered by host tests, not by this field) |
 | `negctl_flagged=no` | the healthy-but-noisy case is **not** called overfit | the detector becomes a gap threshold |
 | `naive_gap_baseline_flagged=yes` | the dumb baseline **is** wrong on that same case | the control stops discriminating and this subsystem stops being justified |
 | `bounded=ok` | 4,096 steps through a 64-point window leaves 64 points | memory grows with run length |
@@ -2808,8 +2816,13 @@ a reviewer notices in the first ten minutes.
 
 `loop_score > 0` does **not** imply overfitting. A converged run sitting in a
 noise ball traces small loops in the delay embedding and scores near 1.0 while
-being entirely healthy. What is proved is the converse and only the converse:
-**a monotone trajectory scores exactly 0.**
+being entirely healthy. What holds is the converse and only the converse:
+**a monotone window scores exactly 0** — and it holds by an explicit O(n)
+monotonicity certificate, not as a property of the Rips count. As a property of
+the count it was false: a strictly decreasing staircase (`v` from 10, −0.001 per
+step, −0.05 every third step, 128 steps) scored `loop_score = 0.969` and, with
+the residual widening, the verdict `Overfit`. The count's corner triangles are
+now quotiented out as well, but the zero rests on the certificate.
 
 Worse, H₁ is orientation-blind. A run *recovering* from a validation spike and
 a run *diverging* into one trace the same loop and receive the same score. The
@@ -2845,6 +2858,8 @@ that returned confident nonsense, and neither was found by reading the code.
    complex duly connected them into cycles. Fixed by arc-length
    reparameterisation. The control was the monotone fixture, whose *only* job
    is to score 0 — the one case where the maths guarantees the answer.
+   The maths did not guarantee it for the complex, only for the trajectory: a
+   third bug, the staircase above, got through both smooth monotone fixtures.
 
 Two bugs found by fixtures whose expected outputs were derived from theory
 rather than from a previous run of the code. Fixtures that record whatever the
