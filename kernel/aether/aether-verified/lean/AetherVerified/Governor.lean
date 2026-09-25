@@ -56,8 +56,9 @@ theorem geometric_bound (ρ e₀ : ℝ) (t : Nat) (h_ρ_nn : 0 ≤ |ρ|) (h_ρ_l
   have h_e : 0 ≤ |e₀| := abs_nonneg _
   nlinarith [pow_nonneg h_ρ_nn t]
 
-/-- Mirrors the Rust `gain_margin_refined(dt)`: `dt ≥ 1 ∧ 0.01 + 0.05/dt < 1`,
-    the gain margin of the default gains `α = 0.01, β = 0.05` only.
+/-- The Rust `gain_margin_refined(alpha, beta, dt)` at the default gains
+    `α = 0.01, β = 0.05` only: `dt ≥ 1 ∧ 0.01 + 0.05/dt < 1`. The general
+    predicate `dt ≥ 1 ∧ α + β/dt < 1` is not stated here.
     `gain_margin_yields_contraction` shows the number `1 − (0.01 + 0.05/dt)`
     lies in `(0, 1)`; nothing connects that number to the Rust step. -/
 def gainMarginRefined (dt : ℝ) : Prop :=

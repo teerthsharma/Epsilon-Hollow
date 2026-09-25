@@ -96,7 +96,7 @@ fn main() {
             eps = new_eps;
             last = eps;
         }
-        let stable = aether_governor::gain_margin_refined(dt);
+        let stable = aether_governor::gain_margin_refined(alpha, beta, dt);
         println!(
             "[T4 PDG]   eps after 50 steps = {:.5} (target ratio {:.2})",
             last, r_target

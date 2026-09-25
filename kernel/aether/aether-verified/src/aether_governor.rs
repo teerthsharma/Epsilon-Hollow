@@ -69,21 +69,17 @@ pub fn governor_step(
     clamp(epsilon + adjustment, eps_min, eps_max)
 }
 
-/// (Lean: `Governor.gainMarginRefined`)
+/// (Lean: `Governor.gainMarginRefined`, at α = 0.01, β = 0.05 only)
 ///
-/// `dt ≥ 1` and `0.01 + 0.05/dt < 1`: the gain margin of the default gains
-/// α = 0.01, β = 0.05, not of the gains a caller passes to [`governor_step`].
+/// `dt ≥ 1` and `α + β/dt < 1` for the gains a caller passes to
+/// [`governor_step`].
 ///
-/// This is a gain condition, not a descent certificate, and would stay one with
-/// the real gains: the step in `tests/house_governor_step_descent.rs` runs on
-/// exactly these gains and still raises `|e|`.
-pub fn gain_margin_refined(dt: f64) -> bool {
-    // ponytail: hard-codes alpha = 0.01, beta = 0.05. Upgrade to
-    // `gain_margin_refined(alpha, beta, dt)` = `dt >= 1.0 &&
-    // aether_agcr::gain_margin_stable(alpha, beta, dt)` together with its one
-    // caller, aether-link/examples/world_model_demo.rs, which is outside this
-    // change's scope.
-    dt >= 1.0 && (0.01 + 0.05 / dt) < 1.0
+/// A gain margin is not a descent certificate. The step in
+/// `tests/house_governor_step_descent.rs` passes this check (`α + β/dt = 0.06`)
+/// and still raises `|e|`; check a computed step with
+/// [`lyapunov_descent_holds`].
+pub fn gain_margin_refined(alpha: f64, beta: f64, dt: f64) -> bool {
+    dt >= 1.0 && crate::aether_agcr::gain_margin_stable(alpha, beta, dt)
 }
 
 /// Whether moving the threshold from `epsilon` to `epsilon_next` under the
@@ -137,15 +133,23 @@ mod tests {
 
     #[test]
     fn test_gain_margin_refined_stable() {
-        assert!(gain_margin_refined(1.0));
-        assert!(gain_margin_refined(10.0));
-        assert!(gain_margin_refined(100.0));
+        assert!(gain_margin_refined(0.01, 0.05, 1.0));
+        assert!(gain_margin_refined(0.01, 0.05, 10.0));
+        assert!(gain_margin_refined(0.01, 0.05, 100.0));
     }
 
     #[test]
     fn test_gain_margin_refined_unstable() {
-        assert!(!gain_margin_refined(0.001));
-        assert!(!gain_margin_refined(0.5));
+        assert!(!gain_margin_refined(0.01, 0.05, 0.001));
+        assert!(!gain_margin_refined(0.01, 0.05, 0.5));
+    }
+
+    #[test]
+    fn test_gain_margin_refined_reads_the_gains() {
+        // alpha + beta / dt = 1.1 at dt = 1: fails on the gains alone.
+        assert!(!gain_margin_refined(0.5, 0.6, 1.0));
+        assert!(!gain_margin_refined(1.0, 0.0, 1.0));
+        assert!(gain_margin_refined(0.5, 0.4, 1.0));
     }
 
     #[test]

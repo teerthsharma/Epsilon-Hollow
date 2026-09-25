@@ -11,7 +11,9 @@
 //! where `|e|` rises. `lyapunov_descent_holds` is the runtime check that refuses
 //! it; the second test shows the same check certifies an ordinary step.
 
-use aether_verified::aether_governor::{governor_error, governor_step, lyapunov_descent_holds};
+use aether_verified::aether_governor::{
+    gain_margin_refined, governor_error, governor_step, lyapunov_descent_holds,
+};
 
 #[test]
 fn a_step_with_a_stale_derivative_raises_the_error_and_is_refused() {
@@ -29,6 +31,8 @@ fn a_step_with_a_stale_derivative_raises_the_error_and_is_refused() {
     assert!((after - 0.414_650_331_632).abs() < 1e-9, "|e'| = {after}");
     assert!(after > before);
 
+    // The gain margin passes on these gains: it is not a descent certificate.
+    assert!(gain_margin_refined(alpha, beta, dt));
     assert!(!lyapunov_descent_holds(r_target, delta, epsilon, next));
 }
 
