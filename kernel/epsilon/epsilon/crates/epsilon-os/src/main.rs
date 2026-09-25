@@ -143,7 +143,7 @@ fn boot(world: &World, fs: &ManifoldFS, config: &LlmConfig, dim: usize, capacity
         );
     }
     println!("  [FS]   Root manifold mounted at /");
-    println!("  [READY] All theorems active. Manifold filesystem online.");
+    println!("{}", ready_line(&status));
     println!();
     println!("  Type /help for commands.");
     println!();
@@ -501,7 +501,7 @@ fn handle_theorems(world: &World, fs: &ManifoldFS) {
 
     let passed = results.iter().filter(|(_, ok)| *ok).count();
     println!("\n  {passed}/10 verified in {:.2?}", dt);
-    println!("  T1-T5: ACTIVE (driving ManifoldFS decisions)");
+    println!("  T1-T5: driving ManifoldFS decisions (states above)");
     println!("  T6-T10: VERIFIED (boot-checked, bounds satisfied)");
 }
 
@@ -568,6 +568,23 @@ fn format_duration_ns(ns: u64) -> String {
 
 // ─── Main ───────────────────────────────────────────────────────────────
 
+/// The boot READY line, derived from the live ManifoldFS theorem status.
+fn ready_line(status: &[(&str, &str, String)]) -> String {
+    let inactive: Vec<String> = status
+        .iter()
+        .filter(|(_, state, _)| *state != "ACTIVE")
+        .map(|(name, state, _)| format!("{name} {state}"))
+        .collect();
+    if inactive.is_empty() {
+        "  [READY] All theorems active. Manifold filesystem online.".to_string()
+    } else {
+        format!(
+            "  [READY] Manifold filesystem online. Not active: {}.",
+            inactive.join(", ")
+        )
+    }
+}
+
 fn main() {
     let (config, dim, capacity) = parse_args();
     let llm = LlmBridge::new(config.clone());
@@ -576,4 +593,21 @@ fn main() {
 
     boot(&world, &fs, &config, dim, capacity);
     repl(&mut world, &mut fs);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ready_line_reports_the_real_t4_status() {
+        let status = ManifoldFS::new().theorem_status();
+        let line = ready_line(&status);
+        if manifold_fs::governor_certified() {
+            assert!(line.contains("All theorems active"), "{line}");
+        } else {
+            assert!(!line.contains("All theorems active"), "{line}");
+            assert!(line.contains("T4/AGCR NOT CERTIFIED"), "{line}");
+        }
+    }
 }
