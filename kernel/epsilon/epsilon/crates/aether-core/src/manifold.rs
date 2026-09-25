@@ -22,6 +22,8 @@
 
 use libm::sqrt;
 
+use crate::persistence::{persistent_homology, PersistenceConfig, PersistenceError};
+
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Manifold Constants
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -257,14 +259,18 @@ impl<const D: usize> SparseAttentionGraph<D> {
         (0..n).filter(|&i| find(&mut parent, i) == i).count() as u32
     }
 
-    /// Estimate Î²â‚ (cycles) using Euler characteristic
-    /// Ï‡ = V - E + F, for planar: Î²â‚€ - Î²â‚ + Î²â‚‚ = Ï‡
-    /// Simplified: Î²â‚ â‰ˆ E - V + Î²â‚€ (ignoring higher homology)
-    /// For a graph this identity is **exact**, not an estimate: the Euler
-    /// characteristic of a 1-complex has no 2-cells to account for. It bounds
-    /// Vietoris-Rips B1 from above only because this structure never fills a
-    /// 2-simplex, and filling one can kill a cycle but never create one.
-    pub fn estimate_betti_1(&self) -> u32 {
+    /// Cycle rank of the ε-graph, `E − V + β₀`.
+    ///
+    /// This is the first Betti number of the graph as a 1-complex, and for a
+    /// 1-complex the identity is exact. It is **not** β₁ of the point cloud.
+    /// The Vietoris-Rips complex at the same scale fills every triangle of
+    /// pairwise-adjacent points, and a filled triangle can kill a cycle but never
+    /// create one, so the cycle rank is an upper bound on Rips β₁ and a loose one
+    /// on dense input. Three points `[0,0,0]`, `[0.1,0,0]`, `[0,0.1,0]` at ε = 1
+    /// give 1 against a Rips β₁ of 0; the 120-point blob in
+    /// `tests/proptest_manifold_topology.rs` gives 7021 against 0.
+    /// [`Self::rips_betti_1`] is the homology count.
+    pub fn cycle_rank(&self) -> u32 {
         let v = self.point_count as i32;
         let mut e = 0i32;
 
@@ -277,19 +283,44 @@ impl<const D: usize> SparseAttentionGraph<D> {
         }
 
         let b0 = self.compute_betti_0() as i32;
-
-        // Î²â‚ â‰ˆ E - V + Î²â‚€ (simplified)
-        let b1 = e - v + b0;
-        if b1 > 0 {
-            b1 as u32
+        let rank = e - v + b0;
+        if rank > 0 {
+            rank as u32
         } else {
             0
         }
     }
 
-    /// Get the topological shape signature
+    /// β₁ of the Vietoris-Rips complex at this graph's scale, reduced exactly
+    /// over its 2-simplices by [`crate::persistence`].
+    ///
+    /// The graph's edge predicate is strict (`d < ε`) and the persistence engine
+    /// admits a simplex at `d <= r`, so the complex is built at the largest float
+    /// below ε, which admits exactly the graph's edges.
+    ///
+    /// A graph with cycle rank 0 is a forest: it has no triangles and β₁ = 0, so
+    /// that case returns without a reduction. Otherwise the engine's simplex
+    /// budget applies and a refusal is returned as its error.
+    pub fn rips_betti_1(&self) -> Result<u32, PersistenceError> {
+        if self.cycle_rank() == 0 {
+            return Ok(0);
+        }
+        // A positive cycle rank implies an edge with 0 <= d < ε, so ε > 0 and
+        // stepping its bit pattern down by one yields its predecessor.
+        let radius = f64::from_bits(self.epsilon.to_bits() - 1);
+        let config = PersistenceConfig {
+            max_points: MAX_POINTS,
+            max_radius: radius,
+            ..PersistenceConfig::h1_dense()
+        };
+        let diagram = persistent_homology(&self.points[..self.point_count], config)?;
+        Ok(diagram.betti_at(radius).beta_1)
+    }
+
+    /// `(β₀, cycle rank)` of the ε-graph. The second entry is not β₁; see
+    /// [`Self::cycle_rank`].
     pub fn shape(&self) -> (u32, u32) {
-        (self.compute_betti_0(), self.estimate_betti_1())
+        (self.compute_betti_0(), self.cycle_rank())
     }
 
     /// Geodesic Partitioning: Find centroid of the local cluster connected to `target`
@@ -500,6 +531,10 @@ impl<const D: usize> TopologicalPipeline<D> {
     }
 
     /// Process a new data sample - The Gatekeeper Flow
+    ///
+    /// Returns `(β₀, cycle rank, TPU id)`. The branch reads Rips β₁, not the
+    /// cycle rank, so a returned cycle rank above 0 does not imply the
+    /// geodesic path was taken.
     pub fn push(&mut self, value: f64) -> Option<(u32, u32, u64)> {
         // Stage 1: The Sparsity Filter
         if libm::fabs(value) < 1e-9 {
@@ -511,9 +546,14 @@ impl<const D: usize> TopologicalPipeline<D> {
         if let Some(point) = self.embedder.embed() {
             // Stage 2: The Topological Check
             self.graph.add_point(point)?;
-            let (betti_0, betti_1) = self.graph.shape();
+            let (betti_0, cycle_rank) = self.graph.shape();
 
-            // Stage 3: The Branching
+            // Stage 3: The Branching, on Rips β₁. A budget refusal falls back to
+            // the cycle rank, an upper bound on β₁, so an unmeasured shape takes
+            // the stability path rather than the speed path.
+            // ponytail: rebuilds and reduces the Rips complex on every push,
+            // O(n³) triangles; an incremental reduction if the pipeline runs hot.
+            let betti_1 = self.graph.rips_betti_1().unwrap_or(cycle_rank);
             let projected_value = if betti_1 == 0 {
                 // Path 1: Direct Projection (Speed)
                 self.concentrator.update(&point);
@@ -534,7 +574,7 @@ impl<const D: usize> TopologicalPipeline<D> {
             // Map the final projected "coordinate" (and original point) to a TPU ID
             let tpu_id = self.map_to_tpu_id(&point, projected_value);
 
-            Some((betti_0, betti_1, tpu_id))
+            Some((betti_0, cycle_rank, tpu_id))
         } else {
             None
         }
@@ -557,7 +597,8 @@ impl<const D: usize> TopologicalPipeline<D> {
         hash
     }
 
-    /// Get current shape (Î²â‚€, Î²â‚)
+    /// Current `(β₀, cycle rank)` of the ε-graph; see
+    /// [`SparseAttentionGraph::cycle_rank`].
     pub fn shape(&self) -> (u32, u32) {
         self.graph.shape()
     }
@@ -671,11 +712,32 @@ mod tests {
         }
     }
 
+    /// Three pairwise-adjacent points span a filled 2-simplex in the Rips
+    /// complex, so β₁ = 0, while the ε-graph's cycle rank is E − V + β₀ = 1.
+    /// The pipeline's loop branch must read the former. Only the direct
+    /// projection path updates the concentrator, so its sample count shows
+    /// which branch the third point took.
+    #[test]
+    fn filled_triangle_does_not_take_the_loop_branch() {
+        let mut pipeline = TopologicalPipeline::<3>::new(1, 100.0);
+        for value in [1.0, 2.0, 3.0, 4.0] {
+            pipeline.push(value);
+        }
+        let before = pipeline.concentrator.count;
+        let (b0, cycle_rank, _) = pipeline.push(5.0).unwrap();
+        assert_eq!((b0, cycle_rank), (1, 1), "fixture must be a triangle graph");
+        assert_eq!(
+            pipeline.concentrator.count,
+            before + 1,
+            "a filled triangle has Rips β₁ = 0 and must take the direct projection path"
+        );
+    }
+
     #[test]
     fn test_gatekeeper_branching() {
         let mut pipeline = TopologicalPipeline::<3>::new(1, 2.0); // large epsilon to force connection
 
-        // 1. Simple shape (Line) -> Betti-1 = 0
+        // 1. Simple shape (Line) -> cycle rank 0
         for i in 0..10 {
             pipeline.push(i as f64);
         }
@@ -683,7 +745,7 @@ mod tests {
         assert_eq!(b0, 1);
         assert_eq!(b1, 0); // Linear structure has no holes
 
-        // 2. Complex Shape (Cycle) -> Betti-1 > 0
+        // 2. Complex Shape (Cycle) -> cycle rank > 0
         pipeline.reset();
         // Create a triangle loop: (0,0,0) -> (1,0,0) -> (0.5,1,0) -> (0,0,0) around time delay
         // This is hard to simulate perfectly with 1D stream, but we can try oscillating
@@ -697,7 +759,7 @@ mod tests {
         // Sine wave in 2D/3D embedding is a loop (circle)
         assert!(
             b1_complex >= 1,
-            "Sine wave should create a cycle (Betti-1 >= 1)"
+            "Sine wave should create a graph cycle (cycle rank >= 1)"
         );
     }
 }

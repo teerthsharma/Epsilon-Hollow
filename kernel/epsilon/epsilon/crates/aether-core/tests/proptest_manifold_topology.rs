@@ -5,7 +5,7 @@
 //!
 //! # Why this file exists
 //!
-//! `SparseAttentionGraph::compute_betti_0` and `estimate_betti_1` produce a
+//! `SparseAttentionGraph::compute_betti_0` and `cycle_rank` produce a
 //! plausible number for every input. A wrong Betti number does not panic, does
 //! not produce a NaN, and does not fail a smoke test — it produces a slightly
 //! different integer, downstream code accepts it, and nothing surfaces. The
@@ -82,7 +82,7 @@ fn reference_edges<const D: usize>(pts: &[ManifoldPoint<D>], eps: f64) -> usize 
     e
 }
 
-/// Cycle rank of the 1-skeleton: `β₁ = E − V + β₀`. Exact for a graph — this is
+/// Cycle rank of the 1-skeleton: `E − V + β₀`. Exact for a graph — this is
 /// the Euler characteristic identity, not an approximation, because a graph has
 /// no 2-cells to kill cycles.
 fn reference_cycle_rank<const D: usize>(pts: &[ManifoldPoint<D>], eps: f64) -> u32 {
@@ -170,7 +170,7 @@ proptest! {
     fn cycle_rank_matches_reference(pts in cloud_2d(120), eps in 0.5f64..8.0) {
         let g = build(&pts, eps);
         prop_assert_eq!(
-            g.estimate_betti_1(), reference_cycle_rank(&pts, eps),
+            g.cycle_rank(), reference_cycle_rank(&pts, eps),
             "cycle rank disagrees with E−V+β₀ reference at n={}", pts.len()
         );
     }
@@ -222,7 +222,7 @@ proptest! {
         let up = build(&scaled, eps * c);
 
         prop_assert_eq!(base.compute_betti_0(), up.compute_betti_0(), "β₀ not scale equivariant");
-        prop_assert_eq!(base.estimate_betti_1(), up.estimate_betti_1(), "β₁ not scale equivariant");
+        prop_assert_eq!(base.cycle_rank(), up.cycle_rank(), "cycle rank not scale equivariant");
     }
 
     /// Translation preserves every pairwise distance exactly.
@@ -241,7 +241,7 @@ proptest! {
         let shifted = build(&moved, eps);
 
         prop_assert_eq!(base.compute_betti_0(), shifted.compute_betti_0(), "β₀ not translation invariant");
-        prop_assert_eq!(base.estimate_betti_1(), shifted.estimate_betti_1(), "β₁ not translation invariant");
+        prop_assert_eq!(base.cycle_rank(), shifted.cycle_rank(), "cycle rank not translation invariant");
     }
 }
 
@@ -319,7 +319,7 @@ fn circle_cycle_rank_is_one() {
             "β₀ should be 1 on a circle at n={n}"
         );
         assert_eq!(
-            g.estimate_betti_1(),
+            g.cycle_rank(),
             1,
             "cycle rank should be 1 on a circle at n={n}"
         );
@@ -349,7 +349,51 @@ fn tight_blob_is_one_component() {
             reference_betti_0(&pts, 1.0),
             "blob β₀ disagrees with reference at n={n}"
         );
+        // Every pair is adjacent, so the graph is complete and its cycle rank is
+        // C(n, 2) − n + 1: 7021 at n = 120. None of those cycles survive the
+        // filled triangles, which is the gap between the two quantities.
+        assert_eq!(
+            g.cycle_rank() as usize,
+            n * (n - 1) / 2 - n + 1,
+            "blob cycle rank at n={n}"
+        );
+        assert_eq!(
+            g.rips_betti_1(),
+            Ok(0),
+            "a tight blob has Rips β₁ = 0 at n={n}"
+        );
     }
+}
+
+/// The smallest case where cycle rank and β₁ part: three pairwise-adjacent
+/// points are one graph cycle and one filled Rips triangle.
+#[test]
+fn filled_triangle_has_cycle_rank_one_and_no_rips_cycle() {
+    let pts = [
+        ManifoldPoint::<3>::new([0.0, 0.0, 0.0]),
+        ManifoldPoint::<3>::new([0.1, 0.0, 0.0]),
+        ManifoldPoint::<3>::new([0.0, 0.1, 0.0]),
+    ];
+    let g = build(&pts, 1.0);
+    assert_eq!(g.cycle_rank(), 1);
+    assert_eq!(g.rips_betti_1(), Ok(0));
+}
+
+/// Control for the Rips count: an n-cycle with ε below the next-nearest
+/// spacing has no triangles, so its one graph cycle is a Rips cycle too.
+#[test]
+fn unfilled_circle_has_rips_betti_1_one() {
+    let (r, n) = (5.0f64, 16usize);
+    let pts: Vec<_> = (0..n)
+        .map(|i| {
+            let t = i as f64 / n as f64 * core::f64::consts::TAU;
+            ManifoldPoint::<2>::new([r * t.cos(), r * t.sin()])
+        })
+        .collect();
+    let near = 2.0 * r * (core::f64::consts::PI / n as f64).sin();
+    let next = 2.0 * r * (2.0 * core::f64::consts::PI / n as f64).sin();
+    let g = build(&pts, (near + next) / 2.0);
+    assert_eq!(g.rips_betti_1(), Ok(1));
 }
 
 // ── 6. The boundary, localised ──────────────────────────────────────────────
