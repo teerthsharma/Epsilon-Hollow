@@ -9,6 +9,8 @@
 //!                             will trip next; enables proactive throttle.
 //! T3 Entropy / Betti-0:       Connected-component count of hot regions;
 //!                             high fragmentation → global frequency reduction.
+//!                             Refused, and the previous count held, while any
+//!                             reading is within HOT_MARGIN_C of the threshold.
 //! T4 PD thermal governor:     ε(t+1) = ε(t) + α·e(t) + β·de/dt.
 //! T5 Hyperbolic P-state:      P-states arranged on Poincaré disk; transition
 //!                             follows geodesic movement.
@@ -24,6 +26,18 @@ use super::fadt;
 
 const MAX_THERMAL_ZONES: usize = 32;
 const T_TARGET: f64 = 75.0; // °C target temperature
+/// Distance, in °C, every reading must keep from the hot threshold before
+/// [`betti_0`] classifies it.
+///
+/// Both sources report whole degrees: the Intel IA32_THERM_STATUS digital
+/// readout (bits 22:16) counts 1 °C per LSB, and `amd.rs` decodes
+/// THM_TCON_CUR_TMP to a whole-degree `u8`. A reading is therefore only known
+/// to within one LSB, and one LSB is the margin. With the 67.5 °C threshold
+/// this refuses readings of 67 and 68 °C and accepts 66 and 69 °C.
+// ponytail: covers readout quantization only, not sensor accuracy, which Intel
+// does not specify tightly far below TjMax. Widen this per part once a
+// calibrated DTS error bound is available.
+const HOT_MARGIN_C: f64 = 1.0;
 
 /// Per-core thermal zone state.
 #[derive(Clone, Copy, Debug)]
@@ -63,6 +77,8 @@ static GOVERNOR_EPS: Mutex<f64> = Mutex::new(0.0);
 static LAST_STEP_TICKS: AtomicU64 = AtomicU64::new(0);
 static PRINT_ACCUM_TICKS: AtomicU64 = AtomicU64::new(0);
 static SLEEPING: AtomicBool = AtomicBool::new(false);
+/// Last certified Betti-0, held while [`betti_0`] refuses.
+static LAST_B0: AtomicU64 = AtomicU64::new(0);
 
 // ---------------------------------------------------------------------------
 // T5: Hyperbolic P-state hierarchy on Poincaré disk
@@ -93,13 +109,23 @@ fn pstate_from_epsilon(eps: f64) -> usize {
 // T3: Betti-0 (connected components of hot regions)
 // ---------------------------------------------------------------------------
 
-/// Simple threshold-based connected-component count on the 1-D CPU array.
-/// Cores are ordered by cpu_num; contiguous runs above threshold form components.
-fn betti_0(temps: &[f64], threshold: f64) -> usize {
+/// Connected components of the hot cores on the 1-D CPU array, or `None` when
+/// the readings cannot certify one.
+///
+/// Cores are ordered by cpu_num; each contiguous run at or above `threshold`
+/// is one component. A reading closer than `margin` to `threshold`, or NaN,
+/// could fall on either side of it, so the count is refused rather than
+/// guessed and the caller keeps its previous value.
+const fn betti_0(temps: &[f64], threshold: f64, margin: f64) -> Option<usize> {
     let mut count = 0;
     let mut in_component = false;
-    for &t in temps {
-        if t >= threshold {
+    let mut i = 0;
+    while i < temps.len() {
+        let gap = (temps[i] - threshold).abs();
+        if gap.is_nan() || gap < margin {
+            return None;
+        }
+        if temps[i] >= threshold {
             if !in_component {
                 count += 1;
                 in_component = true;
@@ -107,9 +133,27 @@ fn betti_0(temps: &[f64], threshold: f64) -> usize {
         } else {
             in_component = false;
         }
+        i += 1;
     }
-    count
+    Some(count)
 }
+
+// Evaluated by every build of this crate, so the contract is checked without
+// a boot. The threshold is the governor's hot threshold, 67.5 °C.
+const _: () = {
+    let hot = T_TARGET * 0.9;
+    // 67 °C sits 0.5 °C below the threshold, inside the margin: refused.
+    assert!(betti_0(&[40.0, 67.0], hot, HOT_MARGIN_C).is_none());
+    // 68 °C sits 0.5 °C above it: refused as well.
+    assert!(betti_0(&[68.0], hot, HOT_MARGIN_C).is_none());
+    // A reading that orders against nothing cannot be classified.
+    assert!(betti_0(&[f64::NAN], hot, HOT_MARGIN_C).is_none());
+    // Every reading at least 1 °C clear: two hot runs, certified.
+    assert!(matches!(
+        betti_0(&[70.0, 40.0, 69.0, 71.0, 66.0], hot, HOT_MARGIN_C),
+        Some(2)
+    ));
+};
 
 // ---------------------------------------------------------------------------
 // Temperature probing
@@ -259,9 +303,16 @@ pub fn thermal_governor_step() {
     }
     let _avg_temp = _avg_temp / count as f64;
 
-    // T3: Betti-0 of thermal map
+    // T3: Betti-0 of thermal map, or the last certified value while any
+    // reading is too close to the threshold to classify.
     let hot_threshold = T_TARGET * 0.9;
-    let b0 = betti_0(&temps[..count], hot_threshold);
+    let b0 = match betti_0(&temps[..count], hot_threshold, HOT_MARGIN_C) {
+        Some(b0) => {
+            LAST_B0.store(b0 as u64, Ordering::Relaxed);
+            b0
+        }
+        None => LAST_B0.load(Ordering::Relaxed) as usize,
+    };
 
     // T4: PD thermal governor
     let e_t = (max_temp_val - T_TARGET) / T_TARGET;
