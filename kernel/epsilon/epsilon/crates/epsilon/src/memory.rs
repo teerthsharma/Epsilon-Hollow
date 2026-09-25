@@ -79,7 +79,8 @@ impl LivenessAnchor {
 
     /// Compute an anchor from raw liveness samples.
     ///
-    /// Uses Welford's online algorithm for numerical stability.
+    /// Two-pass: the mean first, then the mean squared deviation from it,
+    /// which avoids the cancellation of the one-pass `E[x^2] - mean^2` form.
     pub fn from_samples(samples: &[f64], k: f64) -> Self {
         if samples.is_empty() {
             return Self::default();
@@ -148,17 +149,10 @@ impl ChebyshevGuard {
             };
         }
 
-        let n = samples.len() as f64;
-        let mean = samples.iter().sum::<f64>() / n;
-        let sum_sq: f64 = samples.iter().map(|x| x * x).sum();
-        let variance = (sum_sq / n) - (mean * mean);
-        let variance = if variance < 0.0 { 0.0 } else { variance };
-
-        Self {
-            mean,
-            std_dev: sqrt(variance),
-            k: 2.0,
-        }
+        // Two-pass variance via the anchor. The one-pass `sum_sq/n - mean^2`
+        // cancels catastrophically: [1e8+1, 1e8+2, 1e8+3] gave sigma = 0.
+        let anchor = LivenessAnchor::from_samples(samples, 2.0);
+        Self::with_inherited_anchor(&anchor)
     }
 
     /// Create a guard with inherited statistics from a source agent.
