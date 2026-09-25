@@ -126,6 +126,15 @@ impl PersistenceDiagram {
         Self { pairs }
     }
 
+    /// Betti numbers at one threshold, **uncertified**.
+    ///
+    /// The counts are read from floating-point filtration values at exactly
+    /// `radius`, so a merge height that rounds onto the radius decides the
+    /// answer: for `[0, 0]` and `[0.134, 0.847]` the computed distance is
+    /// `0.8575342558755306`, below the exact one, and `betti_at` at that radius
+    /// reports `beta_0 = 1` where the exact Rips complex has `beta_0 = 2`.
+    /// Nothing in the result says the count is that fragile. For beta_0, use
+    /// [`Self::betti0_certified_at`].
     pub fn betti_at(&self, radius: f64) -> BettiNumbers3 {
         let mut betti = BettiNumbers3::default();
         for pair in &self.pairs {
@@ -139,6 +148,48 @@ impl PersistenceDiagram {
             }
         }
         betti
+    }
+
+    /// beta_0 at `radius`, certified constant over
+    /// `[radius / sqrt(ratio), radius * sqrt(ratio)]`, or refused.
+    ///
+    /// beta_0 changes only at an H0 birth or death, and the diagram already
+    /// holds them; for a Rips diagram the deaths are the minimum-spanning-tree
+    /// edge lengths. Returns `Ok(count)` when no H0 endpoint lies in the band,
+    /// so every threshold in it, under `<` or `<=`, gives the same count. This
+    /// is the rule of [`crate::certified_betti::certified_beta0`], applied to
+    /// the diagram instead of the points.
+    ///
+    /// Otherwise returns `Err(height)`: the H0 endpoint nearest `radius`. The
+    /// diagram records no vertex indices, so the refusal names the height,
+    /// not the pair. `ratio` below 1 (or NaN) is treated as 1; a NaN
+    /// endpoint or radius refuses.
+    // ponytail: a diagram built with a finite `max_radius` records no merge
+    // above it, so a band reaching past `max_radius` is checked only against
+    // the merges that were computed. The diagram does not store its
+    // `max_radius`; the presets use `f64::INFINITY`. Upgrade: record it in
+    // `PersistenceDiagram` and refuse any band that crosses it.
+    pub fn betti0_certified_at(&self, radius: f64, ratio: f64) -> Result<u32, f64> {
+        let r = libm::sqrt(if ratio > 1.0 { ratio } else { 1.0 });
+        let (lo, hi) = (radius / r, radius * r);
+        let mut count = 0;
+        let mut nearest: Option<f64> = None;
+        for pair in self.pairs.iter().filter(|pair| pair.dimension == 0) {
+            for h in core::iter::once(pair.birth).chain(pair.death) {
+                if !(h < lo || h > hi)
+                    && nearest.is_none_or(|g| (h - radius).abs() < (g - radius).abs())
+                {
+                    nearest = Some(h);
+                }
+            }
+            if pair.birth < lo && pair.death.is_none_or(|death| death > hi) {
+                count += 1;
+            }
+        }
+        match nearest {
+            Some(h) => Err(h),
+            None => Ok(count),
+        }
     }
 }
 
