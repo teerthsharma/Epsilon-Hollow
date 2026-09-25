@@ -889,7 +889,12 @@ mod tests {
             let text = format!("{:016x}", n.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             fs.store_text(&format!("f{n}"), &text, 0).unwrap();
         }
-        let occupied = fs.stats().cell_distribution.iter().filter(|&&s| s > 0).count();
+        let occupied = fs
+            .stats()
+            .cell_distribution
+            .iter()
+            .filter(|&&s| s > 0)
+            .count();
         assert!(occupied >= 2, "fixture must span cells");
 
         let query = "0123456789abcdef";
@@ -947,7 +952,10 @@ mod tests {
 
         let hits = fs.find(&victim_text);
         let hit = hits.iter().find(|r| r.name == victim);
-        assert!(hit.is_some(), "find lost '{victim}' after the merge: {hits:?}");
+        assert!(
+            hit.is_some(),
+            "find lost '{victim}' after the merge: {hits:?}"
+        );
         let hit = hit.unwrap();
         assert!((hit.similarity - 1.0).abs() < 1e-12);
         assert_ne!(hit.cell, smallest, "the merge re-homed the file");
@@ -962,7 +970,11 @@ mod tests {
         let pre = fs.governor.epsilon();
         let ticks = fs.governor_ticks;
         let r = fs.teleport("x", 0, d).unwrap();
-        assert_eq!(fs.governor.epsilon().to_bits(), pre.to_bits(), "pre ε = {pre}");
+        assert_eq!(
+            fs.governor.epsilon().to_bits(),
+            pre.to_bits(),
+            "pre ε = {pre}"
+        );
         assert_eq!(r.governor_epsilon.to_bits(), pre.to_bits());
         assert_eq!(fs.governor_ticks, ticks, "no tick during /mv");
     }
