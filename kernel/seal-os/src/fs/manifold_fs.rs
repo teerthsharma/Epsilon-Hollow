@@ -543,26 +543,34 @@ impl ManifoldFS {
         self.store(name, data, parent_id)
     }
 
+    /// Rank every file by payload similarity to `query`, best first.
+    ///
+    /// Every file is scored, whichever Voronoi cell holds it: the query's
+    /// cell bounds nothing about similarity, so a scan of that cell alone
+    /// misses files across a cell boundary. A file whose content equals
+    /// `query` has similarity 1, the maximum, and so ranks first (tied only
+    /// with payload collisions). `FindResult::cell` is the file's own cell.
+    ///
+    /// ponytail: O(files) scan per query; an exact spatial index on S² is the
+    /// upgrade if file counts outgrow interactive sizes.
     pub fn find(&mut self, query: &str) -> Vec<FindResult> {
         self.total_lookups += 1;
         let query_payload = encoder::encode_text(query);
-        let (cell, subcell) = self.voronoi.locate(&query_payload);
 
         self.update_prefetch_state(&query_payload);
 
-        let mut results = Vec::new();
-        for &inode_id in self.voronoi.files_in_bucket(cell, subcell) {
-            if let Some(inode) = self.inodes.get(inode_id) {
-                let similarity = payload_similarity_full(&query_payload, &inode.payload);
-                results.push(FindResult {
-                    inode_id,
-                    name: inode.name.clone(),
-                    similarity,
-                    cell,
-                    original_size: inode.metadata.original_size,
-                });
-            }
-        }
+        let mut results: Vec<FindResult> = self
+            .inodes
+            .iter()
+            .filter(|inode| matches!(inode.kind, InodeKind::File))
+            .map(|inode| FindResult {
+                inode_id: inode.id,
+                name: inode.name.clone(),
+                similarity: payload_similarity_full(&query_payload, &inode.payload),
+                cell: inode.voronoi_cell,
+                original_size: inode.metadata.original_size,
+            })
+            .collect();
         results.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
         results
     }
@@ -1623,6 +1631,41 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `find` ranks every file, whichever Voronoi cell holds it, and a query
+    /// equal to a file's content ranks that file at the top (similarity 1).
+    /// A scan of the query's own cell alone fails this as soon as the files
+    /// span more than one cell.
+    fn test_find_ranks_every_file_in_every_cell() -> TestResult {
+        let mut fs = ManifoldFS::new_ramfs();
+        let root = fs.root_id();
+        let mut files = Vec::new();
+        for i in 0..32u64 {
+            // Scattered bytes; a shared prefix would put every file in one cell.
+            let content = format!("{:016x}", i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let id = fs.store_text(&format!("f{}", i), &content, root).unwrap();
+            files.push((id, content));
+        }
+        let mut occupied = [false; VORONOI_CELLS];
+        for (id, _) in &files {
+            occupied[fs.inode(*id).unwrap().voronoi_cell] = true;
+        }
+        test_assert!(
+            occupied.iter().filter(|&&o| o).count() >= 2,
+            "fixture must span more than one cell"
+        );
+        for (id, content) in &files {
+            let hits = fs.find(content);
+            test_assert_eq!(hits.len(), files.len());
+            let Some(own) = hits.iter().find(|r| r.inode_id == *id) else {
+                return TestResult::Fail("find(content) missed the file holding it");
+            };
+            test_assert_eq!(own.cell, fs.inode(*id).unwrap().voronoi_cell);
+            let top = own.similarity >= hits[0].similarity;
+            test_assert!(top, "an exact content match did not rank first");
+        }
+        TestResult::Pass
+    }
+
     fn test_resolve_path_from_relative() -> TestResult {
         let mut fs = ManifoldFS::new();
         let root = fs.root_id();
@@ -1842,6 +1885,10 @@ pub mod tests {
         crate::testing::register_test(
             "filesystem::find_returns_results",
             test_find_returns_results,
+        );
+        crate::testing::register_test(
+            "filesystem::find_ranks_every_file_in_every_cell",
+            test_find_ranks_every_file_in_every_cell,
         );
         crate::testing::register_test(
             "filesystem::resolve_path_from_relative",

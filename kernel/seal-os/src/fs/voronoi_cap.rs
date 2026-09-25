@@ -4,9 +4,13 @@
 //! Voronoi cells over S², each split in two along its axis of greatest
 //! variance once it holds more than 64 files, and merged back below 24.
 //!
+//! `ManifoldFS::find` does not read these buckets: it ranks every file,
+//! because a query's cell bounds nothing about similarity. The buckets feed
+//! the T3/GMC entropy merge, prefetch prediction, and per-cell stats.
+//!
 //! ponytail: a cell splits once; its two subcells are never split again, so
-//! a subcell is unbounded and `find` over a crowded region is a linear scan
-//! of it. Payloads with identical first points (every empty file encodes to
+//! a subcell is unbounded and a scan of a crowded bucket is linear in it.
+//! Payloads with identical first points (every empty file encodes to
 //! the origin) cannot be separated by any coordinate split, so a recursive
 //! k-d split would still need a depth or size floor. Upgrade path: recurse in
 //! `split_cell` with a depth limit.
