@@ -1181,7 +1181,12 @@ pub mod tests {
         // touches page 0 and page u64::MAX in one region spans u64::MAX + 1
         // pages, which is not a u64. Wrapping there reports the largest region
         // measurable as no region at all, and sends the envelope to the floor.
-        let mut everything = swept(MAX_SAMPLES, u64::MAX / MAX_SAMPLES as u64);
+        // The stride divides the range by the 63 gaps between 64 accesses, so
+        // pinning the last access to u64::MAX moves it by under 63 pages and
+        // the sweep stays uniform. Dividing by 64 left a final gap twice the
+        // stride, and single-linkage rightly cut that lone access off as a
+        // second cluster.
+        let mut everything = swept(MAX_SAMPLES, u64::MAX / (MAX_SAMPLES as u64 - 1));
         everything[MAX_SAMPLES - 1].page = u64::MAX;
         let all = summarize(&everything);
         test_assert!(matches!(all, WorkingSet::Clustered { clusters: 1, .. }));
