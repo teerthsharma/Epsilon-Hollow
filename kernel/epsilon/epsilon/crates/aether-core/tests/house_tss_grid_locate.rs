@@ -60,7 +60,10 @@ fn check_random<const K: usize>(seed: u64, queries: usize) -> f64 {
     let mut wrong = 0usize;
     for _ in 0..queries {
         // phi spans [-2pi, 4pi) so the index sees unnormalised longitudes.
-        let q = ((rng.unit() * 2.0 - 1.0).acos(), rng.unit() * 6.0 * PI - 2.0 * PI);
+        let q = (
+            (rng.unit() * 2.0 - 1.0).acos(),
+            rng.unit() * 6.0 * PI - 2.0 * PI,
+        );
         if grid.locate(q) != brute_nearest(&c, q) {
             wrong += 1;
         }
@@ -90,7 +93,11 @@ fn hit_rate_counts_only_certified_answers() {
     let c = [(PI - 0.1, 0.0), (PI - 0.1, PI)];
     let mut grid = SphericalGridHashIndex::<2>::new(c);
     assert_eq!(grid.locate((PI / 2.0, 0.0)), 0);
-    assert_eq!(grid.o1_hit_rate(), 0.0, "an uncertified answer is not a hit");
+    assert_eq!(
+        grid.o1_hit_rate(),
+        0.0,
+        "an uncertified answer is not a hit"
+    );
 
     // A query on top of a centroid is certified from its own cell.
     assert_eq!(grid.locate(c[1]), 1);

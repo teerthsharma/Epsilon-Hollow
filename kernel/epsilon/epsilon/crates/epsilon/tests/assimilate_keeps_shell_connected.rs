@@ -50,18 +50,18 @@ fn out_of_reach_payload_is_refused_and_shell_stays_connected() {
     let near_miss = payload(&[[-1.0, 0.0, 0.0], [-0.9, 0.1, 0.0]]);
     assert_eq!(near_miss.signature_b0, 1);
     match teleport(&mut m, near_miss) {
-        TeleportResult::TopologyRejected(SurgeryError::AmbiguousAssimilation {
-            i,
-            j,
-            height,
-        }) => {
+        TeleportResult::TopologyRejected(SurgeryError::AmbiguousAssimilation { i, j, height }) => {
             // Merged indices: shell [0.9, 0.1, 0] is 1, payload [-0.9, 0.1, 0] is 4.
             assert_eq!((i, j), (1, 4));
             assert!((height - 1.8).abs() < 1e-12, "height = {height}");
         }
         other => panic!("expected AmbiguousAssimilation, got {other:?}"),
     }
-    assert_eq!(m.shell_shape(), before, "refusal must leave the shell untouched");
+    assert_eq!(
+        m.shell_shape(),
+        before,
+        "refusal must leave the shell untouched"
+    );
     assert!(m.void_is_empty());
 
     // Connected on its own (distance 0.1 < 2.0), and 5.0 from the shell, above
@@ -85,7 +85,11 @@ fn out_of_reach_payload_is_refused_and_shell_stays_connected() {
         other => panic!("expected DisconnectedAssimilation, got {other:?}"),
     }
 
-    assert_eq!(m.shell_shape(), before, "refusal must leave the shell untouched");
+    assert_eq!(
+        m.shell_shape(),
+        before,
+        "refusal must leave the shell untouched"
+    );
     assert!(m.void_is_empty());
 
     // The shell is still usable: a payload within 0.141 of it now succeeds.
@@ -119,6 +123,10 @@ fn full_shell_refuses_instead_of_reporting_success() {
             capacity: 256,
         })
     );
-    assert_eq!(m.shell_shape(), before, "refusal must leave the shell untouched");
+    assert_eq!(
+        m.shell_shape(),
+        before,
+        "refusal must leave the shell untouched"
+    );
     assert!(m.void_is_empty());
 }

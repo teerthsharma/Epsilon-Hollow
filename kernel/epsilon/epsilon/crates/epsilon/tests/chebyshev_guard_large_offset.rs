@@ -23,7 +23,10 @@ fn large_offset_samples_keep_their_spread() {
         "boundary = {}",
         guard.safe_boundary()
     );
-    assert!(guard.is_safe(1e8 + 1.0), "a sample inside 2 sigma must be safe");
+    assert!(
+        guard.is_safe(1e8 + 1.0),
+        "a sample inside 2 sigma must be safe"
+    );
 
     // Same statistics as the anchor computed from the same samples.
     let anchor = LivenessAnchor::from_samples(&samples, 2.0);

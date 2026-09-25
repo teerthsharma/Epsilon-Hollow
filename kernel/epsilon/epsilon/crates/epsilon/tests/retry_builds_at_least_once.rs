@@ -29,7 +29,9 @@ fn embeddings<const E: usize>(n: usize) -> Vec<[f64; E]> {
 fn epsilon_above_retry_cap_still_builds() {
     let bridge = EmbeddingBridge::<32, 3>::new(42, 3.0);
     let e = embeddings::<32>(MIN_TOKENS + 10);
-    let direct = bridge.build_graph(&e).expect("build_graph accepts this cloud");
+    let direct = bridge
+        .build_graph(&e)
+        .expect("build_graph accepts this cloud");
     let retried = bridge
         .build_graph_with_retry(&e, 5)
         .expect("retry must build at least once");

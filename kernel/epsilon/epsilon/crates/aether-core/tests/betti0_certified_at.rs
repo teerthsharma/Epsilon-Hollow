@@ -20,7 +20,11 @@ fn float_rounded_merge_height_is_refused() {
         ManifoldPoint::<2>::new([0.134, 0.847]),
     ];
     let r = 0.857_534_255_875_530_6;
-    assert_eq!(pts[0].distance(&pts[1]), r, "the rounded distance this test pins");
+    assert_eq!(
+        pts[0].distance(&pts[1]),
+        r,
+        "the rounded distance this test pins"
+    );
 
     let diagram = persistent_homology(&pts, PersistenceConfig::h0_only()).unwrap();
     assert_eq!(
@@ -87,7 +91,10 @@ fn agrees_with_certified_beta0_on_seeded_clouds() {
 
         for _ in 0..5 {
             let s = 10f64.powf(-5.0 + 7.0 * rng.next());
-            match (certified_beta0(&raw, s, RHO), diagram.betti0_certified_at(s, RHO)) {
+            match (
+                certified_beta0(&raw, s, RHO),
+                diagram.betti0_certified_at(s, RHO),
+            ) {
                 (Beta0::Certified { value, .. }, Ok(v)) => {
                     assert_eq!(v, value, "scale {s}");
                     certified += 1;
@@ -105,5 +112,8 @@ fn agrees_with_certified_beta0_on_seeded_clouds() {
             }
         }
     }
-    assert!(certified > 100 && refused > 100, "{certified} certified, {refused} refused");
+    assert!(
+        certified > 100 && refused > 100,
+        "{certified} certified, {refused} refused"
+    );
 }

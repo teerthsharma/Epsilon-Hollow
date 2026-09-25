@@ -30,7 +30,10 @@ fn successful_teleport_leaves_governor_bit_identical() {
     gov.adapt(0.05, 1.0);
     gov.adapt(0.07, 1.0);
     let before = snapshot(&gov);
-    assert_ne!(before.1, 0, "non-zero error history, so a lost restore shows");
+    assert_ne!(
+        before.1, 0,
+        "non-zero error history, so a lost restore shows"
+    );
 
     let mut m = HollowCubeManifold::<3>::new(1.5);
     m.add_shell_point(EpsilonPoint::new([1.0, 0.0, 0.0]));

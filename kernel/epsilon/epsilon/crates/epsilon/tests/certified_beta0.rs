@@ -90,9 +90,16 @@ fn assert_ambiguous_pair(
                 bridge.project_single(&e[i]).unwrap(),
                 bridge.project_single(&e[j]).unwrap(),
             );
-            assert_eq!(pi.distance(&pj), height, "height is the named pair's distance");
+            assert_eq!(
+                pi.distance(&pj),
+                height,
+                "height is the named pair's distance"
+            );
             let r = BETA0_RATIO.sqrt();
-            assert!(eps / r <= height && height <= eps * r, "height {height} outside the band");
+            assert!(
+                eps / r <= height && height <= eps * r,
+                "height {height} outside the band"
+            );
         }
         other => panic!("expected AmbiguousBeta0, got {other:?}"),
     }
@@ -163,12 +170,19 @@ fn assimilate_refuses_a_merge_with_no_certified_gap() {
     match m.assimilate() {
         Err(SurgeryError::AmbiguousAssimilation { i, j, height }) => {
             // Merged indices: shell 0..3, then payload 3..5.
-            assert!(i < 3 && j == 4, "pair ({i},{j}) is not the shell-payload edge");
+            assert!(
+                i < 3 && j == 4,
+                "pair ({i},{j}) is not the shell-payload edge"
+            );
             assert!((height - 1.05f64.sqrt()).abs() < 1e-12, "height = {height}");
         }
         other => panic!("expected AmbiguousAssimilation, got {other:?}"),
     }
-    assert_eq!(m.shell_shape(), before, "refusal must leave the shell untouched");
+    assert_eq!(
+        m.shell_shape(),
+        before,
+        "refusal must leave the shell untouched"
+    );
     assert!(m.void_is_empty());
 }
 
