@@ -10,7 +10,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::mem::size_of;
 
-use super::encoder::{ManifoldPayload, SpherePoint};
+use super::encoder::{ManifoldPayload, SpherePoint, BETTI0_UNCERTIFIED};
 use super::manifold_fs::{Inode, InodeKind, InodeMetadata};
 use crate::drivers::block::{read_block, write_block, BlockError};
 use core::convert::TryInto;
@@ -829,7 +829,7 @@ impl BlockStore {
                                 bytes_to_payload(buf).unwrap_or_else(|| ManifoldPayload {
                                     points: vec![SpherePoint::zero()],
                                     point_count: 1,
-                                    betti_0: 1,
+                                    betti_0: BETTI0_UNCERTIFIED,
                                     original_size: entry.original_size,
                                     content_hash: entry.content_hash,
                                 })
@@ -837,7 +837,7 @@ impl BlockStore {
                             Err(_) => ManifoldPayload {
                                 points: vec![SpherePoint::zero()],
                                 point_count: 1,
-                                betti_0: 1,
+                                betti_0: BETTI0_UNCERTIFIED,
                                 original_size: entry.original_size,
                                 content_hash: entry.content_hash,
                             },
@@ -846,7 +846,7 @@ impl BlockStore {
                         ManifoldPayload {
                             points: vec![SpherePoint::zero()],
                             point_count: 1,
-                            betti_0: 1,
+                            betti_0: BETTI0_UNCERTIFIED,
                             original_size: entry.original_size,
                             content_hash: entry.content_hash,
                         }
@@ -1311,7 +1311,7 @@ impl BlockStore {
                     .unwrap_or_else(|| ManifoldPayload {
                         points: vec![SpherePoint::zero()],
                         point_count: 1,
-                        betti_0: 1,
+                        betti_0: BETTI0_UNCERTIFIED,
                         original_size: record.original_size,
                         content_hash: record.content_hash,
                     }),
@@ -1354,6 +1354,8 @@ fn payload_bytes(payload: &ManifoldPayload) -> usize {
 fn payload_to_bytes(payload: &ManifoldPayload) -> Vec<u8> {
     let mut buf = Vec::with_capacity(payload_bytes(payload));
     buf.extend_from_slice(&(payload.point_count as u32).to_le_bytes());
+    // betti_0 is a certified count or BETTI0_UNCERTIFIED, which is u32::MAX
+    // and survives this cast unchanged.
     buf.extend_from_slice(&(payload.betti_0 as u32).to_le_bytes());
     buf.extend_from_slice(&payload.original_size.to_le_bytes());
     buf.extend_from_slice(&payload.content_hash.to_le_bytes());
@@ -1370,6 +1372,7 @@ fn bytes_to_payload(buf: &[u8]) -> Option<ManifoldPayload> {
         return None;
     }
     let point_count = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    // u32::MAX here reads back as BETTI0_UNCERTIFIED: no certified count.
     let betti_0 = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
     let original_size = u64::from_le_bytes(buf[8..16].try_into().ok()?);
     let content_hash = u64::from_le_bytes(buf[16..24].try_into().ok()?);

@@ -727,7 +727,7 @@ impl ManifoldFS {
                 coords: self.access_state,
             }],
             point_count: 1,
-            betti_0: 1,
+            betti_0: encoder::BETTI0_UNCERTIFIED,
             original_size: 0,
             content_hash: 0,
         });
