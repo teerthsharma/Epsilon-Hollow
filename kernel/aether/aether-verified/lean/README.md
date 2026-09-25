@@ -19,7 +19,7 @@ first build downloads `mathlib4 v4.7.0`, which takes ~20–30 minutes.
 | Lean module | Rust file | Theorem |
 | --- | --- | --- |
 | `AetherVerified/Pruning.lean` | `aether_pruning.rs` | Cauchy–Schwarz block pruning (squared form) |
-| `AetherVerified/Governor.lean` | `aether_governor.rs` | PD Lyapunov stability |
+| `AetherVerified/Governor.lean` | `aether_governor.rs` | Scalar Lyapunov descent `V(ρe) ≤ V(e)`; no theorem about the PD step `governor_step`, which can raise `\|e\|` |
 | `AetherVerified/Chebyshev.lean` | `aether_chebyshev.rs` | One-sided Chebyshev GC guard |
 | `AetherVerified/Betti.lean` | `aether_betti.rs` | Window-of-4 oscillation count ≤ number of window starts (not a Betti number) |
 | `EpsilonTheorems.lean` | umbrella for 10 theorems | Round-2 statements + proofs |
@@ -34,9 +34,9 @@ A `grep -rn "sorry"` over this directory should return zero matches
 
 | Theorem | Notes |
 | --- | --- |
-| `Governor.lyapunov_descent` | Pure algebra. |
-| `Governor.geometric_bound` | `pow_le_one` + `nlinarith`. |
-| `Governor.gain_margin_yields_contraction` | `linarith` on the Rust gain-margin predicate. |
+| `Governor.lyapunov_descent` | Pure algebra. `V(ρ·e) ≤ V(e)` for `\|ρ\| ≤ 1`; scalar maps only. |
+| `Governor.geometric_bound` | `pow_le_one` + `nlinarith`. States `\|ρ\|^t·\|e₀\| ≤ \|e₀\|`, not a bound on any iterate. |
+| `Governor.gain_margin_yields_contraction` | `linarith` on the Rust gain-margin predicate, which fixes `α = 0.01, β = 0.05`. Shows `1 − (0.01 + 0.05/dt) ∈ (0, 1)`; not connected to `governor_step`. |
 | `Chebyshev.markov_count_bound` | Finite Markov via `Finset.sum_le_sum`. |
 | `Chebyshev.chebyshev_one_sided_sq` | Direct corollary of Markov. |
 | `Betti.oscillationCount_le_windows` | `oscillationCount data tol ≤ data.length - 3`, by induction over `List.range` with `omega`. Attained by period-3 input. Replaces `betti_error_bound` (`≤ β₁ + n`), which held for every `β₁` and backed a Rust gate that could not fail. |

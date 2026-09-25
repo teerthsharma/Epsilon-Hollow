@@ -3,20 +3,21 @@
 
 //! aether_governor.rs
 //!
-//! Provenance: Lean 4 → C → Rust
-//! Source: HeytingLean.Bridge.Sharma.AetherGovernor
+//! Provenance: Lean 4 (`AetherVerified.Governor`, `lean/AetherVerified/Governor.lean`)
 //!
-//! # PD Governor with Lyapunov Stability
+//! # PD governor
 //!
 //! A proportional-derivative controller that adapts the sparsity threshold ε
-//! at runtime. The Lean 4 proof guarantees Lyapunov descent:
+//! at runtime.
 //!
-//! ```text
-//! e_{t+1} = (e_t · (ε − γr)) / (ε + γe_t)  ⟹  |e_{t+1}| ≤ |e_t|
-//! ```
-//!
-//! This ensures the governor converges to the target sparsity ratio
-//! without oscillation, critical for HFT latency guarantees.
+//! No theorem shows that [`governor_step`] decreases `|e|`, and it does not
+//! always: `tests/house_governor_step_descent.rs` has a step on gains with
+//! `α + β/dt = 0.06` where `|e|` rises from 0.414286 to 0.414650. What Lean
+//! proves is scalar: `Governor.lyapunov_descent` gives `V(ρ·e) ≤ V(e)` for
+//! `V(e) = e²` and `|ρ| ≤ 1`, and `Governor.geometric_bound` iterates it. The PD
+//! step is not multiplication of `e` by a fixed `ρ`, because its derivative
+//! term reads `e_prev`. [`lyapunov_descent_holds`] checks descent for a
+//! computed step at runtime instead.
 
 /// Clamp a value to [lo, hi].
 #[inline]
@@ -37,7 +38,7 @@ pub fn governor_error(r_target: f64, delta: f64, epsilon: f64) -> f64 {
 
 /// (Lean: govStep)
 ///
-/// One PD governor step with Lyapunov-guaranteed convergence.
+/// One PD governor step.
 ///
 /// Update rule:
 ///   `ε_{t+1} = clamp(ε_t + α·e + β·ė, ε_min, ε_max)`
@@ -48,8 +49,8 @@ pub fn governor_error(r_target: f64, delta: f64, epsilon: f64) -> f64 {
 ///   - `α` = proportional gain
 ///   - `β` = derivative gain
 ///
-/// The Lean 4 proof of `govStep_lyapunov` guarantees V(e_{t+1}) ≤ V(e_t)
-/// for the Lyapunov function V(e) = e².
+/// The step does not guarantee `|e_{t+1}| ≤ |e_t|` (see the module docs); check
+/// a computed step with [`lyapunov_descent_holds`].
 #[allow(clippy::too_many_arguments)] // PID controller naturally takes all gains/limits.
 pub fn governor_step(
     epsilon: f64,
@@ -68,12 +69,30 @@ pub fn governor_step(
     clamp(epsilon + adjustment, eps_min, eps_max)
 }
 
-/// (Lean: hft_gain_margin_refined)
+/// (Lean: `Governor.gainMarginRefined`)
 ///
-/// Check if the gain margin is sufficient for HFT operation.
-/// Requires dt ≥ 1.0 and total gain < 1.0 for stability.
+/// `dt ≥ 1` and `0.01 + 0.05/dt < 1`: the gain margin of the default gains
+/// α = 0.01, β = 0.05, not of the gains a caller passes to [`governor_step`].
+///
+/// This is a gain condition, not a descent certificate, and would stay one with
+/// the real gains: the step in `tests/house_governor_step_descent.rs` runs on
+/// exactly these gains and still raises `|e|`.
 pub fn gain_margin_refined(dt: f64) -> bool {
+    // ponytail: hard-codes alpha = 0.01, beta = 0.05. Upgrade to
+    // `gain_margin_refined(alpha, beta, dt)` = `dt >= 1.0 &&
+    // aether_agcr::gain_margin_stable(alpha, beta, dt)` together with its one
+    // caller, aether-link/examples/world_model_demo.rs, which is outside this
+    // change's scope.
     dt >= 1.0 && (0.01 + 0.05 / dt) < 1.0
+}
+
+/// Whether moving the threshold from `epsilon` to `epsilon_next` under the
+/// same measurement `delta` does not increase `|e|`, i.e. `V(e') ≤ V(e)` for
+/// `V(e) = e²`. A runtime check of one computed step, not a proof about
+/// [`governor_step`].
+pub fn lyapunov_descent_holds(r_target: f64, delta: f64, epsilon: f64, epsilon_next: f64) -> bool {
+    governor_error(r_target, delta, epsilon_next).abs()
+        <= governor_error(r_target, delta, epsilon).abs()
 }
 
 #[cfg(test)]
@@ -89,7 +108,8 @@ mod tests {
 
     #[test]
     fn test_governor_step_convergence() {
-        // Run several steps and verify error decreases (Lyapunov descent)
+        // Run several steps and check the error stays bounded. Per-step descent
+        // is not asserted because the step does not guarantee it (module docs).
         let mut epsilon = 0.5;
         let mut e_prev = 0.0;
         let r_target = 0.3;

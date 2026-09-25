@@ -358,6 +358,10 @@ pub struct GovernorSimulation {
     pub converged_99: bool,
     /// Final epsilon after simulation.
     pub final_epsilon: f64,
+    /// First step `t >= 1` at which `|e_t| >= |e_{t-1}|` while `|e_{t-1}|` was
+    /// above the 1e-12 noise floor: the step where `|e|` grew or stalled.
+    /// `None` when `|e|` fell at every such step.
+    pub first_non_contracting_step: Option<usize>,
 }
 
 /// Full governor simulation trace for arbitrary measurement slices.
@@ -388,7 +392,12 @@ pub struct GovernorTheoremVerification {
     pub simulation: GovernorSimulation,
     /// Whether empirical and theoretical rates agree within a conservative bound.
     pub rate_agreement: bool,
-    /// True when stability, simulation improvement, and rate agreement all hold.
+    /// True only when the gain margin and closed-form rate are stable, the
+    /// empirical rate is within 0.05 of the closed-form rate, and `|e|` fell
+    /// at every simulated step (`simulation.first_non_contracting_step` is
+    /// `None`) and ended strictly below where it started. Otherwise the report
+    /// refuses, and `simulation.first_non_contracting_step` names the first
+    /// step at which `|e|` grew or stalled, if there was one.
     pub theorem_holds: bool,
 }
 
@@ -480,6 +489,7 @@ impl GovernorConvergenceAnalyzer {
                 theoretical_rate: contraction_rate(self.alpha, self.beta, self.dt),
                 converged_99: false,
                 final_epsilon: initial_epsilon,
+                first_non_contracting_step: None,
             };
         }
 
@@ -487,6 +497,7 @@ impl GovernorConvergenceAnalyzer {
         let mut e_prev = 0.0;
         let mut initial_error = 0.0;
         let mut final_error = 0.0;
+        let mut first_non_contracting_step = None;
 
         let mut t = 0;
         while t < n_steps {
@@ -494,6 +505,11 @@ impl GovernorConvergenceAnalyzer {
             let abs_e = libm::fabs(e);
             if t == 0 {
                 initial_error = abs_e;
+            } else if first_non_contracting_step.is_none()
+                && final_error > 1e-12
+                && abs_e >= final_error
+            {
+                first_non_contracting_step = Some(t);
             }
             final_error = abs_e;
 
@@ -517,6 +533,7 @@ impl GovernorConvergenceAnalyzer {
             theoretical_rate: contraction_rate(self.alpha, self.beta, self.dt),
             converged_99: final_error < initial_error * 0.01,
             final_epsilon: epsilon,
+            first_non_contracting_step,
         }
     }
 
@@ -638,7 +655,12 @@ impl GovernorConvergenceAnalyzer {
         ]
     }
 
-    /// Verify the aggregate governor theorem against closed form and simulation.
+    /// Certify or refuse the aggregate governor theorem for one constant-
+    /// measurement run. See [`GovernorTheoremVerification::theorem_holds`].
+    ///
+    /// A run whose error never moves is refused: with epsilon clamped to a
+    /// single value its endpoint rate is 1.0, which the 0.05 rate window
+    /// around a rho near 0.99 would otherwise admit.
     pub fn verify_theorem(
         &self,
         n_steps: usize,
@@ -651,7 +673,8 @@ impl GovernorConvergenceAnalyzer {
         let rate_agreement = simulation.empirical_rate.is_finite()
             && simulation.theoretical_rate.is_finite()
             && rate_delta <= 0.05;
-        let improved = simulation.final_error <= simulation.initial_error;
+        let improved = simulation.first_non_contracting_step.is_none()
+            && simulation.final_error < simulation.initial_error;
         let stable_rate = theory.contraction_rate.is_finite()
             && theory.contraction_rate > 0.0
             && theory.contraction_rate < 1.0;
@@ -793,6 +816,40 @@ mod tests {
         assert!(report.theory.gain_margin_stable);
         assert!(report.simulation.final_error <= report.simulation.initial_error);
         assert!(report.theorem_holds);
+    }
+
+    /// eps_min == eps_max pins epsilon at 0.1, so e = 0.2 / 0.1 - 0.3 = 1.7 at
+    /// every step. The endpoint rate is (1.7 / 1.7)^(1/500) = 1.0, inside the
+    /// 0.05 window around rho = 0.990476, so the rate check alone admits a run
+    /// in which the error never moved.
+    #[test]
+    fn verify_theorem_refuses_a_clamp_pinned_error_that_never_shrinks() {
+        let analyzer = GovernorConvergenceAnalyzer::new(0.01, 0.05, 1.0, 0.1, 0.1, 0.3);
+        let report = analyzer.verify_theorem(500, 0.5, 0.2);
+        assert!((report.simulation.initial_error - 1.7).abs() < 1e-12);
+        assert_eq!(
+            report.simulation.final_error,
+            report.simulation.initial_error
+        );
+        assert!(report.rate_agreement);
+        assert_eq!(report.simulation.first_non_contracting_step, Some(1));
+        assert!(!report.theorem_holds);
+    }
+
+    /// The simulation starts from e_prev = 0, so step 0 applies a derivative
+    /// kick of beta * e_0 and step 1 reverses part of it. With alpha = 0.001
+    /// the reversal outweighs the proportional term and |e| rises from
+    /// 0.0959612 at step 1 to 0.0960443 at step 2. The run still ends lower
+    /// (0.0832 against 0.1) and its rate sits inside the window, so only the
+    /// per-step check refuses it.
+    #[test]
+    fn verify_theorem_refuses_a_run_whose_error_grows_mid_run() {
+        let analyzer = GovernorConvergenceAnalyzer::new(0.001, 0.05, 1.0, 0.05, 1.0, 0.3);
+        let report = analyzer.verify_theorem(200, 0.5, 0.2);
+        assert!(report.simulation.final_error < report.simulation.initial_error);
+        assert!(report.rate_agreement);
+        assert_eq!(report.simulation.first_non_contracting_step, Some(2));
+        assert!(!report.theorem_holds);
     }
 
     #[test]
