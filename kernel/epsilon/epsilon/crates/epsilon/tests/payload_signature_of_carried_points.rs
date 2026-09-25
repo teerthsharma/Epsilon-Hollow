@@ -18,10 +18,14 @@ fn signature_is_computed_over_carried_points_only() {
         g.add_point(EpsilonPoint::new([i as f64 * 0.01, 0.0, 0.0]));
     }
     for i in 0..32 {
-        g.add_point(EpsilonPoint::new([1.6 + i as f64 * 0.01, 0.0, 0.0]));
+        g.add_point(EpsilonPoint::new([4.0 + i as f64 * 0.01, 0.0, 0.0]));
     }
-    // Index 64: the only link between the clusters, and not carried.
-    g.add_point(EpsilonPoint::new([0.8, 0.0, 0.0]));
+    // Indices 64..68: the only link between the clusters, and not carried.
+    // The carried clusters sit 3.69 apart, above the certificate band
+    // [1/sqrt(10), sqrt(10)] at epsilon 1.0, so their beta_0 = 2 is certified.
+    for x in [0.8, 1.6, 2.4, 3.2] {
+        g.add_point(EpsilonPoint::new([x, 0.0, 0.0]));
+    }
     assert_eq!(g.compute_betti_0(), 1, "the full graph is connected");
 
     let payload = ManifoldPayload::from_graph(&g, 1.0);

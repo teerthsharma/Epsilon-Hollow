@@ -196,3 +196,39 @@ fn assimilate_commits_a_certified_merge() {
     assert_eq!(m.assimilate(), Ok(2));
     assert_eq!(m.shell_shape().0, 1);
 }
+
+#[test]
+fn inject_refuses_a_payload_whose_beta0_sits_in_the_band() {
+    let mut m = shell();
+    // The payload's one spanning-tree edge is 1.0, inside the shell's band
+    // [1.5 / sqrt(10), 1.5 * sqrt(10)] = [0.474, 4.74]. Its uncertified
+    // signature (union-find at the source epsilon 2.0) says beta_0 = 1.
+    let p = payload(&[[0.0, 0.5, 0.5], [1.0, 0.5, 0.5]]);
+    assert_eq!(p.signature_b0, 1);
+    assert_eq!(
+        m.inject_into_void(p),
+        Err(SurgeryError::AmbiguousAssimilation {
+            i: 0,
+            j: 1,
+            height: 1.0
+        })
+    );
+    assert!(
+        m.void_is_empty(),
+        "a refused payload must not enter the void"
+    );
+}
+
+#[test]
+fn inject_refuses_a_certified_disconnected_payload() {
+    let mut m = shell();
+    // Spanning-tree edge 10.0, above the band: certified beta_0 = 2.
+    let p = payload(&[[0.0, 0.5, 0.5], [0.0, 0.5, 10.5]]);
+    assert_eq!(
+        m.inject_into_void(p),
+        Err(SurgeryError::TopologyMismatch {
+            expected_b0: 1,
+            actual_b0: 2
+        })
+    );
+}

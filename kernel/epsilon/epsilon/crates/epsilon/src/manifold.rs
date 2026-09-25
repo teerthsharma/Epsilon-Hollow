@@ -560,11 +560,27 @@ impl<const D: usize> HollowCubeManifold<D> {
             return Err(SurgeryError::EmptyPayload);
         }
 
-        if payload.signature_b0 != 1 {
-            return Err(SurgeryError::TopologyMismatch {
-                expected_b0: 1,
-                actual_b0: payload.signature_b0,
-            });
+        // Gate on the certified beta_0 of the points the payload carries, at
+        // the shell's epsilon, where assimilation will merge them. The stored
+        // `signature_b0` is a union-find count at one threshold and says
+        // nothing about how close a spanning-tree edge sits to it. A refusal
+        // reuses `AmbiguousAssimilation`; its `i`, `j` index the payload's
+        // points.
+        let mut carried = SparseGraph::new(self.shell.epsilon);
+        for p in &payload.points[..payload.point_count] {
+            carried.add_point(*p);
+        }
+        match carried.certified_betti_0() {
+            Beta0::Certified { value: 1, .. } => {}
+            Beta0::Certified { value, .. } => {
+                return Err(SurgeryError::TopologyMismatch {
+                    expected_b0: 1,
+                    actual_b0: value,
+                })
+            }
+            Beta0::Refused { i, j, height } => {
+                return Err(SurgeryError::AmbiguousAssimilation { i, j, height })
+            }
         }
 
         self.void_payload = Some(payload);
@@ -708,8 +724,9 @@ mod tests {
         hollow.add_shell_point(EpsilonPoint::new([0.5, 0.5, 0.0]));
 
         let mut src = SparseGraph::<3>::new(1.0);
+        // 0.1 apart: well below the certificate band at epsilon 1.0.
         src.add_point(EpsilonPoint::new([1.0, 1.0, 1.0]));
-        src.add_point(EpsilonPoint::new([1.5, 1.0, 1.0]));
+        src.add_point(EpsilonPoint::new([1.1, 1.0, 1.0]));
 
         let payload = ManifoldPayload::from_graph(&src, 5.0);
         assert_eq!(payload.signature_b0, 1);
