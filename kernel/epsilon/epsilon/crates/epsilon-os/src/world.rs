@@ -593,11 +593,13 @@ pub fn verify_theorems() -> Vec<(&'static str, bool)> {
         results.push(("T3_GMC", ok1 && ok2));
     }
 
-    // T4: AGCR — governor convergence
+    // T4: AGCR — governor convergence, at the (α, β, dt) ManifoldFS runs.
+    // At dt = 0.01 the margin α + β/dt is 5.01, so this is not certified.
     {
-        let rho = aether_agcr::contraction_rate(0.01, 0.05, 1.0);
+        use crate::manifold_fs::{GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT};
+        let rho = aether_agcr::contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
         let hl = aether_agcr::half_life(rho);
-        let stable = aether_agcr::gain_margin_stable(0.01, 0.05, 1.0);
+        let stable = crate::manifold_fs::governor_certified();
         results.push(("T4_AGCR", rho < 1.0 && hl > 0.0 && hl.is_finite() && stable));
     }
 
@@ -1099,15 +1101,34 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_theorems_all_pass() {
+    fn test_verify_theorems_pass_except_uncertified_runtime_t4() {
+        // Every theorem passes except T4, which passes exactly when the
+        // runtime governor constants satisfy the AGCR gain margin.
         let results = verify_theorems();
         let failed: Vec<&str> = results
             .iter()
             .filter(|(_, ok)| !*ok)
             .map(|(name, _)| *name)
             .collect();
-        assert!(failed.is_empty(), "failed theorems: {:?}", failed);
+        let expected: Vec<&str> = if crate::manifold_fs::governor_certified() {
+            vec![]
+        } else {
+            vec!["T4_AGCR"]
+        };
+        assert_eq!(failed, expected, "failed theorems: {:?}", failed);
         assert_eq!(results.len(), 10);
+    }
+
+    #[test]
+    fn test_t4_is_not_certified_at_the_runtime_governor_dt() {
+        // ManifoldFS ticks its governor with α = 0.01, β = 0.05, dt = 0.01:
+        // gain margin α + β/dt = 5.01 ≥ 1, so AGCR does not certify it.
+        let t4 = verify_theorems()
+            .into_iter()
+            .find(|(n, _)| *n == "T4_AGCR")
+            .unwrap()
+            .1;
+        assert!(!t4, "T4 certified the runtime governor at dt=0.01");
     }
 
     // ── T1/TSS: cells and retrieval ──────────────────────────────

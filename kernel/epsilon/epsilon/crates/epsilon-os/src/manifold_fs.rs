@@ -27,6 +27,17 @@ use crate::encoder::{self, ManifoldPayload};
 const VORONOI_CELLS: usize = 8;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
 
+/// T4 governor gains and tick period that ManifoldFS runs with. The boot
+/// AGCR check (`world::verify_theorems`) certifies exactly these values.
+pub const GOVERNOR_ALPHA: f64 = 0.01;
+pub const GOVERNOR_BETA: f64 = 0.05;
+pub const GOVERNOR_DT: f64 = 0.01;
+
+/// AGCR gain-margin condition `α + β/dt < 1` at the runtime constants.
+pub fn governor_certified() -> bool {
+    aether_verified::aether_agcr::gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT)
+}
+
 // ─── Inode ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -117,7 +128,7 @@ impl ManifoldFS {
             cluster_sizes: vec![0; VORONOI_CELLS],
             entropy_merges: 0,
             current_entropy: 0.0,
-            governor: GeometricGovernor::new(),
+            governor: GeometricGovernor::with_gains(GOVERNOR_ALPHA, GOVERNOR_BETA),
             governor_ticks: 0,
             max_depth: 0,
             hyperbolic_ratio: f64::INFINITY,
@@ -564,7 +575,7 @@ impl ManifoldFS {
     // ─── T4: Governor ──────────────────────────────────────────────���────
 
     fn governor_tick(&mut self, deviation: f64) {
-        self.governor.adapt(deviation, 0.01);
+        self.governor.adapt(deviation, GOVERNOR_DT);
         self.governor_ticks += 1;
     }
 
@@ -690,15 +701,29 @@ impl ManifoldFS {
                     self.current_entropy, self.entropy_merges, ENTROPY_MERGE_THRESHOLD
                 ),
             ),
-            (
-                "T4/AGCR",
-                "ACTIVE",
-                format!(
-                    "Governor: ε={:.4}, ticks={}",
-                    self.governor.epsilon(),
-                    self.governor_ticks
-                ),
-            ),
+            if governor_certified() {
+                (
+                    "T4/AGCR",
+                    "ACTIVE",
+                    format!(
+                        "Governor: ε={:.4}, ticks={}",
+                        self.governor.epsilon(),
+                        self.governor_ticks
+                    ),
+                )
+            } else {
+                (
+                    "T4/AGCR",
+                    "NOT CERTIFIED",
+                    format!(
+                        "Governor: ε={:.4}, ticks={}; gain margin α+β/dt = {:.3} ≥ 1 at dt={}",
+                        self.governor.epsilon(),
+                        self.governor_ticks,
+                        GOVERNOR_ALPHA + GOVERNOR_BETA / GOVERNOR_DT,
+                        GOVERNOR_DT
+                    ),
+                )
+            },
             (
                 "T5/HCS",
                 "ACTIVE",
@@ -944,12 +969,25 @@ mod tests {
     }
 
     #[test]
-    fn test_theorem_status_all_active() {
+    fn test_t4_status_names_dt_when_runtime_gains_are_uncertified() {
+        let fs = ManifoldFS::new();
+        let (_, state, detail) = fs.theorem_status()[3].clone();
+        assert_eq!(state, "NOT CERTIFIED", "detail: {detail}");
+        assert!(detail.contains("dt=0.01"), "detail: {detail}");
+    }
+
+    #[test]
+    fn test_theorem_status_active_unless_t4_uncertified() {
         let fs = ManifoldFS::new();
         let status = fs.theorem_status();
         assert_eq!(status.len(), 5);
-        for (_, state, _) in &status {
-            assert_eq!(*state, "ACTIVE");
+        for (name, state, _) in &status {
+            let want = if *name == "T4/AGCR" && !governor_certified() {
+                "NOT CERTIFIED"
+            } else {
+                "ACTIVE"
+            };
+            assert_eq!(*state, want, "{name}");
         }
     }
 }
