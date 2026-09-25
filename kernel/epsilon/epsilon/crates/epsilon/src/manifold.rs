@@ -45,6 +45,15 @@
 
 use libm::sqrt;
 
+use aether_core::certified_betti::certified_beta0;
+pub use aether_core::certified_betti::Beta0;
+
+/// Band ratio for every certified beta_0 in this crate: a count is accepted
+/// only when no minimum-spanning-tree edge lies within a factor
+/// `sqrt(BETA0_RATIO)` (about 3.16) of epsilon. Planimeter's 10x gap rule, the
+/// same ratio the seal-os encoder uses.
+pub const BETA0_RATIO: f64 = 10.0;
+
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 // Constants
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -157,6 +166,11 @@ impl<const D: usize> SparseGraph<D> {
     /// Exact for every `point_count` up to `MAX_POINTS`. Union-find needs no
     /// explicit stack, so no depth bound can silently drop a neighbour and
     /// over-count components.
+    ///
+    /// This is the exact count **of this graph** at the strict threshold
+    /// `distance < epsilon`, and it is uncertified as a statement about the
+    /// points: at epsilon 1.0, a pair at `0.9999999999999999` gives 1 and a
+    /// pair at `1.0` gives 2. Gate on [`Self::certified_betti_0`].
     pub fn compute_betti_0(&self) -> u32 {
         let n = self.point_count;
         if n == 0 {
@@ -188,6 +202,18 @@ impl<const D: usize> SparseGraph<D> {
         }
 
         (0..n).filter(|&i| find(&mut parent, i) == i).count() as u32
+    }
+
+    /// beta_0 at this graph's epsilon, certified constant over
+    /// `[epsilon / sqrt(BETA0_RATIO), epsilon * sqrt(BETA0_RATIO)]`, or refused
+    /// naming the spanning-tree edge nearest epsilon. Indices are into
+    /// `points`. See `aether_core::certified_betti`.
+    pub fn certified_betti_0(&self) -> Beta0 {
+        let coords: Vec<[f64; D]> = self.points[..self.point_count]
+            .iter()
+            .map(|p| p.coords)
+            .collect();
+        certified_beta0(&coords, self.epsilon, BETA0_RATIO)
     }
 
     /// The first Betti number **of this graph**: `E - V + beta_0`.

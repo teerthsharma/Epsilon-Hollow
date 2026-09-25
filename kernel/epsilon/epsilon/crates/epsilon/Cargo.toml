@@ -16,12 +16,11 @@ via topological surgery on hollow SÂ² manifolds with Betti number Î²â‚‚
 libm = { workspace = true }
 serde-big-array = { version = "0.5", optional = true }
 serde = { workspace = true, optional = true }
-
-# aether-core supplies the exact boundary-matrix reduction this crate's
-# beta_2 claim is checked against. Test-only: the published artifact
-# gains no runtime dependency, and aether-core does not depend on
+# certified_betti::certified_beta0 decides every beta_0 this crate gates on.
+# It was test-only (for the boundary-matrix check of the beta_2 claim) to keep
+# the artifact free of runtime dependencies; a second copy of the certificate
+# here would drift from the one seal-os uses. aether-core does not depend on
 # epsilon, so there is no cycle.
-[dev-dependencies]
 aether-core = { path = "../aether-core" }
 
 [features]
