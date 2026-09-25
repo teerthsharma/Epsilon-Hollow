@@ -21,7 +21,7 @@ first build downloads `mathlib4 v4.7.0`, which takes ~20–30 minutes.
 | `AetherVerified/Pruning.lean` | `aether_pruning.rs` | Cauchy–Schwarz block pruning (squared form) |
 | `AetherVerified/Governor.lean` | `aether_governor.rs` | PD Lyapunov stability |
 | `AetherVerified/Chebyshev.lean` | `aether_chebyshev.rs` | One-sided Chebyshev GC guard |
-| `AetherVerified/Betti.lean` | `aether_betti.rs` | Heuristic-vs-exact β₁ overlap bound |
+| `AetherVerified/Betti.lean` | `aether_betti.rs` | Window-of-4 oscillation count ≤ number of window starts (not a Betti number) |
 | `EpsilonTheorems.lean` | umbrella for 10 theorems | Round-2 statements + proofs |
 
 ## Honest mechanization status
@@ -39,8 +39,7 @@ A `grep -rn "sorry"` over this directory should return zero matches
 | `Governor.gain_margin_yields_contraction` | `linarith` on the Rust gain-margin predicate. |
 | `Chebyshev.markov_count_bound` | Finite Markov via `Finset.sum_le_sum`. |
 | `Chebyshev.chebyshev_one_sided_sq` | Direct corollary of Markov. |
-| `Betti.heuristic_le_window_overlap` | `List.length_filter_le`. |
-| `Betti.betti_error_bound` | `omega` over the overlap bound. |
+| `Betti.oscillationCount_le_windows` | `oscillationCount data tol ≤ data.length - 3`, by induction over `List.range` with `omega`. Attained by period-3 input. Replaces `betti_error_bound` (`≤ β₁ + n`), which held for every `β₁` and backed a Rust gate that could not fail. |
 | `Pruning.cauchy_schwarz_sq` | **Real proof** by induction on lists, using the Lagrange sum-of-squares identity. No `sorry`. The statement is on `List ℝ` rather than `EuclideanSpace ℝ (Fin n)` to avoid pinning a fragile mathlib path; the content is identical. |
 | `EpsilonHollow.scm_contraction` | `linarith`. |
 | `EpsilonHollow.scm_convergence_rate` | `pow_le_one` + `nlinarith`. |

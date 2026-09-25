@@ -3,28 +3,30 @@
   --------------------
   Provenance: backs `kernel/aether/aether-verified/src/aether_betti.rs`.
 
-  The Rust `betti_error_bound_check` asserts:
-    β̃₁(data, tol)  ≤  β₁_exact  +  (n − 3)
-  where `β̃₁` is a single-pass loop-detection count over windows of width
-  4 in a `data : Vec<u8>` of length `n`, and `n − 3` is the number of
-  valid window starts.
+  The Rust `oscillation_count` slides a width-4 window over a byte stream
+  of length `n` and counts windows that return near their start while a
+  middle value moves away. The Rust side claims one fact about it:
+    oscillationCount data tol ≤ n − 3      (natural subtraction)
+  because a window at index `i` exists only when `i + 3 < n`.
 
-  The mathematical content is purely combinatorial: the heuristic count
-  is bounded by the number of valid window-start indices. We prove
-  exactly this — and it is a real proof, no `sorry`. The link to
-  `β₁_exact` is then trivial: any non-negative quantity added on the
-  right preserves the inequality.
+  The count is not a Betti number. It was previously called
+  `betti1Heuristic` and paired with `betti_error_bound`,
+  `count ≤ β₁ + n`, which holds for every `β₁ : Nat` including 0 and so
+  constrains nothing about `β₁`. Its Rust mirror,
+  `betti_error_bound_check`, could not return `false` on any input and
+  was removed. The bound below is attained (a period-3 stream of values
+  pairwise further apart than `tol` gives exactly `n − 3`), so it is the
+  tightest bound that depends only on `n`.
 -/
 
 import Mathlib.Data.List.Basic
 
 namespace AetherVerified.Betti
 
-/-- Window-of-4 loop detector mirroring `aether_betti::detected_loop_at`.
-    A loop is detected at index `i` when `i + 3 < data.length` and the
-    closure-of-window predicate holds. The exact closure predicate is
-    irrelevant for the counting bound below. -/
-def detectedLoopAt (data : List UInt8) (tol i : Nat) : Bool :=
+/-- Window-of-4 oscillation predicate mirroring `aether_betti::oscillation_at`.
+    Holds at index `i` only when `i + 3 < data.length` and the window returns
+    within `tol` of its start while a middle value moves further than `tol`. -/
+def oscillationAt (data : List UInt8) (tol i : Nat) : Bool :=
   if h : i + 3 < data.length then
     let a := data.get ⟨i, by omega⟩
     let b := data.get ⟨i + 1, by omega⟩
@@ -38,29 +40,38 @@ def detectedLoopAt (data : List UInt8) (tol i : Nat) : Bool :=
   else
     false
 
-/-- Heuristic Betti-1 count: scan all positions in `data` and count
-    detected loops. Mirrors `aether_betti::betti1_heuristic`. -/
-def betti1Heuristic (data : List UInt8) (tol : Nat) : Nat :=
-  ((List.range data.length).filter (fun i => detectedLoopAt data tol i)).length
+/-- Number of indices at which `oscillationAt` holds. Mirrors
+    `aether_betti::oscillation_count`. -/
+def oscillationCount (data : List UInt8) (tol : Nat) : Nat :=
+  ((List.range data.length).filter (fun i => oscillationAt data tol i)).length
 
-/-- **Window-overlap bound.** The heuristic count is at most `n`
-    (the number of candidate indices scanned). A filter over
-    `List.range n` cannot produce more than `n` elements. -/
-theorem heuristic_le_length (data : List UInt8) (tol : Nat) :
-    betti1Heuristic data tol ≤ data.length := by
-  unfold betti1Heuristic
-  have : ((List.range data.length).filter
-            (fun i => detectedLoopAt data tol i)).length
-            ≤ (List.range data.length).length :=
-    List.length_filter_le _ _
-  simpa [List.length_range] using this
+/-- An index where the predicate holds is a valid window start. -/
+theorem oscillationAt_window_fits (data : List UInt8) (tol i : Nat)
+    (h : oscillationAt data tol i = true) : i + 3 < data.length := by
+  unfold oscillationAt at h
+  split at h
+  · assumption
+  · simp at h
 
-/-- **The Rust guard's bound.** With any non-negative `β₁_exact`,
-    the heuristic is bounded by `β₁_exact + n`. Follows immediately
-    from `heuristic_le_length`: `x ≤ n` implies `x ≤ β₁ + n`. -/
-theorem betti_error_bound (data : List UInt8) (tol : Nat) (β₁ : Nat) :
-    betti1Heuristic data tol ≤ β₁ + data.length := by
-  have h := heuristic_le_length data tol
-  omega
+/-- Prefix form: among the first `k` indices, at most `min k (n − 3)` hold. -/
+theorem filter_range_le (data : List UInt8) (tol : Nat) :
+    ∀ k : Nat, ((List.range k).filter (fun i => oscillationAt data tol i)).length
+      ≤ min k (data.length - 3)
+  | 0 => by simp
+  | k + 1 => by
+    have ih := filter_range_le data tol k
+    rw [List.range_succ, List.filter_append, List.length_append]
+    by_cases hk : oscillationAt data tol k = true
+    · have hlt := oscillationAt_window_fits data tol k hk
+      simp only [List.filter, hk, List.length_singleton]
+      omega
+    · simp only [List.filter, hk, List.length_nil]
+      omega
+
+/-- **Window-count bound.** The oscillation count is at most the number of
+    width-4 window starts, `n − 3`. This is the bound the Rust module states. -/
+theorem oscillationCount_le_windows (data : List UInt8) (tol : Nat) :
+    oscillationCount data tol ≤ data.length - 3 :=
+  le_trans (filter_range_le data tol data.length) (min_le_right _ _)
 
 end AetherVerified.Betti
