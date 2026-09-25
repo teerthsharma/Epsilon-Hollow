@@ -75,7 +75,14 @@ fn check_len(n: usize) {
 }
 
 /// Resample the polyline through `pts` at uniform arc length. Returns the number
-/// of points written to `out`. Degenerate input is copied through unchanged.
+/// of points written to `out`.
+///
+/// Degenerate input is copied through unchanged: an arc no longer than the
+/// rounding of the coordinates themselves (`n · ε · max|coord|`), which is
+/// not a measured length. The floor scales with the cloud, so rescaling the
+/// loss does not change which windows are resampled. An absolute `1e-12`
+/// floor here made a V scaled by `1e-11` a different shape from the same V
+/// at scale 1.
 pub fn arc_resample(pts: &[DelayPoint], out: &mut [DelayPoint; MAX_POINTS]) -> usize {
     let n = pts.len();
     check_len(n);
@@ -88,7 +95,11 @@ pub fn arc_resample(pts: &[DelayPoint], out: &mut [DelayPoint; MAX_POINTS]) -> u
         cum[i] = cum[i - 1] + pts[i - 1].distance(&pts[i]);
     }
     let total = cum[n - 1];
-    if total < EPS_FLOOR {
+    let big = pts
+        .iter()
+        .flat_map(|p| p.coords)
+        .fold(0.0f64, |a, c| a.max(libm::fabs(c)));
+    if total <= n as f64 * f64::EPSILON * big {
         out[..n].copy_from_slice(pts);
         return n;
     }
@@ -99,10 +110,11 @@ pub fn arc_resample(pts: &[DelayPoint], out: &mut [DelayPoint; MAX_POINTS]) -> u
             seg += 1;
         }
         let (a, b) = (cum[seg], cum[seg + 1]);
-        let f = if b - a < EPS_FLOOR {
-            0.0
-        } else {
+        // A zero-length segment has no interior to interpolate into.
+        let f = if b > a {
             ((target - a) / (b - a)).clamp(0.0, 1.0)
+        } else {
+            0.0
         };
         let mut c = [0.0f64; EMBED_DIM];
         for (d, cd) in c.iter_mut().enumerate() {
@@ -251,7 +263,7 @@ pub fn is_monotone(pts: &[DelayPoint]) -> bool {
 /// present, every two-step chord is quotiented, and every longer chord exceeds
 /// `√3·ε*`. The certificate does not rely on that argument, and it is the only
 /// thing that zeroes a monotone window whose total arc length is under the
-/// resampler's `1e-12` floor, where the raw, unevenly spaced cloud is used.
+/// resampler's rounding floor, where the raw, unevenly spaced cloud is used.
 /// The caller handles the degenerate and non-finite cases before calling this.
 pub fn fold_score(raw: &[DelayPoint]) -> (f64, f64) {
     let mut resampled = [DelayPoint::zero(); MAX_POINTS];
@@ -641,17 +653,16 @@ pub fn measure_window(
         sig.shatter = f64::NAN;
         sig.h0_death = f64::NAN;
         sig.loop_score = f64::NAN;
-    } else if radius < EPS_FLOOR || raw_max < EPS_FLOOR {
-        // Degenerate: every point coincides.
+    } else if radius == 0.0 || raw_max == 0.0 {
+        // Degenerate: every point coincides. Compared with zero rather than
+        // an absolute floor, which read a loss scaled by 1e-11 as a point.
         sig.shatter = 1.0;
         sig.h0_death = 0.0;
         sig.loop_score = 0.0;
     } else {
-        sig.shatter = if raw_med < EPS_FLOOR {
-            1.0
-        } else {
-            raw_max / raw_med
-        };
+        // `raw_med` is the median of positive tree edges, so it is positive
+        // whenever `raw_max` is.
+        sig.shatter = raw_max / raw_med;
         // Reparameterise by arc length so a varying step size cannot
         // masquerade as topology, then measure the fold.
         let (eps_star, loop_score) = fold_score(raw);

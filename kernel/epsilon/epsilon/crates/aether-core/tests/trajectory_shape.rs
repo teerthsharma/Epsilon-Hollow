@@ -303,10 +303,12 @@ fn noiseless_v_is_a_fold() {
     );
 }
 
-/// A monotone window whose whole arc is under the resampler's `1e-12` floor is
-/// measured on its raw, unevenly spaced cloud, where the Rips count does see
-/// the dense converged tail as recurrence. Only the monotonicity certificate
-/// zeroes it, falling or rising: loop_score must be scale invariant too.
+/// A monotone window whose whole arc is under `1e-12`. The resampler once
+/// floored arc length there and measured the raw, unevenly spaced cloud,
+/// where the Rips count does see the dense converged tail as recurrence; its
+/// floor is now relative to the cloud's magnitude. The monotonicity
+/// certificate zeroes it either way, falling or rising: loop_score must be
+/// scale invariant too.
 #[test]
 fn monotone_certificate_holds_below_the_resampler_floor() {
     let fall: Vec<f64> = (0..STEPS)
@@ -364,4 +366,29 @@ fn is_monotone_reads_both_directions() {
     assert!(is_monotone(&up));
     assert!(is_monotone(&down));
     assert!(!is_monotone(&turn));
+}
+
+/// Loop score of the jittered parabolic V `0.30 + 0.0004·(t − 88)²` over
+/// `t ∈ 56..122`, every loss scaled by `c`.
+/// Checked through `fold_score` and through `measure_window`, which the kernel
+/// calls; the two must agree.
+fn scaled_v_loop(c: f64) -> f64 {
+    let v: Vec<f64> = (56..122)
+        .map(|t| c * (0.30 + 0.0004 * (t as f64 - 88.0).powi(2) + 0.02 * jitter(t, 7)))
+        .collect();
+    let w = window(&v, &v);
+    let direct = fold_score(&w.pts).1;
+    assert_eq!(verdict(&w).1.loop_score, direct, "measure_window at {c:e}");
+    direct
+}
+
+/// `fold_score` compares lengths of the cloud with lengths of the same cloud,
+/// so rescaling the loss must not move it. An absolute `1e-12` floor on arc
+/// length made the V a different shape below `c ≈ 1e-11`.
+#[test]
+fn fold_score_is_scale_invariant() {
+    let at_one = scaled_v_loop(1.0);
+    for c in [1e-10, 1e-11, 1e-12, 1e-14, 1e11] {
+        assert_eq!(scaled_v_loop(c), at_one, "loop_score at scale {c:e}");
+    }
 }
