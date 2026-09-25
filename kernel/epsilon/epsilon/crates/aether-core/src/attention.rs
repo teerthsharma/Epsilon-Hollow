@@ -26,8 +26,9 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
-use libm::{exp, sqrt};
+use libm::{exp, nextafter, sqrt};
 
 /// How a row picks the keys it may attend to.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,6 +53,10 @@ pub enum Selector {
     ///
     /// Unimplementable in production — it needs the scores it is meant to avoid
     /// computing — but decisive as a diagnostic upper bound.
+    ///
+    /// The set is certified against float rounding; a row whose boundary the
+    /// rounding bound cannot decide is widened past `budget` and reported (see
+    /// [`select_mask_with_report`]).
     OracleTopK { budget: usize },
 
     /// The `budget` keys nearest the query in the shared embedding space, keeping
@@ -296,13 +301,53 @@ pub fn select_mask(
     selector: Selector,
     q: &[f64],
     k: &[f64],
-    _v: &[f64],
+    v: &[f64],
     seq: usize,
     head_dim: usize,
     causal: bool,
 ) -> Vec<bool> {
+    select_mask_with_report(selector, q, k, v, seq, head_dim, causal).0
+}
+
+/// What `select_mask_with_report` did beyond building the mask.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SelectionReport {
+    /// Every row whose top-k boundary the rounding enclosures did not decide,
+    /// with the refusal that names the pair. Its length is the count of widened
+    /// rows.
+    pub widened_rows: Vec<(usize, BoundaryRefusal)>,
+    /// Keys selected past the budget by widening, summed over rows.
+    pub extra_keys: usize,
+}
+
+/// [`select_mask`], plus the report of which score-ranked rows were refused
+/// certification and widened.
+///
+/// `OracleTopK` and step 3 of `TopologicalRouted` rank by float dot product.
+/// Each score is enclosed by its a-priori rounding bound, and the top-`budget`
+/// set is kept only when [`certified_top_k`] proves no rounding could have moved
+/// a key across the boundary.
+///
+/// On a refusal the row is **widened**, not densified: it takes every key whose
+/// enclosure reaches the lowest selected lower end. Every key left out lies
+/// strictly below `budget` selected keys in exact arithmetic, so the widened set
+/// provably contains the exact top-`budget`. Widening was chosen over a dense
+/// fallback because it keeps that guarantee at the cost of the few keys inside
+/// the ambiguous band rather than the whole row, and needs no extra dot products:
+/// every score it consults was already computed. The growth is not silent — it is
+/// counted here and exceeds the budget only on refused rows.
+pub fn select_mask_with_report(
+    selector: Selector,
+    q: &[f64],
+    k: &[f64],
+    _v: &[f64],
+    seq: usize,
+    head_dim: usize,
+    causal: bool,
+) -> (Vec<bool>, SelectionReport) {
     let selector = resolve(selector, k, seq, head_dim, causal);
     let mut mask = vec![false; seq * seq];
+    let mut report = SelectionReport::default();
 
     // Routing structure is built once over all keys, not per row: a key's cluster
     // does not depend on which query is looking at it. This is what keeps the
@@ -368,15 +413,11 @@ pub fn select_mask(
             }
 
             Selector::OracleTopK { budget } => {
-                let mut scored: Vec<(usize, f64)> = legal
+                let scored: Vec<(usize, f64, f64)> = legal
                     .iter()
-                    .map(|&j| (j, dot(q, k, i, j, head_dim)))
+                    .map(|&j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
-                // Descending by score, ties broken by index so the result is
-                // deterministic rather than sort-stability-dependent.
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                scored.truncate(budget);
-                scored.into_iter().map(|(j, _)| j).collect()
+                certified_or_widened(&scored, budget, i, &mut report)
             }
 
             Selector::Topological {
@@ -452,15 +493,13 @@ pub fn select_mask(
 
                 // Step 3: the exact dot product decides within the candidate set.
                 // This is what the nearest-neighbour rule was missing: geometry
-                // finds where to look, the score decides what to take.
-                let mut scored: Vec<(usize, f64)> = candidates
+                // finds where to look, the score decides what to take. The
+                // decision is certified against rounding, as for `OracleTopK`.
+                let scored: Vec<(usize, f64, f64)> = candidates
                     .into_iter()
-                    .map(|j| (j, dot(q, k, i, j, head_dim)))
+                    .map(|j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
-                scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                scored.truncate(budget);
-
-                let mut chosen: Vec<usize> = scored.into_iter().map(|(j, _)| j).collect();
+                let mut chosen = certified_or_widened(&scored, budget, i, &mut report);
                 if chosen.is_empty() {
                     chosen.push(if causal { i } else { i.min(seq - 1) });
                 }
@@ -472,7 +511,124 @@ pub fn select_mask(
             mask[i * seq + j] = true;
         }
     }
-    mask
+    (mask, report)
+}
+
+/// A top-k boundary the rounding enclosures do not decide.
+///
+/// Names the selected key whose enclosure reaches lowest and the unselected key
+/// whose enclosure reaches highest. The boundary is decided only when
+/// `gap > needed_margin`; a refusal says nothing about which key is really
+/// larger, only that the float arithmetic cannot tell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundaryRefusal {
+    /// The selected key with the lowest enclosure lower end.
+    pub inside: usize,
+    /// The unselected key with the highest enclosure upper end.
+    pub outside: usize,
+    /// Float score of `inside` minus float score of `outside`.
+    pub gap: f64,
+    /// The gap that would certify the pair: the sum of their two radii.
+    pub needed_margin: f64,
+}
+
+/// The top-`budget` ids of `scored`, proven independent of rounding, or the
+/// refusal that blocks the proof.
+///
+/// `scored` holds `(id, score, radius)` with `|score - exact| <= radius`. The set
+/// `T` of the `budget` highest scores (ties by id) is certified when
+///
+/// ```text
+/// min_{i in T} (score_i - radius_i)  >  max_{j not in T} (score_j + radius_j)
+/// ```
+///
+/// which makes `T` the top-`budget` set of every score vector inside the
+/// enclosures, the exact one included. Comparing only the rank-`budget` and
+/// rank-`budget + 1` enclosures is not this rule and is unsound once radii vary:
+/// a low-ranked key with a wide radius can reach past both
+/// (`the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair`). The ends are
+/// rounded outward, and a non-finite score or radius refuses.
+///
+/// Returns ids in descending score order. A `budget` of zero, or one covering
+/// every key, is certified trivially: there is no boundary to decide.
+pub fn certified_top_k(
+    scored: &[(usize, f64, f64)],
+    budget: usize,
+) -> Result<Vec<usize>, BoundaryRefusal> {
+    let mut ranked = scored.to_vec();
+    // Descending by score, ties broken by id so the result is deterministic
+    // rather than sort-stability-dependent.
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    if budget == 0 || budget >= ranked.len() {
+        ranked.truncate(budget);
+        return Ok(ranked.into_iter().map(|(j, _, _)| j).collect());
+    }
+
+    let (inside, outside) = ranked.split_at(budget);
+    let lowest = inside
+        .iter()
+        .copied()
+        .min_by(|a, b| lower_end(a).total_cmp(&lower_end(b)))
+        .expect("budget > 0");
+    let highest = outside
+        .iter()
+        .copied()
+        .max_by(|a, b| upper_end(a).total_cmp(&upper_end(b)))
+        .expect("budget < len");
+
+    if lower_end(&lowest) > upper_end(&highest) {
+        Ok(inside.iter().map(|&(j, _, _)| j).collect())
+    } else {
+        Err(BoundaryRefusal {
+            inside: lowest.0,
+            outside: highest.0,
+            gap: lowest.1 - highest.1,
+            needed_margin: lowest.2 + highest.2,
+        })
+    }
+}
+
+/// `score - radius`, rounded toward minus infinity.
+fn lower_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
+    nextafter(score - radius, f64::NEG_INFINITY)
+}
+
+/// `score + radius`, rounded toward plus infinity.
+fn upper_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
+    nextafter(score + radius, f64::INFINITY)
+}
+
+/// The certified top-`budget` of `scored`, or — on a refusal — every key whose
+/// enclosure reaches the lowest selected lower end, recorded in `report`.
+///
+/// Any key left out has an upper end strictly below the lower end of all
+/// `budget` selected keys, so it is outside the exact top-`budget`: the widened
+/// set contains it. A NaN lower end excludes nothing, which widens to every key.
+fn certified_or_widened(
+    scored: &[(usize, f64, f64)],
+    budget: usize,
+    row: usize,
+    report: &mut SelectionReport,
+) -> Vec<usize> {
+    match certified_top_k(scored, budget) {
+        Ok(chosen) => chosen,
+        Err(refusal) => {
+            let floor = scored
+                .iter()
+                .find(|entry| entry.0 == refusal.inside)
+                .map(lower_end)
+                .expect("the refused key is one of the scored keys");
+            let widened: Vec<usize> = scored
+                .iter()
+                // Kept unless provably below the floor; incomparable (NaN) is kept.
+                .filter(|entry| upper_end(entry).partial_cmp(&floor) != Some(Ordering::Less))
+                .map(|&(j, _, _)| j)
+                .collect();
+            report.extra_keys += widened.len().saturating_sub(budget);
+            report.widened_rows.push((row, refusal));
+            widened
+        }
+    }
 }
 
 /// Single-linkage clustering of `points` (row-major `[count, dim]`) cut so that
@@ -600,6 +756,40 @@ fn dot(q: &[f64], k: &[f64], i: usize, j: usize, head_dim: usize) -> f64 {
         sum += q[i * head_dim + d] * k[j * head_dim + d];
     }
     sum
+}
+
+/// `(j, fl(q_i · k_j), radius)` with `|fl(q_i · k_j) - q_i · k_j| <= radius`.
+///
+/// The score is `dot`'s, bit for bit. The radius is Higham's a-priori bound for a
+/// float inner product of length `n = head_dim` (ASNA 2nd ed., Theorem 3.1):
+///
+/// ```text
+/// |fl(q·k) - q·k| <= gamma_n · Σ|q_d k_d|,   gamma_n = n·u / (1 - n·u),   u = 2^-53
+/// ```
+///
+/// with the absolute value inside the sum; `gamma_n · |q·k|` is not this bound and
+/// is far below it under cancellation, which is exactly where it matters. Two
+/// terms make the computed radius a bound rather than an estimate: the float
+/// `Σ|q_d k_d|` can itself round low by a relative `gamma_n`, and the remaining
+/// four roundings cost `4u`, so the radius is scaled by `1 + 2·gamma_n + 4u` and
+/// rounded up; and a product that lands subnormal carries absolute rather than
+/// relative error, so `n` times the smallest subnormal is added unconditionally.
+///
+/// The absolute sum rides the same pass over `head_dim` as the score, so the
+/// enclosure adds no dot products to the selection cost.
+fn enclosed_dot(q: &[f64], k: &[f64], i: usize, j: usize, head_dim: usize) -> (usize, f64, f64) {
+    let (mut sum, mut magnitude) = (0.0f64, 0.0f64);
+    for d in 0..head_dim {
+        let product = q[i * head_dim + d] * k[j * head_dim + d];
+        sum += product;
+        magnitude += product.abs();
+    }
+    let n = head_dim as f64;
+    let u = f64::EPSILON / 2.0;
+    let gamma = nextafter(n * u / (1.0 - n * u), f64::INFINITY);
+    let underflow = n * f64::from_bits(1);
+    let radius = gamma * magnitude * (1.0 + 2.0 * gamma + 4.0 * u) + underflow;
+    (j, sum, nextafter(radius, f64::INFINITY))
 }
 
 /// Euclidean distance between query `i` and key `j` in the shared embedding

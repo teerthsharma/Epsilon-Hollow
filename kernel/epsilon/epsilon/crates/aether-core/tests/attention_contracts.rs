@@ -12,8 +12,9 @@
 //! worse optimum, which is nearly undetectable from loss curves.
 
 use aether_core::attention::{
-    attention_mass_recovered, dense_attention, dense_dot_cost, routing_plan, select_mask,
-    selection_dot_cost, single_linkage_clusters, sparse_attention, Selector,
+    attention_mass_recovered, certified_top_k, dense_attention, dense_dot_cost, routing_plan,
+    select_mask, select_mask_with_report, selection_dot_cost, single_linkage_clusters,
+    sparse_attention, Selector,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1252,4 +1253,150 @@ fn the_adaptive_selector_keeps_the_quality_of_whichever_path_it_picks() {
         );
     }
     println!("unstructured: declined to route, dense fallback recovers 1.000 of mass");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 12. Certified top-k — rounding must not choose the selected keys
+//
+// A float dot product carries an a-priori rounding bound
+// |fl(q·k) - q·k| <= gamma_n * sum_d |q_d k_d| (Higham, Thm 3.1). When the
+// enclosures of the selected and unselected keys overlap, the float ranking at
+// the boundary is rounding's choice, not the data's.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// seq 2, head_dim 3, non-causal. Row 0 scores key 0 as 0.0 in float against an
+/// exact 1.0 (1e17 + 1 absorbs the 1, then cancels), and key 1 as 0.5 exactly.
+/// Row 1 is well separated (exact scores 1 vs 0).
+fn cancellation_counterexample() -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let q = vec![1.0, 1.0, 1.0, 0.0, 1.0, 0.0];
+    let k = vec![1e17, 1.0, -1e17, 0.5, 0.0, 0.0];
+    let v = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    (q, k, v)
+}
+
+#[test]
+fn the_oracle_does_not_silently_take_the_float_winner_under_cancellation() {
+    let (q, k, v) = cancellation_counterexample();
+    // The premise: float really does rank key 1 above key 0 on row 0.
+    let float_score_0 = (0..3).fold(0.0f64, |acc, d| acc + q[d] * k[d]);
+    assert_eq!(float_score_0, 0.0, "premise: 1e17 + 1 - 1e17 rounds to 0");
+
+    let mask = select_mask(Selector::OracleTopK { budget: 1 }, &q, &k, &v, 2, 3, false);
+    assert!(
+        mask[0],
+        "row 0: key 0 has exact score 1 against key 1's 0.5, but the oracle \
+         selected only the float winner; mask row 0 = {:?}",
+        &mask[0..2]
+    );
+}
+
+#[test]
+fn a_refused_boundary_is_widened_and_counted() {
+    let (q, k, v) = cancellation_counterexample();
+    let (mask, report) =
+        select_mask_with_report(Selector::OracleTopK { budget: 1 }, &q, &k, &v, 2, 3, false);
+
+    // Row 0 is ambiguous and must be refused, naming both keys.
+    assert_eq!(
+        report.widened_rows.len(),
+        1,
+        "exactly one row is ambiguous: {report:?}"
+    );
+    let (row, refusal) = report.widened_rows[0];
+    assert_eq!(row, 0);
+    assert_eq!((refusal.inside, refusal.outside), (1, 0), "{refusal:?}");
+    assert!(
+        refusal.needed_margin >= refusal.gap,
+        "a refusal must be one the margin does not clear: {refusal:?}"
+    );
+    // Widening grows row 0 past its budget of 1, and the growth is reported.
+    assert_eq!(&mask[0..2], &[true, true], "row 0 widened to both keys");
+    assert_eq!(report.extra_keys, 1);
+
+    // Row 1 is certified and keeps its budget.
+    assert_eq!(
+        &mask[2..4],
+        &[true, false],
+        "row 1 certified to key 0 alone"
+    );
+
+    // The same boundary through the routed selector is refused the same way.
+    let (routed, routed_report) = select_mask_with_report(
+        Selector::TopologicalRouted {
+            budget: 1,
+            clusters: 1,
+        },
+        &q,
+        &k,
+        &v,
+        2,
+        3,
+        false,
+    );
+    assert!(routed[0], "routed row 0 dropped the exact winner");
+    assert_eq!(routed_report.widened_rows.len(), 1, "{routed_report:?}");
+}
+
+#[test]
+fn a_well_separated_row_certifies_exactly_the_float_top_k() {
+    let (seq, head_dim, budget) = (16usize, 4usize, 5usize);
+    let (q, k, v) = qkv(seq, head_dim, 17);
+    let (mask, report) = select_mask_with_report(
+        Selector::OracleTopK { budget },
+        &q,
+        &k,
+        &v,
+        seq,
+        head_dim,
+        false,
+    );
+    assert!(
+        report.widened_rows.is_empty(),
+        "no row should be ambiguous: {report:?}"
+    );
+    assert_eq!(report.extra_keys, 0);
+
+    for i in 0..seq {
+        let mut scored: Vec<(usize, f64)> = (0..seq)
+            .map(|j| {
+                let s =
+                    (0..head_dim).fold(0.0, |a, d| a + q[i * head_dim + d] * k[j * head_dim + d]);
+                (j, s)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        let mut want: Vec<usize> = scored[..budget].iter().map(|&(j, _)| j).collect();
+        want.sort_unstable();
+        let got: Vec<usize> = (0..seq).filter(|&j| mask[i * seq + j]).collect();
+        assert_eq!(
+            got, want,
+            "row {i}: certified set differs from float top-{budget}"
+        );
+    }
+}
+
+#[test]
+fn the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair() {
+    // (id, score, radius). Rank 2 (score 9) and rank 3 (score 8) are disjoint, so
+    // the pairwise rule would certify {0, 1}. Key 3 can reach 12 > 9, and the
+    // sound rule — every inside lower end above every outside upper end — refuses.
+    let scored = [
+        (0usize, 10.0, 0.0),
+        (1, 9.0, 0.0),
+        (2, 8.0, 0.0),
+        (3, 0.0, 12.0),
+    ];
+    let refusal = certified_top_k(&scored, 2).expect_err("the pair rule is unsound here");
+    assert_eq!((refusal.inside, refusal.outside), (1, 3), "{refusal:?}");
+    assert_eq!(refusal.gap, 9.0);
+    assert_eq!(refusal.needed_margin, 12.0);
+
+    // With the wide key tightened, the same scores certify.
+    let tight = [
+        (0usize, 10.0, 0.0),
+        (1, 9.0, 0.0),
+        (2, 8.0, 0.0),
+        (3, 0.0, 1.0),
+    ];
+    assert_eq!(certified_top_k(&tight, 2), Ok(vec![0, 1]));
 }
