@@ -80,6 +80,9 @@ pub const PLAQUE_BYTES: usize = 4096;
 
 const NONE: u16 = u16::MAX;
 const ROOT: u16 = 0;
+/// Owner of the sequences the kernel opens for its own proofs and tests.
+/// `scheduler::current_task_id()` reports 0 outside any task.
+const KERNEL: u64 = 0;
 
 /// Eviction policy over the frontier of the resident foliation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,6 +173,9 @@ struct Plaque {
 /// A live inference sequence. Its block table is its path down the foliation.
 struct Seq {
     active: bool,
+    /// Task that opened the sequence. Only it may append to, release, or read
+    /// the counters of this sequence.
+    owner: u64,
     budget_blocks: u16,
     blocks: [u16; MAX_SEQ_BLOCKS],
     nblocks: u16,
@@ -185,6 +191,7 @@ impl Seq {
     const fn blank() -> Self {
         Self {
             active: false,
+            owner: 0,
             budget_blocks: 0,
             blocks: [NONE; MAX_SEQ_BLOCKS],
             nblocks: 0,
@@ -273,8 +280,16 @@ pub const fn fold_key(prev: u64, tokens: &[u32]) -> u64 {
 /// bijection on the running key, so the last two steps can be inverted from
 /// the target. Kept as a known collision so the sharing test exercises one.
 const COLLIDE_A: [u32; BLOCK_TOKENS] = [1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007];
-const COLLIDE_B: [u32; BLOCK_TOKENS] =
-    [1000, 1001, 1002, 1003, 1004, 2_191_639_884, 3_946_364_168, 3_153_004_709];
+const COLLIDE_B: [u32; BLOCK_TOKENS] = [
+    1000,
+    1001,
+    1002,
+    1003,
+    1004,
+    2_191_639_884,
+    3_946_364_168,
+    3_153_004_709,
+];
 const _: () = assert!(fold_key(0, &COLLIDE_A) == fold_key(0, &COLLIDE_B));
 
 impl Foliation {
@@ -337,13 +352,25 @@ impl Foliation {
 
     // -- sequence lifecycle -------------------------------------------------
 
-    /// Open a sequence with a hard block budget.
-    pub fn seq_create(&mut self, budget_blocks: u16) -> Result<usize, FoliationError> {
+    /// Whether `id` names a live sequence opened by `owner`.
+    ///
+    /// Sequence ids are small indices into one table shared by every task, so
+    /// without this any task could append to, release, or read another task's
+    /// sequence by guessing an id. A foreign id is refused as `NoSuchSeq`,
+    /// exactly as an unused one is, so the refusal does not reveal that the
+    /// sequence exists — the rule `syscall::table::fd_lookup` applies to fds.
+    fn owned(&self, id: usize, owner: u64) -> bool {
+        self.seqs.get(id).map(|s| s.active && s.owner == owner) == Some(true)
+    }
+
+    /// Open a sequence with a hard block budget, owned by task `owner`.
+    pub fn seq_create(&mut self, budget_blocks: u16, owner: u64) -> Result<usize, FoliationError> {
         let budget = budget_blocks.min(MAX_SEQ_BLOCKS as u16);
         for (id, s) in self.seqs.iter_mut().enumerate() {
             if !s.active {
                 *s = Seq::blank();
                 s.active = true;
+                s.owner = owner;
                 s.budget_blocks = budget;
                 return Ok(id);
             }
@@ -360,8 +387,8 @@ impl Foliation {
     /// store below in range without a second bounds test, and it is the reason
     /// a refusal cannot be converted into an out-of-range store by a caller
     /// that retries.
-    pub fn seq_append(&mut self, id: usize, token: u32) -> Result<u16, FoliationError> {
-        if self.seqs.get(id).map(|s| s.active) != Some(true) {
+    pub fn seq_append(&mut self, id: usize, owner: u64, token: u32) -> Result<u16, FoliationError> {
+        if !self.owned(id, owner) {
             return Err(FoliationError::NoSuchSeq);
         }
         if self.seqs[id].fill == 0 && self.seqs[id].nblocks >= self.seqs[id].budget_blocks {
@@ -411,18 +438,18 @@ impl Foliation {
     }
 
     /// Blocks sealed, blocks shared on entry, blocks admitted.
-    pub fn seq_counts(&self, id: usize) -> Option<(u16, u32, u32)> {
-        let s = self.seqs.get(id)?;
-        if !s.active {
+    pub fn seq_counts(&self, id: usize, owner: u64) -> Option<(u16, u32, u32)> {
+        if !self.owned(id, owner) {
             return None;
         }
+        let s = &self.seqs[id];
         Some((s.nblocks, s.hits, s.admits))
     }
 
     /// Drop a sequence's references. Plaques stay resident — that is the cache.
     /// A block shared with another live sequence keeps a positive refcount.
-    pub fn seq_release(&mut self, id: usize) -> Result<u16, FoliationError> {
-        if self.seqs.get(id).map(|s| s.active) != Some(true) {
+    pub fn seq_release(&mut self, id: usize, owner: u64) -> Result<u16, FoliationError> {
+        if !self.owned(id, owner) {
             return Err(FoliationError::NoSuchSeq);
         }
         let n = self.seqs[id].nblocks;
@@ -917,14 +944,14 @@ fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> Replay {
     }
     for tokens in trace {
         let budget = (tokens.len() / BLOCK_TOKENS) as u16;
-        let id = match fol.seq_create(budget) {
+        let id = match fol.seq_create(budget, KERNEL) {
             Ok(id) => id,
             Err(_) => continue,
         };
         for &t in tokens {
-            let _ = fol.seq_append(id, t);
+            let _ = fol.seq_append(id, KERNEL, t);
         }
-        let _ = fol.seq_release(id);
+        let _ = fol.seq_release(id, KERNEL);
     }
     let violations = fol.collapse_violations();
     let s = fol.stats();
@@ -954,19 +981,19 @@ fn share_and_refcount_probe() -> (u64, u16, u64, bool) {
         .map(|j| 7000 + j as u32)
         .collect();
 
-    let a = match fol.seq_create(8) {
+    let a = match fol.seq_create(8, KERNEL) {
         Ok(id) => id,
         Err(_) => return (0, 0, 0, false),
     };
     for &t in &prefix {
-        let _ = fol.seq_append(a, t);
+        let _ = fol.seq_append(a, KERNEL, t);
     }
-    let b = match fol.seq_create(8) {
+    let b = match fol.seq_create(8, KERNEL) {
         Ok(id) => id,
         Err(_) => return (0, 0, 0, false),
     };
     for &t in &prefix {
-        let _ = fol.seq_append(b, t);
+        let _ = fol.seq_append(b, KERNEL, t);
     }
 
     let mut identical = true;
@@ -983,7 +1010,7 @@ fn share_and_refcount_probe() -> (u64, u16, u64, bool) {
         }
     }
 
-    let _ = fol.seq_release(a);
+    let _ = fol.seq_release(a, KERNEL);
     let mut refcount_after = 0u16;
     let mut survivors = 0u64;
     for i in 0..HOT_PREFIX_BLOCKS {
@@ -994,7 +1021,7 @@ fn share_and_refcount_probe() -> (u64, u16, u64, bool) {
             }
         }
     }
-    let _ = fol.seq_release(b);
+    let _ = fol.seq_release(b, KERNEL);
     fol.teardown();
     (shared, refcount_after, survivors, identical)
 }
@@ -1015,7 +1042,7 @@ fn refuse_and_continue(
     let mut refused = false;
     let mut absorbed_after_refusal = false;
     for j in 0..tokens {
-        match fol.seq_append(id, base + j as u32) {
+        match fol.seq_append(id, KERNEL, base + j as u32) {
             Ok(_) => absorbed_after_refusal |= refused,
             Err(e) => refused |= e == expect,
         }
@@ -1028,7 +1055,7 @@ fn refuse_and_continue(
 fn refusal_probe() -> (bool, bool, bool) {
     // Budget: a sequence declaring 2 blocks may not seal a third.
     let mut fol = Foliation::new(8, 32, 2, Policy::Foliation);
-    let budget_refused = match fol.seq_create(2) {
+    let budget_refused = match fol.seq_create(2, KERNEL) {
         Ok(id) => {
             let (refused, held) = refuse_and_continue(
                 &mut fol,
@@ -1037,7 +1064,7 @@ fn refusal_probe() -> (bool, bool, bool) {
                 3 * BLOCK_TOKENS,
                 FoliationError::BudgetExceeded,
             );
-            let _ = fol.seq_release(id);
+            let _ = fol.seq_release(id, KERNEL);
             refused && held
         }
         Err(_) => false,
@@ -1047,7 +1074,7 @@ fn refusal_probe() -> (bool, bool, bool) {
     // Exhaustion: every plaque referenced by the live sequence, so the frontier
     // is empty and admission must be refused rather than evicting live state.
     let mut fol = Foliation::new(3, 32, 2, Policy::Foliation);
-    let exhaustion_refused = match fol.seq_create(MAX_SEQ_BLOCKS as u16) {
+    let exhaustion_refused = match fol.seq_create(MAX_SEQ_BLOCKS as u16, KERNEL) {
         Ok(id) => {
             let (refused, held) = refuse_and_continue(
                 &mut fol,
@@ -1056,7 +1083,7 @@ fn refusal_probe() -> (bool, bool, bool) {
                 6 * BLOCK_TOKENS,
                 FoliationError::Exhausted,
             );
-            let _ = fol.seq_release(id);
+            let _ = fol.seq_release(id, KERNEL);
             refused && held
         }
         Err(_) => false,
@@ -1065,16 +1092,16 @@ fn refusal_probe() -> (bool, bool, bool) {
 
     // Referenced free: collapsing a plaque a live sequence still holds.
     let mut fol = Foliation::new(8, 32, 2, Policy::Foliation);
-    let referenced_free_refused = match fol.seq_create(4) {
+    let referenced_free_refused = match fol.seq_create(4, KERNEL) {
         Ok(id) => {
             for j in 0..(2 * BLOCK_TOKENS) {
-                let _ = fol.seq_append(id, 300 + j as u32);
+                let _ = fol.seq_append(id, KERNEL, 300 + j as u32);
             }
             let refused = match fol.seq_leaf(id, 0) {
                 Some(leaf) => fol.force_collapse(leaf) == Err(FoliationError::StillReferenced),
                 None => false,
             };
-            let _ = fol.seq_release(id);
+            let _ = fol.seq_release(id, KERNEL);
             refused
         }
         Err(_) => false,
@@ -1255,10 +1282,10 @@ refused_budget={} refused_exhaustion={} refused_referenced_free={}",
     })
 }
 
-/// Per-sequence counters for `SYS_KV_SEQ_STATS`.
-pub fn seq_stats_line(id: usize) -> Option<String> {
+/// Per-sequence counters for `SYS_KV_SEQ_STATS`, for the task that owns `id`.
+pub fn seq_stats_line(id: usize, owner: u64) -> Option<String> {
     with_global(|f| {
-        let (blocks, shared, admitted) = f.seq_counts(id)?;
+        let (blocks, shared, admitted) = f.seq_counts(id, owner)?;
         Some(format!(
             "seq={} blocks={} shared_on_entry={} admitted={} bytes_shared={}",
             id,
@@ -1290,15 +1317,15 @@ pub mod tests {
     fn test_prefix_sharing_dedupes() -> TestResult {
         let mut fol = Foliation::new(16, 64, 4, Policy::Foliation);
         let toks = prefix_tokens(11_000, 3);
-        let a = fol.seq_create(8).unwrap_or(usize::MAX);
-        let b = fol.seq_create(8).unwrap_or(usize::MAX);
+        let a = fol.seq_create(8, KERNEL).unwrap_or(usize::MAX);
+        let b = fol.seq_create(8, KERNEL).unwrap_or(usize::MAX);
         test_assert!(a != usize::MAX && b != usize::MAX);
         for &t in &toks {
-            let _ = fol.seq_append(a, t);
+            let _ = fol.seq_append(a, KERNEL, t);
         }
         let resident_after_a = fol.resident();
         for &t in &toks {
-            let _ = fol.seq_append(b, t);
+            let _ = fol.seq_append(b, KERNEL, t);
         }
         test_assert!(
             fol.resident() == resident_after_a,
@@ -1321,20 +1348,20 @@ pub mod tests {
     fn test_refcount_survives_partial_free() -> TestResult {
         let mut fol = Foliation::new(16, 64, 4, Policy::Foliation);
         let toks = prefix_tokens(12_000, 2);
-        let a = fol.seq_create(8).unwrap_or(usize::MAX);
-        let b = fol.seq_create(8).unwrap_or(usize::MAX);
+        let a = fol.seq_create(8, KERNEL).unwrap_or(usize::MAX);
+        let b = fol.seq_create(8, KERNEL).unwrap_or(usize::MAX);
         test_assert!(a != usize::MAX && b != usize::MAX);
         for &t in &toks {
-            let _ = fol.seq_append(a, t);
+            let _ = fol.seq_append(a, KERNEL, t);
         }
         for &t in &toks {
-            let _ = fol.seq_append(b, t);
+            let _ = fol.seq_append(b, KERNEL, t);
         }
         let leaf = fol.seq_leaf(b, 0).unwrap_or(NONE);
         test_assert!(leaf != NONE);
         test_assert!(fol.leaf_refcount(leaf) == 2, "two holders");
         let frame_before = fol.seq_frame(b, 0);
-        let _ = fol.seq_release(a);
+        let _ = fol.seq_release(a, KERNEL);
         test_assert!(fol.leaf_refcount(leaf) == 1, "refcount after partial free");
         test_assert!(fol.leaf_resident(leaf), "shared block was dropped early");
         test_assert!(
@@ -1350,21 +1377,21 @@ pub mod tests {
     fn test_eviction_never_frees_referenced() -> TestResult {
         let mut fol = Foliation::new(6, 64, 8, Policy::Foliation);
         // Sequence `live` holds 3 blocks for the whole test.
-        let live = fol.seq_create(4).unwrap_or(usize::MAX);
+        let live = fol.seq_create(4, KERNEL).unwrap_or(usize::MAX);
         test_assert!(live != usize::MAX);
         for &t in &prefix_tokens(13_000, 3) {
-            let _ = fol.seq_append(live, t);
+            let _ = fol.seq_append(live, KERNEL, t);
         }
         let held: Vec<u16> = (0..3).filter_map(|i| fol.seq_leaf(live, i)).collect();
         test_assert_eq!(held.len(), 3);
 
         // Drive churn through the remaining 3 plaques.
         for k in 0..6u32 {
-            if let Ok(id) = fol.seq_create(3) {
+            if let Ok(id) = fol.seq_create(3, KERNEL) {
                 for &t in &prefix_tokens(14_000 + k * 1000, 3) {
-                    let _ = fol.seq_append(id, t);
+                    let _ = fol.seq_append(id, KERNEL, t);
                 }
-                let _ = fol.seq_release(id);
+                let _ = fol.seq_release(id, KERNEL);
             }
         }
         for leaf in &held {
@@ -1377,7 +1404,7 @@ pub mod tests {
         let s = fol.stats();
         test_assert!(s.referenced_evictions == 0, "evicted a referenced plaque");
         test_assert!(fol.collapse_violations() == 0, "residency is not a subtree");
-        let _ = fol.seq_release(live);
+        let _ = fol.seq_release(live, KERNEL);
         fol.teardown();
         TestResult::Pass
     }
@@ -1388,22 +1415,22 @@ pub mod tests {
         let mut fol = Foliation::new(8, 64, 8, Policy::Foliation);
         let mut ids = Vec::new();
         for k in 0..3u32 {
-            if let Ok(id) = fol.seq_create(2) {
+            if let Ok(id) = fol.seq_create(2, KERNEL) {
                 for &t in &prefix_tokens(15_000 + k * 1000, 2) {
-                    let _ = fol.seq_append(id, t);
+                    let _ = fol.seq_append(id, KERNEL, t);
                 }
                 ids.push(id);
             }
         }
         test_assert_eq!(ids.len(), 3);
         // Free the middle sequence, then churn so its slots are recycled.
-        let _ = fol.seq_release(ids[1]);
+        let _ = fol.seq_release(ids[1], KERNEL);
         for k in 0..4u32 {
-            if let Ok(id) = fol.seq_create(2) {
+            if let Ok(id) = fol.seq_create(2, KERNEL) {
                 for &t in &prefix_tokens(16_000 + k * 1000, 2) {
-                    let _ = fol.seq_append(id, t);
+                    let _ = fol.seq_append(id, KERNEL, t);
                 }
-                let _ = fol.seq_release(id);
+                let _ = fol.seq_release(id, KERNEL);
             }
         }
         // Surviving sequences must still map to live, distinct frames.
@@ -1417,8 +1444,8 @@ pub mod tests {
             );
         }
         test_assert_eq!(fol.collapse_violations(), 0);
-        let _ = fol.seq_release(ids[0]);
-        let _ = fol.seq_release(ids[2]);
+        let _ = fol.seq_release(ids[0], KERNEL);
+        let _ = fol.seq_release(ids[2], KERNEL);
         fol.teardown();
         TestResult::Pass
     }
@@ -1442,11 +1469,13 @@ pub mod tests {
         // Exhaustion: three plaques, all referenced by the one live sequence,
         // so the fourth seal has no free face to collapse.
         let mut fol = Foliation::new(3, 32, 2, Policy::Foliation);
-        let id = fol.seq_create(MAX_SEQ_BLOCKS as u16).unwrap_or(usize::MAX);
+        let id = fol
+            .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+            .unwrap_or(usize::MAX);
         test_assert!(id != usize::MAX);
         let mut first_refusal = usize::MAX;
         for j in 0..(6 * BLOCK_TOKENS) {
-            match fol.seq_append(id, 4000 + j as u32) {
+            match fol.seq_append(id, KERNEL, 4000 + j as u32) {
                 Ok(_) => test_assert!(
                     first_refusal == usize::MAX,
                     "a token was absorbed after the sequence had been refused"
@@ -1460,8 +1489,8 @@ pub mod tests {
             }
         }
         test_assert_eq!(first_refusal, 4 * BLOCK_TOKENS - 1);
-        test_assert_eq!(fol.seq_counts(id).map(|c| c.0), Some(3u16));
-        let _ = fol.seq_release(id);
+        test_assert_eq!(fol.seq_counts(id, KERNEL).map(|c| c.0), Some(3u16));
+        let _ = fol.seq_release(id, KERNEL);
         fol.teardown();
 
         // Fan-out: saturate the root leaf's children at the shipped ABI
@@ -1474,20 +1503,20 @@ pub mod tests {
             Policy::Foliation,
         );
         for round in 0..MAX_CHILDREN as u32 {
-            let sid = fol.seq_create(1).unwrap_or(usize::MAX);
+            let sid = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
             test_assert!(sid != usize::MAX);
             for j in 0..BLOCK_TOKENS {
-                let _ = fol.seq_append(sid, 60_000 + round * 100 + j as u32);
+                let _ = fol.seq_append(sid, KERNEL, 60_000 + round * 100 + j as u32);
             }
-            let _ = fol.seq_release(sid);
+            let _ = fol.seq_release(sid, KERNEL);
         }
         test_assert_eq!(fol.stats().children_full, 0);
         test_assert_eq!(fol.stats().descents, MAX_CHILDREN as u64);
-        let sid = fol.seq_create(1).unwrap_or(usize::MAX);
+        let sid = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
         test_assert!(sid != usize::MAX);
         let mut refusals = 0u64;
         for j in 0..(2 * BLOCK_TOKENS) {
-            if let Err(e) = fol.seq_append(sid, 90_000 + j as u32) {
+            if let Err(e) = fol.seq_append(sid, KERNEL, 90_000 + j as u32) {
                 test_assert!(
                     e == FoliationError::ChildrenFull,
                     "wrong refusal at saturated fan-out"
@@ -1498,8 +1527,8 @@ pub mod tests {
         // One refusal for the seal attempt, then one for every later token.
         test_assert_eq!(refusals, BLOCK_TOKENS as u64 + 1);
         test_assert_eq!(fol.stats().children_full, refusals);
-        test_assert_eq!(fol.seq_counts(sid).map(|c| c.0), Some(0u16));
-        let _ = fol.seq_release(sid);
+        test_assert_eq!(fol.seq_counts(sid, KERNEL).map(|c| c.0), Some(0u16));
+        let _ = fol.seq_release(sid, KERNEL);
         fol.teardown();
         TestResult::Pass
     }
@@ -1509,17 +1538,19 @@ pub mod tests {
     /// transient capacity refusal becomes a permanent one for that prefix.
     fn test_refused_admission_leaves_no_leaf() -> TestResult {
         let mut fol = Foliation::new(3, 64, 2, Policy::Foliation);
-        let id = fol.seq_create(MAX_SEQ_BLOCKS as u16).unwrap_or(usize::MAX);
+        let id = fol
+            .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+            .unwrap_or(usize::MAX);
         test_assert!(id != usize::MAX);
         // Three blocks fill the pool and stay referenced; every seal after that
         // is refused, each with a distinct key, so each would invent a leaf.
         for j in 0..(3 * BLOCK_TOKENS) {
-            test_assert!(fol.seq_append(id, 7100 + j as u32).is_ok());
+            test_assert!(fol.seq_append(id, KERNEL, 7100 + j as u32).is_ok());
         }
         let held = fol.seq_leaf(id, 2).unwrap_or(NONE);
         test_assert!(held != NONE);
         for j in 0..(20 * BLOCK_TOKENS) {
-            let r = fol.seq_append(id, 7500 + j as u32);
+            let r = fol.seq_append(id, KERNEL, 7500 + j as u32);
             if j < BLOCK_TOKENS - 1 {
                 // Still filling the buffer, so no seal is attempted yet.
                 test_assert!(r == Ok(3), "a partial block was refused");
@@ -1532,10 +1563,13 @@ pub mod tests {
         }
         test_assert_eq!(fol.stats().children_full, 0);
         test_assert_eq!(fol.stats().leaf_gc, 0);
-        test_assert_eq!(fol.seq_counts(id).map(|c| c.0), Some(3u16));
-        test_assert!(fol.leaf_resident(held), "a refused seal disturbed residency");
+        test_assert_eq!(fol.seq_counts(id, KERNEL).map(|c| c.0), Some(3u16));
+        test_assert!(
+            fol.leaf_resident(held),
+            "a refused seal disturbed residency"
+        );
         test_assert_eq!(fol.collapse_violations(), 0);
-        let _ = fol.seq_release(id);
+        let _ = fol.seq_release(id, KERNEL);
         fol.teardown();
         TestResult::Pass
     }
@@ -1556,18 +1590,18 @@ pub mod tests {
     /// second is driven directly.
     fn test_residency_implies_backing() -> TestResult {
         let mut fol = Foliation::new(6, 64, 4, Policy::Foliation);
-        let id = fol.seq_create(4).unwrap_or(usize::MAX);
+        let id = fol.seq_create(4, KERNEL).unwrap_or(usize::MAX);
         test_assert!(id != usize::MAX);
         for &t in &prefix_tokens(17_000, 3) {
-            let _ = fol.seq_append(id, t);
+            let _ = fol.seq_append(id, KERNEL, t);
         }
         // Churn so plaques are evicted and re-admitted under the same leaves.
         for k in 0..4u32 {
-            if let Ok(other) = fol.seq_create(2) {
+            if let Ok(other) = fol.seq_create(2, KERNEL) {
                 for &t in &prefix_tokens(18_000 + k * 1000, 2) {
-                    let _ = fol.seq_append(other, t);
+                    let _ = fol.seq_append(other, KERNEL, t);
                 }
-                let _ = fol.seq_release(other);
+                let _ = fol.seq_release(other, KERNEL);
             }
         }
         let s = fol.stats();
@@ -1601,7 +1635,7 @@ pub mod tests {
             s.frames_freed == s.frames_backed,
             "teardown did not return every frame"
         );
-        let _ = fol.seq_release(id);
+        let _ = fol.seq_release(id, KERNEL);
         TestResult::Pass
     }
 
@@ -1633,14 +1667,14 @@ pub mod tests {
     /// compile time by the `const _` assertion beside `fold_key`.
     fn test_colliding_blocks_do_not_share() -> TestResult {
         let mut fol = Foliation::new(16, 64, 4, Policy::Foliation);
-        let a = fol.seq_create(1).unwrap_or(usize::MAX);
-        let b = fol.seq_create(1).unwrap_or(usize::MAX);
+        let a = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
+        let b = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
         test_assert!(a != usize::MAX && b != usize::MAX);
         for &t in &COLLIDE_A {
-            test_assert!(fol.seq_append(a, t).is_ok());
+            test_assert!(fol.seq_append(a, KERNEL, t).is_ok());
         }
         for &t in &COLLIDE_B {
-            test_assert!(fol.seq_append(b, t).is_ok());
+            test_assert!(fol.seq_append(b, KERNEL, t).is_ok());
         }
         test_assert!(fol.seq_leaf(a, 0).is_some() && fol.seq_leaf(b, 0).is_some());
         test_assert!(
@@ -1652,8 +1686,8 @@ pub mod tests {
             "different tokens shared a frame on a key collision"
         );
         test_assert_eq!(fol.stats().shared, 0);
-        let _ = fol.seq_release(a);
-        let _ = fol.seq_release(b);
+        let _ = fol.seq_release(a, KERNEL);
+        let _ = fol.seq_release(b, KERNEL);
         fol.teardown();
         TestResult::Pass
     }
@@ -1663,17 +1697,50 @@ pub mod tests {
     /// up once in `referenced_evictions` and once in `collapse_violations`.
     fn test_teardown_under_live_seq_is_counted() -> TestResult {
         let mut fol = Foliation::new(8, 64, 2, Policy::Foliation);
-        let id = fol.seq_create(4).unwrap_or(usize::MAX);
+        let id = fol.seq_create(4, KERNEL).unwrap_or(usize::MAX);
         test_assert!(id != usize::MAX);
         for &t in &prefix_tokens(19_000, 3) {
-            test_assert!(fol.seq_append(id, t).is_ok());
+            test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
         }
         test_assert_eq!(fol.stats().referenced_evictions, 0);
         test_assert_eq!(fol.collapse_violations(), 0);
         fol.teardown();
         test_assert_eq!(fol.stats().referenced_evictions, 3);
         test_assert_eq!(fol.collapse_violations(), 3);
-        let _ = fol.seq_release(id);
+        let _ = fol.seq_release(id, KERNEL);
+        TestResult::Pass
+    }
+
+    /// A task may not append to, release, or read the counters of a sequence
+    /// another task opened. The refusal must look exactly like a missing
+    /// sequence, so it cannot be used to learn whether a prefix was written.
+    fn test_foreign_release_refused() -> TestResult {
+        const OWNER: u64 = 7;
+        const FOREIGN: u64 = 8;
+        let mut fol = Foliation::new(8, 64, 2, Policy::Foliation);
+        let id = fol.seq_create(4, OWNER).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(21_000, 2) {
+            test_assert!(fol.seq_append(id, OWNER, t).is_ok());
+        }
+        test_assert!(
+            fol.seq_release(id, FOREIGN) == Err(FoliationError::NoSuchSeq),
+            "a foreign task released another task's sequence"
+        );
+        test_assert!(
+            fol.seq_append(id, FOREIGN, 1) == Err(FoliationError::NoSuchSeq),
+            "a foreign task appended to another task's sequence"
+        );
+        test_assert!(
+            fol.seq_counts(id, FOREIGN).is_none(),
+            "a foreign task read another task's sequence counters"
+        );
+        test_assert_eq!(fol.seq_counts(id, OWNER), Some((2u16, 0u32, 2u32)));
+        let leaf = fol.seq_leaf(id, 0).unwrap_or(NONE);
+        test_assert!(leaf != NONE);
+        test_assert_eq!(fol.leaf_refcount(leaf), 1);
+        test_assert_eq!(fol.seq_release(id, OWNER), Ok(2u16));
+        fol.teardown();
         TestResult::Pass
     }
 
@@ -1729,6 +1796,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::teardown_under_live_seq_is_counted",
             test_teardown_under_live_seq_is_counted,
+        );
+        crate::testing::register_test(
+            "foliation::foreign_release_refused",
+            test_foreign_release_refused,
         );
         crate::testing::register_test("foliation::proof_line_passes", test_proof_line_passes);
     }

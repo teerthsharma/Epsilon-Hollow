@@ -1230,6 +1230,8 @@ The eviction scan carries its own `ponytail:` comment in the source naming the c
 | 133 | `SYS_KV_SEQ_STATS` | per-sequence blocks / hits / admits |
 | 134 | `SYS_KV_POLICY_STATS` | pool-wide counters |
 
+A sequence belongs to the task that opened it. 131–133 on a sequence another task opened return `ENOENT`, the same answer as an unused id, so a task can neither release someone else's blocks nor learn whether a sequence exists. Plaques themselves are still shared across tasks; ownership is per sequence, not per prefix.
+
 Notice what is missing.
 
 **There is no `SYS_KV_SHARE_PREFIX`.** There is no `share()`, no `dedupe()`, no `link_prefix()`, no `hint_reuse()`. Not because I ran out of syscall numbers — I have a whole decade of them sitting unused between blocks specifically so the next three subsystems can collide somewhere new and exciting.

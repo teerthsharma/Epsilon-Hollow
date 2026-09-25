@@ -1266,10 +1266,12 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             SyscallResult::ok(0)
         }
 
-        // arg0 = block budget. Returns the sequence id.
+        // arg0 = block budget. Returns the sequence id, owned by the caller.
+        // The KV arms below refuse a sequence the caller did not open with
+        // ENOENT, the same answer as an unused id, as `fd_lookup` does for fds.
         SYS_KV_SEQ_CREATE => {
             let budget = arg0.min(u64::from(u16::MAX)) as u16;
-            match crate::ml_engine::foliation::with_global(|f| f.seq_create(budget)) {
+            match crate::ml_engine::foliation::with_global(|f| f.seq_create(budget, task_id)) {
                 Ok(id) => SyscallResult::ok(id as i64),
                 Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
             }
@@ -1278,7 +1280,7 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_KV_SEQ_APPEND => {
             let id = arg0 as usize;
             let token = arg1 as u32;
-            match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, token)) {
+            match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, task_id, token)) {
                 Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
                 Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
             }
@@ -1286,16 +1288,18 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         // arg0 = sequence id. Returns blocks released; shared blocks survive.
         SYS_KV_SEQ_RELEASE => {
             let id = arg0 as usize;
-            match crate::ml_engine::foliation::with_global(|f| f.seq_release(id)) {
+            match crate::ml_engine::foliation::with_global(|f| f.seq_release(id, task_id)) {
                 Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
                 Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
             }
         }
         // arg0 = sequence id. Reports how much of it was shared on entry.
-        SYS_KV_SEQ_STATS => match crate::ml_engine::foliation::seq_stats_line(arg0 as usize) {
-            Some(line) => SyscallResult::with_data(0, line),
-            None => SyscallResult::err(2), // ENOENT
-        },
+        SYS_KV_SEQ_STATS => {
+            match crate::ml_engine::foliation::seq_stats_line(arg0 as usize, task_id) {
+                Some(line) => SyscallResult::with_data(0, line),
+                None => SyscallResult::err(2), // ENOENT
+            }
+        }
         SYS_KV_POLICY_STATS => {
             SyscallResult::with_data(0, crate::ml_engine::foliation::global_stats_line())
         }
