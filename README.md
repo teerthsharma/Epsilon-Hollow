@@ -30,6 +30,10 @@
 </p>
 
 <p align="center">
+  <a href="https://teerthsharma.github.io/Epsilon-Hollow/"><strong>Project page: every certify-or-refuse result as a live figure →</strong></a>
+</p>
+
+<p align="center">
   <a href="#quick-start">🚀 Quick Start</a> •
   <a href="#honest-status-dashboard">📊 Status</a> •
   <a href="#architecture">🏛️ Architecture</a> •
