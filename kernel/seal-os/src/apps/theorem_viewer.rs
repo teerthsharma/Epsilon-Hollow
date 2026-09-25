@@ -1,7 +1,15 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Real-time theorem activity dashboard - T1-T10 core state visualization.
+//! Theorem dashboard: the boot-verification state of T1-T10 and the current
+//! CPU's scheduler governor epsilon.
+//!
+//! The epsilon line is read from the scheduler on every render. The other
+//! quantities T1-T5 name (Voronoi lookups, prefetch accuracy, entropy, Betti-0,
+//! hyperbolic ratio, teleports) have no kernel-wide source this app can read,
+//! so they are shown as `not measured` with an empty bar rather than as a
+//! number. `ManifoldFS::stats()` carries entropy, teleports and the hyperbolic
+//! ratio, but only for the instance its owner holds.
 
 use alloc::format;
 use core::sync::atomic::Ordering;
@@ -17,29 +25,11 @@ const VALUE_FG: u32 = 0x0089B4FA;
 const BAR_BG: u32 = 0x00252535;
 const BAR_FG: u32 = 0x00CBA6F7;
 
-pub struct TheoremViewer {
-    pub epsilon: f64,
-    pub betti_0: usize,
-    pub prefetch_accuracy: f64,
-    pub entropy: f64,
-    pub hyperbolic_ratio: f64,
-    pub teleports: u64,
-    pub lookups: u64,
-    pub schedule_count: u64,
-}
+pub struct TheoremViewer;
 
 impl TheoremViewer {
     pub fn new() -> Self {
-        Self {
-            epsilon: 0.042,
-            betti_0: 3,
-            prefetch_accuracy: 75.0,
-            entropy: 1.234,
-            hyperbolic_ratio: 4.2,
-            teleports: 0,
-            lookups: 0,
-            schedule_count: 0,
-        }
+        Self
     }
 
     pub fn render_to_window(&self, win: &mut Window) {
@@ -71,8 +61,8 @@ impl TheoremViewer {
             y,
             "T1/TSS",
             "Topological State Space",
-            &format!("Voronoi: 8 cells, {} lookups, O(1)", self.lookups),
-            1.0,
+            "Voronoi lookups: not measured",
+            0.0,
             cw,
             0,
         );
@@ -84,11 +74,8 @@ impl TheoremViewer {
             y,
             "T2/SCM",
             "Spectral Contraction Map",
-            &format!(
-                "Prefetch accuracy: {:.0}%, rho=0.700",
-                self.prefetch_accuracy
-            ),
-            self.prefetch_accuracy / 100.0,
+            "Prefetch accuracy: not measured",
+            0.0,
             cw,
             1,
         );
@@ -100,27 +87,22 @@ impl TheoremViewer {
             y,
             "T3/GMC",
             "Geometric Measure Convergence",
-            &format!(
-                "Entropy: H={:.3} bits, Betti-0={}",
-                self.entropy, self.betti_0
-            ),
-            (self.entropy / 3.0).min(1.0),
+            "Entropy, Betti-0: not measured",
+            0.0,
             cw,
             2,
         );
         y += 46;
 
+        let epsilon = crate::process::scheduler::governor_epsilon();
         render_theorem(
             win,
             8,
             y,
             "T4/AGCR",
             "Adaptive Geometric Convergence Rate",
-            &format!(
-                "epsilon={:.4}, {} scheduler ticks",
-                self.epsilon, self.schedule_count
-            ),
-            self.epsilon.min(1.0),
+            &format!("governor epsilon={:.4}", epsilon),
+            epsilon.min(1.0),
             cw,
             3,
         );
@@ -132,11 +114,8 @@ impl TheoremViewer {
             y,
             "T5/HCS",
             "Hyperbolic Curvature Scaling",
-            &format!(
-                "ratio={:.1}x, {} teleports",
-                self.hyperbolic_ratio, self.teleports
-            ),
-            (self.hyperbolic_ratio / 10.0).min(1.0),
+            "Hyperbolic ratio, teleports: not measured",
+            0.0,
             cw,
             4,
         );
