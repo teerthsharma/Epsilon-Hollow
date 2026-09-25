@@ -8,13 +8,15 @@
 
 use aether_core::manifold::TimeDelayEmbedder;
 use aether_core::trajectory_shape::{
-    fold_score, quartile_drift, DelayPoint, EMBED_DIM, MAX_POINTS,
+    fold_score, participation_ratio, quartile_drift, DelayPoint, EMBED_DIM, MAX_POINTS,
 };
 
 /// `stratum::DEFAULT_CALIBRATION.loop_min`.
 const LOOP_MIN: f64 = 0.125;
 /// `stratum::DEFAULT_CALIBRATION.resid_rise_min`.
 const RESID_RISE_MIN: f64 = 0.05;
+/// `stratum::DEFAULT_CALIBRATION.spread_trend_max`.
+const SPREAD_TREND_MAX: f64 = 0.45;
 /// `stratum::PROOF_STEPS`.
 const STEPS: usize = 128;
 
@@ -175,5 +177,58 @@ fn monotone_controls_score_zero() {
         let v: Vec<f64> = (0..STEPS).map(|t| f(t as f64)).collect();
         let w = window(&v, &v);
         assert_eq!(fold_score(&w.pts).1, 0.0, "monotone {name} must score 0");
+    }
+}
+
+/// `stratum::ProofCase::Underfit`'s training loss, in the window, times `scale`.
+fn underfit_train(scale: f64) -> Vec<f64> {
+    let train: Vec<f64> = (0..STEPS)
+        .map(|t| scale * (1.0 - 0.004 * t as f64))
+        .collect();
+    let val: Vec<f64> = train.iter().map(|v| v + scale * 0.02).collect();
+    window(&train, &val).train
+}
+
+/// Scaling every loss by `c > 0` scales every autocovariance by `c²`, so the
+/// participation ratio cannot move. It did below `c ≈ 1e-3`: an absolute
+/// `1e-12` floor on the 4th-power denominator read the underfit fixture at
+/// `1e-3` as spread 1.0 (converged) instead of 0.353 (trend).
+///
+/// Tolerance 1e-9: the scaled series differs from the exact scaling by one
+/// rounding per element, which moves the ratio by O(1e-15).
+#[test]
+fn participation_ratio_is_scale_invariant_downward() {
+    let base = participation_ratio(&underfit_train(1.0));
+    assert!(
+        base <= SPREAD_TREND_MAX,
+        "the fixture must read as a trend at scale 1, or this proves nothing (spread {base})"
+    );
+    for scale in [1e-2, 1e-3, 1e-6, 1e-9, 1e3] {
+        let pr = participation_ratio(&underfit_train(scale));
+        assert!(
+            (pr - base).abs() < 1e-9,
+            "scale {scale}: spread {pr} differs from {base} at scale 1"
+        );
+    }
+}
+
+/// A variation at the level of rounding cannot be told apart from rounding, so
+/// the ratio is refused (NaN, which `stratum`'s `measurable()` fails closed on)
+/// rather than reported. An exactly constant series is not refused: equality
+/// is exact, and a flat loss is converged.
+#[test]
+fn participation_ratio_refuses_rounding_level_variation() {
+    let wiggle: Vec<f64> = (0..MAX_POINTS)
+        .map(|i| if i % 2 == 0 { 1.0 } else { 1.0 + f64::EPSILON })
+        .collect();
+    let pr = participation_ratio(&wiggle);
+    assert!(pr.is_nan(), "a one-ulp wiggle must be refused, got {pr}");
+
+    for c in [0.25, 0.1, 1e-300, 0.0] {
+        assert_eq!(
+            participation_ratio(&[c; MAX_POINTS]),
+            1.0,
+            "an exactly constant series at {c} is converged"
+        );
     }
 }

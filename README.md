@@ -910,7 +910,9 @@ The interpretation is the good part:
 
 I have read a lot of definitions of convergence and that one is my favourite because it needs no reference to a target value, a patience counter, or a human deciding what "low enough" is.
 
-A constant loss has `c₀ = 0`, hits the degenerate branch, and reports `1.0`. A flat loss is converged, not a trend. This is the correct answer and it took me two attempts.
+An exactly constant loss reports `1.0`: a flat loss is converged, not a trend, and equality is checked on the stored values, so that branch is exact.
+
+Anything short of exactly constant is certified or refused. The ratio is invariant under rescaling the loss, and it used to not be: the degenerate branch was an absolute floor, `denominator < 1e-12`, on a denominator that scales as the fourth power of the loss. The underfit fixture scaled by `1e-3` fell under it and read `spread = 1.0`, verdict `WellFit`; at `×1` and `×1e-2` it reads `0.353`, `Underfit`. The floor is now relative and a priori: with `M = max|xᵢ|` and `n` points, each deviation from the mean carries a rounding error `e ≤ (n+1)·ε·M`, and the ratio is reported only when `√c₀ ≥ 3e / 10⁻⁶`, which holds every autocovariance to within `10⁻⁶·c₀`. Below that, the loss varies by less than its own rounding can resolve and the ratio is NaN, which `measurable()` fails closed on (`Collapsing`), rather than a `1.0` nobody measured. Host tests: `participation_ratio_is_scale_invariant_downward` (scales `1e-9` to `1e3`, agreement within `1e-9`) and `participation_ratio_refuses_rounding_level_variation` (a one-ulp wiggle refuses, exact constants report `1.0`).
 
 ### Why this is not a loss curve with a hat on
 

@@ -231,6 +231,9 @@ pub struct FitSignals {
     pub shatter: f64,
     /// Participation ratio of the training-loss delay-embedding covariance, in
     /// [1/3, 1]. 1/3 = rank-1 (trend dominates), 1 = isotropic (converged).
+    /// NaN when the loss varies by less than its own rounding can resolve (see
+    /// `aether_core::trajectory_shape::participation_ratio`); an exactly
+    /// constant loss is 1.0.
     pub spread: f64,
     /// Bounded relative quartile drift of the residual `val − train`, in (−1, 1).
     pub resid_drift: f64,
@@ -1360,6 +1363,25 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The same invariant downward. An absolute floor on the participation
+    /// ratio's denominator, which scales as c⁴, read the underfit fixture at
+    /// 1e-3 as spread 1.0 and the verdict `WellFit`.
+    fn test_scale_equivariance_downward() -> TestResult {
+        let mut a = FitStream::new(DEFAULT_CALIBRATION);
+        let mut b = FitStream::new(DEFAULT_CALIBRATION);
+        for t in 0..PROOF_STEPS {
+            let (tr, va) = ProofCase::Underfit.sample(t);
+            a.observe(tr, va);
+            b.observe(tr * 1e-3, va * 1e-3);
+        }
+        test_assert_eq!(b.regime(), Regime::Underfit);
+        test_assert!(
+            libm::fabs(a.signals().spread - b.signals().spread) < 1e-9,
+            "spread must be scale invariant downward"
+        );
+        TestResult::Pass
+    }
+
     /// TDA invariant: translating the loss axis leaves the geometry of the
     /// delay embedding unchanged up to a rigid motion, so every signal must hold.
     fn test_translation_invariance() -> TestResult {
@@ -1496,6 +1518,10 @@ pub mod tests {
             test_calibrate_rejects_unusable_ranges,
         );
         crate::testing::register_test("stratum::scale_equivariance", test_scale_equivariance);
+        crate::testing::register_test(
+            "stratum::scale_equivariance_downward",
+            test_scale_equivariance_downward,
+        );
         crate::testing::register_test(
             "stratum::translation_invariance",
             test_translation_invariance,

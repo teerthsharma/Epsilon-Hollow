@@ -257,13 +257,32 @@ pub fn fold_score(raw: &[DelayPoint]) -> (f64, f64) {
 /// `C` is symmetric Toeplitz in the autocovariances `c₀, c₁, c₂`, so
 /// `tr(C) = 3c₀`, `‖C‖_F² = 3c₀² + 4c₁² + 2c₂²`, and
 /// `PR = tr(C)²/(3‖C‖_F²) = 3c₀²/(3c₀² + 4c₁² + 2c₂²) ∈ [1/3, 1]`.
-/// A constant signal has `c₀ = 0` and is reported as 1.0 — a flat loss is
-/// converged, not a trend.
+/// An exactly constant signal is reported as 1.0 — a flat loss is converged,
+/// not a trend. Equality is checked on the stored values, so this is exact.
+///
+/// Otherwise the ratio is certified or refused, never floored. The ratio is
+/// invariant under `x → s·x`, so any decision about whether `c₀` is "too small"
+/// has to be relative too; an absolute floor on the `c⁴`-scale denominator
+/// (formerly `1e-12`) read the underfit fixture scaled by `1e-3` as 1.0.
+///
+/// The bound is a priori. With `M = max|xᵢ|`, naive summation puts the mean
+/// within `(n−1)·ε·M` of exact and the subtraction adds at most `2·ε·M`, so each
+/// deviation `xᵢ − x̄` carries an error `e ≤ (n+1)·ε·M`. By Cauchy–Schwarz each
+/// autocovariance then carries an error of at most `2e·√c₀ + e²`, which is
+/// within `PR_REL_TOL · c₀` once `√c₀ ≥ 3e / PR_REL_TOL`. Below that the signal's
+/// variation is not resolved from its own rounding, and the function returns
+/// NaN — which `stratum`'s `FitSignals::measurable` fails closed on — rather
+/// than a ratio it did not measure. A non-finite `M` or `c₀` also refuses.
 pub fn participation_ratio(x: &[f64]) -> f64 {
+    /// Relative accuracy each autocovariance is certified to before the ratio
+    /// is reported. The ratio then moves by at most about `8 · PR_REL_TOL`.
+    const PR_REL_TOL: f64 = 1e-6;
+
     let n = x.len();
-    if n < EMBED_DIM {
+    if n < EMBED_DIM || x.iter().all(|&v| v == x[0]) {
         return 1.0;
     }
+    let big = x.iter().fold(0.0f64, |a, &v| a.max(libm::fabs(v)));
     let mean = x.iter().sum::<f64>() / n as f64;
     let cov = |lag: usize| -> f64 {
         let m = n - lag;
@@ -273,11 +292,15 @@ pub fn participation_ratio(x: &[f64]) -> f64 {
         }
         acc / m as f64
     };
-    let (c0, c1, c2) = (cov(0), cov(1), cov(2));
-    let denom = 3.0 * c0 * c0 + 4.0 * c1 * c1 + 2.0 * c2 * c2;
-    if denom < EPS_FLOOR {
-        return 1.0;
+    let c0 = cov(0);
+    let resolved = 3.0 * (n as f64 + 1.0) * f64::EPSILON * big / PR_REL_TOL;
+    // `>=` is false against NaN, so a NaN `c₀` refuses as well.
+    let certified = resolved.is_finite() && libm::sqrt(c0) >= resolved;
+    if !certified {
+        return f64::NAN;
     }
+    let (c1, c2) = (cov(1), cov(2));
+    let denom = 3.0 * c0 * c0 + 4.0 * c1 * c1 + 2.0 * c2 * c2;
     (3.0 * c0 * c0 / denom).clamp(1.0 / 3.0, 1.0)
 }
 
