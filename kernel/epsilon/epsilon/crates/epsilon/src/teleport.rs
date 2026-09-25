@@ -12,7 +12,7 @@
 //!   EmbeddingBridge  →  ManifoldPayload  →  sys_teleport_context
 //!                                                    │
 //!                        ┌───────────────────────────┼───────────────────────────┐
-//!                        │   1. SurgeryPermit acquire (governor clutch zeroed)   │
+//!                        │   1. SurgeryPermit acquire (β, last_error zeroed)     │
 //!                        │   2. inject_into_void(payload)                        │
 //!                        │   3. assimilate() — wake-up rescan                    │
 //!                        │   4. complete_surgery(permit) — restore β             │
@@ -132,8 +132,8 @@ pub enum TeleportResult {
 /// Orchestrates the full topological surgery pipeline in a single atomic
 /// sequence:
 ///
-/// 1. **Governor Clutch** — acquire a [`SurgeryPermit`](crate::SurgeryPermit),
-///    zeroing the derivative gain β to prevent oscillation panic.
+/// 1. **Governor Bracket** — acquire a [`SurgeryPermit`](crate::SurgeryPermit),
+///    which saves and zeroes β and `last_error`.
 /// 2. **Void Injection** — call `manifold.inject_into_void(payload)`, which
 ///    verifies Betti constraints and writes the payload into the hollow void.
 /// 3. **Wake-Up Rescan** — call `manifold.assimilate()`, merging the payload
@@ -141,11 +141,16 @@ pub enum TeleportResult {
 /// 4. **Governor Restore** — call `governor.complete_surgery(permit)`,
 ///    restoring β and the error history.
 ///
+/// No governor tick runs between steps 1 and 4, so the bracket has no
+/// observable effect: the governor's (ε, `last_error`, β, `tick_count`) is
+/// bit-identical before and after every call, successful or not. It is
+/// kept so a future caller with a measured deviation can tick inside it.
+///
 /// # Arguments
 ///
 /// - `manifold`: Mutable reference to the **receiving** agent's manifold.
 /// - `payload`: The [`ManifoldPayload<D>`] produced by [`EmbeddingBridge`](crate::EmbeddingBridge).
-/// - `governor`: The receiving agent's [`SurgeryGovernor`] (for clutch management).
+/// - `governor`: The receiving agent's [`SurgeryGovernor`] (bracketed around the surgery; left unchanged).
 /// - `target`: Where to inject — `LocalVoid` or `RemoteVoid(descriptor)`.
 ///
 /// # Returns
@@ -198,7 +203,7 @@ pub fn sys_teleport_context<const D: usize>(
         return TeleportResult::VoidBusy;
     }
 
-    // ── Step 1: Governor Clutch — zero β for exactly one tick ────────────────
+    // ── Step 1: Governor Bracket — save and zero β; no tick runs inside ─────
     let permit = governor.prepare_for_surgery();
 
     // ── Step 2: Void Injection — Betti-guarded write ─────────────────────────

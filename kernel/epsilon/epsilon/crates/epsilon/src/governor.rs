@@ -25,9 +25,19 @@
 //! violently triggers the derivative gain (Î²) and forces a Quiescent Reset,
 //! erasing the Injected data.
 //!
-//! **Solution**: Before injection, the kernel acquires a `SurgeryPermit`.
-//! The governor suspends the derivative penalty for exactly one tick
-//! (Î² = 0 for t_surge) to absorb the state change without oscillation panic.
+//! **What the code does**: [`SurgeryGovernor::prepare_for_surgery`] saves
+//! `beta` and `last_error` and sets both to 0; [`SurgeryGovernor::complete_surgery`]
+//! restores them. The pair zeroes the derivative term only for `adapt` calls
+//! made while the permit is held. It does not run a tick itself.
+//!
+//! The pre-print (Section 3.1) describes this window as suspending the
+//! derivative penalty "for exactly one tick" to absorb the injection. No
+//! caller in this crate honours that: `sys_teleport_context` brackets the
+//! assimilation with the permit but runs no governor tick inside it, so the
+//! governor's (epsilon, last_error, beta, tick_count) is bit-identical before
+//! and after a teleport, and the bracket has no observable effect there. The
+//! teleport cannot supply a measured deviation for such a tick, and inventing
+//! one moved epsilon by a value no sensor produced.
 //!
 //! â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
@@ -137,24 +147,23 @@ impl SurgeryGovernor {
     /// Prepare the governor for topological surgery.
     ///
     /// Snapshots the current derivative state (`last_error`, `beta`), then
-    /// zeros both to prevent the PD controller from oscillation panic when
-    /// de/dt â†’ âˆž during instantaneous context injection.
+    /// zeros both. Any [`adapt`](Self::adapt) call made before
+    /// [`complete_surgery()`](Self::complete_surgery) therefore applies the
+    /// proportional term only.
+    ///
+    /// This runs no tick. If no `adapt` happens while the permit is held, the
+    /// prepare/complete pair leaves the governor exactly as it found it; that
+    /// is the case in `sys_teleport_context`. See the module doc.
     ///
     /// Returns a [`SurgeryPermit`] that MUST be passed to
     /// [`complete_surgery()`](Self::complete_surgery) after injection.
-    ///
-    /// # Pre-Print Reference (Section 3.1)
-    /// ```text
-    /// During surgery: Î² = 0, last_error = 0 for t_surge
-    /// This absorbs the state change without oscillation panic.
-    /// ```
     pub fn prepare_for_surgery(&mut self) -> SurgeryPermit {
         let permit = SurgeryPermit {
             saved_last_error: self.last_error,
             saved_beta: self.beta,
         };
 
-        // Zero derivative momentum for exactly one tick
+        // Zero derivative state until complete_surgery restores it.
         self.last_error = 0.0;
         self.beta = 0.0;
 
@@ -164,7 +173,8 @@ impl SurgeryGovernor {
     /// Restore the governor after topological surgery completes.
     ///
     /// Re-enables the derivative gain and error history from the permit,
-    /// allowing the PD controller to resume oscillation damping.
+    /// allowing the PD controller to resume oscillation damping. Any
+    /// `last_error` produced by an `adapt` inside the window is discarded.
     pub fn complete_surgery(&mut self, permit: SurgeryPermit) {
         self.last_error = permit.saved_last_error;
         self.beta = permit.saved_beta;
@@ -194,7 +204,8 @@ impl Default for SurgeryGovernor {
 /// # Invariants
 /// - Created only by [`SurgeryGovernor::prepare_for_surgery()`]
 /// - Consumed only by [`SurgeryGovernor::complete_surgery()`]
-/// - While this permit exists, the governor's Î² = 0 (derivative disabled)
+/// - While this permit exists, the governor's beta is 0, so any `adapt` in
+///   the window has no derivative term. Holding the permit runs no tick.
 #[derive(Debug)]
 pub struct SurgeryPermit {
     saved_last_error: f64,
