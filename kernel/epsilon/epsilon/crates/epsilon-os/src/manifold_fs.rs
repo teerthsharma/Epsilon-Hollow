@@ -248,9 +248,9 @@ impl ManifoldFS {
             return Err(FsError::AlreadyExists);
         }
 
-        // T4: Governor clutch for surgery
-        let pre_epsilon = self.governor.epsilon();
-        self.governor_tick(0.0); // zero deviation during surgery
+        // T4: no governor tick runs inside surgery (the epsilon crate's
+        // SurgeryPermit contract), so ε is the same before and after.
+        let epsilon = self.governor.epsilon();
 
         // The actual "teleport": move directory entry (O(1))
         // The ManifoldPayload stays in the same inode — we just reparent it
@@ -266,10 +266,6 @@ impl ManifoldFS {
             inode.metadata.modified_ms = now_ms();
         }
 
-        // T4: Governor restore
-        self.governor_tick(1.0);
-        let post_epsilon = self.governor.epsilon();
-
         let elapsed = t0.elapsed();
         self.total_teleports += 1;
 
@@ -282,8 +278,8 @@ impl ManifoldFS {
         self.log_event(
             "T1/TSS+T4/AGCR",
             format!(
-                "teleported '{}' ({} bytes) in {:?} [governor ε: {:.4} → {:.4}]",
-                name, original_size, elapsed, pre_epsilon, post_epsilon
+                "teleported '{}' ({} bytes) in {:?} [governor ε held at {:.4}]",
+                name, original_size, elapsed, epsilon
             ),
         );
 
@@ -299,7 +295,7 @@ impl ManifoldFS {
                 .get(&inode_id)
                 .map(|i| i.payload.point_count)
                 .unwrap_or(0),
-            governor_epsilon: post_epsilon,
+            governor_epsilon: epsilon,
         })
     }
 
@@ -955,6 +951,20 @@ mod tests {
         let hit = hit.unwrap();
         assert!((hit.similarity - 1.0).abs() < 1e-12);
         assert_ne!(hit.cell, smallest, "the merge re-homed the file");
+    }
+
+    #[test]
+    fn test_mv_leaves_governor_epsilon_bit_identical() {
+        // Surgery brackets a reparent; no governor tick runs inside it.
+        let mut fs = ManifoldFS::new();
+        let d = fs.mkdir("d", 0).unwrap();
+        fs.store_text("x", "payload", 0).unwrap();
+        let pre = fs.governor.epsilon();
+        let ticks = fs.governor_ticks;
+        let r = fs.teleport("x", 0, d).unwrap();
+        assert_eq!(fs.governor.epsilon().to_bits(), pre.to_bits(), "pre ε = {pre}");
+        assert_eq!(r.governor_epsilon.to_bits(), pre.to_bits());
+        assert_eq!(fs.governor_ticks, ticks, "no tick during /mv");
     }
 
     #[test]
