@@ -250,10 +250,10 @@ impl ManifoldMemory {
         self.tss_active = true;
     }
 
+    /// Great-circle distance with theta as colatitude, the convention
+    /// `vec_to_spherical` produces (verified haversine kernel).
     fn great_circle(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
-        let cos_d =
-            libm::sin(t1) * libm::sin(t2) + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
-        libm::acos(cos_d.clamp(-1.0, 1.0))
+        aether_verified::aether_tss::great_circle_distance(t1, p1, t2, p2)
     }
 
     /// Store an episode. Returns its absolute index.
@@ -1250,6 +1250,20 @@ mod tests {
         for cell in &mem.cell_episodes {
             assert!(cell.is_empty());
         }
+    }
+
+    #[test]
+    fn test_great_circle_uses_colatitude() {
+        // `vec_to_spherical` returns theta as colatitude, so two equator
+        // points a quarter turn apart are pi/2 apart, not 0.
+        use core::f64::consts::FRAC_PI_2;
+        let d = ManifoldMemory::great_circle(FRAC_PI_2, 0.0, FRAC_PI_2, FRAC_PI_2);
+        assert!((d - FRAC_PI_2).abs() < 1e-12, "d = {d}");
+        // And it agrees with the angle between the unit vectors themselves.
+        let (t1, p1) = ManifoldMemory::vec_to_spherical(&[1.0, 0.0, 1.0]);
+        let (t2, p2) = ManifoldMemory::vec_to_spherical(&[0.0, 1.0, 0.0]);
+        let d = ManifoldMemory::great_circle(t1, p1, t2, p2);
+        assert!((d - FRAC_PI_2).abs() < 1e-12, "d = {d}");
     }
 
     fn unit(dim: usize, terms: &[(usize, f64)]) -> Vec<f64> {

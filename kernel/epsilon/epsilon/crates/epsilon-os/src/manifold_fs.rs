@@ -870,13 +870,12 @@ mod tests {
         // Rust-related files should score higher
     }
 
-    /// A filesystem whose files actually spread over the Voronoi cells.
+    /// A filesystem whose files spread over the Voronoi cells.
     ///
-    /// The default centroids all sit on the equator (theta = pi/2), where
-    /// aether-core's `great_circle_distance` (latitude formula, colatitude
-    /// inputs) loses the phi term, so nearly every file lands in cell 0.
-    /// Centroids spread in both theta and phi split the files under either
-    /// convention.
+    /// Centroids spread in both theta and phi, so the fixture does not rely
+    /// on the equatorial defaults. Under the latitude formula aether-core's
+    /// `great_circle_distance` used before ada7e1c, those defaults lost the
+    /// phi term and sent nearly every file to cell 0.
     fn spread_fs() -> ManifoldFS {
         let mut fs = ManifoldFS::new();
         let mut spread = [(0.0, 0.0); VORONOI_CELLS];
