@@ -324,7 +324,7 @@ impl Foliation {
             seqs,
             policy,
             tick: 0,
-            rng: 0x2545_F491_4F6C_DD1D,
+            rng: null_seed(0),
             oracle: Vec::new(),
             stats: FoliationStats::default(),
         }
@@ -925,7 +925,18 @@ fn trace_keys(trace: &[Vec<u32>]) -> Vec<u64> {
     keys
 }
 
+/// Seeds the `Policy::Random` null is replayed under in the boot proof.
+const NULL_SEEDS: u64 = 32;
+
+/// Seed `i` of the random null. Seed 0 is the generator's construction seed.
+const fn null_seed(i: u64) -> u64 {
+    0x2545_F491_4F6C_DD1D ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
 struct Replay {
+    /// Digest of which leaves were resident at the end of the trace. Two runs
+    /// with different digests made different victim choices.
+    resident_digest: u64,
     hit_bp: u64,
     evictions: u64,
     descents: u64,
@@ -937,8 +948,10 @@ struct Replay {
     frames_failed: u64,
 }
 
-fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> Replay {
+/// Replay `trace` under `policy`. `seed` drives `Policy::Random` only.
+fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay {
     let mut fol = Foliation::new(BENCH_POOL_BLOCKS, BENCH_LEAF_ARENA, BENCH_MAX_SEQS, policy);
+    fol.rng = seed;
     if policy == Policy::Belady {
         fol.set_oracle(keys.to_vec());
     }
@@ -954,10 +967,14 @@ fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> Replay {
         let _ = fol.seq_release(id, KERNEL);
     }
     let violations = fol.collapse_violations();
+    let resident_digest = (0..fol.leaves.len() as u32)
+        .filter(|&i| fol.leaves[i as usize].slot != NONE)
+        .fold(0, |h, i| fold_key(h, &[i]));
     let s = fol.stats();
     fol.teardown();
     let after = fol.stats();
     Replay {
+        resident_digest,
         hit_bp: (s.shared * 10_000).checked_div(s.descents).unwrap_or(0),
         evictions: s.evictions,
         descents: s.descents,
@@ -1120,10 +1137,33 @@ pub fn foliation_proof_line() -> String {
     let keys = trace_keys(&trace);
     let tokens: usize = trace.iter().map(|t| t.len()).sum();
 
-    let fo = replay(Policy::Foliation, &trace, &keys);
-    let lru = replay(Policy::Lru, &trace, &keys);
-    let rnd = replay(Policy::Random, &trace, &keys);
-    let opt = replay(Policy::Belady, &trace, &keys);
+    let fo = replay(Policy::Foliation, &trace, &keys, null_seed(0));
+    let lru = replay(Policy::Lru, &trace, &keys, null_seed(0));
+    let rnd = replay(Policy::Random, &trace, &keys, null_seed(0));
+    let opt = replay(Policy::Belady, &trace, &keys, null_seed(0));
+
+    // The random null is a distribution over seeds, not the single draw in
+    // `rnd` (seed 0, kept so `hit_bp_random` stays comparable across proof
+    // runs). Every seed runs at the same budget on the same trace and must
+    // hold the same safety and memory invariants.
+    let mut null_beaten = 0u64;
+    let mut null_min = u64::MAX;
+    let mut null_max = 0u64;
+    let mut null_ok = true;
+    let mut digests = Vec::new();
+    for i in 0..NULL_SEEDS {
+        let r = replay(Policy::Random, &trace, &keys, null_seed(i));
+        null_beaten += u64::from(fo.hit_bp > r.hit_bp);
+        null_min = null_min.min(r.hit_bp);
+        null_max = null_max.max(r.hit_bp);
+        null_ok &= r.referenced_evictions == 0
+            && r.collapse_violations == 0
+            && r.descents == fo.descents
+            && r.frames_freed == r.frames_backed;
+        digests.push(r.resident_digest);
+    }
+    digests.sort_unstable();
+    digests.dedup();
 
     let (shared_blocks, refcount_after, survivors, frames_identical) = share_and_refcount_probe();
     let (budget_refused, exhaustion_refused, referenced_free_refused) = refusal_probe();
@@ -1149,7 +1189,8 @@ pub fn foliation_proof_line() -> String {
     // The offline optimum must dominate every realizable policy on the same
     // candidate set. If it does not, the benchmark is measuring something else.
     let oracle_sane = opt.hit_bp >= fo.hit_bp && opt.hit_bp >= lru.hit_bp;
-    let trace_ok = fo.descents == lru.descents
+    let trace_ok = null_ok
+        && fo.descents == lru.descents
         && fo.descents == rnd.descents
         && fo.descents == opt.descents
         && fo.descents as usize == keys.len();
@@ -1175,6 +1216,8 @@ shared_descents={} bytes_saved={} \
 probe_shared_blocks={} probe_frames_identical={} probe_refcount_after_partial_free={} probe_survivors_resident={} \
 evictions_foliation={} evictions_lru={} evictions_random={} \
 hit_bp_foliation={} hit_bp_lru={} hit_bp_random={} hit_bp_belady={} gap_closed_bp={} \
+random_seeds={} hit_bp_random_min={} hit_bp_random_max={} random_distinct_outcomes={} \
+foliation_beats_random={}/{} \
 referenced_evictions={} collapse_violations={} \
 refused_budget={} refused_exhaustion={} refused_referenced_free={} \
 complexity=descend<={}_children,evict<={}_plaques,lookup=O(1)_indexed \
@@ -1204,6 +1247,12 @@ result={}",
         rnd.hit_bp,
         opt.hit_bp,
         gap_closed_bp,
+        NULL_SEEDS,
+        null_min,
+        null_max,
+        digests.len(),
+        null_beaten,
+        NULL_SEEDS,
         fo.referenced_evictions + lru.referenced_evictions + rnd.referenced_evictions,
         fo.collapse_violations + lru.collapse_violations,
         if budget_refused { 1 } else { 0 },
@@ -1238,7 +1287,11 @@ pub fn with_global<R>(f: impl FnOnce(&mut Foliation) -> R) -> R {
             ABI_POOL_BLOCKS,
             ABI_LEAF_ARENA,
             ABI_MAX_SEQS,
-            Policy::Foliation,
+            // LRU, not the foliation ranking: that ranking beats LRU only at a
+            // capacity cliff on the synthetic boot trace and ties or loses
+            // elsewhere. The boot proof selects every policy explicitly and
+            // does not read this default.
+            Policy::Lru,
         ));
     }
     f(guard.as_mut().expect("foliation initialised above"))
@@ -1262,9 +1315,15 @@ pub fn global_stats_line() -> String {
     with_global(|f| {
         let s = f.stats();
         format!(
-            "policy=foliation pool_blocks={} resident={} descents={} shared={} admits={} \
+            "policy={} pool_blocks={} resident={} descents={} shared={} admits={} \
 evictions={} frames_backed={} frames_freed={} leaf_gc={} children_full={} \
 refused_budget={} refused_exhaustion={} refused_referenced_free={}",
+            match f.policy() {
+                Policy::Foliation => "foliation",
+                Policy::Lru => "lru",
+                Policy::Random => "random",
+                Policy::Belady => "belady",
+            },
             ABI_POOL_BLOCKS,
             f.resident(),
             s.descents,
@@ -1645,9 +1704,9 @@ pub mod tests {
     fn test_policy_vs_lru_on_fixed_trace() -> TestResult {
         let trace = build_trace();
         let keys = trace_keys(&trace);
-        let fo = replay(Policy::Foliation, &trace, &keys);
-        let lru = replay(Policy::Lru, &trace, &keys);
-        let opt = replay(Policy::Belady, &trace, &keys);
+        let fo = replay(Policy::Foliation, &trace, &keys, null_seed(0));
+        let lru = replay(Policy::Lru, &trace, &keys, null_seed(0));
+        let opt = replay(Policy::Belady, &trace, &keys, null_seed(0));
         test_assert!(fo.descents == lru.descents, "policies saw different traces");
         test_assert!(
             fo.descents as usize == keys.len(),
@@ -1755,6 +1814,46 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The random null is a distribution, not one draw: the proof must replay
+    /// it under 32 seeds and report how many of them the foliation policy
+    /// beats, and the seeds must actually produce different victim choices.
+    fn test_random_null_spans_seeds() -> TestResult {
+        let line = foliation_proof_line();
+        test_assert!(
+            line.contains(" random_seeds=32 "),
+            "random null is not replayed over 32 seeds"
+        );
+        test_assert!(
+            line.contains("/32 "),
+            "fraction of seeds foliation beats is not reported"
+        );
+        let trace = build_trace();
+        let keys = trace_keys(&trace);
+        let first = replay(Policy::Random, &trace, &keys, null_seed(0)).resident_digest;
+        test_assert!(
+            (1..NULL_SEEDS).any(|i| {
+                replay(Policy::Random, &trace, &keys, null_seed(i)).resident_digest != first
+            }),
+            "every seed chose the same victims, so the null is one draw"
+        );
+        TestResult::Pass
+    }
+
+    /// The cache syscalls serve under LRU. The foliation ranking only wins at
+    /// a capacity cliff on a synthetic trace, so it is selected explicitly by
+    /// the boot proof and is not the default for real callers.
+    fn test_abi_default_is_lru() -> TestResult {
+        test_assert!(
+            with_global(|f| f.policy()) == Policy::Lru,
+            "ABI cache default is not LRU"
+        );
+        test_assert!(
+            global_stats_line().starts_with("policy=lru "),
+            "stats line misreports the ABI policy"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "foliation::prefix_sharing_dedupes",
@@ -1802,5 +1901,10 @@ pub mod tests {
             test_foreign_release_refused,
         );
         crate::testing::register_test("foliation::proof_line_passes", test_proof_line_passes);
+        crate::testing::register_test(
+            "foliation::random_null_spans_seeds",
+            test_random_null_spans_seeds,
+        );
+        crate::testing::register_test("foliation::abi_default_is_lru", test_abi_default_is_lru);
     }
 }
