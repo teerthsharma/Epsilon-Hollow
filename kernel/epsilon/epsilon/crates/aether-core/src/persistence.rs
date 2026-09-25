@@ -130,8 +130,8 @@ impl PersistenceDiagram {
     ///
     /// The counts are read from floating-point filtration values at exactly
     /// `radius`, so a merge height that rounds onto the radius decides the
-    /// answer: for `[0, 0]` and `[0.134, 0.847]` the computed distance is
-    /// `0.8575342558755306`, below the exact one, and `betti_at` at that radius
+    /// answer: for `[0, 0]` and `[0.1, 0.116]` the computed distance is
+    /// `0.15315351775261318`, below the exact one, and `betti_at` at that radius
     /// reports `beta_0 = 1` where the exact Rips complex has `beta_0 = 2`.
     /// Nothing in the result says the count is that fragile. For beta_0, use
     /// [`Self::betti0_certified_at`].
@@ -350,7 +350,7 @@ fn select_landmarks<const D: usize>(
 
             let nearest = landmarks
                 .iter()
-                .map(|landmark| point.distance(landmark))
+                .map(|landmark| distance(point, landmark))
                 .fold(f64::INFINITY, |a, b| a.min(b));
 
             if nearest > best_distance {
@@ -376,7 +376,7 @@ fn build_vietoris_rips_simplices<const D: usize>(
     let mut distances = vec![0.0; n * n];
     for i in 0..n {
         for j in i + 1..n {
-            let distance = points[i].distance(&points[j]);
+            let distance = distance(&points[i], &points[j]);
             distances[i * n + j] = distance;
             distances[j * n + i] = distance;
         }
@@ -480,7 +480,7 @@ fn build_lazy_witness_simplices<const D: usize>(
 
     for (w_idx, witness) in witnesses.iter().enumerate() {
         for (l_idx, landmark) in landmarks.iter().enumerate() {
-            let distance = witness.distance(landmark);
+            let distance = distance(witness, landmark);
             witness_to_landmark[w_idx * n + l_idx] = distance;
             nearest[w_idx] = nearest[w_idx].min(distance);
         }
@@ -738,6 +738,31 @@ fn xor_sorted(left: &[usize], right: &[usize]) -> Vec<usize> {
         }
     }
     out
+}
+
+/// Euclidean distance as `m * sqrt(sum((d / m)^2))` with `m = max |d|`.
+///
+/// The plain `sqrt(sum(d^2))` of [`ManifoldPoint::distance`] squares a
+/// separation of `1e-170` to zero and one of `1e170` to infinity, so the
+/// diagram merged distinct points at height 0 and never merged distant ones,
+/// and [`PersistenceDiagram::betti0_certified_at`] certified the wrong count.
+/// Scaling out `m` keeps every square in `[0, 1]`. A difference that itself
+/// overflows makes `m`, and so the result, infinite.
+// ponytail: same norm as `certified_betti::dist`, which is private to that
+// module; hoist one shared copy into `manifold` when a third caller needs it.
+fn distance<const D: usize>(a: &ManifoldPoint<D>, b: &ManifoldPoint<D>) -> f64 {
+    let diff = |i: usize| libm::fabs(a.coords[i] - b.coords[i]);
+    let m = (0..D).map(diff).fold(0.0, f64::max);
+    if m == 0.0 || !m.is_finite() {
+        return m;
+    }
+    let s: f64 = (0..D)
+        .map(|i| {
+            let q = diff(i) / m;
+            q * q
+        })
+        .sum();
+    m * libm::sqrt(s)
 }
 
 fn max3(a: f64, b: f64, c: f64) -> f64 {
