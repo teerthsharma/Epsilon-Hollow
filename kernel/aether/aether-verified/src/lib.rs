@@ -12,9 +12,9 @@
 //!
 //! Modules (Original 4 — Round 1):
 //!   - `aether_pruning`:   Cauchy-Schwarz block pruning bounds
-//!   - `aether_governor`:  PD Governor Lyapunov stability
+//!   - `aether_governor`:  PD governor step with a runtime descent check (no descent theorem)
 //!   - `aether_chebyshev`: Chebyshev GC guard safety
-//!   - `aether_betti`:     Betti approximation error bounds
+//!   - `aether_betti`:     window-of-4 oscillation count bounded by n − 3 (not a Betti number)
 //!
 //! Modules (10 Novel Theorems — Round 2):
 //!   - `aether_tss`:       T1: Topological State Synchronization (O(1) retrieval)

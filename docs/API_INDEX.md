@@ -75,7 +75,7 @@ These crates share the workspace root (`Cargo.toml`) and build together.
   - `aether_agcr` — T4 boot gate
   - `aether_hcs` — T5 boot gate
   - `aether_world` — T6-T10 boot gate
-  - `aether_betti` — Betti approximation bounds
+  - `aether_betti` — window-of-4 oscillation count, bounded by n − 3 (not a Betti number)
   - `aether_chebyshev` — Chebyshev GC guard
   - `aether_governor` — PD Lyapunov stability
   - `aether_pruning` — Cauchy-Schwarz pruning bounds
