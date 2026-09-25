@@ -6,9 +6,12 @@
 use aether_core::SphericalVoronoiIndex;
 use proptest::prelude::*;
 
+/// Reference distance under the colatitude convention `locate` uses. This was
+/// the latitude formula, under which every centroid of the equatorial fixture
+/// is equidistant from any query, so the property held for any answer.
 #[inline]
 fn great_circle(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
-    let cos_d = t1.sin() * t2.sin() + t1.cos() * t2.cos() * (p1 - p2).cos();
+    let cos_d = t1.sin() * t2.sin() * (p1 - p2).cos() + t1.cos() * t2.cos();
     cos_d.clamp(-1.0, 1.0).acos()
 }
 

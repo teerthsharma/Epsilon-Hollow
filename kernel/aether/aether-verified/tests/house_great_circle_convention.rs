@@ -114,3 +114,51 @@ fn d_p_p_is_exactly_zero() {
         "d(p,p) reached {worst:.3e}; the acos form gave up to 2.1e-8"
     );
 }
+
+/// Copy of the eight centroids `tss_boot_centroids` in
+/// `kernel/seal-os/src/lib.rs` returns; that function is the source this copy
+/// must match. seal-os sits outside the workspace and its `#[cfg(test)]` tests
+/// never run, so the T1 boot gate is checked here on the host instead.
+fn seal_os_boot_centroids() -> [(f64, f64); 8] {
+    let north = 0.955_316_618_124_509_2; // acos(1 / sqrt(3)), a colatitude
+    let south = core::f64::consts::PI - north;
+    let step = core::f64::consts::FRAC_PI_4;
+    [
+        (north, step),
+        (north, step * 3.0),
+        (north, step * 5.0),
+        (north, step * 7.0),
+        (south, step),
+        (south, step * 3.0),
+        (south, step * 5.0),
+        (south, step * 7.0),
+    ]
+}
+
+#[test]
+fn boot_centroids_separate_under_colatitude() {
+    use aether_verified::aether_tss::{
+        theta_min_from_epsilon, verify_packing_bound, verify_separation,
+    };
+    // The exact T1 predicate `verify_topology_theorems` evaluates at boot.
+    let c = seal_os_boot_centroids();
+    let theta = theta_min_from_epsilon(0.5);
+    let mut min_sep = f64::INFINITY;
+    for i in 0..c.len() {
+        for j in (i + 1)..c.len() {
+            min_sep = min_sep.min(great_circle_distance(c[i].0, c[i].1, c[j].0, c[j].1));
+        }
+    }
+    println!("boot centroids: theta_min={theta:.5} min_sep={min_sep:.6}");
+    assert!(
+        verify_packing_bound(c.len(), theta) && verify_separation(&c, theta),
+        "T1 fails on the boot centroids: min separation {min_sep} < theta_min {theta}"
+    );
+    // The eight points are meant to be the cube vertices (+-1, +-1, +-1)/sqrt(3),
+    // whose nearest neighbours are one cube edge apart: acos(1/3).
+    let edge = (1.0f64 / 3.0).acos();
+    assert!(
+        (min_sep - edge).abs() < 1e-12,
+        "min separation {min_sep} is not the cube edge angle {edge}"
+    );
+}

@@ -14,14 +14,23 @@
 //! great-circle helper is inline-ported to keep `aether-core` independent of
 //! `aether-verified`.
 
-/// Great-circle distance on S² between two points (θ₁,φ₁) and (θ₂,φ₂).
+/// Great-circle distance on S² between two points (θ₁,φ₁) and (θ₂,φ₂), with θ
+/// the colatitude, matching [`spherical_to_unit_vector`].
 ///
 /// Inline port of `aether_verified::aether_tss::great_circle_distance` to
-/// preserve crate-level separation of concerns.
+/// preserve crate-level separation of concerns, including its haversine form.
+/// The port previously kept the latitude formula (`cos(p1 - p2)` on the
+/// `cos * cos` term) after the verified kernel moved to colatitude. Under it
+/// `(t, φ)` and `(π - t, φ + π)` were coincident, so the colatitude cube
+/// vertices the seal-os boot gate uses fell into four cells, and every
+/// equatorial centroid tied with every other for any query, sending `locate`
+/// to cell 0. `tests/house_tss_colatitude.rs` pins both.
 #[inline]
 fn great_circle_distance(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
-    let cos_d = libm::sin(t1) * libm::sin(t2) + libm::cos(t1) * libm::cos(t2) * libm::cos(p1 - p2);
-    libm::acos(cos_d.clamp(-1.0, 1.0))
+    let half_dt = libm::sin((t1 - t2) * 0.5);
+    let half_dp = libm::sin((p1 - p2) * 0.5);
+    let h = half_dt * half_dt + libm::sin(t1) * libm::sin(t2) * half_dp * half_dp;
+    2.0 * libm::asin(libm::sqrt(h.clamp(0.0, 1.0)))
 }
 
 /// Verify all centroid pairs satisfy separation ≥ θ_min (used in `new`).

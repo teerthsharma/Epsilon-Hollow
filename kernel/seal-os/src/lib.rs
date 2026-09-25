@@ -2288,9 +2288,29 @@ fn emit_subsystem_proofs() {
 
 const TSS_BOOT_CELL_COUNT: usize = 8;
 
+/// Colatitude of the upper cube vertices, `acos(1 / sqrt(3))`.
+///
+/// `aether_tss::great_circle_distance` takes colatitude (theta measured from
+/// the north pole). This was `asin(1 / sqrt(3))` with `south = -north`, a
+/// latitude pair; under colatitude `(-t, phi)` is the point `(t, phi + pi)`, so
+/// the eight centroids collapsed onto four, T1 separation measured 0, and boot
+/// panicked. The host copy in
+/// `kernel/aether/aether-verified/tests/house_great_circle_convention.rs` must
+/// match these values.
+const TSS_BOOT_NORTH: f64 = 0.955_316_618_124_509_2;
+const TSS_BOOT_SOUTH: f64 = core::f64::consts::PI - TSS_BOOT_NORTH;
+// seal-os `#[cfg(test)]` tests never run, so the convention is pinned at
+// compile time: both rows must be colatitudes in (0, pi), one per hemisphere.
+const _: () = assert!(
+    0.0 < TSS_BOOT_NORTH
+        && TSS_BOOT_NORTH < core::f64::consts::FRAC_PI_2
+        && core::f64::consts::FRAC_PI_2 < TSS_BOOT_SOUTH
+        && TSS_BOOT_SOUTH < core::f64::consts::PI
+);
+
 fn tss_boot_centroids() -> [(f64, f64); TSS_BOOT_CELL_COUNT] {
-    let north = 0.615_479_708_670_387_4; // asin(1 / sqrt(3))
-    let south = -north;
+    let north = TSS_BOOT_NORTH;
+    let south = TSS_BOOT_SOUTH;
     let step = core::f64::consts::FRAC_PI_4;
     [
         (north, step),
