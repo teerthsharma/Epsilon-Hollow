@@ -499,6 +499,9 @@ pub mod tests {
     /// RULE 3. The floor is never crossed, is hit exactly, and is not derived
     /// from the signal.
     fn test_floor_is_never_crossed() -> TestResult {
+        // One stratum read costs ~20 ms on the soft-float UEFI target; reading
+        // it inside the loop made this test take ~1,000 s and time the suite out.
+        let good = read_signal(&converged(), &DEFAULT_CALIBRATION);
         for floor in [0.05, 0.25, 0.5, 0.999, CEILING] {
             let t = match with_floor(floor) {
                 Some(t) => t,
@@ -506,7 +509,7 @@ pub mod tests {
             };
             let mut cur = t;
             for _ in 0..10_000 {
-                cur = step(cur, read_signal(&converged(), &DEFAULT_CALIBRATION));
+                cur = step(cur, good);
                 test_assert!(
                     cur.share >= floor,
                     "the share must never drop below the constructed floor"
