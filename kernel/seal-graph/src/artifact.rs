@@ -51,8 +51,8 @@
 //!
 //! # What the parser does not guarantee
 //!
-//! Shape agreement *between* ops, single-assignment of value ids, and
-//! topological ordering are not checked here — they are checked in
+//! Unique value names, shape agreement *between* ops, single-assignment of
+//! value ids, and topological ordering are not checked here — they are checked in
 //! [`crate::exec::Graph::from_artifact`], which needs the same walk anyway.
 //! A successfully loaded [`Artifact`] is well-formed bytes, not a runnable
 //! graph.

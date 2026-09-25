@@ -38,6 +38,7 @@
 //! image, and it generates its own random weights rather than accepting the
 //! artifact's. The loop nest here has no such caps.
 
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -99,6 +100,10 @@ pub enum ExecError {
     MissingInput(String),
     /// `run` was given a name the graph does not declare as an input.
     UnknownInput(String),
+    /// A name appeared twice where each must be unique: two entries in the
+    /// artifact's value-name table (refused by `from_artifact`), or two
+    /// tensors supplied under one input name (refused by `run`).
+    DuplicateName(String),
     /// A supplied input tensor does not have the declared shape.
     InputShapeMismatch {
         /// Input name.
@@ -178,10 +183,20 @@ impl Graph {
 
     /// Validate an already-parsed artifact.
     ///
-    /// Checks single assignment, topological order, op arity, attribute
-    /// ranges, and every shape relation. Returns on the first failure without
-    /// materialising anything beyond the initializers already walked.
+    /// Checks unique value names, single assignment, topological order, op
+    /// arity, attribute ranges, and every shape relation. Returns on the first
+    /// failure without materialising anything beyond the initializers already
+    /// walked.
     pub fn from_artifact(artifact: Artifact) -> Result<Self, ExecError> {
+        // `run` binds inputs and reports outputs by name, so a repeated name
+        // would make that binding ambiguous.
+        let mut seen = BTreeSet::new();
+        for name in &artifact.value_names {
+            if !seen.insert(name.as_str()) {
+                return Err(ExecError::DuplicateName(name.clone()));
+            }
+        }
+
         let n = artifact.value_names.len();
         let mut shapes: Vec<Option<Vec<usize>>> = vec![None; n];
         let mut consts: Vec<Option<Tensor>> = vec![None; n];
@@ -279,7 +294,7 @@ impl Graph {
     /// Evaluate the graph.
     ///
     /// Every declared input must appear in `inputs` with exactly its declared
-    /// shape; extra names are refused rather than ignored.
+    /// shape; extra names and repeated names are refused rather than ignored.
     pub fn run(&self, inputs: &[(&str, Tensor)]) -> Result<Vec<(String, Tensor)>, ExecError> {
         let mut vals = self.consts.clone();
 
@@ -302,7 +317,10 @@ impl Graph {
             *slot = Some(supplied.1.clone());
         }
 
-        for (name, _) in inputs {
+        for (i, (name, _)) in inputs.iter().enumerate() {
+            if inputs[..i].iter().any(|(earlier, _)| earlier == name) {
+                return Err(ExecError::DuplicateName((*name).to_string()));
+            }
             if !self
                 .artifact
                 .inputs
@@ -1248,6 +1266,29 @@ mod tests {
         assert_eq!(
             g.run(&[("x", x), ("stowaway", extra)]),
             Err(ExecError::UnknownInput("stowaway".to_string()))
+        );
+    }
+
+    #[test]
+    fn refuses_an_input_name_supplied_twice() {
+        // Binding by first match would run on `a` and silently drop `b`.
+        let g = Graph::load(&mlp().encode()).expect("graph");
+        let a = Tensor::from_vec(vec![1.0, 2.0], vec![1, 2]);
+        let b = Tensor::from_vec(vec![3.0, 4.0], vec![1, 2]);
+        assert_eq!(
+            g.run(&[("x", a), ("x", b)]),
+            Err(ExecError::DuplicateName("x".to_string()))
+        );
+    }
+
+    #[test]
+    fn refuses_a_value_name_declared_twice() {
+        // Two ids named "x": `run(&[("x", ..)])` could bind only one of them.
+        let mut a = mlp();
+        a.value_names[3] = "x".to_string();
+        assert_eq!(
+            Graph::load(&a.encode()),
+            Err(ExecError::DuplicateName("x".to_string()))
         );
     }
 
