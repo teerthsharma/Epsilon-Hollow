@@ -816,7 +816,7 @@ Now the two cases, which is where the geometry earns its keep.
 
 **Monotone run.** `v_t` never returns to a value range it has left, so there is no fold, and `loop_score` is exactly **0** — by a certificate, not by the complex. `trajectory_shape::fold_score` checks in O(n) that the window never turns back and returns 0 before a single edge is built.
 
-This paragraph used to argue the zero from the complex: the cloud is a simple arc, the Rips 1-skeleton at the connectivity scale is a path graph, a path graph has cycle rank 0. **That was false.** The arc is simple but not straight. A monotone delay polyline turns by up to 90° wherever the slope changes, the chord across such a corner is `√2·ε*`, which is under the `1.5·ε*` scale, and every corner closed a triangle. The counterexample: `v` starting at 10, falling 0.001 per step with a 0.05 drop every third step, 128 steps, training loss `v − 0.02 − 0.001·t` — strictly decreasing validation, `loop_score = 0.969`, verdict **`Overfit`**. A drop every eighth step scored 0.141; a single drop at step 30 of a 66-step run scored 0.016 (one spurious cycle in 64 points). The host test `monotone_staircase_scores_no_fold` in `aether-core/tests/trajectory_shape.rs` pins all three at 0.
+This paragraph used to argue the zero from the complex: the cloud is a simple arc, the Rips 1-skeleton at the connectivity scale is a path graph, a path graph has cycle rank 0. **That was false.** The arc is simple but not straight. A monotone delay polyline turns by up to 90° wherever the slope changes, the chord across such a corner is `√2·ε*`, which was under the `1.5·ε*` scale then in use, and every corner closed a triangle. The counterexample: `v` starting at 10, falling 0.001 per step with a 0.05 drop every third step, 128 steps, training loss `v − 0.02 − 0.001·t` — strictly decreasing validation, `loop_score = 0.969`, verdict **`Overfit`**. A drop every eighth step scored 0.141; a single drop at step 30 of a 66-step run scored 0.016 (one spurious cycle in 64 points). The host test `monotone_staircase_scores_no_fold` in `aether-core/tests/trajectory_shape.rs` pins all three at 0.
 
 **Overfitting run.** `v_t` descends, turns at some step, and climbs back. Say the local step is `s`. At validation value `v`, the *descending* point sits at:
 
@@ -842,7 +842,7 @@ while consecutive points along a single arm are:
 ‖p_t − p_{t−1}‖ = ‖(s, s, s)‖ = s√3
 ```
 
-apart. So the arms sit at a fixed multiple of the along-arm spacing — the ratio that matters is `√5/√3 ≈ 1.291` — and once the two arms overlap in *value range*, a filtration scale above that ratio connects them. The U closes. Cycle rank goes above zero. **The fold becomes a hole, and the hole is the alarm.**
+apart. That matched-value ratio is `2√5/√3 ≈ 2.58` — and it is not the closest approach, which is what an earlier version of this paragraph got wrong twice (it wrote the ratio as `√5/√3 ≈ 1.291` and built the scale floor on it). Pair points by *offset* instead. On a clean V with vertex at `c`, the descending point `p_{c−k} = (k, k+1, k+2)·s` and the ascending point `p_{c+k+2} = (k+2, k+1, k)·s` differ by `(2, 0, −2)·s`, for every `k`: the arms run alongside each other at `√8·s`, a ratio of `√(8/3) ≈ 1.633` to the along-arm spacing. For `k = 0` that pair is a two-step chord, filled by a Rips triangle; for `k ≥ 1` it is a cross-arm edge. Once the filtration scale passes 1.633 the arms zip together. The V closes. Cycle rank goes above zero. **The fold becomes a hole, and the hole is the alarm.**
 
 ```
         v                                    v
@@ -857,9 +857,9 @@ apart. So the arms sit at a fixed multiple of the along-arm spacing — the rati
 
 I drew that in a text editor at an hour I decline to name and it is the single most load-bearing ASCII in this repository.
 
-### The one free constant, and why it is 1.5 rather than vibes
+### The one free constant, and why it is 1.68 rather than vibes
 
-`LOOP_SCALE_MARGIN = 1.5`. That is it. That is the entire tuning surface of the topological signal. Everything else is derived or measured.
+`LOOP_SCALE_MARGIN = 1.68`. That is it. That is the entire tuning surface of the topological signal. Everything else is derived or measured.
 
 It is a multiple of `ε*`, the **H₀ death scale** — the largest edge of the minimum spanning tree, which is exactly the single-linkage merge height at which the cloud becomes one connected component. This is not an approximation of the H₀ death scale; it *is* the endpoint of the longest finite H₀ persistence bar, computed by Prim's algorithm in O(n²) with `n = 64` and a fixed stack buffer.
 
@@ -867,11 +867,15 @@ After arc-length reparameterisation (see the second defect below), points along 
 
 | Bound | Value | Why |
 |---|---|---|
-| **Floor** | `√5/√3 = 1.291 · ε*` | Below this the two arms of a fold never connect and the loop never registers. Every overfit is invisible. |
+| **Floor** | `√8/√3 = 1.633 · ε*` | The offset pairing above: below this a clean symmetric V has no cross-arm edge and scores 0. |
 | **Ceiling** | `√3 = 1.732 · ε*` | On a stretch where the loss only falls, every delay segment lies in one closed orthant of ℝ³, so a chord spanning `k` resampled steps is at least `k·ε*/√3`. The two-step chords (`k = 2`) are filled by a Rips triangle and quotiented out of the count; the first chord that can close a spurious cycle spans three steps and needs `√3`. |
-| **Chosen** | **1.5** | Inside `(1.291, 1.732)`. |
+| **Chosen** | **1.68** | Midpoint (1.6825) of `(1.633, 1.732)`, rounded. |
 
-The ceiling used to be `2.0`, on the claim that the next-nearest point in time on a monotone arc is `2·ε*` away. That is true of a straight arc only; the staircase above breaks it at 1.5. On that staircase, with two-step chords quotiented out, the count is 0.0 for every margin from 1.3 to 1.8 and 0.953 at 1.9. Monotone windows no longer depend on the ceiling at all — the certificate zeroes them first — so it now protects only windows that are monotone apart from noise (`jittered_staircase_is_not_a_fold`).
+Measured with the Rust count: the noiseless V `0.3 + 0.01·|t − 100|` scores 0 up to 1.62 and 0.391 from 1.64 (`noiseless_v_is_a_fold`). The margin was 1.5 until an outside verifier ran that V: at 1.5 **no clean V registered at all**. The monotone staircase scores 0 through 1.8 even without the monotonicity certificate; with ±0.002 jitter (no longer monotone) it scores 0 through 1.70 and 0.406 at 1.72 (`jittered_staircase_is_not_a_fold`).
+
+The band is proved for the symmetric V only. An asymmetric fold closes later: a V that descends at 0.005 and climbs at 0.01 per step scores 0.016 at 1.72 and 0.406 only at 1.8, above the ceiling, so **no margin in the band detects it**. And raising the margin from 1.5 to 1.68 costs something on noisy near-monotone windows: the staircase with ±0.005 jitter (five times its slow step) now scores 0.453, where at 1.5 it scored 0 — its treads genuinely revisit values, which is the noise-ball case `loop_score > 0` was never claimed to exclude, and the residual-drift gate still stands between it and `Overfit`.
+
+The ceiling used to be `2.0`, on the claim that the next-nearest point in time on a monotone arc is `2·ε*` away. That is true of a straight arc only; the staircase above breaks it at 1.5. Monotone windows no longer depend on the ceiling at all — the certificate zeroes them first — so it now protects only windows that are monotone apart from noise.
 
 The original sweep, on the two straight-ish fixtures, which is why the `2.0` ceiling looked right:
 
@@ -912,7 +916,9 @@ I have read a lot of definitions of convergence and that one is my favourite bec
 
 An exactly constant loss reports `1.0`: a flat loss is converged, not a trend, and equality is checked on the stored values, so that branch is exact.
 
-Anything short of exactly constant is certified or refused. The ratio is invariant under rescaling the loss, and it used to not be: the degenerate branch was an absolute floor, `denominator < 1e-12`, on a denominator that scales as the fourth power of the loss. The underfit fixture scaled by `1e-3` fell under it and read `spread = 1.0`, verdict `WellFit`; at `×1` and `×1e-2` it reads `0.353`, `Underfit`. The floor is now relative and a priori: with `M = max|xᵢ|` and `n` points, each deviation from the mean carries a rounding error `e ≤ (n+1)·ε·M`, and the ratio is reported only when `√c₀ ≥ 3e / 10⁻⁶`, which holds every autocovariance to within `10⁻⁶·c₀`. Below that, the loss varies by less than its own rounding can resolve and the ratio is NaN, which `measurable()` fails closed on (`Collapsing`), rather than a `1.0` nobody measured. Host tests: `participation_ratio_is_scale_invariant_downward` (scales `1e-9` to `1e3`, agreement within `1e-9`) and `participation_ratio_refuses_rounding_level_variation` (a one-ulp wiggle refuses, exact constants report `1.0`).
+Anything short of exactly constant is certified or refused. The ratio is invariant under rescaling the loss, and it used to not be: the degenerate branch was an absolute floor, `denominator < 1e-12`, on a denominator that scales as the fourth power of the loss. The underfit fixture scaled by `1e-3` fell under it and read `spread = 1.0`, verdict `WellFit`; at `×1` and `×1e-2` it reads `0.353`, `Underfit`. The first fix, a relative floor on the same `3c₀²/(3c₀² + 4c₁² + 2c₂²)`, still broke at the extremes — `3c₀²` underflows at `×1e-150` and overflows at `×1e150` — so the series is now divided by `M = max|xᵢ|` first and the ratio taken as `3/(3 + 4(c₁/c₀)² + 2(c₂/c₀)²)`: nothing squared exceeds 1, at any finite scale. On the normalised series each deviation from the mean carries a rounding error `e ≤ (n+3)·ε`, and the ratio is reported only when `√c₀ ≥ 3e / 10⁻⁶ ≈ 4.5·10⁻⁸` (n = 64), which holds every autocovariance to within `10⁻⁶·c₀`. Below that, the loss varies by less than its own rounding can resolve and the ratio is NaN rather than a `1.0` nobody measured.
+
+What the NaN *does* was wrong once too. It first failed `measurable()`, so the verdict was `Collapsing` — `lr_scale` 0.1 and the heap clamp — for an f32 loss converged to `0.6931472` with one element a single ulp higher, and for `1 + 1e-10·sin t`. A refusal had become an intervention. The refusal now withholds the `Underfit` gate and nothing else, and `measurable()` no longer looks at `spread` (after normalisation it cannot overflow, so a refusal is its only NaN). Those two runs read `WellFit`, the verdict an exactly constant loss gets. One consequence to know about: `tuner` reclaims share on `WellFit`, so it now reclaims on them too, exactly as it does for a constant loss. Host tests: `participation_ratio_is_scale_invariant` (`1e-300` to `1e300`, agreement within `1e-9`, verdict `Underfit` through `1e150`), `participation_ratio_certifies_at_the_stated_bound`, and `refused_spread_is_not_an_intervention`.
 
 ### Why this is not a loss curve with a hat on
 
@@ -968,7 +974,7 @@ Both controls now sit in `MONOTONE_CASES` and the proof emits `monotone_loop_zer
 
 #### Defect 3 — the staircase that was a fold
 
-A strictly decreasing staircase read as `Overfit` with `loop_score = 0.969` (the construction section has the fixture). The two monotone controls could not catch it: both are smooth, and the false argument — "a monotone arc's next-nearest point is `2·ε*` away" — is true of smooth arcs. **The fix** is two parts. A monotone window is certified `loop_score = 0` by an O(n) check before the complex is built. And the cycle count quotients out every two-step chord that bounds a Rips triangle, which keeps it an upper bound on β₁ while removing the corner triangles, so a staircase with jitter larger than its slow step (no longer monotone, so no certificate) stays below `loop_min`. The fold fixture moved from 1.0 to 0.875, still seven times `loop_min`.
+A strictly decreasing staircase read as `Overfit` with `loop_score = 0.969` (the construction section has the fixture). The two monotone controls could not catch it: both are smooth, and the false argument — "a monotone arc's next-nearest point is `2·ε*` away" — is true of smooth arcs. **The fix** is two parts. A monotone window is certified `loop_score = 0` by an O(n) check before the complex is built. And the cycle count quotients out every two-step chord that bounds a Rips triangle, which keeps it an upper bound on β₁ while removing the corner triangles, so the staircase with ±0.002 jitter, twice its slow step (no longer monotone, so no certificate), stays at 0; at ±0.005 it does not (see the margin section). The fold fixture moved from 1.0 to 0.875 at margin 1.5, and is back at 1.0 (1.06 uncapped) at 1.68.
 
 ### The decision cascade, in order, because the order is load-bearing
 
@@ -995,7 +1001,7 @@ Every one of these is settable at runtime through `SYS_FIT_CALIBRATE`. A constan
 
 | Field | Default | Basis | Measured against |
 |---|---|---|---|
-| `loop_min` | 0.125 | one noise recurrence contributes `1/n = 0.0156` at n=64, so 0.125 demands ~8 overlapping recurrence edges | fold fixture 0.875; both monotone controls exactly 0.0 |
+| `loop_min` | 0.125 | one noise recurrence contributes `1/n = 0.0156` at n=64, so 0.125 demands ~8 overlapping recurrence edges | fold fixture 1.0 (1.06 uncapped); noiseless V 0.391; both monotone controls exactly 0.0 |
 | `resid_rise_min` | 0.05 | drift is bounded in (−1,1); 0.05 ≈ late quartile mean 10% above early, below which the estimator is inside its own sampling noise | supplies the orientation H₁ cannot |
 | `spread_trend_max` | 0.45 | the PR floor is exactly 1/3 ≈ 0.333; 0.45 allows ~35% above the floor before "converged" | underfit fixture 0.353, converged fixture 0.814 |
 | `collapse_shatter_min` | 100.0 | largest single step two orders of magnitude above typical is a jump, not a trajectory | smooth fixtures 1.0–2.1, diverging fixture **1.1 × 10⁴** |
@@ -1010,7 +1016,7 @@ The boot proof runs the **real detector** over seven synthetic ground-truth case
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-[MLFIT] proof version=1 subsystem=stratum window=64 embed_dim=3 kappa=1.500
+[MLFIT] proof version=1 subsystem=stratum window=64 embed_dim=3 kappa=1.680
         steps_per_case=128 bytes_per_stream=4792
         long_stream_steps=4096 long_stream_points=64 bounded=ok
         monotone_loop_zero=ok

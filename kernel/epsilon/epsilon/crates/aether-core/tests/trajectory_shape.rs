@@ -1,22 +1,22 @@
-//! Host tests for `aether_core::trajectory_shape`, the geometry behind Seal OS's
-//! `stratum` fit detector. The kernel crate's own tests only run under QEMU, so
-//! these are the checks `cargo test --workspace` actually executes.
+//! Host tests for `aether_core::trajectory_shape`, the measurement and verdict
+//! behind Seal OS's `stratum` fit detector. The kernel crate's own tests only
+//! run under QEMU, so these are the checks `cargo test --workspace` actually
+//! executes.
 //!
 //! The window construction below mirrors `FitStream::observe`: τ = 1 delay
 //! embedding in ℝ³, the last `MAX_POINTS` points kept, and the training loss and
-//! residual recorded at the same steps as the points.
+//! residual recorded at the same steps as the points. `measure_window` and
+//! `classify` are the functions the kernel calls on read.
 
 use aether_core::manifold::TimeDelayEmbedder;
 use aether_core::trajectory_shape::{
-    fold_score, participation_ratio, quartile_drift, DelayPoint, EMBED_DIM, MAX_POINTS,
+    classify, cycle_rank, fold_score, is_monotone, measure_window, participation_ratio, DelayPoint,
+    FitSignals, Regime, DEFAULT_CALIBRATION, EMBED_DIM, MAX_POINTS,
 };
 
-/// `stratum::DEFAULT_CALIBRATION.loop_min`.
-const LOOP_MIN: f64 = 0.125;
-/// `stratum::DEFAULT_CALIBRATION.resid_rise_min`.
-const RESID_RISE_MIN: f64 = 0.05;
-/// `stratum::DEFAULT_CALIBRATION.spread_trend_max`.
-const SPREAD_TREND_MAX: f64 = 0.45;
+const LOOP_MIN: f64 = DEFAULT_CALIBRATION.loop_min;
+const RESID_RISE_MIN: f64 = DEFAULT_CALIBRATION.resid_rise_min;
+const SPREAD_TREND_MAX: f64 = DEFAULT_CALIBRATION.spread_trend_max;
 /// `stratum::PROOF_STEPS`.
 const STEPS: usize = 128;
 
@@ -24,6 +24,7 @@ struct Window {
     pts: Vec<DelayPoint>,
     train: Vec<f64>,
     resid: Vec<f64>,
+    samples: u64,
 }
 
 fn window(train: &[f64], val: &[f64]) -> Window {
@@ -32,6 +33,7 @@ fn window(train: &[f64], val: &[f64]) -> Window {
         pts: Vec::new(),
         train: Vec::new(),
         resid: Vec::new(),
+        samples: train.len() as u64,
     };
     for (&tr, &va) in train.iter().zip(val) {
         embed.push(va);
@@ -48,15 +50,16 @@ fn window(train: &[f64], val: &[f64]) -> Window {
     w
 }
 
-/// The `Overfit` verdict's two gates, as `stratum::classify` applies them.
+/// The kernel's verdict on one window at the default calibration.
+fn verdict(w: &Window) -> (Regime, FitSignals) {
+    let sig = measure_window(&w.pts, &w.train, &w.resid, w.samples, 0);
+    (classify(&sig, &DEFAULT_CALIBRATION), sig)
+}
+
+/// `(loop_score, resid_drift, verdict is Overfit)`.
 fn overfit_gate(w: &Window) -> (f64, f64, bool) {
-    let (_, loop_score) = fold_score(&w.pts);
-    let drift = quartile_drift(&w.resid);
-    (
-        loop_score,
-        drift,
-        loop_score >= LOOP_MIN && drift >= RESID_RISE_MIN,
-    )
+    let (regime, sig) = verdict(w);
+    (sig.loop_score, sig.resid_drift, regime == Regime::Overfit)
 }
 
 /// `stratum::ProofCase::sample`'s deterministic jitter.
@@ -180,44 +183,71 @@ fn monotone_controls_score_zero() {
     }
 }
 
-/// `stratum::ProofCase::Underfit`'s training loss, in the window, times `scale`.
-fn underfit_train(scale: f64) -> Vec<f64> {
+/// `stratum::ProofCase::Underfit`, times `scale`.
+fn underfit(scale: f64) -> Window {
     let train: Vec<f64> = (0..STEPS)
         .map(|t| scale * (1.0 - 0.004 * t as f64))
         .collect();
     let val: Vec<f64> = train.iter().map(|v| v + scale * 0.02).collect();
-    window(&train, &val).train
+    window(&train, &val)
 }
 
 /// Scaling every loss by `c > 0` scales every autocovariance by `c²`, so the
-/// participation ratio cannot move. It did below `c ≈ 1e-3`: an absolute
-/// `1e-12` floor on the 4th-power denominator read the underfit fixture at
-/// `1e-3` as spread 1.0 (converged) instead of 0.353 (trend).
+/// participation ratio cannot move. It did twice: an absolute `1e-12` floor on
+/// the 4th-power denominator read the underfit fixture at `1e-3` as spread 1.0
+/// (converged) instead of 0.353 (trend), and the unnormalised `3c₀²` then
+/// underflowed at `1e-150` and overflowed at `1e150`.
 ///
 /// Tolerance 1e-9: the scaled series differs from the exact scaling by one
 /// rounding per element, which moves the ratio by O(1e-15).
 #[test]
-fn participation_ratio_is_scale_invariant_downward() {
-    let base = participation_ratio(&underfit_train(1.0));
+fn participation_ratio_is_scale_invariant() {
+    let base = participation_ratio(&underfit(1.0).train);
     assert!(
         base <= SPREAD_TREND_MAX,
         "the fixture must read as a trend at scale 1, or this proves nothing (spread {base})"
     );
-    for scale in [1e-2, 1e-3, 1e-6, 1e-9, 1e3] {
-        let pr = participation_ratio(&underfit_train(scale));
+    for scale in [1e-2, 1e-3, 1e-9, 1e-150, 1e-300, 1e3, 1e150, 1e300] {
+        let w = underfit(scale);
+        let pr = participation_ratio(&w.train);
         assert!(
             (pr - base).abs() < 1e-9,
-            "scale {scale}: spread {pr} differs from {base} at scale 1"
+            "scale {scale:e}: spread {pr} differs from {base} at scale 1"
         );
+        if scale <= 1e150 {
+            // Above ~1e154 the validation cloud's own distances overflow and
+            // the verdict fails closed, which is a separate, documented path.
+            assert_eq!(verdict(&w).0, Regime::Underfit, "scale {scale:e}");
+        }
     }
 }
 
 /// A variation at the level of rounding cannot be told apart from rounding, so
-/// the ratio is refused (NaN, which `stratum`'s `measurable()` fails closed on)
-/// rather than reported. An exactly constant series is not refused: equality
-/// is exact, and a flat loss is converged.
+/// the ratio is refused (NaN) rather than reported. An exactly constant series
+/// is not refused: equality is exact, and a flat loss is converged.
+///
+/// The sine inputs sit either side of the stated bound
+/// `√c₀ ≥ 3(n+3)·ε / 1e-6 ≈ 4.5e-8` (n = 64, relative to `max|x|`), far enough
+/// that each flips if the tolerance or the `3(n+3)` factor changes: a 1e-9
+/// sine (σ ≈ 7e-10) flips without the factor, a 1e-10 sine (σ ≈ 7e-11) flips
+/// at a tolerance of 1e-2, and a 1e-6 sine (σ ≈ 7e-7) flips at 1e-12.
 #[test]
-fn participation_ratio_refuses_rounding_level_variation() {
+fn participation_ratio_certifies_at_the_stated_bound() {
+    let sine = |amp: f64| -> Vec<f64> {
+        (0..MAX_POINTS)
+            .map(|t| 1.0 + amp * (t as f64).sin())
+            .collect()
+    };
+    for amp in [1e-9, 1e-10] {
+        let pr = participation_ratio(&sine(amp));
+        assert!(pr.is_nan(), "a {amp:e} sine must be refused, got {pr}");
+    }
+    let pr = participation_ratio(&sine(1e-6));
+    assert!(
+        pr.is_finite(),
+        "a 1e-6 sine is resolved and must be certified"
+    );
+
     let wiggle: Vec<f64> = (0..MAX_POINTS)
         .map(|i| if i % 2 == 0 { 1.0 } else { 1.0 + f64::EPSILON })
         .collect();
@@ -231,4 +261,107 @@ fn participation_ratio_refuses_rounding_level_variation() {
             "an exactly constant series at {c} is converged"
         );
     }
+}
+
+/// A refused spread withholds the `Underfit` gate and nothing else. It must not
+/// become an intervention: before, NaN failed `measurable()` and the verdict was
+/// `Collapsing` (`lr_scale` 0.1, heap clamp) for a run whose loss had simply
+/// stopped moving. Both inputs are converged and must read `WellFit`.
+#[test]
+fn refused_spread_is_not_an_intervention() {
+    let ln2 = core::f32::consts::LN_2; // 0.6931472, a converged cross-entropy
+    let ulp_up = f64::from(f32::from_bits(ln2.to_bits() + 1));
+    let mut f32_flat = vec![f64::from(ln2); MAX_POINTS + 2];
+    f32_flat[40] = ulp_up;
+    let tiny_sine: Vec<f64> = (0..MAX_POINTS + 2)
+        .map(|t| 1.0 + 1e-10 * (t as f64).sin())
+        .collect();
+    for (name, train) in [("f32 flat + 1 ulp", f32_flat), ("1 + 1e-10 sin", tiny_sine)] {
+        let val: Vec<f64> = train.iter().map(|v| v + 0.02).collect();
+        let (regime, sig) = verdict(&window(&train, &val));
+        assert!(
+            sig.spread.is_nan(),
+            "{name}: the refusal path must be the one exercised (spread {})",
+            sig.spread
+        );
+        assert_eq!(regime, Regime::WellFit, "{name}: a refusal must not act");
+    }
+}
+
+/// The noiseless symmetric V `0.3 + 0.01·|t − 100|`. Its arms close at
+/// `√(8/3)·ε* ≈ 1.633·ε*` (see `LOOP_SCALE_MARGIN`); at the old margin of 1.5
+/// it scored 0, so a clean fold was invisible.
+#[test]
+fn noiseless_v_is_a_fold() {
+    let v: Vec<f64> = (0..STEPS)
+        .map(|t| 0.3 + 0.01 * (t as f64 - 100.0).abs())
+        .collect();
+    let (_, loop_score) = fold_score(&window(&v, &v).pts);
+    assert!(
+        loop_score >= LOOP_MIN,
+        "the noiseless V must read as a fold, loop_score {loop_score}"
+    );
+}
+
+/// A monotone window whose whole arc is under the resampler's `1e-12` floor is
+/// measured on its raw, unevenly spaced cloud, where the Rips count does see
+/// the dense converged tail as recurrence. Only the monotonicity certificate
+/// zeroes it, falling or rising: loop_score must be scale invariant too.
+#[test]
+fn monotone_certificate_holds_below_the_resampler_floor() {
+    let fall: Vec<f64> = (0..STEPS)
+        .map(|t| 1e-12 * (0.05 + 0.55 * (-(t as f64) / 22.0).exp()))
+        .collect();
+    let rise: Vec<f64> = fall.iter().map(|v| 1e-12 - v).collect();
+    for (name, v) in [("falling", fall), ("rising", rise)] {
+        let w = window(&v, &v);
+        assert!(is_monotone(&w.pts), "{name}: the fixture must be monotone");
+        assert_eq!(fold_score(&w.pts).1, 0.0, "{name}: monotone must score 0");
+    }
+}
+
+fn pts(coords: &[[f64; 3]]) -> Vec<DelayPoint> {
+    coords.iter().map(|&c| DelayPoint::new(c)).collect()
+}
+
+/// A two-step chord is quotiented only when the Rips triangle that fills it
+/// exists, i.e. both path edges are present. Here `(0, 2)` and `(1, 3)` each
+/// miss the path edge `(1, 2)` (length √2 > 1.2), so both stay, and together
+/// with `(0, 1)` and `(2, 3)` they bound a real square hole.
+#[test]
+fn cycle_rank_keeps_a_chord_whose_path_edge_is_missing() {
+    let square = pts(&[
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0, 0.0],
+    ]);
+    assert_eq!(cycle_rank(&square, 1.2), 1);
+}
+
+/// Only two-step chords are quotiented. The square visited in order has its
+/// closing edge `(0, 3)` as a three-step chord and a real hole; the unit
+/// equilateral triangle's two-step chord is filled and counts nothing.
+#[test]
+fn cycle_rank_counts_longer_chords_and_drops_filled_ones() {
+    let square = pts(&[
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]);
+    assert_eq!(cycle_rank(&square, 1.2), 1);
+    let h = 3f64.sqrt() / 2.0;
+    let triangle = pts(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, h, 0.0]]);
+    assert_eq!(cycle_rank(&triangle, 1.2), 0);
+}
+
+#[test]
+fn is_monotone_reads_both_directions() {
+    let up = pts(&[[1.0, 0.0, -1.0], [2.0, 1.0, 0.0], [3.0, 2.0, 1.0]]);
+    let down = pts(&[[3.0, 4.0, 5.0], [2.0, 3.0, 4.0], [1.0, 2.0, 3.0]]);
+    let turn = pts(&[[1.0, 2.0, 3.0], [2.0, 1.0, 2.0], [3.0, 2.0, 1.0]]);
+    assert!(is_monotone(&up));
+    assert!(is_monotone(&down));
+    assert!(!is_monotone(&turn));
 }
