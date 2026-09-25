@@ -771,20 +771,18 @@ impl ManifoldFS {
         let (src_cell, _) = sorted[0];
         let (dst_cell, _) = sorted[1];
 
-        let files_to_move: Vec<u64> = self.voronoi.all_files_in_cell(src_cell);
+        // `merge_cells` also redirects `locate`, so the moved files stay
+        // reachable by content after `src_cell` is emptied.
+        let files_to_move: Vec<u64> = self.voronoi.merge_cells(src_cell, dst_cell);
         for &fid in &files_to_move {
             if let Some(inode) = self.inodes.get_mut(fid) {
                 inode.voronoi_cell = dst_cell;
                 inode.cluster_id = dst_cell as i32;
             }
         }
-        for &fid in &files_to_move {
-            self.voronoi.move_file_to_cell(fid, src_cell, dst_cell);
-        }
         let moved_count = files_to_move.len();
         self.cluster_sizes[dst_cell] += self.cluster_sizes[src_cell];
         self.cluster_sizes[src_cell] = 0;
-        self.voronoi.clear_cell(src_cell);
 
         self.update_entropy();
         self.entropy_merges += 1;

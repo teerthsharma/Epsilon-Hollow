@@ -38,14 +38,19 @@ struct CellState {
 ///
 /// Invariant: every stored id is reachable from `locate(payload)`. It
 /// appears exactly once, in `files_in_bucket(locate(payload))`, where
-/// `payload` is the one it was inserted with. Insertion, splitting and
-/// removal all go through `route`, which reads only the point recorded in
-/// `points`, so the three cannot disagree about where an id lives.
+/// `payload` is the one it was inserted with. Insertion, splitting, removal
+/// and cell merging all go through `route`, which reads only the point
+/// recorded in `points` and the `merged_into` map, so none of them can
+/// disagree about where an id lives.
 pub struct VoronoiCap {
     cells: Vec<CellState>,
     voronoi: SphericalVoronoiIndex<VORONOI_CELLS>,
     /// First point of each stored id's payload, the only input to `route`.
     points: BTreeMap<u64, [f64; 3]>,
+    /// The live cell each Voronoi cell's payloads route to: itself until
+    /// `merge_cells` folds it into another. Always fully resolved, so one
+    /// lookup suffices.
+    merged_into: [usize; VORONOI_CELLS],
     splits: u64,
     merges: u64,
 }
@@ -64,6 +69,7 @@ impl VoronoiCap {
             cells,
             voronoi: SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids),
             points: BTreeMap::new(),
+            merged_into: core::array::from_fn(|i| i),
             splits: 0,
             merges: 0,
         }
@@ -91,7 +97,14 @@ impl VoronoiCap {
     ) -> (usize, usize) {
         let pt = first_point(payload);
         self.points.insert(inode_id, pt);
-        let (cell, sub) = self.route(&pt);
+        self.place(inode_id, &pt);
+        self.route(&pt)
+    }
+
+    /// Push `inode_id` into the bucket `route(pt)` names, splitting the cell
+    /// if that takes it over the occupancy cap.
+    fn place(&mut self, inode_id: u64, pt: &[f64; 3]) {
+        let (cell, sub) = self.route(pt);
         match self.cells[cell].subcells.as_mut() {
             Some(subs) => subs[sub].files.push(inode_id),
             None => {
@@ -101,7 +114,6 @@ impl VoronoiCap {
                 }
             }
         }
-        self.route(&pt)
     }
 
     /// Remove `inode_id` from whichever bucket holds it. The bucket is found
@@ -165,20 +177,31 @@ impl VoronoiCap {
         }
     }
 
-    pub fn clear_cell(&mut self, cell: usize) {
-        if cell < self.cells.len() {
-            self.cells[cell].files.clear();
-            self.cells[cell].subcells = None;
+    /// Fold cell `src` into cell `dst` for good: every payload that located
+    /// to `src` now locates to `dst`, and each id `src` held is re-bucketed
+    /// in `dst` by its recorded point. Returns the moved ids, empty when the
+    /// two already route to the same cell or either index is out of range.
+    pub fn merge_cells(&mut self, src: usize, dst: usize) -> Vec<u64> {
+        if src >= VORONOI_CELLS || dst >= VORONOI_CELLS {
+            return Vec::new();
         }
-    }
-
-    pub fn move_file_to_cell(&mut self, inode_id: u64, _from_cell: usize, to_cell: usize) {
-        let pt = self.points.get(&inode_id).copied();
-        self.remove(inode_id);
-        if let (Some(pt), true) = (pt, to_cell < self.cells.len()) {
-            self.points.insert(inode_id, pt);
-            self.cells[to_cell].files.push(inode_id);
+        let (src, dst) = (self.merged_into[src], self.merged_into[dst]);
+        if src == dst {
+            return Vec::new();
         }
+        let moved = self.all_files_in_cell(src);
+        self.cells[src].files.clear();
+        self.cells[src].subcells = None;
+        for target in self.merged_into.iter_mut() {
+            if *target == src {
+                *target = dst;
+            }
+        }
+        for &id in &moved {
+            let pt = self.points.get(&id).copied().unwrap_or([0.0; 3]);
+            self.place(id, &pt);
+        }
+        moved
     }
 
     pub fn split_count(&self) -> u64 {
@@ -201,12 +224,14 @@ impl VoronoiCap {
 
     fn assign_cell(&self, pt: &[f64; 3]) -> usize {
         let r = libm::sqrt(pt[0] * pt[0] + pt[1] * pt[1] + pt[2] * pt[2]);
-        if r < 1e-12 {
-            return 0;
-        }
-        let theta = libm::acos((pt[2] / r).clamp(-1.0, 1.0));
-        let phi = libm::atan2(pt[1], pt[0]);
-        self.voronoi.locate((theta, phi))
+        let raw = if r < 1e-12 {
+            0
+        } else {
+            let theta = libm::acos((pt[2] / r).clamp(-1.0, 1.0));
+            let phi = libm::atan2(pt[1], pt[0]);
+            self.voronoi.locate((theta, phi))
+        };
+        self.merged_into[raw]
     }
 
     /// Split `cell` at the mean of its files' first points along the axis of
