@@ -1113,7 +1113,7 @@ Here is the claim I would defend in a review, and it is a structural claim rathe
 
 > **A sequence's block table *is* its root-to-leaf path down the foliation. Prefix sharing is the quotient map, not a hash table consulted afterwards.**
 
-Appending a token accumulates into a pending block. When the block fills at `BLOCK_TOKENS = 8`, it is sealed: `key = fold_key(prev_key, tokens)`, and the sequence performs `descend(current_leaf, key)`. If a child with that key already exists, the sequence **lands on the same leaf as everyone else who wrote those tokens** — and therefore on the same plaque, backed by the same physical frame.
+Appending a token accumulates into a pending block. When the block fills at `BLOCK_TOKENS = 8`, it is sealed: `key = fold_key(prev_key, tokens)`, and the sequence performs `descend(current_leaf, key)`. If a child with that key **and the same eight tokens** already exists, the sequence **lands on the same leaf as everyone else who wrote those tokens** — and therefore on the same plaque, backed by the same physical frame. The key only narrows the search: `fold_key` is a 64-bit digest and it collides (a real colliding pair off the root is pinned by a compile-time assertion in `foliation.rs`), so a block whose key matches but whose tokens differ gets its own leaf. A collision costs a missed share, never another sequence's KV state.
 
 There is no separate sharing mechanism to keep in sync with the allocator, **because there is no separate sharing mechanism at all.** The refcount of a plaque is the cardinality of the fibre over it. Deduplication is not a feature; it is what the data structure means.
 

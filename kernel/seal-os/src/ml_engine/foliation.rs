@@ -121,6 +121,9 @@ struct Leaf {
     used: bool,
     parent: u16,
     key: u64,
+    /// The block's tokens. `key` only narrows the search; these decide
+    /// whether a descent may share this leaf.
+    tokens: [u32; BLOCK_TOKENS],
     depth: u16,
     child: [u16; MAX_CHILDREN],
     nchild: u8,
@@ -141,6 +144,7 @@ impl Leaf {
             used: false,
             parent: NONE,
             key: 0,
+            tokens: [0; BLOCK_TOKENS],
             depth: 0,
             child: [NONE; MAX_CHILDREN],
             nchild: 0,
@@ -245,15 +249,30 @@ pub struct Foliation {
 /// residency or policy, so the same trace produces the same key sequence under
 /// every policy. That is what makes the policy comparison and the Belady oracle
 /// well defined.
-pub fn fold_key(prev: u64, tokens: &[u32]) -> u64 {
+///
+/// A key is a 64-bit digest, not an identity: distinct token blocks can share
+/// one (`COLLIDE_A`/`COLLIDE_B` below), which is why `find_child` compares the
+/// tokens themselves before sharing a plaque.
+pub const fn fold_key(prev: u64, tokens: &[u32]) -> u64 {
     let mut h = prev ^ 0x9e37_79b9_7f4a_7c15;
-    for &t in tokens {
-        h ^= t as u64;
+    let mut i = 0;
+    while i < tokens.len() {
+        h ^= tokens[i] as u64;
         h = h.wrapping_mul(0x1000_0000_01b3);
         h ^= h >> 29;
+        i += 1;
     }
     h
 }
+
+/// Two different blocks with the same `fold_key` off the root
+/// (`0xe0e00501162145bc`), found by meet-in-the-middle: each token step is a
+/// bijection on the running key, so the last two steps can be inverted from
+/// the target. Kept as a known collision so the sharing test exercises one.
+const COLLIDE_A: [u32; BLOCK_TOKENS] = [1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007];
+const COLLIDE_B: [u32; BLOCK_TOKENS] =
+    [1000, 1001, 1002, 1003, 1004, 2_191_639_884, 3_946_364_168, 3_153_004_709];
+const _: () = assert!(fold_key(0, &COLLIDE_A) == fold_key(0, &COLLIDE_B));
 
 impl Foliation {
     /// Create a cache with `pool_blocks` plaques and a `leaf_arena` leaf budget.
@@ -502,12 +521,12 @@ impl Foliation {
         self.tick += 1;
         self.stats.descents += 1;
 
-        let child = self.find_child(parent, key);
+        let child = self.find_child(parent, key, &tokens);
         let fresh = child.is_none();
         let leaf = match child {
             Some(c) => c,
             None => {
-                let c = self.new_leaf(parent, key)?;
+                let c = self.new_leaf(parent, key, tokens)?;
                 self.link_child(parent, c)?;
                 c
             }
@@ -554,11 +573,19 @@ impl Foliation {
     }
 
     /// O(MAX_CHILDREN) bounded scan.
-    fn find_child(&self, parent: u16, key: u64) -> Option<u16> {
+    ///
+    /// A key match alone is not a prefix match: `fold_key` is a 64-bit digest
+    /// and collides. A child is shared only when its stored tokens equal the
+    /// block being sealed; a colliding block falls through and gets its own
+    /// leaf, so a collision costs a missed share, never a wrong plaque.
+    fn find_child(&self, parent: u16, key: u64, tokens: &[u32; BLOCK_TOKENS]) -> Option<u16> {
         let p = &self.leaves[parent as usize];
         for i in 0..p.nchild as usize {
             let c = p.child[i];
-            if c != NONE && self.leaves[c as usize].key == key {
+            if c != NONE
+                && self.leaves[c as usize].key == key
+                && self.leaves[c as usize].tokens == *tokens
+            {
                 return Some(c);
             }
         }
@@ -588,7 +615,12 @@ impl Foliation {
         }
     }
 
-    fn new_leaf(&mut self, parent: u16, key: u64) -> Result<u16, FoliationError> {
+    fn new_leaf(
+        &mut self,
+        parent: u16,
+        key: u64,
+        tokens: [u32; BLOCK_TOKENS],
+    ) -> Result<u16, FoliationError> {
         if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN {
             self.stats.children_full += 1;
             return Err(FoliationError::ChildrenFull);
@@ -607,6 +639,7 @@ impl Foliation {
         l.used = true;
         l.parent = parent;
         l.key = key;
+        l.tokens = tokens;
         l.depth = depth;
         Ok(idx)
     }
@@ -1583,6 +1616,36 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Two different blocks whose keys collide must not share a plaque. The
+    /// pair is a real 64-bit `fold_key` collision off the root, pinned at
+    /// compile time by the `const _` assertion beside `fold_key`.
+    fn test_colliding_blocks_do_not_share() -> TestResult {
+        let mut fol = Foliation::new(16, 64, 4, Policy::Foliation);
+        let a = fol.seq_create(1).unwrap_or(usize::MAX);
+        let b = fol.seq_create(1).unwrap_or(usize::MAX);
+        test_assert!(a != usize::MAX && b != usize::MAX);
+        for &t in &COLLIDE_A {
+            test_assert!(fol.seq_append(a, t).is_ok());
+        }
+        for &t in &COLLIDE_B {
+            test_assert!(fol.seq_append(b, t).is_ok());
+        }
+        test_assert!(fol.seq_leaf(a, 0).is_some() && fol.seq_leaf(b, 0).is_some());
+        test_assert!(
+            fol.seq_leaf(a, 0) != fol.seq_leaf(b, 0),
+            "different tokens shared a leaf on a key collision"
+        );
+        test_assert!(
+            fol.seq_frame(a, 0) != fol.seq_frame(b, 0),
+            "different tokens shared a frame on a key collision"
+        );
+        test_assert_eq!(fol.stats().shared, 0);
+        let _ = fol.seq_release(a);
+        let _ = fol.seq_release(b);
+        fol.teardown();
+        TestResult::Pass
+    }
+
     /// The proof must actually run and report `result=pass`.
     fn test_proof_line_passes() -> TestResult {
         let line = foliation_proof_line();
@@ -1627,6 +1690,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::policy_vs_lru_on_fixed_trace",
             test_policy_vs_lru_on_fixed_trace,
+        );
+        crate::testing::register_test(
+            "foliation::colliding_blocks_do_not_share",
+            test_colliding_blocks_do_not_share,
         );
         crate::testing::register_test("foliation::proof_line_passes", test_proof_line_passes);
     }
