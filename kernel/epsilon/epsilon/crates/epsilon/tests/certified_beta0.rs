@@ -131,3 +131,54 @@ fn exhausted_retry_names_the_ambiguous_pair() {
     let err = bridge.build_graph_with_retry(&e, 0).unwrap_err();
     assert_ambiguous_pair(&bridge, &e, 0.1, err);
 }
+
+// ─── HollowCubeManifold::assimilate ──────────────────────────────────────────
+
+use epsilon::{HollowCubeManifold, ManifoldPayload, SurgeryError};
+
+fn shell() -> HollowCubeManifold<3> {
+    let mut m = HollowCubeManifold::<3>::new(1.5);
+    m.add_shell_point(EpsilonPoint::new([1.0, 0.0, 0.0]));
+    m.add_shell_point(EpsilonPoint::new([0.9, 0.1, 0.0]));
+    m.add_shell_point(EpsilonPoint::new([0.9, 0.0, 0.1]));
+    m
+}
+
+fn payload(points: &[[f64; 3]]) -> ManifoldPayload<3> {
+    let mut src = SparseGraph::<3>::new(2.0);
+    for &c in points {
+        src.add_point(EpsilonPoint::new(c));
+    }
+    ManifoldPayload::from_graph(&src, 1.0)
+}
+
+#[test]
+fn assimilate_refuses_a_merge_with_no_certified_gap() {
+    let mut m = shell();
+    let before = m.shell_shape();
+    // The payload reaches the shell by an edge of sqrt(1.05) = 1.025, so the
+    // merged graph at epsilon 1.5 is connected, with a margin of 1.46x.
+    m.inject_into_void(payload(&[[0.0, 0.5, 0.5], [0.1, 0.5, 0.5]]))
+        .unwrap();
+    match m.assimilate() {
+        Err(SurgeryError::AmbiguousAssimilation { i, j, height }) => {
+            // Merged indices: shell 0..3, then payload 3..5.
+            assert!(i < 3 && j == 4, "pair ({i},{j}) is not the shell-payload edge");
+            assert!((height - 1.05f64.sqrt()).abs() < 1e-12, "height = {height}");
+        }
+        other => panic!("expected AmbiguousAssimilation, got {other:?}"),
+    }
+    assert_eq!(m.shell_shape(), before, "refusal must leave the shell untouched");
+    assert!(m.void_is_empty());
+}
+
+#[test]
+fn assimilate_commits_a_certified_merge() {
+    let mut m = shell();
+    // Every spanning-tree edge of the merged cloud is at most 0.141, below
+    // 1.5 / sqrt(10) = 0.474.
+    m.inject_into_void(payload(&[[0.8, 0.1, 0.0], [0.8, 0.2, 0.0]]))
+        .unwrap();
+    assert_eq!(m.assimilate(), Ok(2));
+    assert_eq!(m.shell_shape().0, 1);
+}

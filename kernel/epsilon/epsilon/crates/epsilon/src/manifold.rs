@@ -374,6 +374,19 @@ pub enum SurgeryError {
         /// epsilon, the payload does not touch the shell anywhere.
         distance: f64,
     },
+    /// Assimilation refused: `beta_0` of the merged shell is not certified at
+    /// the shell's epsilon, because a spanning-tree edge lies within a factor
+    /// `sqrt(BETA0_RATIO)` of it. The shell is left untouched and the payload
+    /// is dropped from the void.
+    AmbiguousAssimilation {
+        /// Index into the merged cloud (shell points, then payload points)
+        /// of one end of the ambiguous edge.
+        i: usize,
+        /// Index of the other end, `i < j`.
+        j: usize,
+        /// Length of the edge.
+        height: f64,
+    },
     /// Assimilation refused: the shell has no room for every payload point.
     /// Nothing is merged; a partial merge would drop points silently.
     ShellCapacityExceeded {
@@ -567,9 +580,11 @@ impl<const D: usize> HollowCubeManifold<D> {
     /// length.
     ///
     /// The merge is all-or-nothing. It commits only when every payload point
-    /// fits and the merged shell has `beta_0 = 1`; otherwise the shell is left
+    /// fits and the merged shell has a certified `beta_0 = 1` (see
+    /// [`SparseGraph::certified_betti_0`]); otherwise the shell is left
     /// exactly as it was, the payload is dropped from the void, and the reason
-    /// is returned as [`SurgeryError::ShellCapacityExceeded`] or
+    /// is returned as [`SurgeryError::ShellCapacityExceeded`],
+    /// [`SurgeryError::AmbiguousAssimilation`] or
     /// [`SurgeryError::DisconnectedAssimilation`].
     ///
     /// Returns the number of points merged, or `Ok(0)` if the void is empty.
@@ -597,10 +612,12 @@ impl<const D: usize> HollowCubeManifold<D> {
             merged.add_point(*p);
         }
 
-        // ponytail: this is the graph's union-find beta_0 at the shell's
-        // epsilon, uncertified. A later change replaces it with a certified
-        // beta_0; the commit-only-if-1 gate stays the same.
-        let merged_b0 = merged.compute_betti_0();
+        let merged_b0 = match merged.certified_betti_0() {
+            Beta0::Certified { value, .. } => value,
+            Beta0::Refused { i, j, height } => {
+                return Err(SurgeryError::AmbiguousAssimilation { i, j, height })
+            }
+        };
         if merged_b0 != 1 {
             // Both sides are non-empty here: injection requires a shell with
             // beta_0 = 1 and a valid payload, and only `reset` shrinks the
@@ -732,9 +749,12 @@ mod tests {
         hollow.add_shell_point(EpsilonPoint::new([0.5, 0.0, 0.0]));
         hollow.add_shell_point(EpsilonPoint::new([0.5, 0.5, 0.0]));
 
+        // Every merged spanning-tree edge is at most 0.5, below
+        // 2.0 / sqrt(10) = 0.632. A payload at [1, 1, 1] would reach the shell
+        // by an edge of 1.22, which the certificate refuses.
         let mut src = SparseGraph::<3>::new(2.0);
-        src.add_point(EpsilonPoint::new([1.0, 1.0, 1.0]));
-        src.add_point(EpsilonPoint::new([1.5, 1.0, 1.0]));
+        src.add_point(EpsilonPoint::new([0.6, 0.6, 0.0]));
+        src.add_point(EpsilonPoint::new([0.7, 0.6, 0.0]));
 
         let payload = ManifoldPayload::from_graph(&src, 5.0);
         hollow.inject_into_void(payload).unwrap();

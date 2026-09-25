@@ -655,10 +655,13 @@ mod tests {
 
         // Build receiver shell — needs at least one point with β₀=1
         let mut hollow = HollowCubeManifold::<3>::new(1.5);
-        // Add a few shell points (any connected cluster)
-        hollow.add_shell_point(EpsilonPoint::new([1.0, 0.0, 0.0]));
-        hollow.add_shell_point(EpsilonPoint::new([0.9, 0.1, 0.0]));
-        hollow.add_shell_point(EpsilonPoint::new([0.9, 0.0, 0.1]));
+        // A connected cluster at the payload's first point. Placed at
+        // [1, 0, 0] instead, the shell met the payload by an edge of 1.09,
+        // within 1.4x of epsilon, and assimilation refused the merge.
+        let [x, y, z] = payload.points[0].coords;
+        hollow.add_shell_point(EpsilonPoint::new([x, y, z]));
+        hollow.add_shell_point(EpsilonPoint::new([x + 0.1, y, z]));
+        hollow.add_shell_point(EpsilonPoint::new([x, y + 0.1, z]));
 
         // The full pipeline: embedding → payload → void injection
         let result = hollow.inject_into_void(payload);
