@@ -650,7 +650,16 @@ fn boot_graphical(fb: &'static Framebuffer) {
 
     // Bring up the Seal-native control surface first; LAAMBA stays a launchable app lane.
     app_state.focus_app(1, &mut compositor);
-    serial_println!("[Shell] T1/TSS  Voronoi cells: 8, Betti-0: 8");
+    // Read from the index rather than hardcoded: the tiling covers a connected
+    // S^2, so Betti-0 is 1, not the cell count this line used to claim.
+    let tss = aether_core::tss::SphericalVoronoiIndex::<TSS_BOOT_CELL_COUNT>::new(
+        tss_boot_centroids(),
+    );
+    serial_println!(
+        "[Shell] T1/TSS  Voronoi cells: {}, Betti-0: {}",
+        tss.capacity(),
+        tss.betti_0()
+    );
 
     app_state.terminal.key_press(b'h');
     app_state.terminal.key_press(b'e');
