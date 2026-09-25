@@ -294,7 +294,14 @@ impl ManifoldFS {
 
     // ─── Find (T1: O(1) content-addressable lookup) ─────────────────────
 
-    /// Find files by content similarity using T1 Voronoi cells.
+    /// Rank every file by content similarity to `query`, best first.
+    ///
+    /// Every file is scored. A cell-local scan would miss files whose best
+    /// match lies across a Voronoi boundary, and files moved by a T3 merge.
+    /// `FindResult::cell` is the file's own cell.
+    ///
+    /// ponytail: O(files) scan per query; an exact spatial index on S² would
+    /// be the upgrade if file counts grow past interactive sizes.
     pub fn find(&mut self, query: &str) -> Vec<FindResult> {
         let t0 = Instant::now();
         self.total_lookups += 1;
@@ -305,21 +312,20 @@ impl ManifoldFS {
         // T2: Update SCM access state for predictive prefetch
         self.update_prefetch_state(&query_payload);
 
-        // Search within the Voronoi cell (O(n/K) where K=8)
         let mut results = Vec::new();
-        for &inode_id in &self.cell_files[cell] {
+        for &inode_id in self.cell_files.iter().flatten() {
             if let Some(inode) = self.inodes.get(&inode_id) {
                 let similarity = payload_similarity(&query_payload, &inode.payload);
                 results.push(FindResult {
                     inode_id,
                     name: inode.name.clone(),
                     similarity,
-                    cell,
+                    cell: inode.voronoi_cell,
                     original_size: inode.metadata.original_size,
                 });
             }
         }
-        results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
+        results.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
 
         let elapsed = t0.elapsed();
         self.log_event(
@@ -837,6 +843,51 @@ mod tests {
         let results = fs.find("Rust systems programming");
         assert!(!results.is_empty());
         // Rust-related files should score higher
+    }
+
+    /// A filesystem whose files actually spread over the Voronoi cells.
+    ///
+    /// The default centroids all sit on the equator (theta = pi/2), where
+    /// aether-core's `great_circle_distance` (latitude formula, colatitude
+    /// inputs) loses the phi term, so nearly every file lands in cell 0.
+    /// Centroids spread in both theta and phi split the files under either
+    /// convention.
+    fn spread_fs() -> ManifoldFS {
+        let mut fs = ManifoldFS::new();
+        let mut spread = [(0.0, 0.0); VORONOI_CELLS];
+        for (i, c) in spread.iter_mut().enumerate() {
+            *c = (0.2 + 0.35 * i as f64, i as f64 * 2.4);
+        }
+        fs.voronoi = SphericalVoronoiIndex::new(spread);
+        fs
+    }
+
+    #[test]
+    fn test_find_ranks_every_file_not_just_the_query_cell() {
+        let mut fs = spread_fs();
+        for n in 0..40u64 {
+            let text = format!("{:016x}", n.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            fs.store_text(&format!("f{n}"), &text, 0).unwrap();
+        }
+        let occupied = fs.stats().cell_distribution.iter().filter(|&&s| s > 0).count();
+        assert!(occupied >= 2, "fixture must span cells");
+
+        let query = "0123456789abcdef";
+        let qp = encoder::encode_text(query);
+        let mut expected: Vec<(f64, String)> = fs
+            .inodes
+            .values()
+            .filter(|i| matches!(i.kind, InodeKind::File))
+            .map(|i| (payload_similarity(&qp, &i.payload), i.name.clone()))
+            .collect();
+        expected.sort_by(|a, b| b.0.total_cmp(&a.0));
+
+        let got = fs.find(query);
+        assert_eq!(got.len(), 40, "find must rank all 40 files");
+        assert_eq!(got[0].name, expected[0].1, "global best match");
+        for (r, (s, _)) in got.iter().zip(&expected) {
+            assert_eq!(r.similarity, *s);
+        }
     }
 
     #[test]

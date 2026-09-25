@@ -7,9 +7,10 @@
 //!
 //! - [`ManifoldMemory`]: Episodic store on S^(D-1). L2-normalized vectors,
 //!   Betti-0 clustering via Union-Find, FIFO eviction. When episode count
-//!   exceeds [`TSS_THRESHOLD`] (16), retrieval switches from O(n) linear scan
-//!   to O(1) Voronoi cell lookup + O(n/K) intra-cell scan via
-//!   [`aether_core::tss::SphericalVoronoiIndex`].
+//!   reaches [`TSS_THRESHOLD`] (16), episodes are bucketed into
+//!   [`aether_core::tss::SphericalVoronoiIndex`] cells (reported in stats).
+//!   Retrieval is an exact full scan: the cell comes from the first three
+//!   coordinates only and cannot bound cosine similarity.
 //!
 //! - [`LatentPredictor`]: Forward dynamics via spectral contraction (T2/SCM).
 //!   Steps state toward an attractor using [`aether_core::scm::SpectralContractionOperator`].
@@ -20,7 +21,7 @@
 //!
 //! # Active Theorems
 //!
-//! T1 (TSS) drives retrieval. T2 (SCM) drives prediction.
+//! T1 (TSS) buckets episodes into cells. T2 (SCM) drives prediction.
 //! T3-T5 drive ManifoldFS. T6-T10 verified at boot.
 
 use std::collections::{HashMap, VecDeque};
@@ -98,14 +99,14 @@ impl UnionFind {
 }
 
 /// Topological manifold memory with L2-normalized vectors, Betti-0 clustering,
-/// and O(1) amortized retrieval via spherical Voronoi tessellation (T1/TSS).
+/// spherical Voronoi cell bookkeeping (T1/TSS), and exact top-k retrieval.
 pub struct ManifoldMemory {
     pub episodes: VecDeque<Episode>,
     pub dim: usize,
     pub capacity: usize,
     chebyshev_k: f64,
     cluster_radius: f64,
-    // T1/TSS: O(1) retrieval via spherical Voronoi cells
+    // T1/TSS: spherical Voronoi cells (bookkeeping only; not used to retrieve)
     voronoi: SphericalVoronoiIndex<TSS_CELLS>,
     cell_episodes: [Vec<usize>; TSS_CELLS],
     episode_cell: VecDeque<usize>,
@@ -179,7 +180,7 @@ impl ManifoldMemory {
         a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
     }
 
-    // ── T1/TSS: O(1) retrieval infrastructure ───────────────────────
+    // ── T1/TSS: Voronoi cell bookkeeping ───────────────────────────
 
     fn vec_to_spherical(v: &[f64]) -> (f64, f64) {
         let x = v.first().copied().unwrap_or(0.0);
@@ -258,7 +259,7 @@ impl ManifoldMemory {
     /// Store an episode. Returns its absolute index.
     ///
     /// When episode count reaches `TSS_THRESHOLD`, the spherical Voronoi index
-    /// activates and all subsequent stores are assigned to O(1)-lookup cells.
+    /// activates and all subsequent stores are assigned to cells.
     pub fn store(
         &mut self,
         vector: Vec<f64>,
@@ -338,61 +339,63 @@ impl ManifoldMemory {
         }
     }
 
-    /// Retrieve top-k episodes by cosine similarity.
+    /// Retrieve the exact global top-k episodes by cosine similarity.
     ///
-    /// When TSS is active, uses O(1) Voronoi cell lookup followed by O(n/K)
-    /// intra-cell scan. Falls back to full O(n) scan when TSS is inactive or
-    /// the target cell has fewer than `k` candidates.
+    /// Every episode is scored. The Voronoi cell of a vector depends only on
+    /// its first three coordinates, so it bounds nothing about cosine
+    /// similarity in `dim` dimensions, and a cell-local scan can miss the
+    /// true best match in another cell. The index is not consulted here.
+    ///
+    /// Each computed dot product `s` carries the forward error bound
+    /// `|s - s_exact| <= 2·γ_n·Σ|q_i v_i|` with `γ_n = n·u / (1 - n·u)`,
+    /// `u = 2^-53` (Higham, *Accuracy and Stability*, §3.1; the factor 2
+    /// covers the rounding of the bound's own sum). When those intervals
+    /// cannot separate rank k from rank k+1, every tied candidate is
+    /// returned, so the result can be longer than `k`. It contains every
+    /// episode that could belong to the exact top-k, sorted by computed score.
+    ///
+    /// ponytail: O(n·dim) scan per query, fine at capacity ≤ 1000; an exact
+    /// sublinear index (e.g. a cover tree on cosine distance) would be the
+    /// upgrade if capacity grows.
     pub fn retrieve(&self, query: &[f64], k: usize) -> Vec<(usize, f64, &Episode)> {
-        if self.tss_active {
-            let (theta, phi) = Self::vec_to_spherical(query);
-            let cell = self.voronoi.locate((theta, phi));
-
-            let mut scored: Vec<(usize, f64)> = self.cell_episodes[cell]
-                .iter()
-                .filter_map(|&abs_idx| {
-                    let vd_idx = abs_idx.checked_sub(self.base_offset)?;
-                    let ep = self.episodes.get(vd_idx)?;
-                    Some((vd_idx, Self::cosine_similarity(query, &ep.vector)))
-                })
-                .collect();
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-            if scored.len() < k {
-                for other in 0..TSS_CELLS {
-                    if other == cell {
-                        continue;
-                    }
-                    for &abs_idx in &self.cell_episodes[other] {
-                        if let Some(vd_idx) = abs_idx.checked_sub(self.base_offset) {
-                            if let Some(ep) = self.episodes.get(vd_idx) {
-                                scored.push((vd_idx, Self::cosine_similarity(query, &ep.vector)));
-                            }
-                        }
-                    }
-                }
-                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            }
-
-            scored
-                .into_iter()
-                .take(k)
-                .map(|(i, s)| (i, s, &self.episodes[i]))
-                .collect()
-        } else {
-            let mut scored: Vec<(usize, f64)> = self
-                .episodes
-                .iter()
-                .enumerate()
-                .map(|(i, ep)| (i, Self::cosine_similarity(query, &ep.vector)))
-                .collect();
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            scored
-                .into_iter()
-                .take(k)
-                .map(|(i, s)| (i, s, &self.episodes[i]))
-                .collect()
+        if k == 0 {
+            return Vec::new();
         }
+        let n = query.len() as f64 * (f64::EPSILON / 2.0);
+        let err_scale = 2.0 * n / (1.0 - n);
+        let mut scored: Vec<(usize, f64, f64)> = self
+            .episodes
+            .iter()
+            .enumerate()
+            .map(|(i, ep)| {
+                let abs: f64 = query
+                    .iter()
+                    .zip(&ep.vector)
+                    .map(|(a, b)| (a * b).abs())
+                    .sum();
+                (
+                    i,
+                    Self::cosine_similarity(query, &ep.vector),
+                    err_scale * abs,
+                )
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+        if scored.len() > k {
+            // k-th largest lower bound: at least k episodes are certainly at
+            // or above it, so anything whose upper bound falls below it is
+            // certainly outside the top-k. Everything else is kept.
+            let mut lows: Vec<f64> = scored.iter().map(|s| s.1 - s.2).collect();
+            lows.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
+            let floor = lows[k - 1];
+            scored.retain(|s| s.1 + s.2 >= floor);
+        }
+
+        scored
+            .into_iter()
+            .map(|(i, s, _)| (i, s, &self.episodes[i]))
+            .collect()
     }
 
     #[allow(dead_code)]
@@ -1107,7 +1110,7 @@ mod tests {
         assert_eq!(results.len(), 10);
     }
 
-    // ── T1/TSS: O(1) retrieval ─────────────────────────────────
+    // ── T1/TSS: cells and retrieval ──────────────────────────────
 
     #[test]
     fn test_tss_activates_at_threshold() {
@@ -1226,6 +1229,63 @@ mod tests {
         for cell in &mem.cell_episodes {
             assert!(cell.is_empty());
         }
+    }
+
+    fn unit(dim: usize, terms: &[(usize, f64)]) -> Vec<f64> {
+        let mut v = vec![0.0; dim];
+        for &(i, x) in terms {
+            v[i] += x;
+        }
+        let n = libm::sqrt(v.iter().map(|x| x * x).sum::<f64>());
+        v.iter().map(|x| x / n).collect()
+    }
+
+    #[test]
+    fn test_tss_retrieve_returns_global_top_k_across_cells() {
+        // The Voronoi cell is chosen from the first three coordinates only,
+        // so it says nothing about cosine similarity in 64 dimensions. The
+        // junk sits at the north pole of that 3-D projection, A at the south
+        // pole, and the query at the north pole while pointing at A.
+        let dim = 64;
+        let mut mem = ManifoldMemory::new(dim, 1000);
+        for i in 0..15 {
+            let junk = unit(dim, &[(2, 1.0), (10 + i, 1.0)]);
+            mem.store(junk, format!("junk {i}"), HashMap::new());
+        }
+        let a = unit(dim, &[(2, -0.1), (3, 1.0)]);
+        mem.store(a, "A".into(), HashMap::new()); // 16th store: TSS rebuild
+        assert!(mem.tss_active);
+        let a_cell = *mem.episode_cell.back().unwrap();
+        assert!(mem.episode_cell.iter().filter(|&&c| c != a_cell).count() == 15);
+
+        let q = unit(dim, &[(2, 0.1), (3, 1.0)]);
+        let got = mem.retrieve(&q, 1);
+        assert_eq!(got[0].2.text, "A", "top-1 was {:?}", got[0].2.text);
+        assert!((got[0].1 - 0.980198).abs() < 1e-5, "score {}", got[0].1);
+        assert_eq!(got.len(), 1, "no tie: a single certified winner");
+    }
+
+    #[test]
+    fn test_retrieve_reports_certified_ties_past_k() {
+        // Two stored vectors whose cosines with the query differ by far less
+        // than the dot-product rounding bound: rank k and k+1 cannot be
+        // separated, so both are returned.
+        let dim = 64;
+        let mut mem = ManifoldMemory::new(dim, 1000);
+        let a = unit(dim, &[(0, 1.0), (1, 1.0)]);
+        let mut b = a.clone();
+        b[1] = f64::from_bits(a[1].to_bits() + 1); // one ulp away from a
+        mem.store(a, "a".into(), HashMap::new());
+        mem.store(b, "b".into(), HashMap::new());
+        mem.store(unit(dim, &[(9, 1.0)]), "far".into(), HashMap::new());
+        let q = unit(dim, &[(0, 1.0), (1, 1.0)]);
+        let got: Vec<&str> = mem
+            .retrieve(&q, 1)
+            .iter()
+            .map(|(_, _, e)| e.text.as_str())
+            .collect();
+        assert_eq!(got.len(), 2, "tie at rank 1 must be reported: {got:?}");
+        assert!(got.contains(&"a") && got.contains(&"b"), "{got:?}");
     }
 
     #[test]
