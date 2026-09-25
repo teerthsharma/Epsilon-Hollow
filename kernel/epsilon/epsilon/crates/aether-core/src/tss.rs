@@ -236,7 +236,9 @@ pub struct SphericalGridStats {
     pub avg_cell_size: f64,
     /// Largest occupied cell size.
     pub max_cell_size: usize,
-    /// Fraction of lookups resolved from the 3x3 neighborhood.
+    /// Fraction of lookups answered from the searched neighborhood with a
+    /// certificate that no centroid outside it is nearer, i.e. without a full
+    /// scan.
     pub o1_hit_rate: f64,
     /// Total lookup calls.
     pub total_lookups: u64,
@@ -328,6 +330,14 @@ impl<const K: usize> SphericalGridHashIndex<K> {
     }
 
     /// Locate the nearest centroid, checking the hashed cell and neighbors first.
+    ///
+    /// The searched region is rows `row-1..=row+1` by columns `col-1..=col+1`,
+    /// widened to every column when it touches a pole row, so the region is a
+    /// polar cap there rather than a wedge the pole cuts through. The region's
+    /// best centroid is returned only if its distance is at most the query's
+    /// distance to the region boundary, which every centroid outside must
+    /// cross; otherwise every centroid is scanned. Ties go to the lowest slot,
+    /// as in a plain scan. Only the certified answers count as O(1) hits.
     pub fn locate(&mut self, query: (f64, f64)) -> usize {
         self.lookup_count = self.lookup_count.saturating_add(1);
         if K == 0 {
@@ -336,39 +346,60 @@ impl<const K: usize> SphericalGridHashIndex<K> {
 
         let q = spherical_to_unit_vector(query.0, query.1);
         let (row, col) = self.hash(query.0, query.1);
+        let (r0, r1) = (row.saturating_sub(1), (row + 1).min(self.n_theta - 1));
+        let (north_cap, south_cap) = (r0 == 0, r1 == self.n_theta - 1);
+        let all_cols = north_cap || south_cap;
         let mut found = false;
         let mut best_idx = self.last_winner.min(K - 1);
         let mut best_dot = f64::NEG_INFINITY;
 
-        let mut dr = -1isize;
-        while dr <= 1 {
-            let r = row as isize + dr;
-            if r >= 0 && (r as usize) < self.n_theta {
-                let mut dc = -1isize;
-                while dc <= 1 {
-                    let c = wrap_col(col, dc, self.n_phi);
-                    let mut i = 0;
-                    while i < K {
-                        if self.hash(self.centroids[i].0, self.centroids[i].1) == (r as usize, c) {
-                            let dot = dot3(&q, &self.centroid_vectors[i]);
-                            if !found || dot > best_dot {
-                                found = true;
-                                best_dot = dot;
-                                best_idx = i;
-                            }
-                        }
-                        i += 1;
-                    }
-                    dc += 1;
+        let mut i = 0;
+        while i < K {
+            let (r, c) = self.hash(self.centroids[i].0, self.centroids[i].1);
+            let near_col = all_cols
+                || c == col
+                || c == wrap_col(col, -1, self.n_phi)
+                || c == wrap_col(col, 1, self.n_phi);
+            if r >= r0 && r <= r1 && near_col {
+                let dot = dot3(&q, &self.centroid_vectors[i]);
+                if !found || dot > best_dot {
+                    found = true;
+                    best_dot = dot;
+                    best_idx = i;
                 }
             }
-            dr += 1;
+            i += 1;
         }
 
         if found {
-            self.o1_hits = self.o1_hits.saturating_add(1);
-            self.last_winner = best_idx;
-            return best_idx;
+            // Lower bound on the distance from the query to the region boundary:
+            // colatitude gaps to the bounding parallels, and the distance to the
+            // great circle through each bounding meridian.
+            let (tq, pq) = canonical(query.0, query.1);
+            let d_theta = core::f64::consts::PI / self.n_theta as f64;
+            let d_phi = 2.0 * core::f64::consts::PI / self.n_phi as f64;
+            let mut bound = f64::INFINITY;
+            if !north_cap {
+                bound = bound.min(tq - r0 as f64 * d_theta);
+            }
+            if !south_cap {
+                bound = bound.min((r1 + 1) as f64 * d_theta - tq);
+            }
+            if !all_cols {
+                let offset = pq - col as f64 * d_phi;
+                let sin_t = libm::sin(tq);
+                let west = libm::fabs(sin_t * libm::sin(offset + d_phi));
+                let east = libm::fabs(sin_t * libm::sin(2.0 * d_phi - offset));
+                bound = bound.min(libm::asin(west.min(east).min(1.0)));
+            }
+            let best_d = libm::acos(best_dot.clamp(-1.0, 1.0));
+            // The margin absorbs rounding between the two distance formulas;
+            // it can only turn a hit into a fallback, never a wrong answer.
+            if best_d + 1e-9 <= bound {
+                self.o1_hits = self.o1_hits.saturating_add(1);
+                self.last_winner = best_idx;
+                return best_idx;
+            }
         }
 
         let mut i = 0;
@@ -401,7 +432,8 @@ impl<const K: usize> SphericalGridHashIndex<K> {
         (idx, payload)
     }
 
-    /// Fraction of lookups resolved by the O(1)-expected grid neighborhood.
+    /// Fraction of lookups answered by the certified grid neighborhood, without
+    /// the full-scan fallback.
     #[inline]
     pub fn o1_hit_rate(&self) -> f64 {
         if self.lookup_count == 0 {
@@ -453,15 +485,39 @@ impl<const K: usize> SphericalGridHashIndex<K> {
         }
     }
 
+    /// Cell of a point: row by colatitude over `[0, pi]`, column by longitude
+    /// over `[0, 2pi)`. Queries and centroids go through the same
+    /// normalisation; the old `[-pi, pi]` clamp put every longitude above `pi`
+    /// in the last column.
     #[inline]
     fn hash(&self, theta: f64, phi: f64) -> (usize, usize) {
-        let theta = theta.clamp(0.0, core::f64::consts::PI);
-        let phi = phi.clamp(-core::f64::consts::PI, core::f64::consts::PI);
+        let (theta, phi) = canonical(theta, phi);
         let row = libm::floor((theta / core::f64::consts::PI) * self.n_theta as f64) as usize;
-        let col =
-            ((phi + core::f64::consts::PI) / (2.0 * core::f64::consts::PI)) * self.n_phi as f64;
-        let col = libm::floor(col) as usize;
+        let col = libm::floor((phi / (2.0 * core::f64::consts::PI)) * self.n_phi as f64) as usize;
         (row.min(self.n_theta - 1), col.min(self.n_phi - 1))
+    }
+}
+
+/// Map `(theta, phi)` to the same point with `theta` in `[0, pi]` and `phi`
+/// in `[0, 2pi)`.
+#[inline]
+fn canonical(theta: f64, phi: f64) -> (f64, f64) {
+    use core::f64::consts::{PI, TAU};
+    let wrap = |x: f64| {
+        let r = libm::fmod(x, TAU);
+        let r = if r < 0.0 { r + TAU } else { r };
+        // Adding TAU to a tiny negative remainder can round up to TAU itself.
+        if r >= TAU {
+            0.0
+        } else {
+            r
+        }
+    };
+    let theta = wrap(theta);
+    if theta > PI {
+        (TAU - theta, wrap(phi + PI))
+    } else {
+        (theta, wrap(phi))
     }
 }
 
