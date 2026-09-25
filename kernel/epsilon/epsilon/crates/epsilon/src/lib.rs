@@ -63,8 +63,8 @@
 //!
 //! ## Safety Modifications
 //!
-//! 1. **Surgery Permit** (governor.rs): Zeroes derivative gain β for one
-//!    tick to prevent oscillation panic when de/dt → ∞.
+//! 1. **Surgery Permit** (governor.rs): Brackets the assimilation. No
+//!    governor tick runs inside the window, so it has no observable effect.
 //! 2. **Chebyshev Liveness Inheritance** (memory.rs): Pre-ages teleported
 //!    data with inherited k-σ bounds to prevent immediate eviction.
 //! 3. **Wake-Up Rescan** (manifold.rs): Verifies Betti boundaries of
