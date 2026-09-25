@@ -36,8 +36,10 @@ fn successful_teleport_leaves_governor_bit_identical() {
     m.add_shell_point(EpsilonPoint::new([1.0, 0.0, 0.0]));
     m.add_shell_point(EpsilonPoint::new([0.9, 0.1, 0.0]));
     let mut src = SparseGraph::<3>::new(2.0);
-    src.add_point(EpsilonPoint::new([0.0, 0.5, 0.5]));
-    src.add_point(EpsilonPoint::new([0.1, 0.5, 0.5]));
+    // Within 0.1 of the shell, so the merged beta_0 = 1 is certified at
+    // epsilon 1.5; a payload ~1.02 away sits inside the certificate band.
+    src.add_point(EpsilonPoint::new([0.8, 0.1, 0.0]));
+    src.add_point(EpsilonPoint::new([0.8, 0.2, 0.0]));
 
     let r = sys_teleport_context(
         &mut m,

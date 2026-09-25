@@ -269,11 +269,13 @@ mod tests {
         m
     }
 
-    /// Build a connected 2-point payload with β₀ = 1.
+    /// Build a connected 2-point payload with β₀ = 1, placed within 0.2 of
+    /// the shell so that the merged β₀ = 1 is certified at ε = 1.5 (no merge
+    /// height in [ε/√10, ε·√10]).
     fn make_connected_payload() -> ManifoldPayload<3> {
         let mut src = SparseGraph::<3>::new(2.0);
-        src.add_point(EpsilonPoint::new([0.0, 0.5, 0.5]));
-        src.add_point(EpsilonPoint::new([0.1, 0.5, 0.5]));
+        src.add_point(EpsilonPoint::new([0.8, 0.1, 0.0]));
+        src.add_point(EpsilonPoint::new([0.8, 0.2, 0.0]));
         ManifoldPayload::from_graph(&src, 5.0)
     }
 

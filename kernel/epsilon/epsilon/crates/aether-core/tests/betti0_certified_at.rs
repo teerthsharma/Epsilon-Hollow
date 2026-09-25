@@ -93,7 +93,12 @@ fn agrees_with_certified_beta0_on_seeded_clouds() {
                     certified += 1;
                 }
                 (Beta0::Refused { height, .. }, Err(h)) => {
-                    assert_eq!(h, height, "scale {s}");
+                    // certified_beta0 measures with a scale-safe norm and the
+                    // diagram with the plain one; the two agree to a few ulp.
+                    assert!(
+                        (h - height).abs() <= 4.0 * f64::EPSILON * height.abs(),
+                        "scale {s}: diagram {h} vs points {height}"
+                    );
                     refused += 1;
                 }
                 (a, b) => panic!("scale {s}: points say {a:?}, diagram says {b:?}"),
