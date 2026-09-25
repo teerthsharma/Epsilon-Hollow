@@ -366,7 +366,7 @@ impl ManifoldFS {
         }
 
         let payload = encoder::encode_data(data);
-        let (cell, subcell) = self.voronoi.insert(0, &payload);
+        let (cell, _) = self.voronoi.locate(&payload);
 
         let inode = Inode {
             id: 0,
@@ -389,12 +389,11 @@ impl ManifoldFS {
         };
 
         let id = self.inodes.alloc(inode);
-        self.voronoi.remove(0, cell, subcell);
         let payload_ref = match self.inodes.get(id) {
             Some(i) => &i.payload,
             None => return Err(FsError::NotFound),
         };
-        let (cell, subcell) = self.voronoi.insert(id, payload_ref);
+        let (cell, _) = self.voronoi.insert(id, payload_ref);
         if let Some(ino) = self.inodes.get_mut(id) {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
@@ -403,7 +402,7 @@ impl ManifoldFS {
         if let Some(ino) = self.inodes.get(id).cloned() {
             let write_result = self.store.write_inode(&ino, data);
             if self.store.is_mounted() && write_result.is_err() {
-                self.voronoi.remove(id, cell, subcell);
+                self.voronoi.remove(id);
                 self.inodes.free(id);
                 return Err(FsError::Storage);
             }
@@ -955,7 +954,7 @@ impl ManifoldFS {
 
         {
             let cell = inode.voronoi_cell;
-            self.voronoi.remove(inode_id, cell, 0);
+            self.voronoi.remove(inode_id);
             if self.cluster_sizes[cell] > 0 {
                 self.cluster_sizes[cell] -= 1;
             }
@@ -1042,7 +1041,7 @@ impl ManifoldFS {
             Some(i) => &i.payload,
             None => return Err(FsError::NotFound),
         };
-        let (cell, subcell) = self.voronoi.insert(id, payload_ref);
+        let (cell, _) = self.voronoi.insert(id, payload_ref);
         if let Some(ino) = self.inodes.get_mut(id) {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
@@ -1050,7 +1049,7 @@ impl ManifoldFS {
         if let Some(ino) = self.inodes.get(id).cloned() {
             let write_result = self.store.write_inode(&ino, &ino.data);
             if self.store.is_mounted() && write_result.is_err() {
-                self.voronoi.remove(id, cell, subcell);
+                self.voronoi.remove(id);
                 self.inodes.free(id);
                 return Err(FsError::Storage);
             }
@@ -1389,7 +1388,7 @@ impl FileSystem for ManifoldFS {
             return Err(VfsError::AlreadyExists);
         }
         let payload = encoder::encode_data(b"");
-        let (cell, subcell) = self.voronoi.insert(0, &payload);
+        let (cell, _) = self.voronoi.locate(&payload);
         let kind = InodeKind::File;
         let perms = 0o666;
         let inode = Inode {
@@ -1412,12 +1411,11 @@ impl FileSystem for ManifoldFS {
             dir_first_child: None,
         };
         let id = self.inodes.alloc(inode);
-        self.voronoi.remove(0, cell, subcell);
         let payload_ref = match self.inodes.get(id) {
             Some(i) => &i.payload,
             None => return Err(VfsError::NotFound),
         };
-        let (cell, _subcell) = self.voronoi.insert(id, payload_ref);
+        let (cell, _) = self.voronoi.insert(id, payload_ref);
         if let Some(ino) = self.inodes.get_mut(id) {
             ino.voronoi_cell = cell;
             ino.cluster_id = cell as i32;
@@ -1425,7 +1423,7 @@ impl FileSystem for ManifoldFS {
         if let Some(ino) = self.inodes.get(id).cloned() {
             let write_result = self.store.write_inode(&ino, &[]);
             if self.store.is_mounted() && write_result.is_err() {
-                self.voronoi.remove(id, cell, _subcell);
+                self.voronoi.remove(id);
                 self.inodes.free(id);
                 return Err(VfsError::IoError);
             }

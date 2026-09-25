@@ -1,27 +1,30 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Bounded Voronoi cells — cap at 64 files, split/merge with hysteresis.
+//! Voronoi cells over S², each split in two along its axis of greatest
+//! variance once it holds more than 64 files, and merged back below 24.
+//!
+//! ponytail: a cell splits once; its two subcells are never split again, so
+//! a subcell is unbounded and `find` over a crowded region is a linear scan
+//! of it. Payloads with identical first points (every empty file encodes to
+//! the origin) cannot be separated by any coordinate split, so a recursive
+//! k-d split would still need a depth or size floor. Upgrade path: recurse in
+//! `split_cell` with a depth limit.
 
 use aether_core::tss::SphericalVoronoiIndex;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 const VORONOI_CELLS: usize = 8;
 const MAX_CELL_OCCUPANCY: usize = 64;
 const MERGE_THRESHOLD: usize = 24;
 
-#[derive(Debug, Clone, Copy)]
-enum SplitAxis {
-    X,
-    Y,
-    Z,
-}
-
 #[derive(Debug, Clone)]
 struct Subcell {
     files: Vec<u64>,
     boundary: f64,
-    axis: SplitAxis,
+    /// Index into the first point's coordinates: 0 = x, 1 = y, 2 = z.
+    axis: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -30,9 +33,19 @@ struct CellState {
     subcells: Option<[Subcell; 2]>,
 }
 
+/// Buckets of inode ids keyed by the Voronoi cell (and, once split, the
+/// subcell) of each payload's first point on S².
+///
+/// Invariant: every stored id is reachable from `locate(payload)`. It
+/// appears exactly once, in `files_in_bucket(locate(payload))`, where
+/// `payload` is the one it was inserted with. Insertion, splitting and
+/// removal all go through `route`, which reads only the point recorded in
+/// `points`, so the three cannot disagree about where an id lives.
 pub struct VoronoiCap {
     cells: Vec<CellState>,
     voronoi: SphericalVoronoiIndex<VORONOI_CELLS>,
+    /// First point of each stored id's payload, the only input to `route`.
+    points: BTreeMap<u64, [f64; 3]>,
     splits: u64,
     merges: u64,
 }
@@ -50,6 +63,7 @@ impl VoronoiCap {
         Self {
             cells,
             voronoi: SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids),
+            points: BTreeMap::new(),
             splits: 0,
             merges: 0,
         }
@@ -67,14 +81,7 @@ impl VoronoiCap {
     }
 
     pub fn locate(&self, payload: &super::encoder::ManifoldPayload) -> (usize, usize) {
-        let cell = self.assign_cell(payload);
-        match &self.cells[cell].subcells {
-            None => (cell, 0),
-            Some(subs) => {
-                let sub = self.assign_subcell(payload, &subs[0]);
-                (cell, sub)
-            }
-        }
+        self.route(&first_point(payload))
     }
 
     pub fn insert(
@@ -82,47 +89,34 @@ impl VoronoiCap {
         inode_id: u64,
         payload: &super::encoder::ManifoldPayload,
     ) -> (usize, usize) {
-        let cell = self.assign_cell(payload);
-
-        // Fast path: already split
-        if let Some(ref subs) = self.cells[cell].subcells {
-            let sub_idx = self.assign_subcell(payload, &subs[0]);
-            self.cells[cell].subcells.as_mut().unwrap()[sub_idx]
-                .files
-                .push(inode_id);
-            return (cell, sub_idx);
+        let pt = first_point(payload);
+        self.points.insert(inode_id, pt);
+        let (cell, sub) = self.route(&pt);
+        match self.cells[cell].subcells.as_mut() {
+            Some(subs) => subs[sub].files.push(inode_id),
+            None => {
+                self.cells[cell].files.push(inode_id);
+                if self.cells[cell].files.len() > MAX_CELL_OCCUPANCY {
+                    self.split_cell(cell);
+                }
+            }
         }
-
-        self.cells[cell].files.push(inode_id);
-
-        if self.cells[cell].files.len() > MAX_CELL_OCCUPANCY {
-            self.split_cell(cell);
-            let sub_idx = {
-                let subs = self.cells[cell].subcells.as_ref().unwrap();
-                self.assign_subcell(payload, &subs[0])
-            };
-            self.cells[cell].subcells.as_mut().unwrap()[sub_idx]
-                .files
-                .push(inode_id);
-            self.cells[cell].files.retain(|&id| id != inode_id);
-            return (cell, sub_idx);
-        }
-
-        (cell, 0)
+        self.route(&pt)
     }
 
-    pub fn remove(&mut self, inode_id: u64, cell: usize, subcell: usize) {
-        if cell >= self.cells.len() {
+    /// Remove `inode_id` from whichever bucket holds it. The bucket is found
+    /// from the point recorded at insertion, not supplied by the caller.
+    pub fn remove(&mut self, inode_id: u64) {
+        let Some(pt) = self.points.remove(&inode_id) else {
             return;
-        }
+        };
+        let (cell, sub) = self.route(&pt);
         let state = &mut self.cells[cell];
         if let Some(ref mut subs) = state.subcells {
-            if subcell < subs.len() {
-                subs[subcell].files.retain(|&id| id != inode_id);
-                let total: usize = subs.iter().map(|s| s.files.len()).sum();
-                if total < MERGE_THRESHOLD {
-                    self.merge_cell(cell);
-                }
+            subs[sub].files.retain(|&id| id != inode_id);
+            let total: usize = subs.iter().map(|s| s.files.len()).sum();
+            if total < MERGE_THRESHOLD {
+                self.merge_cell(cell);
             }
         } else {
             state.files.retain(|&id| id != inode_id);
@@ -178,9 +172,11 @@ impl VoronoiCap {
         }
     }
 
-    pub fn move_file_to_cell(&mut self, inode_id: u64, from_cell: usize, to_cell: usize) {
-        self.remove(inode_id, from_cell, 0);
-        if to_cell < self.cells.len() {
+    pub fn move_file_to_cell(&mut self, inode_id: u64, _from_cell: usize, to_cell: usize) {
+        let pt = self.points.get(&inode_id).copied();
+        self.remove(inode_id);
+        if let (Some(pt), true) = (pt, to_cell < self.cells.len()) {
+            self.points.insert(inode_id, pt);
             self.cells[to_cell].files.push(inode_id);
         }
     }
@@ -193,103 +189,65 @@ impl VoronoiCap {
         self.merges
     }
 
-    fn assign_cell(&self, payload: &super::encoder::ManifoldPayload) -> usize {
-        if payload.points.is_empty() {
-            return 0;
+    /// The bucket for a first point: its Voronoi cell, then the side of that
+    /// cell's split plane when the cell is split.
+    fn route(&self, pt: &[f64; 3]) -> (usize, usize) {
+        let cell = self.assign_cell(pt);
+        match &self.cells[cell].subcells {
+            None => (cell, 0),
+            Some(subs) => (cell, side(pt, subs[0].axis, subs[0].boundary)),
         }
-        let pt = &payload.points[0];
-        let r = libm::sqrt(
-            pt.coords[0] * pt.coords[0] + pt.coords[1] * pt.coords[1] + pt.coords[2] * pt.coords[2],
-        );
+    }
+
+    fn assign_cell(&self, pt: &[f64; 3]) -> usize {
+        let r = libm::sqrt(pt[0] * pt[0] + pt[1] * pt[1] + pt[2] * pt[2]);
         if r < 1e-12 {
             return 0;
         }
-        let theta = libm::acos((pt.coords[2] / r).clamp(-1.0, 1.0));
-        let phi = libm::atan2(pt.coords[1], pt.coords[0]);
+        let theta = libm::acos((pt[2] / r).clamp(-1.0, 1.0));
+        let phi = libm::atan2(pt[1], pt[0]);
         self.voronoi.locate((theta, phi))
     }
 
-    fn assign_subcell(
-        &self,
-        payload: &super::encoder::ManifoldPayload,
-        reference: &Subcell,
-    ) -> usize {
-        if payload.points.is_empty() {
-            return 0;
-        }
-        let coord = match reference.axis {
-            SplitAxis::X => payload.points[0].coords[0],
-            SplitAxis::Y => payload.points[0].coords[1],
-            SplitAxis::Z => payload.points[0].coords[2],
-        };
-        if coord > reference.boundary {
-            1
-        } else {
-            0
-        }
-    }
-
+    /// Split `cell` at the mean of its files' first points along the axis of
+    /// greatest variance, partitioning with the same `side` that `route` uses.
     fn split_cell(&mut self, cell: usize) {
         let state = &mut self.cells[cell];
         if state.files.len() <= MAX_CELL_OCCUPANCY {
             return;
         }
-        // Compute dominant axis of variance
+        let pts: Vec<[f64; 3]> = state
+            .files
+            .iter()
+            .map(|id| self.points.get(id).copied().unwrap_or([0.0; 3]))
+            .collect();
+        let n = pts.len() as f64;
         let mut mean = [0.0f64; 3];
-        for &id in &state.files {
-            // We don't have payload here; use placeholder based on id
-            // In real usage, the caller provides payload. For now, simple hash-based split.
-            let h = id.wrapping_mul(0x9e3779b97f4a7c15);
-            mean[0] += (h & 0xFF) as f64 / 255.0;
-            mean[1] += ((h >> 8) & 0xFF) as f64 / 255.0;
-            mean[2] += ((h >> 16) & 0xFF) as f64 / 255.0;
-        }
-        let n = state.files.len() as f64;
-        mean[0] /= n;
-        mean[1] /= n;
-        mean[2] /= n;
-
-        let mut var = [0.0f64; 3];
-        for &id in &state.files {
-            let h = id.wrapping_mul(0x9e3779b97f4a7c15);
-            let x = (h & 0xFF) as f64 / 255.0;
-            let y = ((h >> 8) & 0xFF) as f64 / 255.0;
-            let z = ((h >> 16) & 0xFF) as f64 / 255.0;
-            var[0] += (x - mean[0]) * (x - mean[0]);
-            var[1] += (y - mean[1]) * (y - mean[1]);
-            var[2] += (z - mean[2]) * (z - mean[2]);
-        }
-
-        let axis = if var[0] >= var[1] && var[0] >= var[2] {
-            SplitAxis::X
-        } else if var[1] >= var[2] {
-            SplitAxis::Y
-        } else {
-            SplitAxis::Z
-        };
-
-        let boundary = match axis {
-            SplitAxis::X => mean[0],
-            SplitAxis::Y => mean[1],
-            SplitAxis::Z => mean[2],
-        };
-
-        let mut sub0 = Vec::new();
-        let mut sub1 = Vec::new();
-        for &id in &state.files {
-            let h = id.wrapping_mul(0x9e3779b97f4a7c15);
-            let coord = match axis {
-                SplitAxis::X => (h & 0xFF) as f64 / 255.0,
-                SplitAxis::Y => ((h >> 8) & 0xFF) as f64 / 255.0,
-                SplitAxis::Z => ((h >> 16) & 0xFF) as f64 / 255.0,
-            };
-            if coord > boundary {
-                sub1.push(id);
-            } else {
-                sub0.push(id);
+        for p in &pts {
+            for k in 0..3 {
+                mean[k] += p[k] / n;
             }
         }
+        let mut var = [0.0f64; 3];
+        for p in &pts {
+            for k in 0..3 {
+                var[k] += (p[k] - mean[k]) * (p[k] - mean[k]);
+            }
+        }
+        let axis = if var[0] >= var[1] && var[0] >= var[2] {
+            0
+        } else if var[1] >= var[2] {
+            1
+        } else {
+            2
+        };
+        let boundary = mean[axis];
 
+        let mut halves = [Vec::new(), Vec::new()];
+        for (&id, p) in state.files.iter().zip(pts.iter()) {
+            halves[side(p, axis, boundary)].push(id);
+        }
+        let [sub0, sub1] = halves;
         state.subcells = Some([
             Subcell {
                 files: sub0,
@@ -316,6 +274,17 @@ impl VoronoiCap {
             self.merges += 1;
         }
     }
+}
+
+/// First point of a payload, or the origin for an empty one, which
+/// `assign_cell` sends to cell 0.
+fn first_point(payload: &super::encoder::ManifoldPayload) -> [f64; 3] {
+    payload.points.first().map(|p| p.coords).unwrap_or([0.0; 3])
+}
+
+/// Which side of a split plane a point falls on: 1 above `boundary`, else 0.
+fn side(pt: &[f64; 3], axis: usize, boundary: f64) -> usize {
+    usize::from(pt[axis] > boundary)
 }
 
 impl Default for VoronoiCap {

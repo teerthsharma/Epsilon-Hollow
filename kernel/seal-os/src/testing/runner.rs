@@ -23,6 +23,8 @@ pub fn test_main() -> ! {
     crate::memory::tests::register_all();
     crate::fs::block_store::tests::register_all();
     crate::fs::manifold_fs::tests::register_all();
+    crate::fs::voronoi_cap::tests::register_all();
+    crate::testing::voronoi_reach::register_all();
     crate::fs::vfs::tests::register_all();
     crate::fs::dir_hash::tests::register_all();
     crate::fs::ext2::tests::register_all();
