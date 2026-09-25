@@ -32,6 +32,7 @@ pub mod angular_sparse_attention;
 /// Topology-derived sparse attention selectors and their dense reference path.
 #[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
 pub mod attention;
+pub mod certified_betti;
 pub mod cross_manifold_alignment;
 /// Persistence-diagram distances and vectorizations (bottleneck, Wasserstein, landscapes, images).
 #[allow(missing_docs)] // Ported from upstream Aether-Lang; documented at module level.
