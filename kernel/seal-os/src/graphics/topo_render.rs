@@ -1,10 +1,10 @@
 // Seal OS — Copyright (c) 2024 Teerth Sharma
 // SPDX-License-Identifier: MIT
 
-//! Topological 3D Render Driver — software rasterizer driven by T1–T5 theorems.
+//! Topological 3D Render Driver — software rasterizer driven by T1, T2, T4 and T5.
 //!
 //! Implements a full software 3D pipeline: hyperbolic projection (T5), spectral LOD (T2),
-//! Betti mesh integrity (T3), Voronoi spatial partition (T1), and adaptive quality governor (T4).
+//! an edge-manifold mesh check, Voronoi spatial partition (T1), and adaptive quality governor (T4).
 
 use crate::graphics::htek;
 use crate::wm::window::Window;
@@ -199,9 +199,9 @@ pub fn render_mesh(mesh: &TopoMesh, target: &mut Window) {
     };
 
     // -----------------------------------------------------------------------
-    // 3. T3 — Betti mesh integrity
+    // 3. Edge-manifold check on the LOD mesh
     // -----------------------------------------------------------------------
-    let final_triangles = if !lod_triangles.is_empty() && betti_one_check(&lod_triangles) {
+    let final_triangles = if !lod_triangles.is_empty() && edge_manifold_check(&lod_triangles) {
         lod_triangles
     } else if let Some(prev) = &state.prev_lod_triangles {
         prev.clone()
@@ -517,11 +517,15 @@ fn compute_lod(mesh: &TopoMesh, camera: &Camera, quality: u8) -> Vec<[u32; 3]> {
 }
 
 // ---------------------------------------------------------------------------
-// T3 — Betti mesh integrity
+// Edge-manifold check
 // ---------------------------------------------------------------------------
 
-fn betti_one_check(triangles: &[[u32; 3]]) -> bool {
-    // Simplified manifold check: no edge may be shared by more than 2 triangles.
+/// True when no edge is shared by more than two triangles.
+///
+/// This is a necessary condition for a 2-manifold (with boundary), not a
+/// sufficient one: it does not detect non-manifold vertices, and it computes
+/// no Betti number. A mesh with any number of holes or tunnels passes.
+fn edge_manifold_check(triangles: &[[u32; 3]]) -> bool {
     let mut edges: Vec<((u32, u32), u32)> = Vec::new();
     for tri in triangles {
         let e0 = if tri[0] < tri[1] {
