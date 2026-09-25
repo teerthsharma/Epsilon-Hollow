@@ -23,11 +23,11 @@
 //!   - **salient blocks**: the `topk_topology_blocks` key blocks with the highest
 //!     0D-persistence salience over block centroids.
 //!
-//! The salience is the elder rule: when two components merge, every member of the
-//! smaller one records the merge distance and the larger one carries on. A block's
-//! score is therefore the H0 death time of the component it belonged to, and a
-//! high score means the block stayed distinct from everything else for a long
-//! time. `block_salience_is_the_elder_rule_over_centroids` checks it against this
+//! The salience is the elder rule: when two components merge, the smaller one
+//! dies and its death is written to the one block that has carried it, while the
+//! larger one carries on. Each merge writes one block, so the non-zero scores are
+//! exactly the H0 finite deaths, and a high score means the block's component
+//! stayed distinct from everything else for a long time. `block_salience_is_the_elder_rule_over_centroids` checks it against this
 //! crate's persistence engine rather than trusting two implementations of H0.
 
 extern crate alloc;
@@ -188,16 +188,21 @@ fn validate_blocking(seq: usize, block_size: usize) -> Result<usize, ScheduleErr
 
 /// 0D-persistence salience of each key block, over block centroids.
 ///
-/// Single-linkage merging in increasing distance; on each merge, every member of
-/// the **smaller** component records the merge distance and the larger component
-/// continues. That is the elder rule, so a block's score is the H0 death time of
-/// the component it belonged to.
+/// Single-linkage merging in increasing distance. On each merge the **smaller**
+/// component dies and the larger continues; the death is written to the smaller
+/// component's root, the one block in it that has never been written. That is
+/// the elder rule, and since each merge writes one block once, the non-zero
+/// scores are the H0 finite deaths of the centroid cloud as a multiset.
+///
+/// Writing every member of the dying component instead overwrites deaths
+/// recorded by earlier merges: keys `[0, 1, 10, 11]` at `block_size` 1 then
+/// score `[9, 9, 1, 0]` against the barcode `{1, 1, 9}`.
 ///
 /// Exactly one block scores 0: the invariant "each component holds exactly one
-/// block that has never been written" is preserved by every merge, since the
-/// smaller component's sole unwritten block gets written and the larger one's does
+/// block that has never been written, its root" is preserved by every merge,
+/// since the smaller component's root gets written and the larger one's does
 /// not. That block is the one that survived to the end, and it is never selected
-/// by top-k — which is correct, since it has no finite death.
+/// by top-k, which is correct, since it has no finite death.
 pub fn block_salience(
     keys: &[f64],
     seq: usize,
@@ -241,7 +246,7 @@ pub fn block_salience(
     edges.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
 
     let mut parent: Vec<usize> = (0..num_blocks).collect();
-    let mut members: Vec<Vec<usize>> = (0..num_blocks).map(|i| vec![i]).collect();
+    let mut size = vec![1usize; num_blocks];
     let mut salience = vec![0.0f64; num_blocks];
 
     for (distance, left, right) in edges {
@@ -251,15 +256,12 @@ pub fn block_salience(
         }
         // Absorb the smaller into the larger, so the elder rule records the
         // younger component's death.
-        if members[root_left].len() > members[root_right].len() {
+        if size[root_left] > size[root_right] {
             core::mem::swap(&mut root_left, &mut root_right);
         }
-        for &block in &members[root_left] {
-            salience[block] = distance;
-        }
+        salience[root_left] = distance;
         parent[root_left] = root_right;
-        let absorbed = core::mem::take(&mut members[root_left]);
-        members[root_right].extend(absorbed);
+        size[root_right] += size[root_left];
     }
     Ok(salience)
 }

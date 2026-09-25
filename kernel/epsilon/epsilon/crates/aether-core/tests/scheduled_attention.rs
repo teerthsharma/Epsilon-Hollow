@@ -12,9 +12,9 @@
 //!     Python builder emits;
 //!   - the kernel is numeric and checkable against dense masked attention.
 //!
-//! The salience is the elder rule — each block scores the merge distance at which
-//! its component was absorbed — so it is asserted against this crate's persistence
-//! engine rather than trusting a second implementation of H0.
+//! The salience is the elder rule — each merge writes the dying component's death
+//! to one block — so its multiset is asserted equal to the H0 barcode from this
+//! crate's persistence engine rather than trusting a second implementation of H0.
 
 use aether_core::attention::sparse_attention;
 use aether_core::scheduled::{
@@ -215,10 +215,9 @@ fn the_topology_schedule_visits_fewer_blocks_than_the_dense_one() {
 
 #[test]
 fn block_salience_is_the_elder_rule_over_centroids() {
-    // Each block scores the merge distance at which its component was absorbed:
-    // the elder rule, and therefore an H0 death of the centroid cloud. The set of
-    // non-zero saliences must be a sub-multiset of the H0 finite deaths the
-    // persistence engine computes on the same centroids.
+    // Each merge kills one component and writes its death to one block: the
+    // elder rule. The non-zero saliences must therefore equal, as a multiset, the
+    // H0 finite deaths the persistence engine computes on the same centroids.
     use aether_core::manifold::ManifoldPoint;
     use aether_core::persistence::{persistent_homology, PersistenceConfig};
 
@@ -251,14 +250,18 @@ fn block_salience_is_the_elder_rule_over_centroids() {
         .collect();
     deaths.sort_by(f64::total_cmp);
 
-    for (block, &score) in salience.iter().enumerate() {
-        if score == 0.0 {
-            continue; // the block that survived to the end never dies
-        }
+    // The block that survived to the end never dies, so it is left out.
+    let mut scores: Vec<f64> = salience.iter().copied().filter(|&s| s != 0.0).collect();
+    scores.sort_by(f64::total_cmp);
+    assert_eq!(
+        scores.len(),
+        deaths.len(),
+        "salience {scores:?} is not the H0 barcode {deaths:?}"
+    );
+    for (i, (score, death)) in scores.iter().zip(deaths.iter()).enumerate() {
         assert!(
-            deaths.iter().any(|&d| (d - score).abs() < 1e-9),
-            "block {block} salience {score} is not an H0 death of the centroids: \
-             {deaths:?}"
+            (score - death).abs() < 1e-9,
+            "sorted salience {i} is {score}, H0 death is {death}: {scores:?} vs {deaths:?}"
         );
     }
 
@@ -269,6 +272,18 @@ fn block_salience_is_the_elder_rule_over_centroids() {
         1,
         "exactly one block should never be absorbed"
     );
+}
+
+#[test]
+fn block_salience_writes_each_death_once() {
+    // Two pairs at unit spacing, nine apart. The H0 barcode has finite deaths
+    // {1, 1, 9}: each pair merges at 1, then the pairs merge at 9. The merge at 9
+    // kills one component, so exactly one block carries 9. Overwriting every
+    // member of the absorbed component gave [9, 9, 1, 0].
+    let keys = [0.0, 1.0, 10.0, 11.0];
+    let mut salience = block_salience(&keys, 4, 1, 1).unwrap();
+    salience.sort_by(f64::total_cmp);
+    assert_eq!(salience, vec![0.0, 1.0, 1.0, 9.0]);
 }
 
 #[test]
