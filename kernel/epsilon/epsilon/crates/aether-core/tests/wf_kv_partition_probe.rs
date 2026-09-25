@@ -127,9 +127,10 @@ fn probe_reported_cost_vs_path_actually_run() {
     for groups in [1usize, 2, 4, 6, 12, 48] {
         let k = structured_keys(seq, head_dim, groups, 5000 + groups as u64);
         let q = structured_keys(seq, head_dim, groups.max(2), 99_000 + groups as u64);
-        let plan = routing_plan(&k, seq, head_dim, clusters, budget, true);
+        let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
         let reported = selection_dot_cost(
             Selector::TopologicalRouted { budget, clusters },
+            &q,
             &k,
             seq,
             head_dim,

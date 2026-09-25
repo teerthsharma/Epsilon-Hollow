@@ -50,6 +50,13 @@ fn qkv(seq: usize, head_dim: usize, seed: u64) -> (Vec<f64>, Vec<f64>, Vec<f64>)
     (q, k, v)
 }
 
+/// Row-major `[seq, head_dim]` queries from their own generator, so adding them
+/// to a test leaves that test's key tensor unchanged.
+fn queries(seq: usize, head_dim: usize, seed: u64) -> Vec<f64> {
+    let mut rng = Rng::new(seed);
+    (0..seq * head_dim).map(|_| rng.signed()).collect()
+}
+
 fn full_mask(seq: usize) -> Vec<bool> {
     vec![true; seq * seq]
 }
@@ -902,10 +909,11 @@ fn routing_is_sparse_only_when_the_keys_have_h0_structure() {
     let (seq, head_dim, budget, clusters) = (64usize, 8usize, 8usize, 4usize);
     let dense = dense_dot_cost(seq, true);
     let selector = Selector::TopologicalRouted { budget, clusters };
+    let q = queries(seq, head_dim, 4002);
 
     let mut rng = Rng::new(4001);
     let uniform: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
-    let uniform_cost = selection_dot_cost(selector, &uniform, seq, head_dim, true) / dense;
+    let uniform_cost = selection_dot_cost(selector, &q, &uniform, seq, head_dim, true) / dense;
     assert!(
         uniform_cost > 0.85,
         "uniform keys have no H0 structure, so routing cannot be sparse; measured \
@@ -915,7 +923,8 @@ fn routing_is_sparse_only_when_the_keys_have_h0_structure() {
 
     let mut rng = Rng::new(4001);
     let structured = clustered_keys(seq, head_dim, clusters, 0.0, &mut rng);
-    let structured_cost = selection_dot_cost(selector, &structured, seq, head_dim, true) / dense;
+    let structured_cost =
+        selection_dot_cost(selector, &q, &structured, seq, head_dim, true) / dense;
     assert!(
         structured_cost < 0.6,
         "with {clusters} genuine key clusters the router should examine well under \
@@ -944,7 +953,7 @@ fn routing_buys_its_quality_at_a_real_discount_on_structured_keys() {
             let v: Vec<f64> = (0..n).map(|_| rng.signed()).collect();
             let k = clustered_keys(seq, head_dim, clusters, spread, &mut rng);
 
-            cost_total += selection_dot_cost(selector, &k, seq, head_dim, true) / dense;
+            cost_total += selection_dot_cost(selector, &q, &k, seq, head_dim, true) / dense;
 
             let mass =
                 |sel: Selector| attention_mass_recovered(sel, &q, &k, &v, seq, head_dim, true);
@@ -974,16 +983,25 @@ fn the_oracle_is_priced_as_the_diagnostic_it_is() {
     let (seq, head_dim) = (32usize, 8usize);
     let mut rng = Rng::new(4003);
     let k: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
+    let q = queries(seq, head_dim, 4004);
 
     let dense = dense_dot_cost(seq, true);
     assert_eq!(
-        selection_dot_cost(Selector::OracleTopK { budget: 4 }, &k, seq, head_dim, true),
+        selection_dot_cost(
+            Selector::OracleTopK { budget: 4 },
+            &q,
+            &k,
+            seq,
+            head_dim,
+            true
+        ),
         dense,
         "oracle top-k must be priced at the full dense cost"
     );
     assert_eq!(
         selection_dot_cost(
             Selector::Random { budget: 4, seed: 1 },
+            &q,
             &k,
             seq,
             head_dim,
@@ -1034,10 +1052,12 @@ fn the_plan_predicts_the_cost_it_will_actually_incur() {
     for groups in [1usize, 2, 4, 6, 12, 48] {
         let mut rng = Rng::new(5000 + groups as u64);
         let k = structured_keys(seq, head_dim, groups, &mut rng);
+        let q = queries(seq, head_dim, 5500 + groups as u64);
 
-        let plan = routing_plan(&k, seq, head_dim, clusters, budget, true);
+        let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
         let measured = selection_dot_cost(
             Selector::TopologicalRouted { budget, clusters },
+            &q,
             &k,
             seq,
             head_dim,
@@ -1067,10 +1087,12 @@ fn the_plan_declines_to_route_exactly_when_routing_would_not_pay() {
         for trial in 0..3u64 {
             let mut rng = Rng::new(6000 + groups as u64 * 17 + trial);
             let k = structured_keys(seq, head_dim, groups, &mut rng);
+            let q = queries(seq, head_dim, 6500 + groups as u64 * 17 + trial);
 
-            let plan = routing_plan(&k, seq, head_dim, clusters, budget, true);
+            let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
             let measured = selection_dot_cost(
                 Selector::TopologicalRouted { budget, clusters },
+                &q,
                 &k,
                 seq,
                 head_dim,
@@ -1117,14 +1139,17 @@ fn the_h0_barcode_alone_separates_the_two_regimes() {
     let mut chained_gaps = Vec::new();
 
     for trial in 0..6u64 {
+        // The gap ratio reads the barcode only; the queries never touch it.
+        let q = queries(seq, head_dim, 7200 + trial);
         let mut rng = Rng::new(7000 + trial);
         let structured = structured_keys(seq, head_dim, clusters, &mut rng);
         structured_gaps
-            .push(routing_plan(&structured, seq, head_dim, clusters, budget, true).gap_ratio);
+            .push(routing_plan(&q, &structured, seq, head_dim, clusters, budget, true).gap_ratio);
 
         let mut rng = Rng::new(7100 + trial);
         let uniform: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
-        chained_gaps.push(routing_plan(&uniform, seq, head_dim, clusters, budget, true).gap_ratio);
+        chained_gaps
+            .push(routing_plan(&q, &uniform, seq, head_dim, clusters, budget, true).gap_ratio);
     }
 
     let worst_structured = structured_gaps
@@ -1155,18 +1180,27 @@ fn the_adaptive_selector_never_costs_more_than_dense() {
         for trial in 0..3u64 {
             let mut rng = Rng::new(8000 + groups as u64 * 13 + trial);
             let k = structured_keys(seq, head_dim, groups, &mut rng);
+            let q: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
+            let v: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
 
-            let cost = selection_dot_cost(adaptive, &k, seq, head_dim, true) / dense;
+            let cost = selection_dot_cost(adaptive, &q, &k, seq, head_dim, true) / dense;
             assert!(
                 cost <= 1.0 + 1e-12,
                 "groups {groups} trial {trial}: adaptive cost {cost:.4} of dense — \
                  the fallback did not fire"
             );
 
+            // The guarantee is about the path that runs, not the one reported:
+            // count the dot products the selection actually performed.
+            let (mask, report) = select_mask_with_report(adaptive, &q, &k, &v, seq, head_dim, true);
+            let executed = report.dot_products as f64 / seq as f64 / dense;
+            assert!(
+                executed <= 1.0 + 1e-12,
+                "groups {groups} trial {trial}: adaptive executed {executed:.4} of dense \
+                 (reported {cost:.4}) — the path run costs more than the fallback it promised"
+            );
+
             // And it must still produce a legal mask.
-            let q: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
-            let v: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
-            let mask = select_mask(adaptive, &q, &k, &v, seq, head_dim, true);
             for i in 0..seq {
                 let selected: Vec<usize> = (0..seq).filter(|&j| mask[i * seq + j]).collect();
                 assert!(
@@ -1221,7 +1255,7 @@ fn the_adaptive_selector_keeps_the_quality_of_whichever_path_it_picks() {
         placement_total += (mass(adaptive) - random) / (oracle - random);
 
         assert!(
-            routing_plan(&k, seq, head_dim, clusters, budget, true).worth_routing,
+            routing_plan(&q, &k, seq, head_dim, clusters, budget, true).worth_routing,
             "structured trial {trial}: the plan declined to route, so this is not              measuring the routed path"
         );
     }
@@ -1242,7 +1276,7 @@ fn the_adaptive_selector_keeps_the_quality_of_whichever_path_it_picks() {
         let v: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
 
         assert!(
-            !routing_plan(&k, seq, head_dim, clusters, budget, true).worth_routing,
+            !routing_plan(&q, &k, seq, head_dim, clusters, budget, true).worth_routing,
             "unstructured trial {trial}: the plan chose to route on keys with no              H0 structure"
         );
 
@@ -1399,4 +1433,58 @@ fn the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair() {
         (3, 0.0, 1.0),
     ];
     assert_eq!(certified_top_k(&tight, 2), Ok(vec![0, 1]));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 13. Reported cost is the cost of the path actually run
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The generator of `wf_kv_partition_probe::probe_reported_cost_vs_path_actually_run`,
+/// reproduced so its inputs are asserted on here rather than only printed.
+fn probe_keys(seq: usize, head_dim: usize, groups: usize, seed: u64) -> Vec<f64> {
+    let mut s = seed | 1;
+    let mut next = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+    };
+    let centers: Vec<Vec<f64>> = (0..groups)
+        .map(|_| (0..head_dim).map(|_| next() * 8.0).collect())
+        .collect();
+    let mut k = vec![0.0; seq * head_dim];
+    for t in 0..seq {
+        for d in 0..head_dim {
+            k[t * head_dim + d] = centers[t % groups][d] + next() * 0.05;
+        }
+    }
+    k
+}
+
+#[test]
+fn the_reported_cost_is_the_cost_of_the_path_actually_run() {
+    // The routed selector visits clusters in query-to-centroid alignment order.
+    // A cost model that visits them in size order reports a different number
+    // whenever the two orders disagree (probe: groups 1 reported 1.132653 against
+    // 1.186224 run; groups 4, 0.568027 against 0.560374).
+    let (seq, head_dim, budget, clusters) = (48usize, 8usize, 6usize, 6usize);
+    for groups in [1usize, 2, 4, 6, 12, 48] {
+        let k = probe_keys(seq, head_dim, groups, 5000 + groups as u64);
+        let q = probe_keys(seq, head_dim, groups.max(2), 99_000 + groups as u64);
+        for selector in [
+            Selector::TopologicalRouted { budget, clusters },
+            Selector::Adaptive { budget, clusters },
+            Selector::OracleTopK { budget },
+            Selector::Dense,
+        ] {
+            let reported = selection_dot_cost(selector, &q, &k, seq, head_dim, true);
+            let (_, report) = select_mask_with_report(selector, &q, &k, &k, seq, head_dim, true);
+            let executed = report.dot_products as f64 / seq as f64;
+            assert_eq!(
+                reported, executed,
+                "groups {groups}, {selector:?}: reported {reported:.6} dot products per \
+                 row, the path run performed {executed:.6}"
+            );
+        }
+    }
 }

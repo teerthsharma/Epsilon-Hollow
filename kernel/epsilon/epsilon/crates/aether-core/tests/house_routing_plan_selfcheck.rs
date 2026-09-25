@@ -28,10 +28,12 @@ fn the_contract_is_an_identity_and_holds_for_any_cost_function() {
     // like, and what a genuine prediction-vs-measurement check does not.
     let (seq, head_dim, clusters, budget) = (48usize, 8usize, 4usize, 12usize);
     let k = keys(seq, head_dim, 0xBEEF);
+    let q = keys(seq, head_dim, 0xFACE);
 
-    let plan = routing_plan(&k, seq, head_dim, clusters, budget, true);
+    let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
     let measured = selection_dot_cost(
         Selector::TopologicalRouted { budget, clusters },
+        &q,
         &k,
         seq,
         head_dim,
@@ -65,6 +67,7 @@ fn the_cost_model_charges_routing_overhead_and_never_invents_keys() {
     let head_dim = 4usize;
     for seq in [8usize, 16, 32, 64, 128] {
         let k = keys(seq, head_dim, 0x1234 + seq as u64);
+        let q = keys(seq, head_dim, 0x5678 + seq as u64);
         let dense = dense_dot_cost(seq, true);
         let clusters = 2usize;
         let cost = selection_dot_cost(
@@ -72,6 +75,7 @@ fn the_cost_model_charges_routing_overhead_and_never_invents_keys() {
                 budget: 4,
                 clusters,
             },
+            &q,
             &k,
             seq,
             head_dim,
@@ -97,7 +101,8 @@ fn the_plan_declines_to_route_when_the_ratio_exceeds_one() {
     let (head_dim, clusters, budget) = (8usize, 4usize, 12usize);
     for seq in [16usize, 32, 48] {
         let k = keys(seq, head_dim, 0xBEEF + seq as u64);
-        let plan = routing_plan(&k, seq, head_dim, clusters, budget, true);
+        let q = keys(seq, head_dim, 0xFACE + seq as u64);
+        let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
         println!(
             "seq {seq:3}: cost_ratio {:.4} threshold {:.4} worth_routing {}",
             plan.cost_ratio, plan.threshold, plan.worth_routing

@@ -110,11 +110,14 @@ pub enum Selector {
     Adaptive { budget: usize, clusters: usize },
 }
 
-/// What routing will cost on a given key tensor, decided before any query runs.
+/// What routing will cost on a given query and key tensor, decided before any
+/// attention runs.
 ///
 /// The H0 clustering is computed once per key tensor and amortised over every
 /// query, head, and layer that reuses it, so this is cheap relative to attention
-/// itself.
+/// itself. The cost is not a property of the keys alone: each row pays for the
+/// clusters its query aligns with, so the plan needs the queries to report the
+/// cost the selector will actually incur.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoutingPlan {
     /// Dot products per row the router will perform, as a fraction of dense.
@@ -148,8 +151,9 @@ pub struct RoutingPlan {
 /// asserts the decision against whatever this is.
 pub const ROUTING_COST_THRESHOLD: f64 = 0.6;
 
-/// Decide whether topological routing will pay on this key tensor.
+/// Decide whether topological routing will pay on these queries and keys.
 pub fn routing_plan(
+    q: &[f64],
     k: &[f64],
     seq: usize,
     head_dim: usize,
@@ -168,6 +172,7 @@ pub fn routing_plan(
 
     let cost_ratio = selection_dot_cost(
         Selector::TopologicalRouted { budget, clusters },
+        q,
         k,
         seq,
         head_dim,
@@ -318,6 +323,12 @@ pub struct SelectionReport {
     pub widened_rows: Vec<(usize, BoundaryRefusal)>,
     /// Keys selected past the budget by widening, summed over rows.
     pub extra_keys: usize,
+    /// `head_dim`-length inner products the path actually ran performed, summed
+    /// over rows, counted on the same terms as [`selection_dot_cost`]: each score
+    /// or distance evaluated, each centroid alignment, and for `Dense` the full
+    /// legal set it commits the kernel to. Dividing by `seq` gives the executed
+    /// per-row cost, which `selection_dot_cost` must equal.
+    pub dot_products: usize,
 }
 
 /// [`select_mask`], plus the report of which score-ranked rows were refused
@@ -345,7 +356,7 @@ pub fn select_mask_with_report(
     head_dim: usize,
     causal: bool,
 ) -> (Vec<bool>, SelectionReport) {
-    let selector = resolve(selector, k, seq, head_dim, causal);
+    let selector = resolve(selector, q, k, seq, head_dim, causal);
     let mut mask = vec![false; seq * seq];
     let mut report = SelectionReport::default();
 
@@ -354,33 +365,7 @@ pub fn select_mask_with_report(
     // clustering cost amortised across the sequence rather than paid per row.
     let routing = match selector {
         Selector::TopologicalRouted { clusters, .. } => {
-            let (assignment, _) = single_linkage_clusters(k, seq, head_dim, clusters, true);
-            let cluster_count = assignment.iter().copied().max().map_or(0, |m| m + 1);
-
-            // Centroids of the unit-normalised keys: the direction each cluster
-            // represents. Routing compares queries against these, so the router
-            // does `cluster_count` dot products instead of `seq`.
-            let mut centroids = vec![0.0f64; cluster_count * head_dim];
-            let mut members = vec![0usize; cluster_count];
-            for (t, &label) in assignment.iter().enumerate() {
-                let norm = sqrt(
-                    (0..head_dim)
-                        .map(|d| k[t * head_dim + d] * k[t * head_dim + d])
-                        .sum::<f64>(),
-                );
-                let inverse = if norm > 0.0 { 1.0 / norm } else { 0.0 };
-                for d in 0..head_dim {
-                    centroids[label * head_dim + d] += k[t * head_dim + d] * inverse;
-                }
-                members[label] += 1;
-            }
-            for label in 0..cluster_count {
-                let count = members[label].max(1) as f64;
-                for d in 0..head_dim {
-                    centroids[label * head_dim + d] /= count;
-                }
-            }
-            Some((assignment, centroids, cluster_count))
+            Some(Routing::build(k, seq, head_dim, clusters))
         }
         _ => None,
     };
@@ -390,7 +375,10 @@ pub fn select_mask_with_report(
         let legal: Vec<usize> = (0..legal_end).collect();
 
         let chosen: Vec<usize> = match selector {
-            Selector::Dense => legal.clone(),
+            Selector::Dense => {
+                report.dot_products += legal.len();
+                legal.clone()
+            }
 
             Selector::Local { window } => {
                 let start = legal_end.saturating_sub(window.max(1));
@@ -417,6 +405,7 @@ pub fn select_mask_with_report(
                     .iter()
                     .map(|&j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
+                report.dot_products += scored.len();
                 certified_or_widened(&scored, budget, i, &mut report)
             }
 
@@ -431,6 +420,7 @@ pub fn select_mask_with_report(
                     .iter()
                     .map(|&j| (j, key_distance(q, k, i, j, head_dim)))
                     .collect();
+                report.dot_products += scored.len();
                 scored.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
 
                 // The radius is a multiple of this row's median query-key
@@ -465,31 +455,10 @@ pub fn select_mask_with_report(
             Selector::Adaptive { .. } => unreachable!("Adaptive is resolved before selection"),
 
             Selector::TopologicalRouted { budget, .. } => {
-                let (assignment, centroids, cluster_count) =
-                    routing.as_ref().expect("routing built for this selector");
+                let routing = routing.as_ref().expect("routing built for this selector");
 
-                // Step 1: rank clusters by query-to-centroid alignment. This is
-                // the only place the query meets the topology, and it costs
-                // `cluster_count` dot products.
-                let mut ranked: Vec<(usize, f64)> = (0..*cluster_count)
-                    .map(|label| {
-                        let score: f64 = (0..head_dim)
-                            .map(|d| q[i * head_dim + d] * centroids[label * head_dim + d])
-                            .sum();
-                        (label, score)
-                    })
-                    .collect();
-                ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-
-                // Step 2: pull legal members of the best clusters until there are
-                // at least `budget` candidates to choose between.
-                let mut candidates: Vec<usize> = Vec::new();
-                for (label, _) in ranked {
-                    if candidates.len() >= budget {
-                        break;
-                    }
-                    candidates.extend(legal.iter().copied().filter(|&j| assignment[j] == label));
-                }
+                // Steps 1 and 2: route to the best-aligned clusters.
+                let candidates = routing.candidates(q, i, head_dim, legal_end, budget);
 
                 // Step 3: the exact dot product decides within the candidate set.
                 // This is what the nearest-neighbour rule was missing: geometry
@@ -499,6 +468,7 @@ pub fn select_mask_with_report(
                     .into_iter()
                     .map(|j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
+                report.dot_products += routing.cluster_count + scored.len();
                 let mut chosen = certified_or_widened(&scored, budget, i, &mut report);
                 if chosen.is_empty() {
                     chosen.push(if causal { i } else { i.min(seq - 1) });
@@ -512,6 +482,87 @@ pub fn select_mask_with_report(
         }
     }
     (mask, report)
+}
+
+/// The H0 routing structure over one key tensor: cluster labels and the
+/// unit-direction centroid of each cluster.
+///
+/// Shared by the selector and by [`selection_dot_cost`], so the cost model walks
+/// exactly the clusters the selector walks, in the same order.
+struct Routing {
+    assignment: Vec<usize>,
+    centroids: Vec<f64>,
+    cluster_count: usize,
+}
+
+impl Routing {
+    fn build(k: &[f64], seq: usize, head_dim: usize, clusters: usize) -> Self {
+        let (assignment, _) = single_linkage_clusters(k, seq, head_dim, clusters, true);
+        let cluster_count = assignment.iter().copied().max().map_or(0, |m| m + 1);
+
+        // Centroids of the unit-normalised keys: the direction each cluster
+        // represents. Routing compares queries against these, so the router
+        // does `cluster_count` dot products instead of `seq`.
+        let mut centroids = vec![0.0f64; cluster_count * head_dim];
+        let mut members = vec![0usize; cluster_count];
+        for (t, &label) in assignment.iter().enumerate() {
+            let norm = sqrt(
+                (0..head_dim)
+                    .map(|d| k[t * head_dim + d] * k[t * head_dim + d])
+                    .sum::<f64>(),
+            );
+            let inverse = if norm > 0.0 { 1.0 / norm } else { 0.0 };
+            for d in 0..head_dim {
+                centroids[label * head_dim + d] += k[t * head_dim + d] * inverse;
+            }
+            members[label] += 1;
+        }
+        for label in 0..cluster_count {
+            let count = members[label].max(1) as f64;
+            for d in 0..head_dim {
+                centroids[label * head_dim + d] /= count;
+            }
+        }
+        Self {
+            assignment,
+            centroids,
+            cluster_count,
+        }
+    }
+
+    /// The keys below `legal_end` that query `i` is routed to.
+    ///
+    /// Step 1 ranks clusters by query-to-centroid alignment — the only place the
+    /// query meets the topology, at `cluster_count` dot products. Step 2 pulls the
+    /// legal members of the best clusters, whole, until there are at least
+    /// `budget` candidates to choose between.
+    fn candidates(
+        &self,
+        q: &[f64],
+        i: usize,
+        head_dim: usize,
+        legal_end: usize,
+        budget: usize,
+    ) -> Vec<usize> {
+        let mut ranked: Vec<(usize, f64)> = (0..self.cluster_count)
+            .map(|label| {
+                let score: f64 = (0..head_dim)
+                    .map(|d| q[i * head_dim + d] * self.centroids[label * head_dim + d])
+                    .sum();
+                (label, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        let mut candidates: Vec<usize> = Vec::new();
+        for (label, _) in ranked {
+            if candidates.len() >= budget {
+                break;
+            }
+            candidates.extend((0..legal_end).filter(|&j| self.assignment[j] == label));
+        }
+        candidates
+    }
 }
 
 /// A top-k boundary the rounding enclosures do not decide.
@@ -819,10 +870,17 @@ fn splitmix(state: u64) -> u64 {
 /// Everything downstream — mask construction, cost accounting, the ablation — goes
 /// through this, so the adaptive selector cannot report one path's cost while
 /// running another's.
-fn resolve(selector: Selector, k: &[f64], seq: usize, head_dim: usize, causal: bool) -> Selector {
+fn resolve(
+    selector: Selector,
+    q: &[f64],
+    k: &[f64],
+    seq: usize,
+    head_dim: usize,
+    causal: bool,
+) -> Selector {
     match selector {
         Selector::Adaptive { budget, clusters } => {
-            if routing_plan(k, seq, head_dim, clusters, budget, causal).worth_routing {
+            if routing_plan(q, k, seq, head_dim, clusters, budget, causal).worth_routing {
                 Selector::TopologicalRouted { budget, clusters }
             } else {
                 // Dense, not a cheap window.
@@ -855,44 +913,40 @@ fn resolve(selector: Selector, k: &[f64], seq: usize, head_dim: usize, causal: b
 /// Dense attention costs `i + 1` dot products at row `i` under causal masking, so
 /// compare against `dense_dot_cost`.
 ///
+/// The number is the cost of the path [`select_mask`] runs on the same `q` and
+/// `k`, not an estimate of it: `TopologicalRouted` visits clusters in each
+/// query's alignment order, so its cost depends on the queries, and the count is
+/// taken from that same walk. [`SelectionReport::dot_products`] measures the run
+/// independently, and `the_reported_cost_is_the_cost_of_the_path_actually_run`
+/// asserts the two are equal.
+///
 /// Selectors that inspect no scores (`Local`, `Random`) cost nothing to evaluate
 /// and report 0; the number is about search, not about the attention arithmetic
 /// that follows. `OracleTopK` costs the full dense count by construction — that is
 /// precisely why it is a diagnostic and not an implementation.
 pub fn selection_dot_cost(
     selector: Selector,
+    q: &[f64],
     k: &[f64],
     seq: usize,
     head_dim: usize,
     causal: bool,
 ) -> f64 {
-    let total: usize = match resolve(selector, k, seq, head_dim, causal) {
+    let total: usize = match resolve(selector, q, k, seq, head_dim, causal) {
         Selector::Adaptive { .. } => unreachable!("Adaptive is resolved before costing"),
         Selector::Local { .. } | Selector::Random { .. } => 0,
         Selector::Dense | Selector::OracleTopK { .. } | Selector::Topological { .. } => {
             (0..seq).map(|i| if causal { i + 1 } else { seq }).sum()
         }
         Selector::TopologicalRouted { budget, clusters } => {
-            let (assignment, _) = single_linkage_clusters(k, seq, head_dim, clusters, true);
-            let cluster_count = assignment.iter().copied().max().map_or(0, |m| m + 1);
-            let mut sizes = vec![0usize; cluster_count];
-            for &label in &assignment {
-                sizes[label] += 1;
-            }
-            let mut labels: Vec<usize> = (0..cluster_count).collect();
-            labels.sort_by_key(|&l| core::cmp::Reverse(sizes[l]));
-
+            // A row pays for the clusters its query aligns with, so the cost is
+            // per query: walk the selector's own ranking, not a proxy for it.
+            let routing = Routing::build(k, seq, head_dim, clusters);
             (0..seq)
                 .map(|i| {
                     let legal_end = if causal { i + 1 } else { seq };
-                    let mut candidates = 0usize;
-                    for &label in &labels {
-                        if candidates >= budget {
-                            break;
-                        }
-                        candidates += (0..legal_end).filter(|&j| assignment[j] == label).count();
-                    }
-                    cluster_count + candidates
+                    routing.cluster_count
+                        + routing.candidates(q, i, head_dim, legal_end, budget).len()
                 })
                 .sum()
         }
