@@ -38,7 +38,7 @@ full = ["std", "gpu", "net", "ml"]
 aether-core = { path = "../../../../epsilon/epsilon/crates/aether-core", default-features = false }
 libm = { workspace = true }
 heapless = { workspace = true }
-reqwest = { version = "0.11", features = ["blocking", "rustls-tls"], default-features = false, optional = true }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false, optional = true }
 safetensors = { version = "0.3", optional = true }
 wgpu = { version = "0.17", optional = true }
 pollster = { version = "0.3", optional = true }

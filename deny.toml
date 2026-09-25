@@ -18,6 +18,7 @@ ignore = [
     "RUSTSEC-2025-0119",
     # pyo3 buffer overflow — only affects optional python feature
     "RUSTSEC-2025-0020",
+    "RUSTSEC-2026-0258",
     # rustls-pemfile unmaintained — transitive via reqwest (optional net feature)
     "RUSTSEC-2025-0134",
     # webpki URI name constraints — transitive via reqwest
