@@ -5,7 +5,7 @@
 //!
 //! Implements scalar versions of:
 //!   - L^∞ landscape distance: max_i |a\[i\] - b\[i\]|
-//!   - Betti accumulator: count finite birth/death pairs
+//!   - Bar counter: count persistence pairs with birth < death
 //!
 //! # Calling convention
 //!
@@ -67,12 +67,11 @@ simd_landscape_distance:
 .Ldist_done:
     ret
 
-    .global simd_betti_accumulate
+    .global simd_positive_length_bars
     .p2align 4
-simd_betti_accumulate:
-    // Win64: rcx = barcode ([birth: f64, death: f64]*), rdx = pairs,
-    //        r8b = dim (part of the ABI; the scalar count ignores it).
-    // Returns the number of finite pairs in rax.
+simd_positive_length_bars:
+    // Win64: rcx = barcode ([birth: f64, death: f64]*), rdx = pairs.
+    // Returns the number of pairs with birth < death in rax.
     xor rax, rax
     test rdx, rdx
     jz .Lbetti_done
@@ -84,8 +83,9 @@ simd_betti_accumulate:
     movsd xmm0, [rcx + r10]         // birth
     movsd xmm1, [rcx + r10 + 8]     // death
     ucomisd xmm1, xmm0
-    jbe .Lbetti_next                // death <= birth, or either is NaN, so the
-                                    // pair is not finite -> skip
+    jbe .Lbetti_next                // death <= birth, or either is NaN -> skip.
+                                    // death = +INF compares above any finite
+                                    // birth, so an essential bar counts
     inc rax
 
 .Lbetti_next:
@@ -100,7 +100,7 @@ simd_betti_accumulate:
 
 extern "C" {
     fn simd_landscape_distance(a: *const f64, b: *const f64, len: usize) -> f64;
-    fn simd_betti_accumulate(barcode: *const f64, pairs: usize, dim: u8) -> u64;
+    fn simd_positive_length_bars(barcode: *const f64, pairs: usize) -> u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,20 +129,22 @@ pub fn landscape_distance_64(a: &[f64; 64], b: &[f64; 64]) -> f64 {
     landscape_distance(a.as_slice(), b.as_slice())
 }
 
-/// Count finite persistence pairs (birth < death) in a barcode.
+/// Count the `[birth, death]` bars with `birth < death`.
 ///
-/// The `dim` parameter is part of the topo-asm ABI; the scalar accumulator
-/// counts all finite pairs regardless of dimension.
-pub fn betti_count(barcode: &[(f64, f64)], _dim: u8) -> u64 {
-    if barcode.is_empty() {
+/// Zero-length bars (`birth == death`), inverted bars, and bars with a NaN
+/// endpoint are skipped. An essential bar (`death == f64::INFINITY`) is
+/// counted. The count spans every homological dimension present in
+/// `barcode`, so it is not a Betti number unless the caller passes the bars of
+/// a single dimension that are alive at one filtration value.
+pub fn positive_length_bars(barcode: &[[f64; 2]]) -> u64 {
+    let flat = barcode.as_flattened();
+    if flat.is_empty() {
         return 0;
     }
-    // Barcode is [(birth, death)]; we pass it as a flat f64 array. The pair is
-    // two f64, so `(birth, death)` occupies 16 bytes with birth first.
-    let flat = barcode.as_ptr() as *const f64;
-    // SAFETY: the callee reads exactly `barcode.len()` 16-byte pairs starting at
-    // the slice base, which is the slice's own extent, and writes nothing.
-    unsafe { simd_betti_accumulate(flat, barcode.len(), _dim) }
+    // SAFETY: `[[f64; 2]]` is contiguous with birth then death in each
+    // element, so `flat` is `2 * barcode.len()` f64. The callee reads exactly
+    // `barcode.len()` 16-byte pairs from its base and writes nothing.
+    unsafe { simd_positive_length_bars(flat.as_ptr(), barcode.len()) }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,24 +189,25 @@ pub mod tests {
         TestResult::Pass
     }
 
-    fn test_betti_count() -> TestResult {
+    fn test_positive_length_bars() -> TestResult {
         let barcode = [
-            (0.0, 1.0), // finite -> count
-            (1.0, 1.0), // infinite (birth == death) -> skip
-            (2.0, 5.0), // finite -> count
+            [0.0, 1.0],           // positive length -> count
+            [1.0, 1.0],           // zero length (birth == death) -> skip
+            [2.0, 5.0],           // positive length -> count
+            [3.0, f64::INFINITY], // essential bar -> count
+            [4.0, 2.0],           // inverted -> skip
         ];
-        let c = betti_count(&barcode, 0);
-        if c != 2 {
-            return TestResult::Fail("Expected Betti count 2");
+        if positive_length_bars(&barcode) != 3 {
+            return TestResult::Fail("Expected 3 positive-length bars");
         }
         TestResult::Pass
     }
 
-    fn test_betti_count_rejects_nan() -> TestResult {
-        // A NaN endpoint orders against nothing, so it is not a finite pair.
-        let barcode = [(0.0f64, f64::NAN), (f64::NAN, 1.0f64)];
-        if betti_count(&barcode, 0) != 0 {
-            return TestResult::Fail("NaN endpoints must not count as finite");
+    fn test_positive_length_bars_rejects_nan() -> TestResult {
+        // A NaN endpoint orders against nothing, so the bar has no length.
+        let barcode = [[0.0f64, f64::NAN], [f64::NAN, 1.0f64]];
+        if positive_length_bars(&barcode) != 0 {
+            return TestResult::Fail("NaN endpoints must not count");
         }
         TestResult::Pass
     }
@@ -213,10 +216,10 @@ pub mod tests {
         crate::testing::register_test("topo_asm::distance_identity", test_distance_identity);
         crate::testing::register_test("topo_asm::distance_basic", test_distance_basic);
         crate::testing::register_test("topo_asm::distance_peak_at_end", test_distance_peak_at_end);
-        crate::testing::register_test("topo_asm::betti_count", test_betti_count);
+        crate::testing::register_test("topo_asm::positive_length_bars", test_positive_length_bars);
         crate::testing::register_test(
-            "topo_asm::betti_count_rejects_nan",
-            test_betti_count_rejects_nan,
+            "topo_asm::positive_length_bars_rejects_nan",
+            test_positive_length_bars_rejects_nan,
         );
     }
 }
