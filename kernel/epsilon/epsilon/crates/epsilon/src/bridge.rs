@@ -66,7 +66,7 @@
 
 use libm::sqrt;
 
-use crate::manifold::{EpsilonPoint, ManifoldPayload, SparseGraph};
+use crate::manifold::{Beta0, EpsilonPoint, ManifoldPayload, SparseGraph};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -237,6 +237,17 @@ pub enum BridgeError {
         /// Measured connected-component count of the projected graph.
         beta0: u32,
     },
+    /// β₀ at this epsilon is not certified: a spanning-tree edge of the
+    /// projected cloud lies within a factor `sqrt(BETA0_RATIO)` of epsilon, so
+    /// the count depends on a threshold choice the input does not make.
+    AmbiguousBeta0 {
+        /// Index into the embeddings of one end of the ambiguous edge.
+        i: usize,
+        /// Index into the embeddings of the other end, `i < j`.
+        j: usize,
+        /// Distance between the two projected points.
+        height: f64,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -318,7 +329,9 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
     /// # Errors
     /// - `BridgeError::InsufficientTokens` if fewer than `MIN_TOKENS` provided
     /// - `BridgeError::AllDegenerateProjections` if all projections collapse
-    /// - `BridgeError::DisconnectedGraph` if β₀ > 1 with provided epsilon
+    /// - `BridgeError::DisconnectedGraph` if β₀ is certified and not 1
+    /// - `BridgeError::AmbiguousBeta0` if β₀ at epsilon is not certified; see
+    ///   [`SparseGraph::certified_betti_0`]
     pub fn build_graph(&self, embeddings: &[[f64; E]]) -> Result<SparseGraph<D>, BridgeError> {
         // Guard: minimum sampling density for topological recovery
         if embeddings.len() < MIN_TOKENS {
@@ -329,26 +342,30 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
         }
 
         let mut graph = SparseGraph::new(self.epsilon);
-        let mut added = 0usize;
+        // Embedding index of each graph point; degenerate projections are skipped.
+        let mut origin = Vec::with_capacity(embeddings.len());
 
-        for embedding in embeddings {
+        for (k, embedding) in embeddings.iter().enumerate() {
             if let Some(point) = self.project_single(embedding) {
                 graph.add_point(point);
-                added += 1;
+                origin.push(k);
             }
         }
 
-        if added == 0 {
+        if origin.is_empty() {
             return Err(BridgeError::AllDegenerateProjections);
         }
 
-        // Topological verification: β₀ must be 1 (single connected component)
-        let beta0 = graph.compute_betti_0();
-        if beta0 != 1 {
-            return Err(BridgeError::DisconnectedGraph { beta0 });
+        // Topological verification: a certified β₀ = 1 (single connected component)
+        match graph.certified_betti_0() {
+            Beta0::Certified { value: 1, .. } => Ok(graph),
+            Beta0::Certified { value, .. } => Err(BridgeError::DisconnectedGraph { beta0: value }),
+            Beta0::Refused { i, j, height } => Err(BridgeError::AmbiguousBeta0 {
+                i: origin[i],
+                j: origin[j],
+                height,
+            }),
         }
-
-        Ok(graph)
     }
 
     /// Build a verified `ManifoldPayload<D>` from LLM token embeddings.
@@ -380,18 +397,21 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
         Ok(ManifoldPayload::from_graph(&graph, liveness))
     }
 
-    /// Build a graph with retries, widening epsilon on probabilistic disconnection.
+    /// Build a graph at the first epsilon whose β₀ is certified to be 1.
     ///
-    /// When exactly MIN_TOKENS points are uniformly randomly distributed on S2,
-    /// edge cases can momentarily produce a disconnected graph (beta0 > 1).
-    /// This method catches `BridgeError::DisconnectedGraph` and retries up to
-    /// `max_retries` times, multiplying epsilon by `EPSILON_WIDEN_FACTOR`.
+    /// Each attempt runs [`Self::build_graph`], which accepts only a β₀ = 1
+    /// with no spanning-tree edge within a factor `sqrt(BETA0_RATIO)` of
+    /// epsilon. On `DisconnectedGraph` or `AmbiguousBeta0` the method retries
+    /// up to `max_retries` times, multiplying epsilon by `EPSILON_WIDEN_FACTOR`.
+    /// Widening used to stop at the first epsilon that merely connected the
+    /// graph, which by construction sat within 1.2x of the longest edge; the
+    /// certificate makes it continue into a real gap.
     ///
     /// The first attempt always runs at `self.epsilon`, even above
     /// `MAX_RETRY_EPSILON`; the cap only bounds how far retries widen it.
     ///
-    /// Returns the first topologically valid `SparseGraph`, or the error from
-    /// the last attempt, whose `beta0` is the measured component count.
+    /// Returns the first certified `SparseGraph`, or the error from the last
+    /// attempt: a certified `beta0 != 1`, or the ambiguous pair.
     pub fn build_graph_with_retry(
         &self,
         embeddings: &[[f64; E]],
@@ -412,7 +432,10 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
 
             match temp_bridge.build_graph(embeddings) {
                 Ok(graph) => return Ok(graph),
-                Err(err @ BridgeError::DisconnectedGraph { .. }) => {
+                Err(
+                    err @ (BridgeError::DisconnectedGraph { .. }
+                    | BridgeError::AmbiguousBeta0 { .. }),
+                ) => {
                     let wider = current_eps * EPSILON_WIDEN_FACTOR;
                     if retries_left == 0 || wider > MAX_RETRY_EPSILON {
                         return Err(err);
@@ -465,10 +488,24 @@ mod tests {
         emb
     }
 
-    /// Generate N distinct synthetic embeddings
+    /// Generate N distinct synthetic embeddings.
+    ///
+    /// Bases 0.5 apart spread the projections over the sphere: with the seeds
+    /// used below, spanning-tree edges reach 0.42 to 1.16. The graph at
+    /// epsilon 1.0 or 2.0 is connected, but no epsilon below the sphere's
+    /// diameter certifies it, so the bridge refuses these clouds.
     fn make_embeddings<const E: usize>(n: usize) -> Vec<[f64; E]> {
         (0..n)
             .map(|i| make_embedding::<E>(i as f64 * 0.5, i as u64 * 1337))
+            .collect()
+    }
+
+    /// Generate N synthetic embeddings whose projections cluster: with the
+    /// seeds used below, every spanning-tree edge is under 0.08, so beta_0 = 1
+    /// is certified at epsilon 1.0.
+    fn make_clustered_embeddings<const E: usize>(n: usize) -> Vec<[f64; E]> {
+        (0..n)
+            .map(|i| make_embedding::<E>(1.0 + i as f64 * 0.05, i as u64 * 1337))
             .collect()
     }
 
@@ -553,7 +590,7 @@ mod tests {
     #[test]
     fn test_sphere_betti_0_is_one() {
         let bridge = EmbeddingBridge::<32, 3>::with_seed(42);
-        let embeddings = make_embeddings::<32>(MIN_TOKENS + 10);
+        let embeddings = make_clustered_embeddings::<32>(MIN_TOKENS + 10);
 
         let graph = bridge
             .build_graph(&embeddings)
@@ -561,6 +598,13 @@ mod tests {
 
         let beta0 = graph.compute_betti_0();
         assert_eq!(beta0, 1, "Projected sphere graph must be connected (β₀=1)");
+
+        // Connected at epsilon 1.0, but a spanning-tree edge of 0.756 sits
+        // within sqrt(10) of it: refused, not accepted.
+        assert!(matches!(
+            bridge.build_graph(&make_embeddings::<32>(MIN_TOKENS + 10)),
+            Err(BridgeError::AmbiguousBeta0 { .. })
+        ));
     }
 
     #[test]
@@ -581,7 +625,7 @@ mod tests {
     #[test]
     fn test_build_payload_succeeds() {
         let bridge = EmbeddingBridge::<32, 3>::with_seed(0xDEADBEEF);
-        let embeddings = make_embeddings::<32>(MIN_TOKENS + 5);
+        let embeddings = make_clustered_embeddings::<32>(MIN_TOKENS + 5);
 
         let payload = bridge
             .build_payload_with_retry(&embeddings, 5.0, 10)
@@ -590,6 +634,13 @@ mod tests {
         assert!(payload.is_valid());
         assert_eq!(payload.signature_b0, 1);
         assert!((payload.liveness_anchor - 5.0).abs() < 1e-10);
+
+        // A spanning-tree edge of 1.156 needs epsilon above 3.66 to certify,
+        // past MAX_RETRY_EPSILON: retries exhaust and name the pair.
+        assert!(matches!(
+            bridge.build_payload_with_retry(&make_embeddings::<32>(MIN_TOKENS + 5), 5.0, 10),
+            Err(BridgeError::AmbiguousBeta0 { .. })
+        ));
     }
 
     #[test]
@@ -656,7 +707,7 @@ mod tests {
         let bridge_a = EmbeddingBridge::<32, 3>::with_seed(SEED);
         let bridge_b = EmbeddingBridge::<32, 3>::with_seed(SEED);
 
-        let embeddings = make_embeddings::<32>(MIN_TOKENS + 5);
+        let embeddings = make_clustered_embeddings::<32>(MIN_TOKENS + 5);
 
         let payload_a = bridge_a.build_payload(&embeddings, 1.0).unwrap();
         let payload_b = bridge_b.build_payload(&embeddings, 1.0).unwrap();
@@ -676,8 +727,10 @@ mod tests {
 
     #[test]
     fn test_retry_on_disconnected_graph() {
-        let bridge = EmbeddingBridge::<32, 3>::new(42, 0.01);
-        let embeddings = make_embeddings::<32>(MIN_TOKENS);
+        // At 0.0003 every spanning-tree edge is above the band: certified
+        // beta_0 = 20. Widening reaches a certified 1 after about 35 steps.
+        let bridge = EmbeddingBridge::<32, 3>::new(42, 0.0003);
+        let embeddings = make_clustered_embeddings::<32>(MIN_TOKENS);
 
         let result_fail = bridge.build_graph(&embeddings);
         assert!(matches!(
@@ -685,10 +738,17 @@ mod tests {
             Err(BridgeError::DisconnectedGraph { .. })
         ));
 
-        let result_success = bridge.build_graph_with_retry(&embeddings, 30);
+        let result_success = bridge.build_graph_with_retry(&embeddings, 40);
         assert!(
             result_success.is_ok(),
             "Retry logic must eventually connect the graph"
         );
+
+        // The spread cloud connects once widened, but never with a certified gap.
+        let spread = EmbeddingBridge::<32, 3>::new(42, 0.01);
+        assert!(matches!(
+            spread.build_graph_with_retry(&make_embeddings::<32>(MIN_TOKENS), 30),
+            Err(BridgeError::AmbiguousBeta0 { .. })
+        ));
     }
 }
