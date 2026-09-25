@@ -798,10 +798,11 @@ impl World {
                 i + 1,
                 m.score,
                 m.cluster_id,
-                if m.text.len() > 60 {
-                    format!("{}...", &m.text[..60])
-                } else {
-                    m.text.clone()
+                // Cut after 60 chars, not 60 bytes: a byte index can land
+                // inside a multi-byte char and panic.
+                match m.text.char_indices().nth(60) {
+                    Some((cut, _)) => format!("{}...", &m.text[..cut]),
+                    None => m.text.clone(),
                 }
             ));
         }
@@ -1067,6 +1068,22 @@ mod tests {
         let r = w.query("sky color", 3);
         assert!(r.llm_response.is_none()); // no API key → no LLM call
         assert!(!r.top_k.is_empty());
+    }
+
+    #[test]
+    fn test_world_query_truncates_multibyte_text_on_char_boundary() {
+        // Byte 60 of "a" + "é"×n falls inside a 2-byte 'é', so a byte slice
+        // there panics. The context line must cut after 60 chars instead.
+        let mut w = World::new(LlmBridge::new(crate::llm::LlmConfig::offline()), 64, 1000);
+        let short = format!("a{}", "é".repeat(40)); // 41 chars: kept whole
+        let long = format!("a{}", "é".repeat(80)); // 81 chars: cut to 60
+        w.update(&short);
+        w.update(&long);
+        let r = w.query(&short, 5);
+        let ctx = w.format_context(&r.top_k);
+        assert!(ctx.contains(&format!("text=\"{short}\"")), "context: {ctx}");
+        let cut = format!("text=\"a{}...\"", "é".repeat(59));
+        assert!(ctx.contains(&cut), "context: {ctx}");
     }
 
     #[test]
