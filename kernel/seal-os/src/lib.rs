@@ -2290,7 +2290,7 @@ const TSS_BOOT_CELL_COUNT: usize = 8;
 
 fn tss_boot_centroids() -> [(f64, f64); TSS_BOOT_CELL_COUNT] {
     let north = 0.615_479_708_670_387_4; // asin(1 / sqrt(3))
-    let south = -north;
+    let south = core::f64::consts::PI - north;
     let step = core::f64::consts::FRAC_PI_4;
     [
         (north, step),

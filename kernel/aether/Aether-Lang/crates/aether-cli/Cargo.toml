@@ -9,6 +9,7 @@ description = "Aether-Lang Cross-Platform CLI"
 [dependencies]
 repl-core = { path = "../repl-core" }
 clap = { workspace = true }
+reqwest = "0.12"
 
 [[bin]]
 name = "aether"
