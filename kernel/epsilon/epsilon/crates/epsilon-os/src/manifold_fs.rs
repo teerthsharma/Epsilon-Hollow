@@ -891,6 +891,49 @@ mod tests {
     }
 
     #[test]
+    fn test_find_after_entropy_merge_returns_file_from_merged_cell() {
+        let mut fs = spread_fs();
+        let mut texts = Vec::new();
+        while fs.stats().current_entropy <= ENTROPY_MERGE_THRESHOLD {
+            let n = texts.len() as u64;
+            let text = format!("{:016x}", n.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            fs.store_text(&format!("f{n}"), &text, 0).unwrap();
+            texts.push(text);
+            assert!(
+                texts.len() < 500,
+                "entropy never crossed the threshold: {:?}",
+                fs.stats()
+            );
+        }
+        // The merge moves the smallest non-empty cell into the next smallest.
+        let dist = fs.stats().cell_distribution;
+        let smallest = (0..VORONOI_CELLS)
+            .filter(|&c| dist[c] > 0)
+            .min_by_key(|&c| dist[c])
+            .unwrap();
+        let victim = fs
+            .ls(0)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.voronoi_cell == smallest)
+            .unwrap()
+            .name;
+        let victim_text = texts[victim[1..].parse::<usize>().unwrap()].clone();
+
+        let d = fs.mkdir("d", 0).unwrap();
+        fs.teleport("f0", 0, d).unwrap(); // /mv runs the T3 check
+        assert_eq!(fs.stats().entropy_merges, 1);
+        assert_eq!(fs.stats().cell_distribution[smallest], 0);
+
+        let hits = fs.find(&victim_text);
+        let hit = hits.iter().find(|r| r.name == victim);
+        assert!(hit.is_some(), "find lost '{victim}' after the merge: {hits:?}");
+        let hit = hit.unwrap();
+        assert!((hit.similarity - 1.0).abs() < 1e-12);
+        assert_ne!(hit.cell, smallest, "the merge re-homed the file");
+    }
+
+    #[test]
     fn test_mkdir_and_depth() {
         let mut fs = ManifoldFS::new();
         let a = fs.mkdir("a", 0).unwrap();
