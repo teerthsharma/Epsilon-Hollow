@@ -387,21 +387,20 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
     /// This method catches `BridgeError::DisconnectedGraph` and retries up to
     /// `max_retries` times, multiplying epsilon by `EPSILON_WIDEN_FACTOR`.
     ///
-    /// Returns the first topologically valid `SparseGraph` or the final error.
+    /// The first attempt always runs at `self.epsilon`, even above
+    /// `MAX_RETRY_EPSILON`; the cap only bounds how far retries widen it.
+    ///
+    /// Returns the first topologically valid `SparseGraph`, or the error from
+    /// the last attempt, whose `beta0` is the measured component count.
     pub fn build_graph_with_retry(
         &self,
         embeddings: &[[f64; E]],
         max_retries: u8,
     ) -> Result<SparseGraph<D>, BridgeError> {
         let mut current_eps = self.epsilon;
-        let mut last_err = BridgeError::DisconnectedGraph { beta0: 0 };
+        let mut retries_left = max_retries;
 
-        for _ in 0..=max_retries {
-            // Check if we exceeded max reasonable radius
-            if current_eps > MAX_RETRY_EPSILON {
-                break;
-            }
-
+        loop {
             // Create a temporary bridge with the wider epsilon
             let temp_bridge = Self {
                 projection: ProjectionMatrix {
@@ -414,13 +413,16 @@ impl<const E: usize, const D: usize> EmbeddingBridge<E, D> {
             match temp_bridge.build_graph(embeddings) {
                 Ok(graph) => return Ok(graph),
                 Err(err @ BridgeError::DisconnectedGraph { .. }) => {
-                    last_err = err;
-                    current_eps *= EPSILON_WIDEN_FACTOR;
+                    let wider = current_eps * EPSILON_WIDEN_FACTOR;
+                    if retries_left == 0 || wider > MAX_RETRY_EPSILON {
+                        return Err(err);
+                    }
+                    retries_left -= 1;
+                    current_eps = wider;
                 }
                 Err(other) => return Err(other), // Fail fast on non-topology errors
             }
         }
-        Err(last_err)
     }
 
     /// Build a verified `ManifoldPayload<D>` with probabilistic disconnection retry.
