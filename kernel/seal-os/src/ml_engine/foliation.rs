@@ -217,7 +217,10 @@ pub struct FoliationStats {
     pub frames_failed: u64,
     /// Dead leaves reclaimed from the arena.
     pub leaf_gc: u64,
-    /// Evictions that touched a referenced plaque. Must stay zero.
+    /// Plaques collapsed while a live sequence still referenced them. Counted
+    /// in `collapse`, which every removal passes through, so it does not
+    /// depend on the victim filter it is meant to check. Must stay zero;
+    /// tearing down under a live sequence raises it.
     pub referenced_evictions: u64,
     /// Appends refused for exceeding the sequence budget.
     pub refused_budget: u64,
@@ -477,10 +480,19 @@ impl Foliation {
     }
 
     /// Verify the residency invariant: the resident set is a connected subtree
-    /// rooted at the root leaf, and no resident leaf is referenced-but-absent.
-    /// Returns the number of violations. O(pool_blocks).
+    /// rooted at the root leaf, and every block of every live sequence is
+    /// resident. Returns the number of violations, one per orphaned plaque
+    /// plus one per live block without a plaque.
+    /// O(pool_blocks + max_seqs * MAX_SEQ_BLOCKS).
     pub fn collapse_violations(&self) -> usize {
         let mut bad = 0;
+        for s in self.seqs.iter().filter(|s| s.active) {
+            for &leaf in &s.blocks[..s.nblocks as usize] {
+                if self.leaves[leaf as usize].slot == NONE {
+                    bad += 1;
+                }
+            }
+        }
         for p in &self.plaques {
             if p.leaf == NONE {
                 continue;
@@ -692,9 +704,6 @@ impl Foliation {
                     return Err(FoliationError::Exhausted);
                 }
             };
-            if self.leaves[victim as usize].refcount > 0 {
-                self.stats.referenced_evictions += 1;
-            }
             self.collapse(victim);
             self.stats.evictions += 1;
         }
@@ -737,6 +746,9 @@ impl Foliation {
         let slot = self.leaves[leaf as usize].slot;
         if slot == NONE {
             return;
+        }
+        if self.leaves[leaf as usize].refcount > 0 {
+            self.stats.referenced_evictions += 1;
         }
         if let Some(frame) = self.plaques[slot as usize].frame.take() {
             topo_ram::free_frames(frame, 1);
@@ -1646,6 +1658,25 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The safety counters must be able to fail. Tearing down under a live
+    /// sequence collapses every plaque it holds, so each held block must show
+    /// up once in `referenced_evictions` and once in `collapse_violations`.
+    fn test_teardown_under_live_seq_is_counted() -> TestResult {
+        let mut fol = Foliation::new(8, 64, 2, Policy::Foliation);
+        let id = fol.seq_create(4).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(19_000, 3) {
+            test_assert!(fol.seq_append(id, t).is_ok());
+        }
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        fol.teardown();
+        test_assert_eq!(fol.stats().referenced_evictions, 3);
+        test_assert_eq!(fol.collapse_violations(), 3);
+        let _ = fol.seq_release(id);
+        TestResult::Pass
+    }
+
     /// The proof must actually run and report `result=pass`.
     fn test_proof_line_passes() -> TestResult {
         let line = foliation_proof_line();
@@ -1694,6 +1725,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::colliding_blocks_do_not_share",
             test_colliding_blocks_do_not_share,
+        );
+        crate::testing::register_test(
+            "foliation::teardown_under_live_seq_is_counted",
+            test_teardown_under_live_seq_is_counted,
         );
         crate::testing::register_test("foliation::proof_line_passes", test_proof_line_passes);
     }

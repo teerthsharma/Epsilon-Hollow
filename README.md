@@ -1143,7 +1143,7 @@ Within the frontier, the foliation policy ranks by:
 
 Fewest distinct sequences that ever entered the leaf, first. Then deepest. Then oldest. Root-adjacent leaves — the shared system prompt everybody starts with — sink to the bottom of the eviction order by construction, because everybody entered them and their depth is small.
 
-The proof counts `collapse_violations` (resident leaf with an absent parent) and `referenced_evictions` (a plaque evicted while referenced) and **both must be exactly zero, for every policy**. If the structural invariant is only checked for my policy, it is not an invariant, it is a preference.
+The proof counts `collapse_violations` (resident leaf with an absent parent, or a live sequence's block with no plaque) and `referenced_evictions` (a plaque collapsed while referenced, counted inside `collapse` itself rather than downstream of the victim filter it checks) and **both must be exactly zero, for every policy**. Both can fail: tearing down under a live sequence raises each by the number of blocks it holds, and the in-kernel test `foliation::teardown_under_live_seq_is_counted` holds them to that. If the structural invariant is only checked for my policy, it is not an invariant, it is a preference.
 
 ### Metadata persists, memory does not
 
