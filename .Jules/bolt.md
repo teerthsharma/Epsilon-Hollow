@@ -1,0 +1,4 @@
+
+## 2024-05-15 - React Zustand Selectors and TS Compilation Error
+**Learning:** When trying to implement `useShallow` for Zustand selectors to optimize a React application, I discovered that attempting to use `import { useShallow } from 'zustand/react/shallow'` might require patching heavily across multiple files. More importantly, attempting to run node scripts testing these imports failed locally due to module resolution, but Vite easily resolved it in the final build. The key lesson here is that Vite processes bare module imports differently than standard Node.js without specific configuration, so evaluating module availability via Node execution inside a Vite project may produce false negatives for packages installed.
+**Action:** When working in Vite projects, rely on Vite's build step (`pnpm run build`) for accurate module resolution checks instead of standalone Node execution when evaluating library imports.
