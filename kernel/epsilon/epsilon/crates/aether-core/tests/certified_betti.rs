@@ -7,8 +7,23 @@ use aether_core::certified_betti::{certified_beta0, Beta0};
 
 const RHO: f64 = 10.0;
 
+/// Scale-safe Euclidean distance, `m * sqrt(sum((d / m)^2))` with
+/// `m = max |d|`, so neither a `1e-170` nor a `1e170` difference underflows
+/// or overflows when squared. It performs the same operations in the same
+/// order as the library's norm, and IEEE `sqrt` is correctly rounded in
+/// both, so a named height compares bit for bit at every opt-level.
 fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    let d = [
+        (a[0] - b[0]).abs(),
+        (a[1] - b[1]).abs(),
+        (a[2] - b[2]).abs(),
+    ];
+    let m = d[0].max(d[1]).max(d[2]);
+    if m == 0.0 || !m.is_finite() {
+        return m;
+    }
+    let (x, y, z) = (d[0] / m, d[1] / m, d[2] / m);
+    m * (x * x + y * y + z * z).sqrt()
 }
 
 /// Independent reference: all-pairs union-find at a fixed threshold.
@@ -82,7 +97,11 @@ fn value(b: Beta0) -> Option<u32> {
 fn checked(pts: &[[f64; 3]], s: f64) -> Beta0 {
     let b = certified_beta0(pts, s, RHO);
     if let Beta0::Certified { value, .. } = b {
-        assert_eq!(value, brute_beta0(pts, s, true), "certified value disagrees with all-pairs");
+        assert_eq!(
+            value,
+            brute_beta0(pts, s, true),
+            "certified value disagrees with all-pairs"
+        );
     }
     b
 }
@@ -91,7 +110,11 @@ fn assert_refused_pair(b: Beta0, pts: &[[f64; 3]]) {
     match b {
         Beta0::Refused { i, j, height } => {
             assert!(i < j && j < pts.len(), "pair ({i},{j}) out of range");
-            assert_eq!(height, dist(pts[i], pts[j]), "height is the named pair's distance");
+            assert_eq!(
+                height,
+                dist(pts[i], pts[j]),
+                "height is the named pair's distance"
+            );
         }
         other => panic!("expected Refused, got {other:?}"),
     }
@@ -121,7 +144,11 @@ fn two_tight_clusters_far_apart_certify_two() {
         [10.0, 1e-4, 0.0],
     ];
     match certified_beta0(&pts, 0.5, RHO) {
-        Beta0::Certified { value, gap_lo, gap_hi } => {
+        Beta0::Certified {
+            value,
+            gap_lo,
+            gap_hi,
+        } => {
             assert_eq!(value, 2);
             assert!(gap_lo <= 0.5 / RHO.sqrt() && gap_hi >= 0.5 * RHO.sqrt());
             assert!(gap_hi / gap_lo >= RHO);
@@ -134,7 +161,11 @@ fn two_tight_clusters_far_apart_certify_two() {
 fn one_point_certifies_one() {
     assert_eq!(
         certified_beta0(&[[0.3, 0.4, 0.5]], 0.5, RHO),
-        Beta0::Certified { value: 1, gap_lo: 0.0, gap_hi: f64::INFINITY }
+        Beta0::Certified {
+            value: 1,
+            gap_lo: 0.0,
+            gap_hi: f64::INFINITY
+        }
     );
 }
 
@@ -144,7 +175,11 @@ fn empty_certifies_zero() {
     let pts: [[f64; 3]; 0] = [];
     assert_eq!(
         certified_beta0(&pts, 0.5, RHO),
-        Beta0::Certified { value: 0, gap_lo: 0.0, gap_hi: f64::INFINITY }
+        Beta0::Certified {
+            value: 0,
+            gap_lo: 0.0,
+            gap_hi: f64::INFINITY
+        }
     );
 }
 
@@ -201,7 +236,10 @@ fn isometry_invariant() {
             certified += 1;
         }
     }
-    assert!(certified > 50, "only {certified}/200 isometry pairs certified");
+    assert!(
+        certified > 50,
+        "only {certified}/200 isometry pairs certified"
+    );
 }
 
 #[test]
@@ -229,7 +267,11 @@ fn certified_agrees_with_all_pairs_union_find_across_the_band() {
         let pts = cloud(&mut rng);
         let s = log_uniform_scale(&mut rng);
         match certified_beta0(&pts, s, RHO) {
-            Beta0::Certified { value, gap_lo, gap_hi } => {
+            Beta0::Certified {
+                value,
+                gap_lo,
+                gap_hi,
+            } => {
                 certified += 1;
                 assert!(gap_lo < s && s < gap_hi);
                 // Every threshold in the certified band gives the same count,
@@ -245,5 +287,212 @@ fn certified_agrees_with_all_pairs_union_find_across_the_band() {
             }
         }
     }
-    assert!(certified > 100 && refused > 20, "certified {certified}, refused {refused}");
+    assert!(
+        certified > 100 && refused > 20,
+        "certified {certified}, refused {refused}"
+    );
+}
+
+#[test]
+fn tiny_separation_does_not_underflow_into_a_merge() {
+    // 1e-170 squared is 0 in f64; the true distance is far above the band
+    // [3.2e-201, 3.2e-200], so the two points are two components.
+    let pts = [[0.0, 0.0, 0.0], [1e-170, 0.0, 0.0]];
+    assert_eq!(
+        brute_beta0(&pts, 1e-200, true),
+        2,
+        "oracle must see the gap"
+    );
+    assert_eq!(
+        certified_beta0(&pts, 1e-200, RHO),
+        Beta0::Certified {
+            value: 2,
+            gap_lo: 0.0,
+            gap_hi: 1e-170
+        }
+    );
+}
+
+#[test]
+fn huge_separation_does_not_overflow_the_height() {
+    // 1e170 squared is inf in f64. At scale 1e170 the edge sits at the band
+    // centre, and the refusal must report its finite height.
+    let pts = [[0.0, 0.0, 0.0], [1e170, 0.0, 0.0]];
+    assert_eq!(
+        certified_beta0(&pts, 1e170, RHO),
+        Beta0::Refused {
+            i: 0,
+            j: 1,
+            height: 1e170
+        }
+    );
+    // 1e160 lies below the band around 1e170: one component, not a refusal.
+    let pts = [[0.0, 0.0, 0.0], [1e160, 0.0, 0.0]];
+    assert_eq!(
+        certified_beta0(&pts, 1e170, RHO),
+        Beta0::Certified {
+            value: 1,
+            gap_lo: 1e160,
+            gap_hi: f64::INFINITY
+        }
+    );
+}
+
+#[test]
+fn edge_exactly_at_a_band_end_refuses() {
+    // Scale 2, ratio 4: the band is exactly [1, 4].
+    for h in [1.0, 4.0] {
+        assert_eq!(
+            certified_beta0(&[[0.0], [h]], 2.0, 4.0),
+            Beta0::Refused {
+                i: 0,
+                j: 1,
+                height: h
+            },
+            "edge at band end {h}"
+        );
+    }
+    // Just outside either end certifies.
+    assert_eq!(
+        certified_beta0(&[[0.0], [0.875]], 2.0, 4.0),
+        Beta0::Certified {
+            value: 1,
+            gap_lo: 0.875,
+            gap_hi: f64::INFINITY
+        }
+    );
+    assert_eq!(
+        certified_beta0(&[[0.0], [4.5]], 2.0, 4.0),
+        Beta0::Certified {
+            value: 2,
+            gap_lo: 0.0,
+            gap_hi: 4.5
+        }
+    );
+}
+
+#[test]
+fn ratio_below_one_or_nan_is_treated_as_one() {
+    for ratio in [0.25, 0.0, -3.0, f64::NAN] {
+        // With the band collapsed onto the scale, 1.5 lies above it and 0.5 below.
+        assert_eq!(
+            certified_beta0(&[[0.0], [1.5]], 1.0, ratio),
+            Beta0::Certified {
+                value: 2,
+                gap_lo: 0.0,
+                gap_hi: 1.5
+            },
+            "ratio {ratio}"
+        );
+        assert_eq!(
+            certified_beta0(&[[0.0], [0.5]], 1.0, ratio),
+            Beta0::Certified {
+                value: 1,
+                gap_lo: 0.5,
+                gap_hi: f64::INFINITY
+            },
+            "ratio {ratio}"
+        );
+        // A height equal to the scale still refuses.
+        assert_eq!(
+            certified_beta0(&[[0.0], [1.0]], 1.0, ratio),
+            Beta0::Refused {
+                i: 0,
+                j: 1,
+                height: 1.0
+            },
+            "ratio {ratio}"
+        );
+    }
+}
+
+#[test]
+fn gap_bounds_are_the_nearest_heights_outside_the_band() {
+    // Tree heights 0.125, 0.25, 7.625, 16; the band around 1 at ratio 4 is
+    // [0.5, 2]. Below it the largest is 0.25; above it the smallest is 7.625.
+    let pts = [[0.0], [0.125], [0.375], [8.0], [24.0]];
+    assert_eq!(
+        certified_beta0(&pts, 1.0, 4.0),
+        Beta0::Certified {
+            value: 3,
+            gap_lo: 0.25,
+            gap_hi: 7.625
+        }
+    );
+    // The same heights found in another order give the same bounds.
+    let pts = [[24.0], [0.375], [8.0], [0.0], [0.125]];
+    assert_eq!(
+        certified_beta0(&pts, 1.0, 4.0),
+        Beta0::Certified {
+            value: 3,
+            gap_lo: 0.25,
+            gap_hi: 7.625
+        }
+    );
+}
+
+#[test]
+fn refusal_names_the_band_edge_nearest_the_scale() {
+    // Band [0.25, 4] around 1. Prim finds heights 0.5, 1, 3 in that order,
+    // all inside the band; the named edge is the middle one, |h - 1| = 0.
+    assert_eq!(
+        certified_beta0(&[[0.0], [0.5], [1.5], [4.5]], 1.0, 16.0),
+        Beta0::Refused {
+            i: 1,
+            j: 2,
+            height: 1.0
+        }
+    );
+    // Heights 2.5 (found first) and 0.375: nearest by absolute difference is
+    // 0.375 (0.625 < 1.5), although 2.5 is nearer by ratio (2.5 < 1 / 0.375).
+    assert_eq!(
+        certified_beta0(&[[2.875], [0.375], [0.0]], 1.0, 16.0),
+        Beta0::Refused {
+            i: 1,
+            j: 2,
+            height: 0.375
+        }
+    );
+}
+
+#[test]
+fn non_finite_point_is_named_as_itself() {
+    // An edge sits exactly at the scale, yet the input also holds a point with
+    // no measurable distance. The refusal names that point as i == j, with a
+    // NaN height, whether Prim meets it first (NaN) or last (infinity).
+    for pts in [
+        [
+            [f64::NAN, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ],
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [f64::INFINITY, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ],
+    ] {
+        let p = pts
+            .iter()
+            .position(|q| q.iter().any(|c| !c.is_finite()))
+            .unwrap();
+        match certified_beta0(&pts, 0.5, RHO) {
+            Beta0::Refused { i, j, height } => {
+                assert_eq!((i, j), (p, p), "names the non-finite point");
+                assert!(height.is_nan(), "height {height} is not NaN");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+    // One point has no pair to be ambiguous about.
+    assert_eq!(
+        certified_beta0(&[[f64::NAN, 0.0, 0.0]], 0.5, RHO),
+        Beta0::Certified {
+            value: 1,
+            gap_lo: 0.0,
+            gap_hi: f64::INFINITY
+        }
+    );
 }

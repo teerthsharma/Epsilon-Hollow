@@ -20,6 +20,13 @@
 //! the result is a refusal naming the tree edge whose height is nearest the
 //! scale.
 //!
+//! Heights are computed with a scale-safe norm, `m * sqrt(sum((d / m)^2))`
+//! with `m` the largest coordinate difference, so separations near `1e-170`
+//! or `1e170` are neither squared to zero nor to infinity. The band test runs
+//! on those computed heights: an edge within a few ulp of a band end is
+//! classified by its rounded value, which may sit on the other side of the
+//! end than the exact real distance does.
+//!
 //! This is stricter than planimeter's `--grid` rule, which accepts any scale
 //! inside a `ratio`-wide gap; that rule would certify a scale sitting 1e-9
 //! below a merge height.
@@ -38,15 +45,24 @@ pub enum Beta0 {
         /// Smallest merge height above the band, or `f64::INFINITY` if there is none.
         gap_hi: f64,
     },
-    /// A merge height lies in the band, so the count depends on a choice the
-    /// input does not make. `(i, j)` with `i < j` are indices into the input
-    /// slice of the spanning-tree edge whose height is nearest the scale.
+    /// The count cannot be certified, for one of two reasons.
+    ///
+    /// - A merge height lies in the band (ends included), so the count
+    ///   depends on a choice the input does not make. `(i, j)` with `i < j`
+    ///   are indices into the input slice of the in-band spanning-tree edge
+    ///   whose height is nearest the scale by absolute difference
+    ///   `|height - scale|`, the earliest found on a tie. A spanning-tree
+    ///   height that overflows to infinity is also refused this way.
+    /// - A point has a non-finite coordinate, so no distance to it is
+    ///   measurable. Then `i == j` is the index of the first such point and
+    ///   `height` is NaN.
     Refused {
-        /// Smaller index of the ambiguous pair.
+        /// Smaller index of the ambiguous pair, or the non-finite point.
         i: usize,
-        /// Larger index of the ambiguous pair.
+        /// Larger index of the ambiguous pair, or the non-finite point.
         j: usize,
-        /// Euclidean distance between `points[i]` and `points[j]`.
+        /// Euclidean distance between `points[i]` and `points[j]`, or NaN
+        /// when `i == j`.
         height: f64,
     },
 }
@@ -55,8 +71,9 @@ pub enum Beta0 {
 /// over `[scale / sqrt(ratio), scale * sqrt(ratio)]`, or refused.
 ///
 /// `ratio` below 1 (or NaN) is treated as 1, which certifies whenever no
-/// height equals the scale exactly. A non-finite coordinate or a NaN scale
-/// yields a refusal whenever there is more than one point.
+/// height equals the scale exactly. With more than one point, a non-finite
+/// coordinate refuses by naming that point, and a NaN scale refuses by
+/// naming the first spanning-tree edge (no height is nearer a NaN scale).
 // ponytail: O(n^2) all-pairs Prim, exact by construction; fine for the
 // encoder's 64-point payloads. Upgrade path is a verified EMST (e.g. Delaunay
 // in 2-D/3-D) with this Prim kept as the test control.
@@ -65,9 +82,15 @@ pub fn certified_beta0<const D: usize>(points: &[[f64; D]], scale: f64, ratio: f
     let r = libm::sqrt(if ratio > 1.0 { ratio } else { 1.0 });
     let (lo, hi) = (scale / r, scale * r);
 
-    let dist = |a: &[f64; D], b: &[f64; D]| {
-        libm::sqrt(a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum())
-    };
+    if n > 1 {
+        if let Some(p) = points.iter().position(|q| q.iter().any(|c| !c.is_finite())) {
+            return Beta0::Refused {
+                i: p,
+                j: p,
+                height: f64::NAN,
+            };
+        }
+    }
 
     let mut inside = vec![false; n];
     let mut best = vec![f64::INFINITY; n];
@@ -78,7 +101,7 @@ pub fn certified_beta0<const D: usize>(points: &[[f64; D]], scale: f64, ratio: f
 
     for k in 0..n {
         // Lowest-index minimum among points not yet in the tree. Points only
-        // reachable through a NaN distance keep `best = INFINITY`.
+        // reachable through an overflowed distance keep `best = INFINITY`.
         let mut u = usize::MAX;
         for v in 0..n {
             if !inside[v] && (u == usize::MAX || best[v] < best[u]) {
@@ -95,7 +118,7 @@ pub fn certified_beta0<const D: usize>(points: &[[f64; D]], scale: f64, ratio: f
             } else if h > hi && h.is_finite() {
                 gap_hi = gap_hi.min(h);
             } else {
-                // In the band, or not a measurable distance: ambiguous.
+                // In the band, or overflowed to infinity: ambiguous.
                 let closer = match nearest {
                     None => true,
                     Some((_, _, g)) => libm::fabs(h - scale) < libm::fabs(g - scale),
@@ -126,4 +149,28 @@ pub fn certified_beta0<const D: usize>(points: &[[f64; D]], scale: f64, ratio: f
             gap_hi,
         },
     }
+}
+
+/// Euclidean distance as `m * sqrt(sum((d / m)^2))` with `m = max |d|`, so a
+/// difference of `1e-170` does not square to zero and one of `1e170` does not
+/// square to infinity. Coordinates must be finite; a difference that still
+/// overflows makes `m`, and so the result, infinite.
+fn dist<const D: usize>(a: &[f64; D], b: &[f64; D]) -> f64 {
+    let m = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| libm::fabs(x - y))
+        .fold(0.0, f64::max);
+    if m == 0.0 || !m.is_finite() {
+        return m;
+    }
+    let s: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let q = libm::fabs(x - y) / m;
+            q * q
+        })
+        .sum();
+    m * libm::sqrt(s)
 }
