@@ -615,7 +615,7 @@ mod tests {
             result
         );
 
-        let merged = hollow.assimilate();
+        let merged = hollow.assimilate().expect("assimilation must commit");
         assert!(merged > 0, "Assimilation must merge at least one point");
     }
 

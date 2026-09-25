@@ -152,7 +152,9 @@ pub enum TeleportResult {
 ///
 /// - [`TeleportResult::Success`] — pipeline completed; `points_assimilated`
 ///   reports how many points were merged.
-/// - [`TeleportResult::TopologyRejected`] — Betti mismatch or degenerate shell.
+/// - [`TeleportResult::TopologyRejected`] — Betti mismatch, degenerate shell,
+///   or an assimilation refused because the merged shell would have
+///   `beta_0 != 1` or would exceed capacity. The shell is left untouched.
 /// - [`TeleportResult::VoidBusy`] — void already occupied; retry later.
 /// - [`TeleportResult::RemoteUnimplemented`] — remote routing not yet available.
 ///
@@ -211,7 +213,14 @@ pub fn sys_teleport_context<const D: usize>(
     }
 
     // ── Step 3: Wake-Up Rescan — assimilate into shell ───────────────────────
-    let points_assimilated = manifold.assimilate();
+    // All-or-nothing: a refusal leaves the shell untouched and the void empty.
+    let points_assimilated = match manifold.assimilate() {
+        Ok(n) => n,
+        Err(err) => {
+            governor.complete_surgery(permit);
+            return TeleportResult::TopologyRejected(err);
+        }
+    };
 
     // ── Step 4: Governor Restore — re-enable derivative damping ─────────────
     governor.complete_surgery(permit);

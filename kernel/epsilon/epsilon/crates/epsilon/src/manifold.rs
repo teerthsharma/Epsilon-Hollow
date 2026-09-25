@@ -334,6 +334,30 @@ pub enum SurgeryError {
         /// Measured B0 of the offending shell.
         shell_b0: u32,
     },
+    /// Assimilation refused: merging the payload would leave the shell with
+    /// `beta_0 != 1`. The shell is left untouched and the payload is dropped
+    /// from the void.
+    DisconnectedAssimilation {
+        /// B0 the shell would have had after the merge.
+        merged_b0: u32,
+        /// Index into the shell of the closest shell–payload pair.
+        shell_index: usize,
+        /// Index into the payload of the closest shell–payload pair.
+        payload_index: usize,
+        /// Distance between that pair. When it is at least the shell's
+        /// epsilon, the payload does not touch the shell anywhere.
+        distance: f64,
+    },
+    /// Assimilation refused: the shell has no room for every payload point.
+    /// Nothing is merged; a partial merge would drop points silently.
+    ShellCapacityExceeded {
+        /// Points already in the shell.
+        shell_points: usize,
+        /// Points the payload carries.
+        payload_points: usize,
+        /// Maximum points a shell can hold.
+        capacity: usize,
+    },
 }
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -509,22 +533,64 @@ impl<const D: usize> HollowCubeManifold<D> {
     /// the agent's active processing shell in O(1) time relative to token
     /// length.
     ///
-    /// Returns number of points successfully assimilated.
-    pub fn assimilate(&mut self) -> usize {
+    /// The merge is all-or-nothing. It commits only when every payload point
+    /// fits and the merged shell has `beta_0 = 1`; otherwise the shell is left
+    /// exactly as it was, the payload is dropped from the void, and the reason
+    /// is returned as [`SurgeryError::ShellCapacityExceeded`] or
+    /// [`SurgeryError::DisconnectedAssimilation`].
+    ///
+    /// Returns the number of points merged, or `Ok(0)` if the void is empty.
+    pub fn assimilate(&mut self) -> Result<usize, SurgeryError> {
         let payload = match self.void_payload.take() {
             Some(p) => p,
-            None => return 0,
+            None => return Ok(0),
         };
+        self.assimilated = true;
 
-        let mut merged = 0usize;
-        for i in 0..payload.point_count {
-            if self.shell.add_point(payload.points[i]).is_some() {
-                merged += 1;
-            }
+        let shell_points = self.shell.point_count;
+        if shell_points + payload.point_count > MAX_POINTS {
+            return Err(SurgeryError::ShellCapacityExceeded {
+                shell_points,
+                payload_points: payload.point_count,
+                capacity: MAX_POINTS,
+            });
         }
 
-        self.assimilated = true;
-        merged
+        let mut merged = SparseGraph::new(self.shell.epsilon);
+        for p in self.shell.points[..shell_points]
+            .iter()
+            .chain(&payload.points[..payload.point_count])
+        {
+            merged.add_point(*p);
+        }
+
+        // ponytail: this is the graph's union-find beta_0 at the shell's
+        // epsilon, uncertified. A later change replaces it with a certified
+        // beta_0; the commit-only-if-1 gate stays the same.
+        let merged_b0 = merged.compute_betti_0();
+        if merged_b0 != 1 {
+            // Both sides are non-empty here: injection requires a shell with
+            // beta_0 = 1 and a valid payload, and only `reset` shrinks the
+            // shell, which also empties the void.
+            let (mut shell_index, mut payload_index, mut distance) = (0, 0, f64::INFINITY);
+            for (i, s) in self.shell.points[..shell_points].iter().enumerate() {
+                for (j, q) in payload.points[..payload.point_count].iter().enumerate() {
+                    let d = s.distance(q);
+                    if d < distance {
+                        (shell_index, payload_index, distance) = (i, j, d);
+                    }
+                }
+            }
+            return Err(SurgeryError::DisconnectedAssimilation {
+                merged_b0,
+                shell_index,
+                payload_index,
+                distance,
+            });
+        }
+
+        self.shell = merged;
+        Ok(payload.point_count)
     }
 
     /// Inherited liveness anchor from the current payload (if any).
@@ -640,7 +706,7 @@ mod tests {
         let payload = ManifoldPayload::from_graph(&src, 5.0);
         hollow.inject_into_void(payload).unwrap();
 
-        let merged = hollow.assimilate();
+        let merged = hollow.assimilate().unwrap();
         assert_eq!(merged, 2);
         assert!(hollow.void_is_empty());
         assert!(!hollow.has_pending_payload());
