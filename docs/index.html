@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epsilon-Hollow: certify or refuse</title>
+<meta name="description" content="Seal OS is a bare-metal x86_64 UEFI research kernel in no_std Rust that keeps OS state as point clouds on the sphere. Its topological and ranking answers now come with a certificate, or are refused with a named witness.">
+<link rel="canonical" href="https://teerthsharma.github.io/Epsilon-Hollow/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Epsilon-Hollow: certify or refuse">
+<meta property="og:description" content="A research kernel whose topological and ranking answers come with a certificate, or are refused with a named witness.">
+<meta property="og:url" content="https://teerthsharma.github.io/Epsilon-Hollow/">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/page.css">
+</head>
+<body>
+
+<nav class="nav" aria-label="Site">
+  <div class="nav__inner">
+    <a class="nav__brand" href="https://teerthsharma.github.io/">Teerth Sharma</a>
+    <div class="nav__links">
+      <a class="nav__link" href="https://teerthsharma.github.io/#upstream">Upstream</a>
+      <a class="nav__link" href="https://teerthsharma.github.io/work.html">Personal work</a>
+      <a class="nav__link" href="mailto:teerths57@gmail.com">Email</a>
+    </div>
+  </div>
+</nav>
+
+<nav class="psub" aria-label="On this page">
+  <div class="psub__scroll">
+    <ul class="psub__list">
+      <li><a class="psub__link psub__name" href="#top">Epsilon-Hollow</a></li>
+      <li class="psub__sep" aria-hidden="true"></li>
+      <li><a class="psub__link" href="#t1">Boot centroids</a></li>
+      <li><a class="psub__link" href="#locate">Nearest centroid</a></li>
+      <li><a class="psub__link" href="#beta0">&beta;&#8320;</a></li>
+      <li><a class="psub__link" href="#topk">Top-k</a></li>
+      <li><a class="psub__link" href="#stratum">Fit</a></li>
+      <li><a class="psub__link" href="#foliation">KV cache</a></li>
+      <li><a class="psub__link" href="#governor">Governor</a></li>
+      <li><a class="psub__link" href="#cells">Cells</a></li>
+      <li><a class="psub__link" href="#boot">Boot log</a></li>
+      <li class="psub__sep" aria-hidden="true"></li>
+      <li><a class="psub__link" href="#limits">Limits</a></li>
+      <li><a class="psub__link" href="#reproduce">Reproduce</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main id="top">
+
+<header class="hero">
+  <div class="wrap">
+    <p class="hero__kicker">Epsilon-Hollow &middot; Seal OS</p>
+    <h1 class="hero__h1">An answer with a certificate, or a refusal that says why.</h1>
+    <p class="hero__sub">Seal OS is a bare-metal x86_64 UEFI research kernel in <code>no_std</code> Rust that keeps memory, files and scheduler state as points on a sphere. When rounding could flip a count, a top-k or a nearest-centroid lookup, it now says so instead of guessing.</p>
+    <div class="cta-row">
+      <a class="pt__cta" href="https://github.com/teerthsharma/Epsilon-Hollow">View on GitHub</a>
+      <a class="pt__more" href="https://github.com/teerthsharma/Epsilon-Hollow#readme">Read the README <span class="pt__chev" aria-hidden="true">&#8250;</span></a>
+    </div>
+    <div class="heads">
+      <span class="spec"><b class="spec__n">1,215 &rarr; 0</b><span class="spec__l">wrong nearest-centroid answers in 5,000 queries</span></span>
+      <span class="spec"><b class="spec__n">0.96875 &rarr; 0</b><span class="spec__l">loop score of a loss curve that only falls</span></span>
+      <span class="spec"><b class="spec__n">0.001 &rarr; 10.0</b><span class="spec__l">what one <code>/mv</code> did to ε; now it is held</span></span>
+      <span class="spec"><b class="spec__n">849 / 0</b><span class="spec__l">workspace tests passed / failed at <code>0f040e0</code></span></span>
+    </div>
+  </div>
+</header>
+
+<!-- 1 · T1/TSS ------------------------------------------------------------ -->
+<section class="fsec" id="t1" aria-labelledby="t1-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig">
+        <div class="figc" style="--figc-ar:470/480">
+          <canvas data-fig="t1" aria-hidden="true"></canvas>
+          <svg class="figc__lab" viewBox="0 0 470 480" role="img" aria-labelledby="t1-t t1-d">
+            <title id="t1-t">Eight boot centroids fold onto four and back</title>
+            <desc id="t1-d">The unit sphere with the eight Seal OS boot centroids, the cube vertices at colatitude acos(1/√3) and π − acos(1/√3), and their Voronoi cells, the eight octants. The centroids then slide to where the old code put them: placed by latitude ±asin(1/√3) and read as colatitude, where (−t, φ) is (t, φ + π), all eight land on one ring in four coincident pairs. The minimum separation, computed live, drops to 0 against T1's θ_min of 0.50536 and the T1/TSS line fails. They slide back, the separation returns to acos(1/3) = 1.2310, and the boot line reads VERIFIED.</desc>
+            <text data-phase="ok" x="235" y="22" text-anchor="middle" font-size="14" fill="var(--muted)">colatitude <tspan class="mono">acos(1/√3)</tspan>, <tspan class="mono">π − acos(1/√3)</tspan>: the cube</text>
+            <text data-phase="bad" x="235" y="22" text-anchor="middle" font-size="14" fill="var(--coral-700)">placed by latitude, read as colatitude: eight on four</text>
+            <text x="180.8" y="334" text-anchor="middle" font-size="12" fill="var(--ink)" class="mono">θ<tspan font-size="9" baseline-shift="sub">min</tspan> 0.50536</text>
+            <text x="40" y="390" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0</text>
+            <text x="179.3" y="390" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.5</text>
+            <text x="318.6" y="390" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">1.0</text>
+            <text x="235" y="414" text-anchor="middle" font-size="13" fill="var(--muted)">minimum centroid separation <tspan class="mono" fill="var(--ink)" data-v="sep">1.2310</tspan> rad</text>
+            <text x="92" y="447" font-size="13" font-weight="600" fill="var(--green-700)" class="mono">[BOOT] All T1-T10 theorems VERIFIED</text>
+            <text x="92" y="471" font-size="13" font-weight="600" fill="var(--coral-700)" class="mono">[THEOREM] T1/TSS FAILED</text>
+          </svg>
+        </div>
+        <figcaption class="fig__cap">The separation is measured on the drawn centroids every frame.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>01</b> &middot; T1/TSS &middot; b9a4531</p>
+      <h2 class="fsec__h2" id="t1-h">The boot stopped failing its own theorem.</h2>
+      <p class="fsec__p">The eight boot centroids were placed at latitude <code>±asin(1/√3)</code>, but the distance reads colatitude, where <code>(−t, φ)</code> is <code>(t, φ + π)</code>. Eight centroids fell onto four, T1 measured a minimum separation of 0 against θ<sub>min</sub> 0.50536, and boot panicked. At colatitude they are the cube again, 1.2310 rad apart, pinned by a compile-time assert because seal-os tests do not run.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--coral">0</b><span class="spec__l">minimum separation, before</span></span>
+        <span class="spec"><b class="spec__n spec__n--green">acos(1/3)</b><span class="spec__l">minimum separation, after</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li><code>locate</code> over the cube returned [0, 1, 2, 3, 2, 3, 0, 1] before and [0 … 7] after</li>
+          <li><code>ManifoldMemory::great_circle</code> had the same latitude formula: two equator points a quarter turn apart measured 0 (73372ac)</li>
+          <li>a QEMU boot of the release image prints <code>[BOOT] All T1-T10 theorems VERIFIED</code></li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 2 · locate ------------------------------------------------------------ -->
+<section class="fsec fsec--flip" id="locate" aria-labelledby="locate-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig">
+        <svg data-fig="locate" viewBox="0 0 470 330" role="img" aria-labelledby="loc-t loc-d">
+          <title id="loc-t">A nearest centroid across the pole, missed and then found</title>
+          <desc id="loc-d">A view down onto the north pole of the grid-hash index with two centroids, so the grid has 4 colatitude rows and 8 longitude columns. The query sits at colatitude 0.1, longitude 0. Slot 0 sits at colatitude 0.1, longitude 3.0, just across the pole, 0.1995 rad away. Slot 1 sits at colatitude 1.0, longitude 0, 0.9 rad away. The old 3 by 3 block around the query is a wedge that stops at the pole, so it held only slot 1 and returned it. The fixed block takes every column once it touches a pole row, a polar cap, and returns slot 0.</desc>
+          <g class="loc-grid"></g>
+          <path data-phase="old" d="M150 170 L250.1 270.1 A141.6 141.6 0 0 0 150 28.4 Z" fill="var(--coral-100)" stroke="var(--coral-500)" stroke-opacity=".5"/>
+          <circle data-phase="new" cx="150" cy="170" r="141.6" fill="var(--green-100)" fill-opacity=".7" stroke="var(--green-500)" stroke-opacity=".5"/>
+          <g class="loc-lines"></g>
+          <line data-phase="old" x1="161.8" y1="170" x2="268" y2="170" stroke="var(--coral-500)" stroke-width="2.4" stroke-linecap="round"/>
+          <line data-phase="new" x1="161.8" y1="170" x2="138.3" y2="168.3" stroke="var(--green-500)" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="150" cy="170" r="2" fill="var(--muted)"/>
+          <circle cx="138.3" cy="168.3" r="5" fill="var(--blue-500)"/>
+          <circle cx="268" cy="170" r="5" fill="var(--blue-500)"/>
+          <circle cx="161.8" cy="170" r="4" fill="var(--raised)" stroke="var(--ink)" stroke-width="2"/>
+          <text x="120" y="152" font-size="11" fill="var(--ink)" class="mono">slot 0</text>
+          <text x="268" y="192" text-anchor="middle" font-size="11" fill="var(--ink)" class="mono">slot 1</text>
+          <text x="170" y="192" font-size="11" fill="var(--muted)" class="mono">query</text>
+          <text x="150" y="324" text-anchor="middle" font-size="11" fill="var(--muted)">pole at the centre, colatitude out to 1.2</text>
+          <g data-phase="old">
+            <text x="312" y="120" font-size="13" font-weight="600" fill="var(--ink)">before</text>
+            <text x="312" y="142" font-size="13" fill="var(--muted)">the 3×3 block is a wedge</text>
+            <text x="312" y="160" font-size="13" fill="var(--muted)">that stops at the pole</text>
+            <text x="312" y="186" font-size="13" font-weight="600" fill="var(--coral-700)">slot 1, 0.9 rad away</text>
+          </g>
+          <g data-phase="new">
+            <text x="312" y="120" font-size="13" font-weight="600" fill="var(--ink)">now</text>
+            <text x="312" y="142" font-size="13" fill="var(--muted)">a block on a pole row</text>
+            <text x="312" y="160" font-size="13" fill="var(--muted)">takes every column</text>
+            <text x="312" y="186" font-size="13" font-weight="600" fill="var(--green-700)">slot 0, 0.1995 rad away</text>
+          </g>
+        </svg>
+        <figcaption class="fig__cap">Centroids and query are the test's pole counterexample.</figcaption>
+      </figure>
+      <figure class="fig">
+        <svg viewBox="0 0 470 250" role="img" aria-labelledby="tss-t tss-d">
+          <title id="tss-t">The same 5,000 queries before and after</title>
+          <desc id="tss-d">Two bars of 5,000 seeded queries against 8 centroids. Before: 3,785 answers were the true nearest centroid and 1,215 were not, and the index reported a hit rate of 1.0000. After: 4,909 answers are certified inside the 3 by 3 block and 91 queries scan every centroid; none is wrong, and the reported hit rate is 0.9818 because it counts only certified answers.</desc>
+          <text x="35" y="22" font-size="13" fill="var(--muted)" class="mono">before</text>
+          <text x="435" y="22" text-anchor="end" font-size="13" font-weight="600" fill="var(--coral-700)" class="mono">1,215 wrong</text>
+          <rect x="35" y="32" width="302.8" height="30" rx="6" fill="var(--hair2)"/>
+          <rect x="339.8" y="32" width="95.2" height="30" rx="6" fill="var(--coral-500)"/>
+          <text x="35" y="84" font-size="13" fill="var(--muted)">3,785 right; reported hit rate <tspan class="mono" fill="var(--ink)">1.0000</tspan></text>
+          <text x="35" y="130" font-size="13" fill="var(--muted)" class="mono">after</text>
+          <text x="435" y="130" text-anchor="end" font-size="13" font-weight="600" fill="var(--green-700)" class="mono">0 wrong</text>
+          <rect x="35" y="140" width="390.7" height="30" rx="6" fill="var(--green-500)"/>
+          <rect x="427.7" y="140" width="7.3" height="30" rx="2" fill="var(--amber-500)"/>
+          <text x="35" y="192" font-size="13" fill="var(--muted)"><tspan class="mono" fill="var(--green-700)">4,909</tspan> certified in the block, <tspan class="mono" fill="var(--amber-700)">91</tspan> scanned in full</text>
+          <text x="35" y="214" font-size="13" fill="var(--muted)">reported hit rate <tspan class="mono" fill="var(--ink)">0.9818</tspan>: only certified answers count</text>
+        </svg>
+        <figcaption class="fig__cap">Before: commit cdb4a4e. After: probe_e re-run at 0f040e0.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>02</b> &middot; grid-hash locate &middot; cdb4a4e</p>
+      <h2 class="fsec__h2" id="locate-h">A lookup that never checked outside its block.</h2>
+      <p class="fsec__p"><code>SphericalGridHashIndex::locate</code> returned the best centroid in the 3×3 cell block around a query and counted it as an O(1) hit. Nothing checked for a nearer centroid outside the block, and the block was a wedge even at the pole. It now accepts the block winner only when it is nearer than any point outside the block can be, and scans every centroid otherwise.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--coral">1,215</b><span class="spec__l">wrong of 5,000, before</span></span>
+        <span class="spec"><b class="spec__n spec__n--green">0</b><span class="spec__l">wrong of 5,000, after</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>25,000 seeded queries over K = 2, 8, 20, 64 and 200: 101 of 5,000 wrong at K = 2 before, 0 wrong at every K after</li>
+          <li>the pole counterexample returned slot 1 before and slot 0 after</li>
+          <li>an equatorial query whose block winner is 1.47 rad away against a 0.785 rad boundary reported a hit rate of 1.0 before and 0.0 after</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 3 · certified beta_0 --------------------------------------------------- -->
+<section class="fsec" id="beta0" aria-labelledby="beta0-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig" id="play-beta">
+        <svg viewBox="0 0 470 290" role="img" aria-labelledby="b0-t b0-d">
+          <title id="b0-t">Sixteen points, their spanning tree and the band around the scale</title>
+          <desc id="b0-d">Sixteen points in the plane: three tight clusters and one loose point. Their minimum spanning tree is drawn above a log axis of its merge heights, with the band from s/√10 to s·√10 around the scale s. Tree edges below the band are merged and drawn in blue, edges inside it in coral, edges above it faint green. When no height sits in the band the count of components is certified; otherwise the count is refused and the in-band edge nearest the scale is ringed. The slider moves s.</desc>
+          <g class="b0-layer"></g>
+          <text x="30" y="226" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.001</text>
+          <text x="147.1" y="226" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.01</text>
+          <text x="264.3" y="226" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.1</text>
+          <text x="381.4" y="226" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">1</text>
+          <text x="235" y="246" text-anchor="middle" font-size="12" fill="var(--muted)">spanning-tree merge heights, log scale; band ratio 10</text>
+          <text x="30" y="276" font-size="15" font-weight="600" fill="var(--green-700)" data-v="verdict">β₀</text>
+          <text x="440" y="276" text-anchor="end" font-size="12" fill="var(--muted)" class="mono" data-v="detail"></text>
+        </svg>
+        <div class="ctrl">
+          <div class="ctrl__row"><label for="b0-s">Scale s</label><output for="b0-s" aria-live="polite"></output></div>
+          <input id="b0-s" type="range" min="0" max="1000" value="610">
+        </div>
+        <figcaption class="fig__cap">The points are chosen for the picture; the tree, the band and the verdict are computed by the rule.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>03</b> &middot; certified &beta;&#8320; &middot; 8678c97</p>
+      <h2 class="fsec__h2" id="beta0-h">A component count is certified, or the pair is named.</h2>
+      <p class="fsec__p"><code>certified_beta0</code> takes the n − 1 merge heights of a Euclidean minimum spanning tree. If none lies in <code>[s/√10, s·√10]</code>, every threshold in that band gives the same count and it is certified. Otherwise the answer is a refusal naming the edge nearest the scale. The seal-os encoder used to count at a chord of 0.5 with a strict <code>&lt;</code>. It now stores the certified count, or <code>u32::MAX</code>.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n">0.5 ± 1e-9</b><span class="spec__l">chord pair: two integers before, both refused now</span></span>
+        <span class="spec"><b class="spec__n">500</b><span class="spec__l">seeded clouds agree with all-pairs union-find</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 4 ways</summary>
+        <ul class="ev__list">
+          <li>permutation, isometry and scale invariance; a single point, an empty cloud, a non-finite coordinate</li>
+          <li>heights use <code>m·√Σ(d/m)²</code>, so a 1e-170 separation no longer squares to zero and 1e170 no longer overflows</li>
+          <li>30 embeddings, seed 42: a spanning edge of 0.089 at ε = 0.1 was accepted, and is now refused (cb8a873)</li>
+          <li>planted mutants (<code>h &lt;= lo</code>, <code>h &gt;= hi</code>, clamp removed, wrong edge named) each fail a test</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 4 · certified top-k ---------------------------------------------------- -->
+<section class="fsec fsec--flip" id="topk" aria-labelledby="topk-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig" id="play-topk">
+        <svg viewBox="0 0 470 260" role="img" aria-labelledby="tk-t tk-d">
+          <title id="tk-t">Six scores as intervals, a budget of two, and the boundary between them</title>
+          <desc id="tk-d">Six keys, each score drawn as an interval of the rounding radius around its float value. The budget is two. The two float leaders are kept only when both of their lower ends clear every other key's upper end; the dashed line marks the lowest selected lower end. When an unselected interval reaches it, the row widens to every such key, drawn amber. With one score overflowed to NaN, the row refuses and falls back to dense over all six keys. The slider sets the radius.</desc>
+          <g class="tk-layer"></g>
+          <text x="60" y="206" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0</text>
+          <text x="250" y="206" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.5</text>
+          <text x="440" y="206" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">1</text>
+          <text x="20" y="232" font-size="15" font-weight="600" fill="var(--green-700)" data-v="verdict"></text>
+          <text x="20" y="252" font-size="12" fill="var(--muted)" data-v="detail"></text>
+        </svg>
+        <div class="ctrl">
+          <div class="ctrl__row"><label for="tk-r">Rounding radius</label><output for="tk-r" aria-live="polite"></output></div>
+          <input id="tk-r" type="range" min="0" max="120" value="20">
+          <div class="ctrl__row"><button class="chip" type="button" aria-pressed="false" data-nan>Overflow key 3 to NaN</button></div>
+        </div>
+        <figcaption class="fig__cap">Scores and radii are illustrative; the keep, widen and fall-back rule is certified_top_k's.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>04</b> &middot; attention top-k &middot; afd0969, eb4af16</p>
+      <h2 class="fsec__h2" id="topk-h">Top-k keeps its keys only when the intervals separate.</h2>
+      <p class="fsec__p">Each score carries Higham's a-priori bound <code>γₙ·Σ|q_d k_d|</code>. The top set is kept only when every selected lower end clears every unselected upper end. Otherwise the row widens to every key that reaches the lowest selected lower end, at no extra dot products. A NaN or infinite score refuses, and the row falls back to dense.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--coral">0.0 vs 1</b><span class="spec__l">float vs exact score of <code>k₀ = [1e17, 1, −1e17]</code> at <code>q = [1, 1, 1]</code></span></span>
+        <span class="spec"><b class="spec__n">2</b><span class="spec__l">tests in the workspace suite that widen any row: the two counterexamples</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>on that q and k, <code>OracleTopK{budget: 1}</code> took key 1 (0.5) over key 0 (exact 1)</li>
+          <li>each test carries its exact reference: i128 for the inflated score, u128 for the radius against γ₈</li>
+          <li>2·1e308 + 2·(−0.95e308) reads NaN; such a row refuses as <code>TopKRefusal::NonFinite</code> and is listed in <code>dense_rows</code></li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 5 · stratum ------------------------------------------------------------ -->
+<section class="fsec" id="stratum" aria-labelledby="stratum-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig" id="play-stratum">
+        <svg viewBox="0 0 470 300" role="img" aria-labelledby="st-t st-d">
+          <title id="st-t">A loss curve, its delay cloud, and the loops the cloud closes</title>
+          <desc id="st-d">Left: the last 64 steps of a validation loss. Right: its delay cloud, the points (v_t, v_t−1, v_t−2) resampled at uniform arc length and projected flat, with every Rips edge at 1.68 times the largest spanning-tree edge. Path edges are grey, two-step chords that a Rips triangle fills are dashed, and edges that close a loop are coral. A clean V, 0.3 + 0.01·|t − 100|, folds back on itself and scores 0.391. A staircase that only falls scored 0.96875 under the old reading at margin 1.5, where every corner closed a triangle. Now a monotone window is certified 0 before any complex is built.</desc>
+          <text x="118" y="20" text-anchor="middle" font-size="12" fill="var(--muted)">validation loss, last 64 steps</text>
+          <text x="352" y="20" text-anchor="middle" font-size="12" fill="var(--muted)">delay cloud, projected</text>
+          <g class="st-layer"></g>
+          <text x="20" y="262" font-size="15" font-weight="600" fill="var(--ink)" data-v="verdict"></text>
+          <text x="20" y="284" font-size="12" fill="var(--muted)" data-v="detail"></text>
+        </svg>
+        <div class="ctrl">
+          <div class="ctrl__row" role="group" aria-label="Loss curve">
+            <button class="chip" type="button" aria-pressed="true" data-mode="v">A fold (V)</button>
+            <button class="chip" type="button" aria-pressed="false" data-mode="old">Staircase, before</button>
+            <button class="chip" type="button" aria-pressed="false" data-mode="now">Staircase, now</button>
+          </div>
+        </div>
+        <figcaption class="fig__cap">The loop score is computed live by a port of fold_score that reproduces 0.391 and 0.96875.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>05</b> &middot; stratum &middot; abc7e0f, d52f6c6, dbbce44</p>
+      <h2 class="fsec__h2" id="stratum-h">A loss curve that only falls scores exactly zero.</h2>
+      <p class="fsec__p"><code>stratum</code> watches a training run's validation loss and counts loops in its delay embedding: overfitting folds back, a healthy run does not. A staircase turns by up to 90° at every change of slope, each corner closed a triangle, and the run was called Overfit. <code>fold_score</code> now checks monotonicity in O(n) and returns a certified 0. Two-step chords that a triangle fills are no longer counted, and the margin is 1.68, inside the derived band (1.633, 1.732).</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--coral">0.96875</b><span class="spec__l">staircase loop score, verdict Overfit, before</span></span>
+        <span class="spec"><b class="spec__n spec__n--green">0</b><span class="spec__l">certified, before any complex is built</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>the Underfit fixture scaled by 1e-3 read spread 1.0 and WellFit, against 0.3529 and Underfit at ×1; the ratio now agrees within 1e-9 from 1e-300 to 1e300</li>
+          <li>a refused spread withholds only the Underfit gate; it no longer forces Collapsing</li>
+          <li>mutants at margins 1.0, 1.3 and 1.8 each fail a host test</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 6 · foliation ---------------------------------------------------------- -->
+<section class="fsec fsec--flip" id="foliation" aria-labelledby="fol-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig">
+        <svg data-fig="foliation" viewBox="0 0 470 300" role="img" aria-labelledby="fo-t fo-d">
+          <title id="fo-t">Two sequences in the prefix tree, a key collision, a collapse and a refusal</title>
+          <desc id="fo-d">A prefix tree of cached KV blocks. Sequence A descends from the root through block 1 to a leaf keyed 0xe0e00501162145bc. Sequence B has different tokens whose key collides. Before, B shared A's leaf and read its KV state. Now the tokens are compared and B gets its own leaf. When B releases, its leaf is resident, unreferenced and childless, a free face, and it is collapsed. Then a task that did not open sequence A tries to release it and is refused with NoSuchSeq.</desc>
+          <g class="fo-layer"></g>
+          <text x="20" y="262" font-size="15" font-weight="600" fill="var(--ink)" data-v="verdict"></text>
+          <text x="20" y="284" font-size="12" fill="var(--muted)" data-v="detail"></text>
+        </svg>
+        <figcaption class="fig__cap">The tree is a sketch; the key is the collision pinned in the kernel's const assertion.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>06</b> &middot; foliation KV cache &middot; 98b023b, 659c376, 90aa07e</p>
+      <h2 class="fsec__h2" id="fol-h">The KV cache shares a block only when its tokens match.</h2>
+      <p class="fsec__p"><code>foliation</code> shares a cached block between sequences with the same prefix. It shared whenever a 64-bit <code>fold_key</code> matched and never compared tokens, so two different blocks could read each other's KV state. A leaf now stores its tokens. Eviction only ever collapses a free face, and a task that did not open a sequence gets <code>NoSuchSeq</code> from <code>SYS_KV_SEQ_APPEND</code>, <code>_RELEASE</code> and <code>_STATS</code>.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n">952 bp</b><span class="spec__l">foliation hit rate under QEMU, against 238 to 857 bp for random over 32 seeds</span></span>
+        <span class="spec"><b class="spec__n">32 / 32</b><span class="spec__l">seeds the foliation policy beats</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>the collision <code>0xe0e00501162145bc</code> was found by meet-in-the-middle against the shipped function and is pinned by a <code>const</code> assertion</li>
+          <li>the ABI default is now LRU, because the ranking wins only at a capacity cliff</li>
+          <li>a foreign release, append and stats read are refused while the owner's blocks stay referenced</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 7 · governor ----------------------------------------------------------- -->
+<section class="fsec" id="governor" aria-labelledby="gov-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig" id="play-gov">
+        <svg viewBox="0 0 470 330" role="img" aria-labelledby="gv-t gv-d">
+          <title id="gv-t">The T4 gain margin against the tick period, and a run whose error grew</title>
+          <desc id="gv-d">Top: the gain margin α + β/dt for α = 0.01 and β = 0.05, on log axes, against the line at 1 below which T4 certifies. At dt = 1 the margin is 0.06 and certifies. At the runtime tick dt = 0.01 it is 5.01 and does not. The slider moves dt. Bottom: the error of a governor run at α = 0.001, β = 0.05: 0.1, then 0.0959612, then 0.0960443. It rises at step 2, and verify_theorem now refuses the run there.</desc>
+          <g class="gv-layer"></g>
+          <text x="50" y="196" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.01</text>
+          <text x="354" y="196" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">1</text>
+          <text x="235" y="212" text-anchor="middle" font-size="11" fill="var(--muted)">tick period dt, log scale</text>
+          <text x="46" y="18" font-size="11" fill="var(--muted)">α + β/dt</text>
+          <text x="20" y="236" font-size="14" font-weight="600" fill="var(--ink)" data-v="verdict"></text>
+          <text x="50" y="262" font-size="12" fill="var(--muted)">|e| per step, α = 0.001, β = 0.05</text>
+          <text x="258" y="286" font-size="12" font-weight="600" fill="var(--coral-700)">rises at step 2: refused</text>
+          <text x="258" y="304" font-size="12" fill="var(--muted)">it ended inside the rate window</text>
+          <text x="258" y="320" font-size="12" fill="var(--muted)">and used to be certified</text>
+        </svg>
+        <div class="ctrl">
+          <div class="ctrl__row"><label for="gv-dt">Tick period dt</label><output for="gv-dt" aria-live="polite"></output></div>
+          <input id="gv-dt" type="range" min="0" max="1000" value="0">
+        </div>
+        <figcaption class="fig__cap">The margin curve is the formula; the three |e| values are quoted from commit 6c450d4.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>07</b> &middot; governor, T4/AGCR &middot; c5b5853, 6c450d4, 2605f70</p>
+      <h2 class="fsec__h2" id="gov-h">The governor stopped certifying runs that did not converge.</h2>
+      <p class="fsec__p">epsilon-os checked T4 at boot with dt = 1, while the governor ticks at dt = 0.01, where the margin is 5.01. The READY line now says T4 is not active. <code>verify_theorem</code> certified runs whose error stalled or grew, and now refuses at the first step that does not contract. <code>/mv</code> ran two ticks whose derivative spike threw ε from 0.001 to 10.0. It now runs none.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n">70 &rarr; 12</b><span class="spec__l">of 420 configurations still certified</span></span>
+        <span class="spec"><b class="spec__n spec__n--coral">5.01</b><span class="spec__l">α + β/dt at the runtime dt; certification needs &lt; 1</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>a run with ε pinned at 0.1 holds e = 1.7 at every step; it was certified and is now refused at step 1</li>
+          <li>ε and the tick count are pinned bit-identical across one <code>/mv</code></li>
+          <li>boot prints <code>[READY] Manifold filesystem online. Not active: T4/AGCR NOT CERTIFIED.</code></li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 8 · voronoi_cap -------------------------------------------------------- -->
+<section class="fsec fsec--flip" id="cells" aria-labelledby="cells-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig">
+        <svg data-fig="cells" viewBox="0 0 470 280" role="img" aria-labelledby="ce-t ce-d">
+          <title id="ce-t">A full cell splits, and some files become unreachable</title>
+          <desc id="ce-d">Sixty-five files arrive in one Voronoi cell, placed along the split axis by their coordinate. The cell holds 64, so the 65th insert splits it at the mean. Before, the split sent each file to a side by a hash of its inode id, while lookups routed by its coordinate against the same boundary, so every file whose two sides disagree, ringed coral, could no longer be found. Now split, insert, lookup and removal all route by the same point, and every file is reachable.</desc>
+          <g class="ce-layer"></g>
+          <text x="235" y="200" text-anchor="middle" font-size="12" fill="var(--muted)">coordinate on the split axis</text>
+          <text x="20" y="240" font-size="15" font-weight="600" fill="var(--ink)" data-v="verdict"></text>
+          <text x="20" y="262" font-size="12" fill="var(--muted)" data-v="detail"></text>
+        </svg>
+        <figcaption class="fig__cap">Positions and hashes are drawn at random; the split and routing rules are voronoi_cap's.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>08</b> &middot; ManifoldFS cells &middot; 8e378e8, f00e8f9</p>
+      <h2 class="fsec__h2" id="cells-h">Split, lookup and removal route by the same point.</h2>
+      <p class="fsec__p"><code>VoronoiCap::split_cell</code> sent a file to a side by a hash of its inode id, a value in [0, 1], while <code>locate</code> routed by its first coordinate, a value in [−1, 1], against the same boundary. After the 65th insert into a cell, <code>find</code> could miss a file stored before the split. Every id now records its point, and all four operations route through one function over it.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n">64</b><span class="spec__l">files a cell holds before it splits</span></span>
+        <span class="spec"><b class="spec__n">520</b><span class="spec__l">payloads the test inserts, 8·64 + 8, so some cell always splits</span></span>
+      </div>
+      <details class="ev">
+        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <ul class="ev__list">
+          <li>every id is exactly once in its <code>locate()</code> bucket after a split and after removing every subcell-1 id</li>
+          <li>a T3 entropy merge now redirects lookups to the merged cell; every file is found after entropy passes 2.0</li>
+          <li><code>voronoi_cap::basic_insert_locate</code> is now registered with the runner; it had never run</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- 9 · boot log ----------------------------------------------------------- -->
+<section class="fsec" id="boot" aria-labelledby="boot-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__fig">
+      <figure class="fig">
+        <pre class="log" data-fig="boot" aria-label="Boot log">
+<span class="dim">$ qemu-system-x86_64 -machine q35 … seal-os.img</span>
+<span class="dim">…</span>
+<span>[THEOREM] T1/TSS VERIFIED</span>
+<span>[THEOREM] T2/SCM VERIFIED</span>
+<span>[THEOREM] T3/GMC VERIFIED</span>
+<span>[THEOREM] T4/AGCR VERIFIED</span>
+<span>[THEOREM] T5/HCS VERIFIED</span>
+<span>[THEOREM] T6/RGCS VERIFIED</span>
+<span>[THEOREM] T7/PHKP VERIFIED</span>
+<span>[THEOREM] T8/TEB VERIFIED</span>
+<span>[THEOREM] T9/CMA VERIFIED</span>
+<span>[THEOREM] T10/WPHB VERIFIED</span>
+<span class="ok">[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span>
+<span class="dim"> </span>
+<span class="dim">$ epsilon-os</span>
+<span class="warn">[READY] Manifold filesystem online. Not active: T4/AGCR NOT CERTIFIED.</span></pre>
+        <figcaption class="fig__cap">The seal-os lines follow the kernel's own format strings; the last line is epsilon-os's.</figcaption>
+      </figure>
+    </div>
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>09</b> &middot; the boot gate &middot; b9a4531, 13d0049</p>
+      <h2 class="fsec__h2" id="boot-h">Ten theorems checked at boot, one honestly not active.</h2>
+      <p class="fsec__p">Seal OS checks T1 to T10 from <code>aether_verified</code> before it claims the theorem core is alive, and panics if any fails. CI boots the image under QEMU and requires the VERIFIED line. The epsilon-os ManifoldFS app used to print "All theorems active" unconditionally. It now names the one it cannot certify at its own tick period.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--green">10 / 10</b><span class="spec__l">boot theorem lines VERIFIED under QEMU</span></span>
+        <span class="spec"><b class="spec__n">T4</b><span class="spec__l">not certified in epsilon-os at dt = 0.01</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band band--tint" id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <h2 class="sec__h2" id="how-h" data-reveal>One test, four questions.</h2>
+    <p class="sec__lede" data-reveal>Compute the answer with an enclosure. If the enclosure stays clear of the decision boundary, return the answer. If it touches the boundary, return the witness, and let the caller widen, scan or refuse.</p>
+    <div class="scroll sec__body" data-reveal>
+      <table>
+        <thead>
+          <tr><th scope="col">question</th><th scope="col">certified when</th><th scope="col">otherwise</th><th scope="col">caller then</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>β₀ at scale s</td><td class="ok">no spanning-tree merge height lies in <code>[s/√10, s·√10]</code></td><td class="no">refused, naming the edge <code>(i, j, height)</code> nearest s</td><td>stores <code>u32::MAX</code>, or rejects the payload</td></tr>
+          <tr><td>top-k of q·k</td><td class="ok">every selected lower end exceeds every unselected upper end</td><td class="no"><code>BoundaryRefusal</code>: both keys, the float gap, the margin needed</td><td>widens the row, or falls back to dense</td></tr>
+          <tr><td>fit of a training run</td><td class="ok">a monotone window scores 0; the spread clears a relative rounding bound</td><td class="no">the participation ratio is NaN</td><td>withholds the Underfit gate only</td></tr>
+          <tr><td>nearest centroid on S²</td><td class="ok">the block winner is nearer than any point outside the block can be</td><td class="no">no answer from the block</td><td>scans every centroid</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="limits" aria-labelledby="limits-h">
+  <div class="wrap">
+    <h2 class="sec__h2" id="limits-h" data-reveal>Limits.</h2>
+    <p class="sec__lede" data-reveal>All of them, in one place.</p>
+    <ul class="limits">
+      <li data-reveal>
+        <h3>Kernel tests do not run on the host</h3>
+        <p><code>kernel/seal-os</code> is excluded from the Cargo workspace, so its <code>#[cfg(test)]</code> tests are never compiled or run. Kernel checks run only in the in-kernel harness and the <code>seal-mkimage</code> boot proofs under QEMU, and the harness job fires only after CI succeeds. That is why several seal-os fixes here are pinned by compile-time assertions.</p>
+      </li>
+      <li data-reveal>
+        <h3>Synthetic results are screening only</h3>
+        <p><code>stratum</code>'s fixtures and <code>foliation</code>'s 30-request trace are synthetic, and nothing has been run against a real model. The foliation win is a capacity cliff: LRU reaches the same 9.52% hit rate from 32 plaques up.</p>
+      </li>
+      <li data-reveal>
+        <h3>T4 is not certified at runtime</h3>
+        <p>In epsilon-os, T4/AGCR reports NOT CERTIFIED at the governor's runtime dt = 0.01. The gains satisfy the margin only at dt = 1.0.</p>
+      </li>
+      <li data-reveal>
+        <h3>A certificate covers the question as posed</h3>
+        <p>It says rounding and the choice of threshold cannot change the answer. It says nothing about whether the scale, the ratio of 10 or the embedding on S² was the right question. The points, scores and trees in figures 3, 4, 6 and 8 are chosen for the picture; the rules applied to them are the code's.</p>
+      </li>
+      <li data-reveal>
+        <h3>Outside this change</h3>
+        <p>From the README's status table: TLS does not interoperate with a stock TLS 1.3 server; AMD GPU dispatch has never executed; WiFi and Bluetooth ship no vendor firmware; KASLR moves mappings, not the image base; kernel W^X is measured and not enforced; 585 of the kernel's 594 <code>unsafe</code> blocks carry no written safety justification.</p>
+      </li>
+      <li data-reveal>
+        <h3>Where the numbers come from</h3>
+        <p>Every "before" figure is quoted from the commit named beside it. The nearest-centroid "after" figures, the stratum scores and the workspace count were re-run at <code>0f040e0</code> on Windows 11 with rustc 1.97.1: <code>cargo test --workspace</code> passed 849, failed 0, ignored 2. The QEMU results are quoted from the commits.</p>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section class="band band--tint" id="reproduce" aria-labelledby="reproduce-h">
+  <div class="wrap">
+    <h2 class="sec__h2" id="reproduce-h" data-reveal>Reproduce it.</h2>
+    <p class="sec__lede" data-reveal>The host suite on stable Rust, the kernel on nightly for the UEFI target, and the boot under QEMU as <code>.github/workflows/ci.yml</code> runs it.</p>
+    <div class="steps sec__body">
+      <div class="step" data-reveal>
+        <h3>1. Host workspace</h3>
+        <p>Everything except <code>kernel/seal-os</code>, which the workspace excludes.</p>
+<pre class="code"><code>cargo test --workspace
+cargo test -p aether-core --test wf_tss_s2_index_probe probe_e -- --nocapture
+<span class="c"># queries=5000  voronoi!=grid: 0  grid!=true-nearest: 0
+# grid o1_hit_rate reported = 0.9818</span>
+cargo test -p aether-core --test certified_betti --test trajectory_shape --test attention_contracts</code></pre>
+      </div>
+      <div class="step" data-reveal>
+        <h3>2. Kernel, nightly, UEFI</h3>
+        <p>Needs the <code>rust-src</code> and <code>llvm-tools-preview</code> components. <code>--features test-mode</code> builds the image that runs the in-kernel harness.</p>
+<pre class="code"><code>rustup component add rust-src llvm-tools-preview --toolchain nightly
+cd kernel/seal-os
+cargo +nightly build --release
+cd ../seal-mkimage
+cargo +stable run --release        <span class="c"># writes seal-os.img next to seal-os.efi</span></code></pre>
+      </div>
+      <div class="step" data-reveal>
+        <h3>3. Boot under QEMU and check the theorem lines</h3>
+        <p>OVMF firmware, one AHCI disk, serial to the terminal.</p>
+<pre class="code"><code>timeout 240 qemu-system-x86_64 -machine q35 -cpu qemu64,+rdrand \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -device ahci,id=seal_sata \
+  -drive if=none,id=seal_disk,file=kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img,format=raw,media=disk \
+  -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
+  -nographic -m 4G -no-reboot -no-shutdown | tee /tmp/seal-os.log
+cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log /tmp/seal-os.log
+<span class="c"># expect: [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span></code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="related" aria-labelledby="related-h">
+  <div class="wrap">
+    <h2 class="sec__h2" id="related-h" data-reveal>Read further.</h2>
+    <div class="grid grid--4 sec__body">
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/docs/THEOREMS.md">
+        <p class="card__repo">docs/THEOREMS.md</p>
+        <h3 class="card__title">The ten theorems</h3>
+        <p class="card__body">T1 to T10: the runtime role, the boot check and the Lean strength of each.</p>
+        <span class="card__link">Read the theorems <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/planimeter#readme">
+        <p class="card__repo">teerthsharma/planimeter</p>
+        <h3 class="card__title">planimeter</h3>
+        <p class="card__body"><code>certified_beta0</code> ports its gap rule, with the band centred on the scale.</p>
+        <span class="card__link">Read how it works <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/separatrix#readme">
+        <p class="card__repo">teerthsharma/separatrix</p>
+        <h3 class="card__title">separatrix</h3>
+        <p class="card__body">The same test for a top-k, an argmin and a threshold: certified or refused.</p>
+        <span class="card__link">Read how it works <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://teerthsharma.github.io/caustic/">
+        <p class="card__repo">teerthsharma/caustic</p>
+        <h3 class="card__title">caustic</h3>
+        <p class="card__body">Wrong answers proved from the orbit partition, with no answer key.</p>
+        <span class="card__link">Read how it works <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://teerthsharma.github.io/resolvent/">
+        <p class="card__repo">teerthsharma/resolvent</p>
+        <h3 class="card__title">resolvent</h3>
+        <p class="card__body">Attention and Markov paths as settings of one operator.</p>
+        <span class="card__link">Read how it works <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow#readme">
+        <p class="card__repo">README.md</p>
+        <h3 class="card__title">The whole kernel</h3>
+        <p class="card__body">Architecture, subsystems and the full status table, candid about what is not real yet.</p>
+        <span class="card__link">Read the README <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://teerthsharma.github.io/work.html#p-epsilon-hollow">
+        <p class="card__repo">teerthsharma.github.io</p>
+        <h3 class="card__title">Personal work</h3>
+        <p class="card__body">Epsilon-Hollow among the other projects.</p>
+        <span class="card__link">See all projects <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://doi.org/10.5281/zenodo.20264206">
+        <p class="card__repo">10.5281/zenodo.20264206</p>
+        <h3 class="card__title">Cite it</h3>
+        <p class="card__body">The archived release on Zenodo.</p>
+        <span class="card__link">Open the DOI <span aria-hidden="true">&#8250;</span></span>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot__row">
+    <span class="foot__name">Teerth Sharma</span>
+    <nav class="foot__links" aria-label="Contact">
+      <a href="mailto:teerths57@gmail.com">Email</a>
+      <a href="https://github.com/teerthsharma/teerthsharma/raw/main/Teerth_Sharma_Resume.pdf">Resume</a>
+      <a href="https://github.com/teerthsharma">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="assets/figures.js" defer></script>
+</body>
+</html>
