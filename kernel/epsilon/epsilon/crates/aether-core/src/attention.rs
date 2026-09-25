@@ -26,7 +26,6 @@ extern crate alloc;
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 
 use libm::{exp, nextafter, sqrt};
 
@@ -105,8 +104,11 @@ pub enum Selector {
     /// there is nothing to route on.
     ///
     /// A condition nobody checks at runtime is an assumption. This variant checks
-    /// it, which is what makes routing safe to enable by default: the fallback
-    /// guarantees the selector never inspects more scores than dense would.
+    /// it. Checking is not free: the check aligns every query with every cluster
+    /// centroid, `cluster_count` dot products per row. Routing reuses that pass;
+    /// the dense fallback cannot, so it costs dense plus `cluster_count` per row.
+    /// The bound is therefore dense plus the plan, not dense
+    /// (`the_adaptive_selector_costs_at_most_dense_plus_its_plan`).
     Adaptive { budget: usize, clusters: usize },
 }
 
@@ -170,14 +172,8 @@ pub fn routing_plan(
     }
     let largest = sizes.iter().copied().max().unwrap_or(0);
 
-    let cost_ratio = selection_dot_cost(
-        Selector::TopologicalRouted { budget, clusters },
-        q,
-        k,
-        seq,
-        head_dim,
-        causal,
-    ) / dense_dot_cost(seq, causal);
+    let (routed_clusters, rows) = route_rows(q, k, seq, head_dim, clusters, budget, causal);
+    let cost_ratio = routed_cost_ratio(routed_clusters * seq, &rows, seq, causal);
 
     // The cut sits between merge `seq - cluster_count - 1` and `seq - cluster_count`:
     // that many merges are taken, the rest are not. The ratio across it is how
@@ -321,7 +317,11 @@ pub struct SelectionReport {
     /// with the refusal that names the pair. Its length is the count of widened
     /// rows.
     pub widened_rows: Vec<(usize, BoundaryRefusal)>,
-    /// Keys selected past the budget by widening, summed over rows.
+    /// Every row that fell back to dense because a score or radius was not
+    /// finite, with the key that carried it. Its length is the count of
+    /// densified rows.
+    pub dense_rows: Vec<(usize, usize)>,
+    /// Keys selected past the budget by widening or densifying, summed over rows.
     pub extra_keys: usize,
     /// `head_dim`-length inner products the path actually ran performed, summed
     /// over rows, counted on the same terms as [`selection_dot_cost`]: each score
@@ -347,6 +347,11 @@ pub struct SelectionReport {
 /// the ambiguous band rather than the whole row, and needs no extra dot products:
 /// every score it consults was already computed. The growth is not silent — it is
 /// counted here and exceeds the budget only on refused rows.
+///
+/// A score or radius that is not finite has no enclosure — an overflowed dot
+/// product can read NaN or -inf while the exact score is finite and largest — so
+/// no floor can be derived from it and widening cannot bound it. Such a row falls
+/// back to dense over its legal keys and is reported in `dense_rows`.
 pub fn select_mask_with_report(
     selector: Selector,
     q: &[f64],
@@ -356,18 +361,19 @@ pub fn select_mask_with_report(
     head_dim: usize,
     causal: bool,
 ) -> (Vec<bool>, SelectionReport) {
-    let selector = resolve(selector, q, k, seq, head_dim, causal);
-    let mut mask = vec![false; seq * seq];
-    let mut report = SelectionReport::default();
-
     // Routing structure is built once over all keys, not per row: a key's cluster
     // does not depend on which query is looking at it. This is what keeps the
     // clustering cost amortised across the sequence rather than paid per row.
-    let routing = match selector {
-        Selector::TopologicalRouted { clusters, .. } => {
-            Some(Routing::build(k, seq, head_dim, clusters))
-        }
-        _ => None,
+    // `resolve` also runs the alignment pass, once, and it is charged here.
+    let Resolved {
+        selector,
+        mut routed,
+        paid,
+    } = resolve(selector, q, k, seq, head_dim, causal);
+    let mut mask = vec![false; seq * seq];
+    let mut report = SelectionReport {
+        dot_products: paid,
+        ..SelectionReport::default()
     };
 
     for i in 0..seq {
@@ -406,7 +412,7 @@ pub fn select_mask_with_report(
                     .map(|&j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
                 report.dot_products += scored.len();
-                certified_or_widened(&scored, budget, i, &mut report)
+                certified_or_widened(&scored, budget, i, legal_end, &mut report)
             }
 
             Selector::Topological {
@@ -455,10 +461,10 @@ pub fn select_mask_with_report(
             Selector::Adaptive { .. } => unreachable!("Adaptive is resolved before selection"),
 
             Selector::TopologicalRouted { budget, .. } => {
-                let routing = routing.as_ref().expect("routing built for this selector");
-
-                // Steps 1 and 2: route to the best-aligned clusters.
-                let candidates = routing.candidates(q, i, head_dim, legal_end, budget);
+                // Steps 1 and 2, already run by `resolve`: the legal members of
+                // the best-aligned clusters.
+                let candidates =
+                    core::mem::take(&mut routed.as_mut().expect("resolve routes this selector")[i]);
 
                 // Step 3: the exact dot product decides within the candidate set.
                 // This is what the nearest-neighbour rule was missing: geometry
@@ -468,8 +474,8 @@ pub fn select_mask_with_report(
                     .into_iter()
                     .map(|j| enclosed_dot(q, k, i, j, head_dim))
                     .collect();
-                report.dot_products += routing.cluster_count + scored.len();
-                let mut chosen = certified_or_widened(&scored, budget, i, &mut report);
+                report.dot_products += scored.len();
+                let mut chosen = certified_or_widened(&scored, budget, i, legal_end, &mut report);
                 if chosen.is_empty() {
                     chosen.push(if causal { i } else { i.min(seq - 1) });
                 }
@@ -597,15 +603,25 @@ pub struct BoundaryRefusal {
 /// enclosures, the exact one included. Comparing only the rank-`budget` and
 /// rank-`budget + 1` enclosures is not this rule and is unsound once radii vary:
 /// a low-ranked key with a wide radius can reach past both
-/// (`the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair`). The ends are
-/// rounded outward, and a non-finite score or radius refuses.
+/// (`the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair`).
+///
+/// Any score or radius that is NaN or infinite refuses first, before any
+/// ordering: `total_cmp` sorts `+NaN` above every number and `-NaN` below, so an
+/// extreme-only comparison steps over it, and an overflowed score has no
+/// enclosure to compare.
 ///
 /// Returns ids in descending score order. A `budget` of zero, or one covering
 /// every key, is certified trivially: there is no boundary to decide.
 pub fn certified_top_k(
     scored: &[(usize, f64, f64)],
     budget: usize,
-) -> Result<Vec<usize>, BoundaryRefusal> {
+) -> Result<Vec<usize>, TopKRefusal> {
+    if let Some(&(key, _, _)) = scored
+        .iter()
+        .find(|&&(_, score, radius)| !score.is_finite() || !radius.is_finite())
+    {
+        return Err(TopKRefusal::NonFinite { key });
+    }
     let mut ranked = scored.to_vec();
     // Descending by score, ties broken by id so the result is deterministic
     // rather than sort-stability-dependent.
@@ -630,56 +646,76 @@ pub fn certified_top_k(
     if lower_end(&lowest) > upper_end(&highest) {
         Ok(inside.iter().map(|&(j, _, _)| j).collect())
     } else {
-        Err(BoundaryRefusal {
+        Err(TopKRefusal::Boundary(BoundaryRefusal {
             inside: lowest.0,
             outside: highest.0,
             gap: lowest.1 - highest.1,
             needed_margin: lowest.2 + highest.2,
-        })
+        }))
     }
 }
 
-/// `score - radius`, rounded toward minus infinity.
-fn lower_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
-    nextafter(score - radius, f64::NEG_INFINITY)
+/// Why [`certified_top_k`] declined to certify.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TopKRefusal {
+    /// The enclosures of a selected and an unselected key overlap.
+    Boundary(BoundaryRefusal),
+    /// `key`'s score or radius is NaN or infinite, so it has no enclosure.
+    NonFinite { key: usize },
 }
 
-/// `score + radius`, rounded toward plus infinity.
-fn upper_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
-    nextafter(score + radius, f64::INFINITY)
-}
-
-/// The certified top-`budget` of `scored`, or — on a refusal — every key whose
-/// enclosure reaches the lowest selected lower end, recorded in `report`.
+/// `score - radius`, rounded to nearest.
 ///
-/// Any key left out has an upper end strictly below the lower end of all
-/// `budget` selected keys, so it is outside the exact top-`budget`: the widened
-/// set contains it. A NaN lower end excludes nothing, which widens to every key.
+/// Directed rounding is not needed at either end. Round-to-nearest is monotone,
+/// so for finite inputs `fl(a) > fl(b)` implies `a > b` exactly: a certificate
+/// `fl(lo_in) > fl(hi_out)` proves `lo_in > hi_out`, and a widening exclusion
+/// `fl(hi_j) < fl(lo_in)` proves `hi_j < lo_in`.
+fn lower_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
+    score - radius
+}
+
+/// `score + radius`, rounded to nearest; see [`lower_end`].
+fn upper_end(&(_, score, radius): &(usize, f64, f64)) -> f64 {
+    score + radius
+}
+
+/// The certified top-`budget` of `scored`, or, on a refusal, a superset of the
+/// exact top-`budget`, recorded in `report`.
+///
+/// On an overlapping boundary the row widens to every key whose enclosure reaches
+/// the lowest selected lower end: any key left out has an upper end strictly
+/// below the lower end of all `budget` selected keys, so it is outside the exact
+/// top-`budget`. On a non-finite score or radius there is no floor to widen to,
+/// so the row falls back to every legal key, `0..legal_end`.
 fn certified_or_widened(
     scored: &[(usize, f64, f64)],
     budget: usize,
     row: usize,
+    legal_end: usize,
     report: &mut SelectionReport,
 ) -> Vec<usize> {
-    match certified_top_k(scored, budget) {
-        Ok(chosen) => chosen,
-        Err(refusal) => {
+    let chosen: Vec<usize> = match certified_top_k(scored, budget) {
+        Ok(chosen) => return chosen,
+        Err(TopKRefusal::NonFinite { key }) => {
+            report.dense_rows.push((row, key));
+            (0..legal_end).collect()
+        }
+        Err(TopKRefusal::Boundary(refusal)) => {
             let floor = scored
                 .iter()
                 .find(|entry| entry.0 == refusal.inside)
                 .map(lower_end)
                 .expect("the refused key is one of the scored keys");
-            let widened: Vec<usize> = scored
-                .iter()
-                // Kept unless provably below the floor; incomparable (NaN) is kept.
-                .filter(|entry| upper_end(entry).partial_cmp(&floor) != Some(Ordering::Less))
-                .map(|&(j, _, _)| j)
-                .collect();
-            report.extra_keys += widened.len().saturating_sub(budget);
             report.widened_rows.push((row, refusal));
-            widened
+            scored
+                .iter()
+                .filter(|entry| upper_end(entry) >= floor)
+                .map(|&(j, _, _)| j)
+                .collect()
         }
-    }
+    };
+    report.extra_keys += chosen.len().saturating_sub(budget);
+    chosen
 }
 
 /// Single-linkage clustering of `points` (row-major `[count, dim]`) cut so that
@@ -865,11 +901,23 @@ fn splitmix(state: u64) -> u64 {
 // The ablation
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// A selector collapsed to the concrete rule it will run, with the routing pass
+/// already performed to decide it.
+struct Resolved {
+    selector: Selector,
+    /// Per-row routed candidates, when the rule is `TopologicalRouted`.
+    routed: Option<Vec<Vec<usize>>>,
+    /// Query-to-centroid dot products spent while resolving, summed over rows.
+    paid: usize,
+}
+
 /// Collapse [`Selector::Adaptive`] to the concrete rule it will actually run.
 ///
 /// Everything downstream — mask construction, cost accounting, the ablation — goes
 /// through this, so the adaptive selector cannot report one path's cost while
-/// running another's.
+/// running another's. The alignment pass is performed here once and handed on:
+/// the routed path reuses it rather than repeating it, and a fallback still pays
+/// for it, because the decision could not be made without it.
 fn resolve(
     selector: Selector,
     q: &[f64],
@@ -877,11 +925,28 @@ fn resolve(
     seq: usize,
     head_dim: usize,
     causal: bool,
-) -> Selector {
+) -> Resolved {
+    let routed = |budget, clusters| {
+        let (cluster_count, rows) = route_rows(q, k, seq, head_dim, clusters, budget, causal);
+        (cluster_count * seq, rows)
+    };
     match selector {
+        Selector::TopologicalRouted { budget, clusters } => {
+            let (paid, rows) = routed(budget, clusters);
+            Resolved {
+                selector,
+                routed: Some(rows),
+                paid,
+            }
+        }
         Selector::Adaptive { budget, clusters } => {
-            if routing_plan(q, k, seq, head_dim, clusters, budget, causal).worth_routing {
-                Selector::TopologicalRouted { budget, clusters }
+            let (paid, rows) = routed(budget, clusters);
+            if routed_cost_ratio(paid, &rows, seq, causal) < ROUTING_COST_THRESHOLD {
+                Resolved {
+                    selector: Selector::TopologicalRouted { budget, clusters },
+                    routed: Some(rows),
+                    paid,
+                }
             } else {
                 // Dense, not a cheap window.
                 //
@@ -891,16 +956,52 @@ fn resolve(
                 // because finding the top-k without computing the scores is exactly
                 // what the structure was supposed to make possible.
                 //
-                // So the fallback preserves correctness rather than cost. The
-                // guarantee this variant offers is "never worse than dense, in cost
-                // or in quality", which is the only one that is safe to enable by
-                // default. A caller that would rather trade quality for cost should
-                // ask for `Local` explicitly.
-                Selector::Dense
+                // So the fallback preserves correctness rather than cost. Its
+                // quality is dense's; its cost is dense plus the alignment pass
+                // spent deciding, which is `cluster_count` dot products per row
+                // above dense. A caller that would rather trade quality for cost
+                // should ask for `Local` explicitly.
+                Resolved {
+                    selector: Selector::Dense,
+                    routed: None,
+                    paid,
+                }
             }
         }
-        other => other,
+        other => Resolved {
+            selector: other,
+            routed: None,
+            paid: 0,
+        },
     }
+}
+
+/// Every row's routed candidates, from one alignment pass over the H0 clusters.
+/// Returns `(cluster_count, candidates per row)`.
+fn route_rows(
+    q: &[f64],
+    k: &[f64],
+    seq: usize,
+    head_dim: usize,
+    clusters: usize,
+    budget: usize,
+    causal: bool,
+) -> (usize, Vec<Vec<usize>>) {
+    let routing = Routing::build(k, seq, head_dim, clusters);
+    let rows = (0..seq)
+        .map(|i| {
+            let legal_end = if causal { i + 1 } else { seq };
+            routing.candidates(q, i, head_dim, legal_end, budget)
+        })
+        .collect();
+    (routing.cluster_count, rows)
+}
+
+/// The routed path's dot products per row as a fraction of dense: the alignment
+/// pass (`paid`) plus one score per candidate.
+fn routed_cost_ratio(paid: usize, rows: &[Vec<usize>], seq: usize, causal: bool) -> f64 {
+    let total = paid + rows.iter().map(Vec::len).sum::<usize>();
+    total as f64 / seq as f64 / dense_dot_cost(seq, causal)
 }
 
 /// Mean number of `head_dim`-length dot products a selector performs per row.
@@ -932,26 +1033,24 @@ pub fn selection_dot_cost(
     head_dim: usize,
     causal: bool,
 ) -> f64 {
-    let total: usize = match resolve(selector, q, k, seq, head_dim, causal) {
+    let resolved = resolve(selector, q, k, seq, head_dim, causal);
+    let path: usize = match resolved.selector {
         Selector::Adaptive { .. } => unreachable!("Adaptive is resolved before costing"),
         Selector::Local { .. } | Selector::Random { .. } => 0,
         Selector::Dense | Selector::OracleTopK { .. } | Selector::Topological { .. } => {
             (0..seq).map(|i| if causal { i + 1 } else { seq }).sum()
         }
-        Selector::TopologicalRouted { budget, clusters } => {
-            // A row pays for the clusters its query aligns with, so the cost is
-            // per query: walk the selector's own ranking, not a proxy for it.
-            let routing = Routing::build(k, seq, head_dim, clusters);
-            (0..seq)
-                .map(|i| {
-                    let legal_end = if causal { i + 1 } else { seq };
-                    routing.cluster_count
-                        + routing.candidates(q, i, head_dim, legal_end, budget).len()
-                })
-                .sum()
-        }
+        // A row pays for the clusters its query aligns with, so the cost is per
+        // query: the candidates of the selector's own ranking, not a proxy for it.
+        Selector::TopologicalRouted { .. } => resolved
+            .routed
+            .as_ref()
+            .expect("resolve routes this selector")
+            .iter()
+            .map(Vec::len)
+            .sum(),
     };
-    total as f64 / seq as f64
+    (resolved.paid + path) as f64 / seq as f64
 }
 
 /// Mean dot products per row that dense attention performs. The denominator for
@@ -1008,4 +1107,70 @@ pub fn attention_mass_recovered(
         total += recovered;
     }
     total / seq as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `r = M · 2^e` with `M` the integer significand, for a positive normal `r`.
+    fn significand_and_exponent(r: f64) -> (u128, i32) {
+        assert!(r > 0.0 && r.is_normal(), "{r} is not a positive normal");
+        let bits = r.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32 - 1075;
+        (
+            ((bits & ((1u64 << 52) - 1)) | (1u64 << 52)) as u128,
+            exponent,
+        )
+    }
+
+    #[test]
+    fn the_radius_dominates_highams_bound_on_the_exact_magnitude() {
+        // q = 1 x 8, k = [1, u, u, u, u, u, u, u], u = 2^-53. Every `1 + u` ties
+        // to even and drops the u, so the float magnitude is 1 while the exact
+        // magnitude is S = 1 + 7u: the float sum under-reads it by 7u. The radius
+        // must still cover gamma_8 * S, which in exact rationals is
+        //
+        //   gamma_8 * S = 8 / (2^53 - 8) * (2^53 + 7) / 2^53.
+        //
+        // With r = M * 2^e, `r >= gamma_8 * S` is, after dividing by 2^53,
+        //   M * (2^53 - 8) >= 8 * (2^53 + 7) * 2^(-e - 53),
+        // both sides below 2^107 and compared in u128 with no rounding.
+        let u = f64::EPSILON / 2.0;
+        let q = [1.0; 8];
+        let mut k = [u; 8];
+        k[0] = 1.0;
+        let (_, score, radius) = enclosed_dot(&q, &k, 0, 0, 8);
+        assert_eq!(score, 1.0, "premise: the float sum drops all seven u");
+
+        let (m, e) = significand_and_exponent(radius);
+        let shift = u32::try_from(-e - 53).expect("radius is far below 1");
+        let lhs = m * ((1u128 << 53) - 8);
+        let rhs = (8 * ((1u128 << 53) + 7)) << shift;
+        assert!(
+            lhs >= rhs,
+            "radius {radius:e} is below gamma_8 times the exact magnitude"
+        );
+    }
+
+    #[test]
+    fn the_enclosure_contains_the_exact_score_when_products_underflow() {
+        // Each product is (1 - 2^-10) * 2^-1075, below half the smallest
+        // subnormal, so it rounds to 0 and the float score is 0. The relative
+        // error model does not hold there: the magnitude is 0 too, so gamma
+        // contributes nothing, and only the underflow term can cover the exact
+        // score 3 * (1 - 2^-10) * 2^-1075 = 3069 * 2^-1085.
+        //
+        // With r = R * 2^-1074, `r >= 3069 * 2^-1085` is `R * 2^11 >= 3069`.
+        let q = [2f64.powi(-600); 3];
+        let k = [(1.0 - 2f64.powi(-10)) * 2f64.powi(-475); 3];
+        let (_, score, radius) = enclosed_dot(&q, &k, 0, 0, 3);
+        assert_eq!(score, 0.0, "premise: every product underflows to zero");
+
+        let in_subnormals = radius * 2f64.powi(1000) * 2f64.powi(74);
+        assert!(
+            in_subnormals * 2048.0 >= 3069.0,
+            "radius of {in_subnormals} subnormals misses an exact score of 3069/2048"
+        );
+    }
 }

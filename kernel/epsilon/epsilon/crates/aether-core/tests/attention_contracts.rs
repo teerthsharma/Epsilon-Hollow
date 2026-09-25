@@ -14,7 +14,7 @@
 use aether_core::attention::{
     attention_mass_recovered, certified_top_k, dense_attention, dense_dot_cost, routing_plan,
     select_mask, select_mask_with_report, selection_dot_cost, single_linkage_clusters,
-    sparse_attention, Selector,
+    sparse_attention, Selector, TopKRefusal,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1168,13 +1168,20 @@ fn the_h0_barcode_alone_separates_the_two_regimes() {
 }
 
 #[test]
-fn the_adaptive_selector_never_costs_more_than_dense() {
-    // The guarantee the plan buys. Routing that does not pay must fall back, so
-    // the adaptive selector is never worse than the dense path it replaces —
-    // which is the property that makes it safe to switch on by default.
+fn the_adaptive_selector_costs_at_most_dense_plus_its_plan() {
+    // The guarantee the plan buys, stated at the size it actually has.
+    //
+    // Deciding whether to route needs the plan, and the plan aligns every query
+    // with every centroid: `cluster_count` dot products per row. When routing
+    // pays, the routed path reuses that pass. When it does not, the pass is spent
+    // and dense runs after it, so the fallback costs dense PLUS the plan — more
+    // than dense. "Never costs more than dense" was false; the bound is dense
+    // plus `clusters` per row, and the fallback sits exactly on it.
     let (seq, head_dim, budget, clusters) = (48usize, 8usize, 6usize, 6usize);
     let dense = dense_dot_cost(seq, true);
     let adaptive = Selector::Adaptive { budget, clusters };
+    let bound = (dense + clusters as f64) / dense;
+    let mut fallbacks = 0;
 
     for groups in [1usize, 2, 4, 6, 12, 24, 48] {
         for trial in 0..3u64 {
@@ -1183,22 +1190,37 @@ fn the_adaptive_selector_never_costs_more_than_dense() {
             let q: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
             let v: Vec<f64> = (0..seq * head_dim).map(|_| rng.signed()).collect();
 
+            // The bound is about the path that runs, not the one reported: count
+            // the dot products the selection actually performed, plan included.
             let cost = selection_dot_cost(adaptive, &q, &k, seq, head_dim, true) / dense;
-            assert!(
-                cost <= 1.0 + 1e-12,
-                "groups {groups} trial {trial}: adaptive cost {cost:.4} of dense — \
-                 the fallback did not fire"
-            );
-
-            // The guarantee is about the path that runs, not the one reported:
-            // count the dot products the selection actually performed.
             let (mask, report) = select_mask_with_report(adaptive, &q, &k, &v, seq, head_dim, true);
             let executed = report.dot_products as f64 / seq as f64 / dense;
-            assert!(
-                executed <= 1.0 + 1e-12,
-                "groups {groups} trial {trial}: adaptive executed {executed:.4} of dense \
-                 (reported {cost:.4}) — the path run costs more than the fallback it promised"
+            assert_eq!(
+                cost, executed,
+                "groups {groups} trial {trial}: reported {cost:.4} of dense, ran {executed:.4}"
             );
+            assert!(
+                executed <= bound + 1e-12,
+                "groups {groups} trial {trial}: adaptive executed {executed:.4} of dense, \
+                 above dense plus the plan ({bound:.4})"
+            );
+
+            let plan = routing_plan(&q, &k, seq, head_dim, clusters, budget, true);
+            if plan.worth_routing {
+                assert_eq!(
+                    executed, plan.cost_ratio,
+                    "groups {groups} trial {trial}: routing paid for the plan twice"
+                );
+            } else {
+                let (labels, _) = single_linkage_clusters(&k, seq, head_dim, clusters, true);
+                let cluster_count = labels.iter().copied().max().map_or(0, |m| m + 1);
+                assert_eq!(
+                    report.dot_products,
+                    seq * (seq + 1) / 2 + seq * cluster_count,
+                    "groups {groups} trial {trial}: the fallback's count omits the plan"
+                );
+                fallbacks += 1;
+            }
 
             // And it must still produce a legal mask.
             for i in 0..seq {
@@ -1214,6 +1236,10 @@ fn the_adaptive_selector_never_costs_more_than_dense() {
             }
         }
     }
+    assert!(
+        fallbacks > 0,
+        "no case fell back, so the bound's tight side is untested"
+    );
 }
 
 #[test]
@@ -1228,8 +1254,9 @@ fn the_adaptive_selector_keeps_the_quality_of_whichever_path_it_picks() {
     // structure was supposed to make possible.
     //
     // So `Adaptive` falls back to dense, and the guarantee it offers is "never
-    // worse than dense, in cost or in quality" — the only guarantee safe enough to
-    // switch on by default.
+    // worse than dense in quality". In cost it is bounded by dense plus the plan's
+    // alignment pass, not by dense (see
+    // `the_adaptive_selector_costs_at_most_dense_plus_its_plan`).
     //
     // The two regimes are scored on DIFFERENT scales on purpose. Placement is
     // only meaningful for budget-limited selectors: dense recovers all the mass,
@@ -1420,7 +1447,9 @@ fn the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair() {
         (2, 8.0, 0.0),
         (3, 0.0, 12.0),
     ];
-    let refusal = certified_top_k(&scored, 2).expect_err("the pair rule is unsound here");
+    let Err(TopKRefusal::Boundary(refusal)) = certified_top_k(&scored, 2) else {
+        panic!("the pair rule is unsound here, and a boundary refusal was expected");
+    };
     assert_eq!((refusal.inside, refusal.outside), (1, 3), "{refusal:?}");
     assert_eq!(refusal.gap, 9.0);
     assert_eq!(refusal.needed_margin, 12.0);
@@ -1433,6 +1462,148 @@ fn the_rule_is_not_the_rank_k_versus_rank_k_plus_one_pair() {
         (3, 0.0, 1.0),
     ];
     assert_eq!(certified_top_k(&tight, 2), Ok(vec![0, 1]));
+
+    // The wide key can also sit INSIDE the set, above rank k. Key 0 ranks first
+    // but can fall to 5, below key 2's 8: the witness (5, 9, 8) lies in the box
+    // and its top-2 is {1, 2}. Using the rank-k key (key 1, lower end 9) as the
+    // set's lowest point would certify {0, 1}.
+    let wide_inside = [(0usize, 10.0, 5.0), (1, 9.0, 0.0), (2, 8.0, 0.0)];
+    assert!(
+        certified_top_k(&wide_inside, 2).is_err(),
+        "a selected key whose enclosure reaches below an unselected one must refuse"
+    );
+}
+
+#[test]
+fn a_non_finite_score_or_radius_is_never_certified() {
+    // `+NaN` sorts above every number under `total_cmp`, so a rule that only
+    // compares extremes can step over it. Every one of these must refuse.
+    let nan_inside = [(0usize, f64::NAN, 0.0), (1, 2.0, 0.1), (2, 1.0, 0.1)];
+    assert_eq!(
+        certified_top_k(&nan_inside, 2),
+        Err(TopKRefusal::NonFinite { key: 0 }),
+        "+NaN score certified in"
+    );
+    assert!(
+        certified_top_k(&nan_inside, 1).is_err(),
+        "+NaN score certified"
+    );
+    let negative_nan = [(0usize, -f64::NAN, 0.0), (1, 2.0, 0.1), (2, 1.0, 0.1)];
+    assert!(
+        certified_top_k(&negative_nan, 1).is_err(),
+        "-NaN score certified out"
+    );
+    let nan_radius = [(0usize, 10.0, f64::NAN), (1, 9.0, 0.0), (2, 1.0, 0.0)];
+    assert!(
+        certified_top_k(&nan_radius, 2).is_err(),
+        "NaN radius certified"
+    );
+    let overflowed_radius = [(0usize, 10.0, 0.0), (1, 9.0, 0.0), (2, 1.0, f64::INFINITY)];
+    assert!(
+        certified_top_k(&overflowed_radius, 2).is_err(),
+        "infinite radius certified"
+    );
+}
+
+/// Row 0 of `q` against three keys, `budget` 1, non-causal; returns row 0 of the mask.
+fn oracle_row_zero(q_row: &[f64], k: &[f64], head_dim: usize) -> Vec<usize> {
+    let seq = k.len() / head_dim;
+    let q: Vec<f64> = (0..seq).flat_map(|_| q_row.iter().copied()).collect();
+    let v = vec![0.0; seq * head_dim];
+    let mask = select_mask(
+        Selector::OracleTopK { budget: 1 },
+        &q,
+        k,
+        &v,
+        seq,
+        head_dim,
+        false,
+    );
+    (0..seq).filter(|&j| mask[j]).collect()
+}
+
+#[test]
+fn an_overflowed_score_does_not_certify_the_finite_keys() {
+    // Key 0's exact score is finite and largest, but its float score overflows.
+    //
+    // (a) 2*1e308 = +inf and 2*(-0.95e308) = -inf, so the float score is NaN.
+    //     Exact: 2*(1e308 - 0.95e308) ~ 1e307, against 2e306 and 1e306.
+    let k = [1e308, -0.95e308, 1e306, 0.0, 5e305, 0.0];
+    let row = oracle_row_zero(&[2.0, 2.0], &k, 2);
+    assert!(
+        row.contains(&0),
+        "NaN case: exact winner key 0 dropped, row 0 = {row:?}"
+    );
+
+    // No floor can be derived from a NaN, so the row is dense, and says so.
+    let q = [2.0; 6];
+    let (_, report) =
+        select_mask_with_report(Selector::OracleTopK { budget: 1 }, &q, &k, &k, 3, 2, false);
+    assert_eq!(
+        report.dense_rows,
+        vec![(0, 0), (1, 0), (2, 0)],
+        "every row sees key 0's NaN"
+    );
+    assert_eq!(report.extra_keys, 6, "each row grows from 1 key to 3");
+    assert!(report.widened_rows.is_empty());
+
+    // (b) The partial sum -1.7e308 - 1.7e308 overflows to -inf and stays there.
+    //     Exact: -1.7e308, against -1.79e308 and -1.795e308.
+    let k = [
+        -1.7e308, -1.7e308, 1.7e308, -1.79e308, 0.0, 0.0, -1.795e308, 0.0, 0.0,
+    ];
+    let row = oracle_row_zero(&[1.0, 1.0, 1.0], &k, 3);
+    assert!(
+        row.contains(&0),
+        "-inf case: exact winner key 0 dropped, row 0 = {row:?}"
+    );
+}
+
+#[test]
+fn the_widened_set_contains_the_exact_winner_when_rounding_inflates_a_score() {
+    // Exact reference: q is all ones and every k entry is a multiple of
+    // u = 2^-53, so each exact score is an integer in units of u, computed in
+    // i128 below with no rounding at all.
+    //
+    // Key B accumulates 1024(1 + 2u), then 1024u, then 13 x 3072u. Each addition
+    // lands exactly halfway between two floats and ties to the even one, which
+    // is always the upper one here, so the sum is inflated by 14 x 1024u; the
+    // final -1023 is exact (Sterbenz). Float B = 1 + 57344u, exact B = 1 + 43008u.
+    // Key C is 1 + 50000u, exactly. So float ranks B first, exact ranks C first,
+    // and C's upper end (~1 + 50016u) is below B's float score but above B's
+    // lower end: C survives only if the widening floor is B's LOWER end.
+    let head_dim = 16usize;
+    let u = f64::EPSILON / 2.0;
+    let mut b = vec![1024.0 * (1.0 + 2.0 * u), 1024.0 * u];
+    b.extend(core::iter::repeat_n(3072.0 * u, 13));
+    b.push(-1023.0);
+    let mut c = vec![1.0 + 50_000.0 * u];
+    c.extend(core::iter::repeat_n(0.0, 15));
+    let k: Vec<f64> = b.iter().chain(c.iter()).copied().collect();
+
+    let exact = |key: &[f64]| -> i128 {
+        key.iter()
+            .map(|&x| (x * 2f64.powi(53)) as i128)
+            .sum::<i128>()
+    };
+    let float = |key: &[f64]| key.iter().fold(0.0f64, |acc, &x| acc + x);
+    assert_eq!(exact(&b) - (1i128 << 53), 43_008, "premise: exact B");
+    assert_eq!(exact(&c) - (1i128 << 53), 50_000, "premise: exact C");
+    assert_eq!(
+        float(&b),
+        1.0 + 57_344.0 * u,
+        "premise: float B is inflated"
+    );
+    assert!(
+        exact(&c) > exact(&b) && float(&b) > float(&c),
+        "premise: rankings disagree"
+    );
+
+    let row = oracle_row_zero(&vec![1.0; head_dim], &k, head_dim);
+    assert!(
+        row.contains(&1),
+        "key 1 (C) is the exact top-1 but was dropped; row 0 = {row:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
