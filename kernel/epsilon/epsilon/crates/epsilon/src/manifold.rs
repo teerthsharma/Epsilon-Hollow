@@ -406,14 +406,21 @@ impl<const D: usize> ManifoldPayload<D> {
     }
 
     /// Build a payload from a converged [`SparseGraph`].
+    ///
+    /// At most the first `MAX_PAYLOAD_POINTS` (64) points are carried, and the
+    /// signature is computed over those carried points at the graph's epsilon,
+    /// not over the whole graph: a truncated payload can be disconnected even
+    /// when its source graph is not.
     pub fn from_graph(graph: &SparseGraph<D>, liveness_anchor: f64) -> Self {
-        let (b0, b1, b2) = graph.full_shape();
         let count = graph.point_count.min(MAX_PAYLOAD_POINTS);
 
         let mut payload = Self::new();
+        let mut carried = SparseGraph::new(graph.epsilon);
         for i in 0..count {
             payload.points[i] = graph.points[i];
+            carried.add_point(graph.points[i]);
         }
+        let (b0, b1, b2) = carried.full_shape();
         payload.point_count = count;
         payload.signature_b0 = b0;
         payload.signature_b1 = b1;
