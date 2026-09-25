@@ -648,6 +648,31 @@ fn the_kernel_rejects_a_schedule_that_does_not_match_the_sequence() {
 }
 
 #[test]
+fn the_kernel_rejects_a_hand_built_row_with_a_duplicate_block() {
+    // `BlockSchedule`'s fields are public, so `from_rows` is not the only way to
+    // make one. Row 1 lists block 0 twice; launched, the kernel would fold key 0
+    // in twice and double its weight against the dense reference.
+    let (seq, dim, block_size) = (2usize, 4usize, 1usize);
+    let (q, k, v) = qkv(seq, dim, 61);
+    let schedule = BlockSchedule {
+        offsets: vec![0, 1, 4],
+        indices: vec![0, 0, 0, 1],
+    };
+    let refused = Err(ScheduleError::UnsortedRow {
+        q_block: 1,
+        block: 0,
+    });
+    assert_eq!(
+        scheduled_attention(&q, &k, &v, seq, dim, &schedule, block_size),
+        refused
+    );
+    assert_eq!(
+        dense_masked_attention(&q, &k, &v, seq, dim, &schedule, block_size),
+        refused
+    );
+}
+
+#[test]
 fn an_empty_row_is_rejected_rather_than_producing_nan() {
     // softmax over no keys is 0/0. The Triton builder guarantees every row has at
     // least its own block; the Rust type enforces it.

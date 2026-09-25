@@ -358,12 +358,17 @@ fn validate_launch(
         if row.is_empty() {
             return Err(ScheduleError::EmptyRow { q_block });
         }
-        for &block in row {
+        for (i, &block) in row.iter().enumerate() {
             if block >= num_blocks {
                 return Err(ScheduleError::BlockIndexOutOfRange { q_block, block });
             }
             if block > q_block {
                 return Err(ScheduleError::NonCausalRow { q_block, block });
+            }
+            // The fields are public, so a schedule need not come from `from_rows`.
+            // A repeated block would be folded into the softmax twice.
+            if i > 0 && block <= row[i - 1] {
+                return Err(ScheduleError::UnsortedRow { q_block, block });
             }
         }
     }
