@@ -4,7 +4,7 @@
 
 //! Data → Manifold encoder. Converts bytes into ManifoldPayloads on S².
 
-use alloc::collections::BTreeSet;
+use aether_core::certified_betti::{certified_beta0, Beta0};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -12,6 +12,19 @@ const MAX_PAYLOAD_POINTS: usize = 64;
 const PROJECTION_DIM: usize = 3;
 const HASH_DIM: usize = 128;
 const BLOCK_SIZE: usize = 4096;
+
+/// Chord length on S² at which blocks are counted as one component.
+const BETTI0_SCALE: f64 = 0.5;
+/// Width of the band around `BETTI0_SCALE` that must hold no merge height
+/// before a β₀ is certified: `[0.5 / sqrt(10), 0.5 * sqrt(10)]`.
+const BETTI0_RATIO: f64 = 10.0;
+
+/// Value of `ManifoldPayload::betti_0` when no certified β₀ exists: either
+/// `certified_beta0` refused because a merge height sits in the band around
+/// `BETTI0_SCALE`, or the payload is a placeholder whose points were not
+/// measured. On disk it is the 4-byte field's `u32::MAX`, so the payload
+/// byte layout is unchanged and no certified count can collide with it.
+pub const BETTI0_UNCERTIFIED: usize = u32::MAX as usize;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpherePoint {
@@ -125,7 +138,8 @@ pub fn encode_data(data: &[u8]) -> ManifoldPayload {
         return ManifoldPayload {
             points: vec![SpherePoint::zero()],
             point_count: 1,
-            betti_0: 1,
+            // The placeholder point is not on S² and was not measured.
+            betti_0: BETTI0_UNCERTIFIED,
             original_size: 0,
             content_hash,
         };
@@ -170,51 +184,14 @@ pub fn encode_text(text: &str) -> ManifoldPayload {
     encode_data(text.as_bytes())
 }
 
+/// Certified β₀ of the block points at chord `BETTI0_SCALE`, or
+/// `BETTI0_UNCERTIFIED` when a pair of blocks sits close enough to the scale
+/// that the count depends on which side of it they fall.
 fn compute_betti_0(points: &[SpherePoint]) -> usize {
-    if points.is_empty() {
-        return 0;
-    }
-    let epsilon_sq = 0.5 * 0.5;
-    let n = points.len();
-    let mut parent: Vec<usize> = (0..n).collect();
-    let mut rank = vec![0u8; n];
-
-    for i in 0..n {
-        for j in (i + 1)..n {
-            if points[i].distance_sq(&points[j]) < epsilon_sq {
-                union(&mut parent, &mut rank, i, j);
-            }
-        }
-    }
-
-    let mut roots = BTreeSet::new();
-    for i in 0..n {
-        roots.insert(find(&mut parent, i));
-    }
-    roots.len()
-}
-
-fn find(parent: &mut [usize], mut x: usize) -> usize {
-    while parent[x] != x {
-        parent[x] = parent[parent[x]];
-        x = parent[x];
-    }
-    x
-}
-
-fn union(parent: &mut [usize], rank: &mut [u8], a: usize, b: usize) {
-    let ra = find(parent, a);
-    let rb = find(parent, b);
-    if ra == rb {
-        return;
-    }
-    match rank[ra].cmp(&rank[rb]) {
-        core::cmp::Ordering::Less => parent[ra] = rb,
-        core::cmp::Ordering::Greater => parent[rb] = ra,
-        core::cmp::Ordering::Equal => {
-            parent[rb] = ra;
-            rank[ra] += 1;
-        }
+    let coords: Vec<[f64; PROJECTION_DIM]> = points.iter().map(|p| p.coords).collect();
+    match certified_beta0(&coords, BETTI0_SCALE, BETTI0_RATIO) {
+        Beta0::Certified { value, .. } => value as usize,
+        Beta0::Refused { .. } => BETTI0_UNCERTIFIED,
     }
 }
 
