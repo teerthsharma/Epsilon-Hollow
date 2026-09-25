@@ -327,8 +327,10 @@ impl ManifoldFS {
         dirs.insert(root_id, ".", root_id);
         dirs.insert(root_id, "..", root_id);
 
-        let mut cluster_sizes = vec![0; VORONOI_CELLS];
-        cluster_sizes[0] = 1;
+        // Counts only what `voronoi` indexes. The root is not inserted there,
+        // so counting it in cell 0 let the T3/GMC merge pick a cell holding
+        // no indexed file and move nothing.
+        let cluster_sizes = vec![0; VORONOI_CELLS];
 
         Self {
             inodes,
