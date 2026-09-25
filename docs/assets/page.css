@@ -244,6 +244,61 @@ pre.code .c{ color:var(--muted); }
 .js-reveal .fsec__fig.is-in{ clip-path:inset(-24px -24px -24px -24px); }
 .js-reveal .fsec__fig.is-done{ clip-path:none; transition:none; }
 
+/* ---------- the vision hero: more colour and life than the proof run ---------- */
+.vhero{
+  position:relative; overflow:hidden;
+  padding:clamp(40px, 7vw, 96px) 0 clamp(40px, 6vw, 80px);
+  background:
+    radial-gradient(60% 70% at 82% 38%, rgba(36,86,220,.13), transparent 70%),
+    radial-gradient(45% 55% at 62% 90%, rgba(11,147,171,.12), transparent 70%),
+    radial-gradient(40% 50% at 98% 0%, rgba(166,108,240,.14), transparent 70%),
+    var(--ground);
+  border-bottom:1px solid var(--hair);
+}
+.vhero__grid{ display:grid; grid-template-columns:minmax(0, 1.05fr) minmax(0, 1fr); gap:clamp(24px, 4vw, 56px); align-items:center; }
+.vhero__h1{ margin-top:16px; font-size:clamp(42px, 6.2vw, 80px); line-height:1.02; letter-spacing:-0.04em; font-weight:700; text-wrap:balance; }
+.vhero__sub{ margin-top:22px; max-width:32em; font-size:clamp(18px, 1.8vw, 22px); line-height:1.5; color:var(--muted); text-wrap:pretty; }
+.vhero__sub em{ font-style:normal; color:var(--violet-700); font-weight:600; }
+.vhero__facts{ margin-top:22px; display:flex; flex-wrap:wrap; gap:8px; }
+.vhero__facts li{
+  padding:4px 11px; border-radius:999px; background:var(--raised); border:1px solid var(--hair);
+  font-family:var(--font-mono); font-size:12px; font-weight:600; letter-spacing:.02em; color:var(--ink);
+}
+.vhero__facts code{ font-size:1em; }
+.cta-row--left{ justify-content:flex-start; margin-top:28px; }
+.vhero__seal{ margin:0; min-width:0; }
+@media (max-width:900px){
+  .vhero__grid{ grid-template-columns:1fr; }
+  .vhero__seal{ order:-1; max-width:360px; width:100%; margin:0 auto -8px; }
+}
+
+/* ---------- pillars ---------- */
+.pillars{ padding:clamp(64px, 8vw, 104px) 0; background:var(--ground); }
+.pgrid{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:24px; }
+@media (max-width:760px){ .pgrid{ grid-template-columns:1fr; } }
+.pcard{
+  --tint:var(--blue-100); --tagc:var(--blue-700);
+  display:flex; flex-direction:column; min-width:0; padding:clamp(18px, 2.4vw, 28px);
+  border-radius:30px; background:var(--raised); border:1px solid var(--hair); box-shadow:var(--e1);
+}
+.pcard--violet{ --tint:#efe6ff; --tagc:var(--violet-700); }
+.pcard--mint{ --tint:var(--mint-100); --tagc:var(--mint-700); }
+.pcard--coral{ --tint:var(--coral-100); --tagc:var(--coral-700); }
+.pcard__fig{ border-radius:18px; background:linear-gradient(180deg, var(--tint), var(--raised)); }
+.pcard__tag{ margin-top:20px; font-family:var(--font-mono); font-size:var(--fs-0); text-transform:uppercase; letter-spacing:.08em; color:var(--tagc); font-weight:600; }
+.pcard__h{ margin-top:8px; font-size:clamp(22px, 2.2vw, 28px); line-height:1.15; letter-spacing:-0.02em; font-weight:700; text-wrap:balance; }
+.pcard__p{ margin-top:10px; color:var(--muted); line-height:1.6; }
+.pcard__p code{ color:var(--ink); font-size:.86em; }
+.pcard__p a{ color:var(--blue-700); font-weight:600; }
+.pcard__p a:hover{ text-decoration:underline; }
+
+/* ---------- it boots, and the proof run's intro ---------- */
+.fsec.boots{ background:var(--ground2); }
+.fsec.boots .fsec__fig{ background:var(--raised); border-color:var(--hair); box-shadow:var(--e1); }
+.claims{ padding:clamp(64px, 8vw, 104px) 0 clamp(8px, 2vw, 24px); background:var(--ground); }
+.claims .sec__h2{ margin-top:12px; }
+.claims .heads{ margin-left:0; }
+
 @media (prefers-reduced-motion: reduce){
   .card, .pt__cta, .chip{ transition:none; }
   .card:hover{ transform:none; }

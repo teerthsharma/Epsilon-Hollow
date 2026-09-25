@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Epsilon-Hollow: certify or refuse</title>
+<title>Seal OS: the ML-native kernel</title>
 <meta name="description" content="Seal OS is a bare-metal x86_64 UEFI research kernel in no_std Rust that keeps OS state as point clouds on the sphere. Its topological and ranking answers now come with a certificate, or are refused with a named witness.">
 <link rel="canonical" href="https://teerthsharma.github.io/Epsilon-Hollow/">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Epsilon-Hollow: certify or refuse">
+<meta property="og:title" content="Seal OS: the ML-native kernel">
 <meta property="og:description" content="A research kernel whose topological and ranking answers come with a certificate, or are refused with a named witness.">
 <meta property="og:url" content="https://teerthsharma.github.io/Epsilon-Hollow/">
 <link rel="icon" href="data:,">
@@ -32,17 +32,11 @@
 <nav class="psub" aria-label="On this page">
   <div class="psub__scroll">
     <ul class="psub__list">
-      <li><a class="psub__link psub__name" href="#top">Epsilon-Hollow</a></li>
+      <li><a class="psub__link psub__name" href="#top">Seal OS</a></li>
       <li class="psub__sep" aria-hidden="true"></li>
-      <li><a class="psub__link" href="#t1">Boot centroids</a></li>
-      <li><a class="psub__link" href="#locate">Nearest centroid</a></li>
-      <li><a class="psub__link" href="#beta0">&beta;&#8320;</a></li>
-      <li><a class="psub__link" href="#topk">Top-k</a></li>
-      <li><a class="psub__link" href="#stratum">Fit</a></li>
-      <li><a class="psub__link" href="#foliation">KV cache</a></li>
-      <li><a class="psub__link" href="#governor">Governor</a></li>
-      <li><a class="psub__link" href="#cells">Cells</a></li>
-      <li><a class="psub__link" href="#boot">Boot log</a></li>
+      <li><a class="psub__link" href="#pillars">What it does</a></li>
+      <li><a class="psub__link" href="#boot">It boots</a></li>
+      <li><a class="psub__link" href="#claims">Every claim, drawn</a></li>
       <li class="psub__sep" aria-hidden="true"></li>
       <li><a class="psub__link" href="#limits">Limits</a></li>
       <li><a class="psub__link" href="#reproduce">Reproduce</a></li>
@@ -52,23 +46,146 @@
 
 <main id="top">
 
-<header class="hero">
-  <div class="wrap">
-    <p class="hero__kicker">Epsilon-Hollow &middot; Seal OS</p>
-    <h1 class="hero__h1">An answer with a certificate, or a refusal that says why.</h1>
-    <p class="hero__sub">Seal OS is a bare-metal x86_64 UEFI research kernel in <code>no_std</code> Rust that keeps memory, files and scheduler state as points on a sphere. When rounding could flip a count, a top-k or a nearest-centroid lookup, it now says so instead of guessing.</p>
-    <div class="cta-row">
-      <a class="pt__cta" href="https://github.com/teerthsharma/Epsilon-Hollow">View on GitHub</a>
-      <a class="pt__more" href="https://github.com/teerthsharma/Epsilon-Hollow#readme">Read the README <span class="pt__chev" aria-hidden="true">&#8250;</span></a>
+<header class="vhero">
+  <div class="wrap vhero__grid">
+    <div class="vhero__copy">
+      <p class="hero__kicker">Seal OS &middot; Epsilon-Hollow</p>
+      <h1 class="vhero__h1">An operating system whose day job is machine learning.</h1>
+      <p class="vhero__sub">OS state is topology on the unit sphere S². Training runs get a kernel that measures the <em>shape</em> of their overfitting. Inference gets a KV cache that evicts by elementary collapse.</p>
+      <ul class="vhero__facts" aria-label="Platform">
+        <li>bare-metal x86_64</li><li>UEFI</li><li><code>no_std</code> Rust</li><li>no POSIX</li><li>no libc</li>
+      </ul>
+      <div class="cta-row cta-row--left">
+        <a class="pt__cta" href="https://github.com/teerthsharma/Epsilon-Hollow">View on GitHub</a>
+        <a class="pt__more" href="https://github.com/teerthsharma/Epsilon-Hollow#readme">Read the README <span class="pt__chev" aria-hidden="true">&#8250;</span></a>
+      </div>
     </div>
-    <div class="heads">
+    <figure class="vhero__seal">
+      <div class="figc" style="--figc-ar:480/520">
+        <canvas data-fig="seal" aria-hidden="true"></canvas>
+        <svg class="figc__lab" viewBox="0 0 480 520" role="img" aria-labelledby="seal-t seal-d">
+          <title id="seal-t">The Seal OS seal, balancing the sphere its state lives on</title>
+          <desc id="seal-d">A seal sits upright and balances a glass sphere on its nose. The sphere turns slowly; on it sit the eight boot centroids, the cube vertices, and the three great circles that bound their Voronoi cells. The seal bobs gently and blinks.</desc>
+        </svg>
+      </div>
+    </figure>
+  </div>
+</header>
+
+<section class="pillars" id="pillars" aria-labelledby="pillars-h">
+  <div class="wrap">
+    <h2 class="sec__h2" id="pillars-h" data-reveal>Four things the kernel does that other kernels do not try.</h2>
+    <p class="sec__lede" data-reveal>Built to be the layer where a training run and an inference server are understood, not just scheduled. Each of these runs in the kernel today, on synthetic workloads; real-model validation is the open work.</p>
+    <div class="pgrid sec__body">
+      <article class="pcard pcard--violet" data-reveal>
+        <div class="figc pcard__fig" style="--figc-ar:320/190">
+          <canvas data-fig="p-stratum" aria-hidden="true"></canvas>
+          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="ps-t">
+            <title id="ps-t">A loss curve and its delay embedding: a fold closes a loop, a monotone run does not</title>
+            <text x="80" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">validation loss</text>
+            <text x="240" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">delay embedding</text>
+            <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" data-v="verdict" fill="var(--ink)"></text>
+          </svg>
+        </div>
+        <p class="pcard__tag">stratum &middot; Seal ABI 120–124</p>
+        <h3 class="pcard__h">The kernel watches the shape of your loss curve.</h3>
+        <p class="pcard__p">Push <code>(train_loss, val_loss)</code> each step and get a regime back: Underfit, WellFit, Overfit or Collapsing. Overfitting closes a loop in the delay embedding of the validation curve. A run that only falls scores exactly 0. 4,792 bytes per stream, no allocation per sample.</p>
+      </article>
+      <article class="pcard pcard--blue" data-reveal>
+        <div class="figc pcard__fig" style="--figc-ar:320/190">
+          <canvas data-fig="p-foliation" aria-hidden="true"></canvas>
+          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="pf-t">
+            <title id="pf-t">Sequences share a prefix tree of KV blocks; a leaf no sequence uses is collapsed</title>
+            <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" data-v="verdict" fill="var(--ink)"></text>
+          </svg>
+        </div>
+        <p class="pcard__tag">foliation &middot; Seal ABI 130–134</p>
+        <h3 class="pcard__h">A KV cache that is a prefix tree.</h3>
+        <p class="pcard__p">Live sequences share cached blocks wherever their prefixes agree, and a sequence's block table is its path down the tree. Eviction removes only a free face: a block that is resident, unreferenced and has no resident children. Sharing requires an exact token match.</p>
+      </article>
+      <article class="pcard pcard--mint" data-reveal>
+        <div class="figc pcard__fig" style="--figc-ar:320/190">
+          <canvas data-fig="p-topo" aria-hidden="true"></canvas>
+          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="pt-t">
+            <title id="pt-t">Frames and files land on the sphere and join the Voronoi cell of their nearest centroid</title>
+            <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" fill="var(--ink)">each point joins its nearest centroid's cell</text>
+          </svg>
+        </div>
+        <p class="pcard__tag">TopoRAM &middot; ManifoldFS</p>
+        <h3 class="pcard__h">Memory and files are points on a sphere.</h3>
+        <p class="pcard__p">Every physical frame carries 64 bytes of metadata: its S² embedding, access history, Voronoi cell and lifetime class. Files are placed and found the same way, by great-circle distance to Voronoi centroids, with spectral prefetch and an entropy governor over the cells.</p>
+      </article>
+      <article class="pcard pcard--coral" data-reveal>
+        <div class="figc pcard__fig" style="--figc-ar:320/190">
+          <canvas data-fig="p-cert" aria-hidden="true"></canvas>
+          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="pc-t">
+            <title id="pc-t">A scale sweeps across merge heights; the count is certified between them and refused on them</title>
+            <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" data-v="verdict" fill="var(--ink)"></text>
+            <text x="160" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">merge heights, log scale; band ratio 10</text>
+          </svg>
+        </div>
+        <p class="pcard__tag">certify or refuse</p>
+        <h3 class="pcard__h">It refuses rather than guesses.</h3>
+        <p class="pcard__p">Component counts, attention top-k, fit verdicts and nearest-centroid lookups come back with a certificate, or with a refusal naming the pair that made them ambiguous. The kernel does not return a number that rounding, not the data, chose. <a href="#claims">See every one drawn</a>.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="fsec boots" id="boot" aria-labelledby="boot-h">
+  <div class="wrap fsec__grid">
+    <div class="fsec__text" data-reveal>
+      <p class="fsec__kicker"><b>It boots</b> &middot; QEMU &middot; OVMF</p>
+      <h2 class="fsec__h2" id="boot-h">Ten theorems, a filesystem, a desktop, an event loop.</h2>
+      <p class="fsec__p">The UEFI image boots under QEMU, checks T1 to T10 from <code>aether_verified</code> and panics if any fails, brings up its layers, draws a desktop and enters its event loop. CI boots every build this way and fails it without the theorem, SealShell, desktop and event-loop lines.</p>
+      <div class="fsec__nums">
+        <span class="spec"><b class="spec__n spec__n--green">10 / 10</b><span class="spec__l">boot theorem lines VERIFIED</span></span>
+        <span class="spec"><b class="spec__n">8</b><span class="spec__l">Voronoi cells in the boot index, with Betti-0 of 1</span></span>
+      </div>
+    </div>
+    <div class="fsec__fig">
+      <figure class="fig">
+        <pre class="log" data-fig="boot" aria-label="Boot log">
+<span class="dim">$ qemu-system-x86_64 -machine q35 … seal-os.img</span>
+<span class="dim">…</span>
+<span>[THEOREM] T1/TSS VERIFIED</span>
+<span>[THEOREM] T2/SCM VERIFIED</span>
+<span>[THEOREM] T3/GMC VERIFIED</span>
+<span>[THEOREM] T4/AGCR VERIFIED</span>
+<span>[THEOREM] T5/HCS VERIFIED</span>
+<span>[THEOREM] T6/RGCS VERIFIED</span>
+<span>[THEOREM] T7/PHKP VERIFIED</span>
+<span>[THEOREM] T8/TEB VERIFIED</span>
+<span>[THEOREM] T9/CMA VERIFIED</span>
+<span>[THEOREM] T10/WPHB VERIFIED</span>
+<span class="ok">[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span>
+<span class="dim">…</span>
+<span>[BOOT] Syscall FS ready</span>
+<span>[BOOT] All layers initialized.</span>
+<span>[Desktop] Rendering desktop environment</span>
+<span>[SealShell] Loaded</span>
+<span class="ok">[BOOT] Seal OS desktop ready.</span>
+<span class="ok">[EVENT] Entering real event loop — keyboard and mouse active</span></pre>
+        <figcaption class="fig__cap">Lines are the kernel's own format strings, in boot order; "…" marks lines left out.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="claims" id="claims" aria-labelledby="claims-h">
+  <div class="wrap">
+    <p class="hero__kicker" data-reveal>Every claim, drawn</p>
+    <h2 class="sec__h2" id="claims-h" data-reveal>Certify or refuse: the round that made the answers honest.</h2>
+    <p class="sec__lede" data-reveal>Eight results from the latest round. Each one was a number that the arithmetic, not the data, had chosen. Each figure below runs the rule it describes.</p>
+    <div class="heads" data-reveal>
       <span class="spec"><b class="spec__n">1,215 &rarr; 0</b><span class="spec__l">wrong nearest-centroid answers in 5,000 queries</span></span>
       <span class="spec"><b class="spec__n">0.96875 &rarr; 0</b><span class="spec__l">loop score of a loss curve that only falls</span></span>
       <span class="spec"><b class="spec__n">0.001 &rarr; 10.0</b><span class="spec__l">what one <code>/mv</code> did to ε; now it is held</span></span>
       <span class="spec"><b class="spec__n">849 / 0</b><span class="spec__l">workspace tests passed / failed at <code>0f040e0</code></span></span>
     </div>
   </div>
-</header>
+</section>
+
 
 <!-- 1 · T1/TSS ------------------------------------------------------------ -->
 <section class="fsec" id="t1" aria-labelledby="t1-h">
@@ -439,42 +556,7 @@
   </div>
 </section>
 
-<!-- 9 · boot log ----------------------------------------------------------- -->
-<section class="fsec" id="boot" aria-labelledby="boot-h">
-  <div class="wrap fsec__grid">
-    <div class="fsec__fig">
-      <figure class="fig">
-        <pre class="log" data-fig="boot" aria-label="Boot log">
-<span class="dim">$ qemu-system-x86_64 -machine q35 … seal-os.img</span>
-<span class="dim">…</span>
-<span>[THEOREM] T1/TSS VERIFIED</span>
-<span>[THEOREM] T2/SCM VERIFIED</span>
-<span>[THEOREM] T3/GMC VERIFIED</span>
-<span>[THEOREM] T4/AGCR VERIFIED</span>
-<span>[THEOREM] T5/HCS VERIFIED</span>
-<span>[THEOREM] T6/RGCS VERIFIED</span>
-<span>[THEOREM] T7/PHKP VERIFIED</span>
-<span>[THEOREM] T8/TEB VERIFIED</span>
-<span>[THEOREM] T9/CMA VERIFIED</span>
-<span>[THEOREM] T10/WPHB VERIFIED</span>
-<span class="ok">[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span>
-<span class="dim"> </span>
-<span class="dim">$ epsilon-os</span>
-<span class="warn">[READY] Manifold filesystem online. Not active: T4/AGCR NOT CERTIFIED.</span></pre>
-        <figcaption class="fig__cap">The seal-os lines follow the kernel's own format strings; the last line is epsilon-os's.</figcaption>
-      </figure>
-    </div>
-    <div class="fsec__text" data-reveal>
-      <p class="fsec__kicker"><b>09</b> &middot; the boot gate &middot; b9a4531, 13d0049</p>
-      <h2 class="fsec__h2" id="boot-h">Ten theorems checked at boot, one honestly not active.</h2>
-      <p class="fsec__p">Seal OS checks T1 to T10 from <code>aether_verified</code> before it claims the theorem core is alive, and panics if any fails. CI boots the image under QEMU and requires the VERIFIED line. The epsilon-os ManifoldFS app used to print "All theorems active" unconditionally. It now names the one it cannot certify at its own tick period.</p>
-      <div class="fsec__nums">
-        <span class="spec"><b class="spec__n spec__n--green">10 / 10</b><span class="spec__l">boot theorem lines VERIFIED under QEMU</span></span>
-        <span class="spec"><b class="spec__n">T4</b><span class="spec__l">not certified in epsilon-os at dt = 0.01</span></span>
-      </div>
-    </div>
-  </div>
-</section>
+
 
 <section class="band band--tint" id="how" aria-labelledby="how-h">
   <div class="wrap">

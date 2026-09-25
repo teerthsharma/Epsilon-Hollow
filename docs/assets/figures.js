@@ -747,6 +747,346 @@
     register(pre, draw, 99999);
   }
 
+  /* ================================================= shared sphere */
+  /* the eight boot centroids (cube vertices, colatitude acos(1/sqrt3) and
+     pi - acos(1/sqrt3)), the icosphere film, and a painter for a glass S2 */
+  function cubeCentroids() {
+    var tn = Math.acos(1 / Math.sqrt(3)), out = [], k;
+    var sph = function (th, ph) { return [Math.sin(th) * Math.cos(ph), Math.sin(th) * Math.sin(ph), Math.cos(th)]; };
+    for (k = 1; k < 8; k += 2) out.push(sph(tn, k * Math.PI / 4));
+    for (k = 1; k < 8; k += 2) out.push(sph(Math.PI - tn, k * Math.PI / 4));
+    return out;
+  }
+  function icosphere(C) {
+    var gr = (1 + Math.sqrt(5)) / 2;
+    var IV = [[-1, gr, 0], [1, gr, 0], [-1, -gr, 0], [1, -gr, 0], [0, -1, gr], [0, 1, gr],
+              [0, -1, -gr], [0, 1, -gr], [gr, 0, -1], [gr, 0, 1], [-gr, 0, -1], [-gr, 0, 1]].map(norm);
+    var IF = [[0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11], [1, 5, 9], [5, 11, 4],
+              [11, 10, 2], [10, 7, 6], [7, 1, 8], [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8],
+              [3, 8, 9], [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1]];
+    for (var sd = 0; sd < 2; sd++) {
+      var mid = {}, NF = [];
+      var mp = function (a, b) {
+        var key = a < b ? a + '_' + b : b + '_' + a;
+        if (mid[key] == null) { mid[key] = IV.length; IV.push(norm([(IV[a][0] + IV[b][0]) / 2, (IV[a][1] + IV[b][1]) / 2, (IV[a][2] + IV[b][2]) / 2])); }
+        return mid[key];
+      };
+      IF.forEach(function (fc) {
+        var ab = mp(fc[0], fc[1]), bc = mp(fc[1], fc[2]), ca = mp(fc[2], fc[0]);
+        NF.push([fc[0], ab, ca], [fc[1], bc, ab], [fc[2], ca, bc], [ab, bc, ca]);
+      });
+      IF = NF;
+    }
+    var seen = {}, SE = [];
+    IF.forEach(function (fc) {
+      for (var q = 0; q < 3; q++) {
+        var a = fc[q], b = fc[(q + 1) % 3], key = a < b ? a * 1000 + b : b * 1000 + a;
+        if (!seen[key]) { seen[key] = 1; SE.push(a, b); }
+      }
+    });
+    var stops = [C.m5, C.b5, C.v5, C.b5], iri = [];
+    for (var qb = 0; qb < 16; qb++) {
+      var pos = qb / 16 * stops.length, si = Math.floor(pos);
+      iri.push(mix(stops[si], stops[(si + 1) % stops.length], pos - si));
+    }
+    var walls = [];
+    for (var i = 0; i < 3; i++) {
+      var ring = [];
+      for (var k = 0; k <= 96; k++) {
+        var a2 = k / 96 * TAU, c2 = Math.cos(a2), s2 = Math.sin(a2);
+        ring.push(i === 0 ? [0, c2, s2] : i === 1 ? [c2, 0, s2] : [c2, s2, 0]);
+      }
+      walls.push(ring);
+    }
+    return { IV: IV, SE: SE, iri: iri, walls: walls };
+  }
+  function glowSprite(base, C) {
+    var cv = document.createElement('canvas'), Z = 24; cv.width = cv.height = Z;
+    var x = cv.getContext('2d'), q = x.createRadialGradient(Z / 2, Z / 2, 0, Z / 2, Z / 2, Z / 2);
+    q.addColorStop(0, rgb(mix(base, C.raised, 0.55), 1)); q.addColorStop(0.38, rgb(base, 0.6)); q.addColorStop(1, rgb(base, 0));
+    x.fillStyle = q; x.fillRect(0, 0, Z, Z);
+    return cv;
+  }
+  /* paint a glass sphere at (cx, cy, R) turned by yaw and tilted; returns
+     view() so callers can place their own points on it */
+  function paintSphere(g, C, I, cx, cy, R, yaw, tilt, drift, a, wallCols) {
+    var cy_ = Math.cos(yaw), sy = Math.sin(yaw), ct = Math.cos(tilt), st = Math.sin(tilt);
+    var view = function (p) {
+      var u = cy_ * p[0] - sy * p[1], d0 = -(sy * p[0] + cy_ * p[1]), w = p[2];
+      return [cx + R * u, cy - R * (w * ct - d0 * st), w * st + d0 * ct];
+    };
+    var air = g.createRadialGradient(cx, cy, R * 0.86, cx, cy, R * 1.16);
+    air.addColorStop(0, rgb(C.b5, 0)); air.addColorStop(0.45, rgb(C.b5, 0.1 * a)); air.addColorStop(1, rgb(C.b5, 0));
+    g.fillStyle = air; g.beginPath(); g.arc(cx, cy, R * 1.16, 0, TAU); g.fill();
+    var glass = g.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R);
+    glass.addColorStop(0, rgb(C.raised, 0.85 * a)); glass.addColorStop(1, rgb(C.raised, 0.18 * a));
+    g.fillStyle = glass; g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.fill();
+    g.strokeStyle = rgb(C.hair, a); g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, R, 0, TAU); g.stroke();
+    var SV = I.IV.map(view), sb = [], sf = [], q;
+    for (q = 0; q < 16; q++) { sb.push([]); sf.push([]); }
+    for (q = 0; q < I.SE.length; q += 2) {
+      var p1 = SV[I.SE[q]], p2 = SV[I.SE[q + 1]], mz = (p1[2] + p2[2]) / 2;
+      var hu = Math.atan2(p1[1] + p2[1] - 2 * cy, p1[0] + p2[0] - 2 * cx) / TAU + 0.25 * mz + drift;
+      hu -= Math.floor(hu);
+      (mz > 0 ? sf : sb)[Math.floor(hu * 16) % 16].push(p1, p2);
+    }
+    var film = function (B, al) {
+      g.lineWidth = 0.8;
+      for (var bk = 0; bk < 16; bk++) {
+        var L = B[bk]; if (!L.length) continue;
+        g.strokeStyle = rgb(I.iri[bk], al * a);
+        g.beginPath();
+        for (var m = 0; m < L.length; m += 2) { g.moveTo(L[m][0], L[m][1]); g.lineTo(L[m + 1][0], L[m + 1][1]); }
+        g.stroke();
+      }
+    };
+    var walls = function (front) {
+      for (var wi = 0; wi < 3; wi++) {
+        var ring = I.walls[wi], open = false;
+        g.strokeStyle = rgb(wallCols[wi], (front ? 0.6 : 0.16) * a); g.lineWidth = front ? 1.4 : 1;
+        g.beginPath();
+        for (var m = 0; m < ring.length; m++) {
+          var v = view(ring[m]);
+          if ((v[2] >= 0) === front) { if (!open) { g.moveTo(v[0], v[1]); open = true; } else g.lineTo(v[0], v[1]); }
+          else open = false;
+        }
+        g.stroke();
+      }
+    };
+    return { view: view, back: function () { film(sb, 0.08); walls(false); }, front: function () { film(sf, 0.18); walls(true); } };
+  }
+
+  /* ======================================================== the seal */
+  function figSeal(canvas) {
+    var C = palette(), I = icosphere(C), CENT = cubeCentroids();
+    var cols = [C.b5, C.v5, C.m5, C.a5];
+    var spr = cols.map(function (c) { return glowSprite(c, C); });
+    var VBW = 480, VBH = 520, NX = 292, NY = 222, BR = 86;
+    var bodyTop = mix(C.b5, C.raised, 0.78), bodyBot = mix(C.m5, C.raised, 0.8), ink = C.ink;
+    var P = new Path2D('M292 222 C304 232 306 256 300 276 C296 290 300 302 312 318 C340 350 356 404 344 446 C334 478 300 494 250 494 C200 494 160 488 134 476 C150 440 176 392 200 356 C214 334 216 304 222 280 C228 250 250 228 272 220 C280 216 286 216 292 222 Z');
+    var BELLY = new Path2D('M306 304 C336 340 348 400 332 450 C318 472 292 482 262 482 C300 442 312 384 300 322 Z');
+    var FLIP = new Path2D('M314 370 C344 390 366 420 374 448 C352 442 330 426 310 404 Z');
+    var TAIL = new Path2D('M140 472 C112 460 86 454 60 460 C78 473 100 481 122 483 C100 491 84 503 78 514 C104 512 128 499 148 484 Z');
+    function draw(t) {
+      var g = fitCanvas(canvas, VBW, VBH);
+      var tt = REDUCED ? 0 : t, Al = REDUCED ? 1 : ease(t / 1000);
+      var bob = REDUCED ? 0 : 3 * Math.sin(tt * TAU / 2600);
+      var sway = REDUCED ? 0 : 0.045 * Math.sin(tt * TAU / 3400);
+      var bc = tt % 4600, open = bc > 4440 ? Math.abs(bc - 4520) / 80 : 1;
+      if (!REDUCED && (tt % 13800) > 13500) open = Math.min(open, Math.abs((tt % 13800) - 13650) / 150);
+      /* shadow, which does not bob */
+      var sh = g.createRadialGradient(236, 500, 4, 236, 500, 130);
+      sh.addColorStop(0, rgb(ink, 0.12 * Al)); sh.addColorStop(1, rgb(ink, 0));
+      g.fillStyle = sh; g.beginPath(); g.ellipse(236, 500, 130, 12, 0, 0, TAU); g.fill();
+      g.save(); g.translate(0, bob);
+      g.lineJoin = 'round'; g.lineCap = 'round';
+      /* tail and flipper behind the body */
+      var gr = g.createLinearGradient(180, 220, 320, 500);
+      gr.addColorStop(0, rgb(bodyTop, Al)); gr.addColorStop(1, rgb(bodyBot, Al));
+      g.fillStyle = gr; g.strokeStyle = rgb(ink, 0.85 * Al); g.lineWidth = 2.2;
+      g.fill(TAIL); g.stroke(TAIL);
+      g.fill(P); g.stroke(P);
+      g.fillStyle = rgb(C.raised, 0.55 * Al); g.fill(BELLY);
+      /* a few spots on the back */
+      [[214, 380, 4], [196, 420, 3], [230, 342, 3], [178, 452, 3.5], [236, 410, 2.5]].forEach(function (s) {
+        g.fillStyle = rgb(mix(C.b5, C.raised, 0.45), 0.45 * Al); g.beginPath(); g.arc(s[0], s[1], s[2], 0, TAU); g.fill();
+      });
+      g.fillStyle = gr; g.fill(FLIP); g.stroke(FLIP);
+      /* face */
+      g.fillStyle = rgb(C.c5, 0.16 * Al); g.beginPath(); g.ellipse(282, 262, 11, 7, 0.3, 0, TAU); g.fill();
+      g.fillStyle = rgb(ink, Al);
+      g.beginPath(); g.ellipse(262, 246, 6.5, Math.max(0.8, 7.5 * open), 0, 0, TAU); g.fill();
+      if (open > 0.5) { g.fillStyle = rgb(C.raised, Al); g.beginPath(); g.arc(264.5, 243, 2, 0, TAU); g.fill(); }
+      g.fillStyle = rgb(ink, Al); g.beginPath(); g.ellipse(291, 225, 7, 5, 0.5, 0, TAU); g.fill();
+      g.strokeStyle = rgb(ink, 0.8 * Al); g.lineWidth = 1.8;
+      g.beginPath(); g.moveTo(297, 252); g.quadraticCurveTo(292, 260, 284, 258); g.stroke();
+      g.strokeStyle = rgb(ink, 0.45 * Al); g.lineWidth = 1.2;
+      [[300, 240, 334, 228], [302, 246, 338, 244], [300, 252, 332, 260]].forEach(function (w) {
+        g.beginPath(); g.moveTo(w[0], w[1]); g.quadraticCurveTo((w[0] + w[2]) / 2, (w[1] + w[3]) / 2 - 3, w[2], w[3]); g.stroke();
+      });
+      /* the sphere, balanced on the nose: it sways about the nose tip */
+      g.translate(NX, NY); g.rotate(sway); g.translate(-NX, -NY);
+      var S2 = paintSphere(g, C, I, NX, NY - BR - 4, BR, 0.55 + tt * TAU / 30000, 0.38, tt / 14000, Al, [C.m5, C.b5, C.v5]);
+      S2.back();
+      var V = CENT.map(S2.view);
+      var dots = function (front) {
+        for (var i = 0; i < 8; i++) {
+          if ((V[i][2] >= 0) !== front) continue;
+          g.globalAlpha = (front ? 1 : 0.35) * Al;
+          g.drawImage(spr[i % 4], V[i][0] - 9, V[i][1] - 9, 18, 18);
+          g.globalAlpha = 1;
+        }
+      };
+      dots(false); S2.front(); dots(true);
+      g.restore();
+    }
+    register(canvas, draw, 0);
+  }
+
+  /* ================================================= pillar figures */
+  function pillarStratum(canvas) {
+    var svg = canvas.parentNode.querySelector('svg'), C = palette();
+    var V = [], D = [], t;
+    for (t = 0; t < 128; t++) V.push(0.3 + 0.01 * Math.abs(t - 100));
+    for (t = 0; t < 128; t++) D.push(0.05 + 0.55 * Math.exp(-t / 22));
+    function model(series) {
+      var raw = delayCloud(series), R = arcResample(raw), e = mstMax(R), win = series.slice(-64);
+      if (isMonotone(raw)) return { R: R, E: [], score: 0, win: win, mono: true };
+      var f = foldEdges(R, e * 1.68, true);
+      return { R: R, E: f.E, score: Math.min(1, f.cyc / R.length), win: win, mono: false };
+    }
+    var M = [model(V), model(D)];
+    function layout(m) {
+      var lo = Math.min.apply(null, m.win), hi = Math.max.apply(null, m.win);
+      m.curve = m.win.map(function (v, i) { return [16 + i / 63 * 128, 160 - (v - lo) / (hi - lo) * 118]; });
+      var pr = m.R.map(function (p) { return [p[0] - p[2], (p[0] + p[1] + p[2]) / 3]; });
+      var xs = pr.map(function (p) { return p[0]; }), ys = pr.map(function (p) { return p[1]; });
+      var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+      m.cloud = pr.map(function (p) { return [180 + (p[0] - x0) / (x1 - x0 || 1) * 124, 160 - (p[1] - y0) / (y1 - y0 || 1) * 118]; });
+    }
+    M.forEach(layout);
+    var SLOT = 5600;
+    function draw(t) {
+      var g = fitCanvas(canvas, 320, 190), which = REDUCED ? 0 : Math.floor(t / SLOT) % 2, m = M[which];
+      var k = REDUCED ? 1 : ease((t % SLOT) / 2600), n = Math.max(2, Math.round(k * m.curve.length));
+      var col = which ? C.b5 : C.v5;
+      g.lineJoin = 'round'; g.lineCap = 'round';
+      g.strokeStyle = rgb(col, 0.95); g.lineWidth = 2.2; g.beginPath();
+      for (var i = 0; i < n; i++) { var p = m.curve[i]; if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }
+      g.stroke();
+      var hd = m.curve[n - 1]; g.fillStyle = rgb(col, 1); g.beginPath(); g.arc(hd[0], hd[1], 3.5, 0, TAU); g.fill();
+      var cn = Math.max(2, Math.round(k * m.cloud.length));
+      g.strokeStyle = rgb(C.ink, 0.45); g.lineWidth = 1.1; g.beginPath();
+      for (i = 0; i < cn; i++) { p = m.cloud[i]; if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }
+      g.stroke();
+      var ea = REDUCED ? 1 : Math.max(0, Math.min(1, ((t % SLOT) - 2400) / 900));
+      if (ea > 0 && !m.mono) {
+        /* the loop the fold closes, shaded, with the edges that close it */
+        g.fillStyle = rgb(C.c5, 0.12 * ea); g.beginPath();
+        m.cloud.forEach(function (q, j) { if (j) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
+        g.closePath(); g.fill();
+        m.E.forEach(function (e) {
+          if (e[2] !== 'cross') return;
+          var a = m.cloud[e[0]], b = m.cloud[e[1]];
+          g.strokeStyle = rgb(C.c5, 0.3 * ea); g.lineWidth = 1;
+          g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+        });
+      }
+      for (i = 0; i < cn; i++) { p = m.cloud[i]; g.fillStyle = rgb(col, 0.9); g.beginPath(); g.arc(p[0], p[1], 1.7, 0, TAU); g.fill(); }
+      verdict(svg, which ? 'only falls: loop_score certified 0' : 'folds back: loop_score ' + m.score.toFixed(3), which ? 'var(--green-700)' : 'var(--coral-700)');
+    }
+    register(canvas, draw, 0);
+  }
+
+  function pillarFoliation(canvas) {
+    var svg = canvas.parentNode.querySelector('svg'), C = palette();
+    var N = { r: [34, 104], a: [104, 70], b: [104, 142], a1: [184, 44], a2: [184, 96], b1: [184, 142], a11: [264, 36], a12: [264, 76], a21: [264, 118] };
+    var E = [['r', 'a'], ['r', 'b'], ['a', 'a1'], ['a', 'a2'], ['b', 'b1'], ['a1', 'a11'], ['a1', 'a12'], ['a2', 'a21']];
+    var SEQ = [[['r', 'a', 'a1', 'a11'], C.b5], [['r', 'a', 'a1', 'a12'], C.v5], [['r', 'a', 'a2', 'a21'], C.m5], [['r', 'b', 'b1'], C.a5]];
+    var CYC = 9000;
+    function draw(t) {
+      var g = fitCanvas(canvas, 320, 190), tc = REDUCED ? 3000 : t % CYC;
+      var gone = tc > 4200 && tc < 8400 ? Math.min(1, (tc - 4200) / 900) : 0;            /* seq 4 released, its leaves collapse */
+      var leafFade = tc > 5200 && tc < 8400 ? ease((tc - 5200) / 900) : 0;
+      var alive = function (n) { return (n === 'b1' || n === 'b') ? 1 - leafFade * (n === 'b1' ? 1 : (tc > 6400 ? ease((tc - 6400) / 900) : 0)) : 1; };
+      g.lineCap = 'round';
+      E.forEach(function (e) {
+        var a = N[e[0]], b = N[e[1]], al = Math.min(alive(e[0]), alive(e[1]));
+        g.strokeStyle = rgb(C.hair, al); g.lineWidth = 1.4; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+      });
+      SEQ.forEach(function (s, i) {
+        var grow = REDUCED ? 1 : ease((tc - i * 600) / 1100), al = i === 3 ? 1 - gone : 1;
+        if (grow <= 0 || al <= 0) return;
+        var pts = s[0].map(function (n) { return N[n]; }), segs = pts.length - 1, upto = grow * segs;
+        g.strokeStyle = rgb(s[1], 0.55 * al); g.lineWidth = 4; g.lineJoin = 'round';
+        g.beginPath(); g.moveTo(pts[0][0] + i - 1.5, pts[0][1] + i - 1.5);
+        for (var j = 1; j <= segs; j++) {
+          var f = Math.min(1, upto - (j - 1)); if (f <= 0) break;
+          var a = pts[j - 1], b = pts[j];
+          g.lineTo(a[0] + (b[0] - a[0]) * f + i - 1.5, a[1] + (b[1] - a[1]) * f + i - 1.5);
+        }
+        g.stroke();
+      });
+      Object.keys(N).forEach(function (k) {
+        var p = N[k], al = alive(k); if (al <= 0.01) return;
+        var r = k === 'r' ? 6 : 9 * (0.5 + 0.5 * al);
+        if (k === 'r') { g.fillStyle = rgb(C.raised, 1); g.strokeStyle = rgb(C.ink, 0.9); g.lineWidth = 1.4; g.beginPath(); g.arc(p[0], p[1], r, 0, TAU); g.fill(); g.stroke(); return; }
+        g.fillStyle = rgb(C.raised, al); g.strokeStyle = rgb((k === 'b1' || k === 'b') && gone > 0 ? C.c5 : C.ink, 0.85 * al); g.lineWidth = 1.4;
+        g.beginPath(); g.roundRect ? g.roundRect(p[0] - r * 1.5, p[1] - r * 0.9, r * 3, r * 1.8, 5) : g.rect(p[0] - r * 1.5, p[1] - r * 0.9, r * 3, r * 1.8);
+        g.fill(); g.stroke();
+      });
+      var msg = tc < 4200 ? ['4 sequences share their common prefixes', 'var(--ink)'] : tc < 6400 ? ['one sequence ends: its leaf is a free face', 'var(--coral-700)'] : tc < 8400 ? ['collapsed, and its parent is now free too', 'var(--coral-700)'] : ['4 sequences share their common prefixes', 'var(--ink)'];
+      verdict(svg, msg[0], msg[1]);
+    }
+    register(canvas, draw, 3000);
+  }
+
+  function pillarTopo(canvas) {
+    var C = palette(), I = icosphere(C), CENT = cubeCentroids();
+    var cellCol = [C.b5, C.v5, C.m5, C.a5, mix(C.b5, C.raised, 0.35), mix(C.v5, C.raised, 0.35), mix(C.m5, C.raised, 0.35), mix(C.a5, C.raised, 0.35)];
+    var seed = 7, rnd = function () { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+    var PTS = [];
+    for (var i = 0; i < 120; i++) {
+      var z = 2 * rnd() - 1, ph = TAU * rnd(), s = Math.sqrt(1 - z * z), p = [s * Math.cos(ph), s * Math.sin(ph), z], best = 0, bd = -2;
+      for (var c = 0; c < 8; c++) { var d = p[0] * CENT[c][0] + p[1] * CENT[c][1] + p[2] * CENT[c][2]; if (d > bd) { bd = d; best = c; } }
+      PTS.push({ p: p, cell: best });                 /* nearest by great-circle distance = largest dot */
+    }
+    var spr = cellCol.map(function (c) { return glowSprite(c, C); });
+    var CYC = 9000;
+    function draw(t) {
+      var g = fitCanvas(canvas, 320, 190), tc = REDUCED ? CYC - 1 : t % CYC;
+      var S2 = paintSphere(g, C, I, 160, 104, 72, 0.55 + (REDUCED ? 0 : t) * TAU / 40000, 0.38, (REDUCED ? 0 : t) / 14000, 1, [C.m5, C.b5, C.v5]);
+      var shown = Math.min(PTS.length, Math.floor(tc / 55));
+      S2.back();
+      var put = function (front) {
+        for (var k = 0; k < shown; k++) {
+          var v = S2.view(PTS[k].p); if ((v[2] >= 0) !== front) continue;
+          var age = Math.min(1, (tc - k * 55) / 400);
+          g.globalAlpha = (front ? 1 : 0.3) * age;
+          g.drawImage(spr[PTS[k].cell], v[0] - 4.5, v[1] - 4.5, 9, 9);
+          g.globalAlpha = 1;
+        }
+        CENT.forEach(function (cc) {
+          var v = S2.view(cc); if ((v[2] >= 0) !== front) return;
+          g.strokeStyle = rgb(C.ink, front ? 0.6 : 0.2); g.lineWidth = 1.2; g.beginPath(); g.arc(v[0], v[1], 5, 0, TAU); g.stroke();
+        });
+      };
+      put(false); S2.front(); put(true);
+    }
+    register(canvas, draw, CYC - 1);
+  }
+
+  function pillarCert(canvas) {
+    var svg = canvas.parentNode.querySelector('svg'), C = palette();
+    var P = [[0.06], [0.064], [0.07], [0.075], [0.31], [0.316], [0.322], [0.62], [0.627], [0.95], [0.956], [0.962]];
+    var E = mst(P), X0 = 20, W = 280, L0 = -2.6, L1 = 0.3;
+    var lx = function (h) { return X0 + (Math.log10(h) - L0) / (L1 - L0) * W; };
+    var px = function (v) { return 20 + v[0] * 290; };
+    var K = [[0, 0.02], [1500, 0.02], [3300, 0.1], [4800, 0.1], [6600, 0.9], [8100, 0.9], [9900, 0.02]];
+    function draw(t) {
+      var g = fitCanvas(canvas, 320, 190), s = REDUCED ? 0.1 : keyed(K, t % 9900, true), c = certify(P.length, E, s, 10), w = c.witness;
+      g.lineCap = 'round';
+      E.forEach(function (e) {
+        var h = e[2], col = h < c.lo ? C.b5 : h <= c.hi ? C.c5 : C.g5, on = e === w;
+        g.strokeStyle = rgb(col, h > c.hi ? 0.3 : 0.9); g.lineWidth = on ? 3.4 : 2;
+        g.beginPath(); g.moveTo(px(P[e[0]]), 70); g.lineTo(px(P[e[1]]), 70); g.stroke();
+      });
+      P.forEach(function (p) { g.fillStyle = rgb(C.ink, 0.9); g.beginPath(); g.arc(px(p), 70, 3.2, 0, TAU); g.fill(); });
+      if (w) [w[0], w[1]].forEach(function (i) { g.strokeStyle = rgb(C.c5, 1); g.lineWidth = 1.6; g.beginPath(); g.arc(px(P[i]), 70, 8, 0, TAU); g.stroke(); });
+      var AY = 142, xl = Math.max(X0, lx(c.lo)), xh = Math.min(X0 + W, lx(c.hi));
+      g.fillStyle = rgb(w ? C.c5 : C.hair, w ? 0.16 : 0.45); g.fillRect(xl, AY - 20, Math.max(0, xh - xl), 28);
+      g.strokeStyle = rgb(C.hair, 1); g.lineWidth = 1; g.beginPath(); g.moveTo(X0, AY + 8); g.lineTo(X0 + W, AY + 8); g.stroke();
+      g.strokeStyle = rgb(C.ink, 0.55); g.setLineDash([2, 3]); g.beginPath(); g.moveTo(lx(s), AY - 24); g.lineTo(lx(s), AY + 8); g.stroke(); g.setLineDash([]);
+      E.forEach(function (e) {
+        var h = e[2], col = h < c.lo ? C.b5 : h <= c.hi ? C.c5 : C.g5, x = lx(h);
+        g.strokeStyle = rgb(col, 0.9); g.lineWidth = e === w ? 2.6 : 1.5; g.beginPath(); g.moveTo(x, AY + 6); g.lineTo(x, e === w ? AY - 18 : AY - 10); g.stroke();
+      });
+      if (w) verdict(svg, 'a merge height is in the band: refused, pair named', 'var(--coral-700)');
+      else verdict(svg, 'β₀ = ' + c.count + ', certified', 'var(--green-700)');
+    }
+    register(canvas, draw, 0);
+  }
+
   /* ============================================ painting and arrival */
   function onScreen(el) {
     var r = el.getBoundingClientRect(), vh = window.innerHeight || 800;
@@ -780,6 +1120,11 @@
 
   function boot() {
     var el;
+    if ((el = document.querySelector('canvas[data-fig="seal"]')) && el.getContext) figSeal(el);
+    if ((el = document.querySelector('canvas[data-fig="p-stratum"]')) && el.getContext) pillarStratum(el);
+    if ((el = document.querySelector('canvas[data-fig="p-foliation"]')) && el.getContext) pillarFoliation(el);
+    if ((el = document.querySelector('canvas[data-fig="p-topo"]')) && el.getContext) pillarTopo(el);
+    if ((el = document.querySelector('canvas[data-fig="p-cert"]')) && el.getContext) pillarCert(el);
     if ((el = document.querySelector('canvas[data-fig="t1"]')) && el.getContext) figT1(el);
     if ((el = document.querySelector('svg[data-fig="locate"]'))) figLocate(el);
     if ((el = document.getElementById('play-beta'))) figBeta(el);
