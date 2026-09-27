@@ -69,9 +69,10 @@ pub const BLOCK_TOKENS: usize = 8;
 /// Maximum fan-out of a foliation leaf.
 ///
 /// ponytail: fixed fan-out with a linear child scan. Ceiling is 32 distinct
-/// continuations per prefix; past that `descend` refuses to share and reports
-/// `children_full`. Upgrade path is an open-addressed key->child map per leaf,
-/// which trades 3x metadata for unbounded fan-out.
+/// live continuations per prefix: a full prefix first reclaims a continuation
+/// no live sequence uses, and only when all 32 are live does `descend` refuse
+/// and report `children_full`. Upgrade path is an open-addressed key->child
+/// map per leaf, which trades 3x metadata for unbounded fan-out.
 pub const MAX_CHILDREN: usize = 32;
 /// Maximum blocks in one sequence's block table.
 pub const MAX_SEQ_BLOCKS: usize = 16;
@@ -665,7 +666,9 @@ impl Foliation {
         key: u64,
         tokens: [u32; BLOCK_TOKENS],
     ) -> Result<u16, FoliationError> {
-        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN {
+        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN
+            && !self.reclaim_dead_child(parent)
+        {
             self.stats.children_full += 1;
             return Err(FoliationError::ChildrenFull);
         }
@@ -686,6 +689,45 @@ impl Foliation {
         l.tokens = tokens;
         l.depth = depth;
         Ok(idx)
+    }
+
+    /// Free one of `parent`'s child slots held by a continuation no live
+    /// sequence uses. Returns false when every child is live.
+    ///
+    /// A sequence's block table is a path from the root, so a child with no
+    /// references heads a subtree with none: the whole subtree is collapsed
+    /// and its leaves blanked. Without this a prefix that ever had
+    /// `MAX_CHILDREN` continuations refused every new one for the rest of the
+    /// boot, because the leaf GC runs only on a full arena and never takes a
+    /// resident leaf. Prefers a child already out of the pool, then the least
+    /// recently used.
+    fn reclaim_dead_child(&mut self, parent: u16) -> bool {
+        let p = &self.leaves[parent as usize];
+        let Some(top) = p.child[..p.nchild as usize]
+            .iter()
+            .copied()
+            .filter(|&c| self.leaves[c as usize].refcount == 0)
+            .min_by_key(|&c| {
+                let l = &self.leaves[c as usize];
+                (l.slot != NONE, l.last_use)
+            })
+        else {
+            return false;
+        };
+        self.unlink_child(parent, top);
+        let mut stack = Vec::new();
+        stack.push(top);
+        while let Some(x) = stack.pop() {
+            let l = &self.leaves[x as usize];
+            stack.extend_from_slice(&l.child[..l.nchild as usize]);
+            if l.slot != NONE {
+                self.collapse(x);
+                self.stats.evictions += 1;
+            }
+            self.leaves[x as usize] = Leaf::blank();
+            self.stats.leaf_gc += 1;
+        }
+        true
     }
 
     fn free_leaf(&self) -> Option<u16> {
@@ -1670,22 +1712,26 @@ pub mod tests {
         let _ = fol.seq_release(id, KERNEL);
         fol.teardown();
 
-        // Fan-out: saturate the root leaf's children at the shipped ABI
-        // geometry, where neither the pool nor the leaf arena is the binding
-        // constraint, then seal one more distinct block off the root.
+        // Fan-out: saturate the root leaf's children with live sequences at
+        // the shipped ABI pool and arena, where neither is the binding
+        // constraint, then seal one more distinct block off the root. The
+        // ceiling binds live continuations only — a released one is reclaimed
+        // (`dead_children_do_not_saturate_fanout`) — so the saturating
+        // sequences stay open, which takes one slot more than the ABI table.
         let mut fol = Foliation::new(
             ABI_POOL_BLOCKS,
             ABI_LEAF_ARENA,
-            ABI_MAX_SEQS,
+            ABI_MAX_SEQS + 1,
             Policy::Foliation,
         );
+        let mut live = Vec::new();
         for round in 0..MAX_CHILDREN as u32 {
             let sid = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
             test_assert!(sid != usize::MAX);
             for j in 0..BLOCK_TOKENS {
                 let _ = fol.seq_append(sid, KERNEL, 60_000 + round * 100 + j as u32);
             }
-            let _ = fol.seq_release(sid, KERNEL);
+            live.push(sid);
         }
         test_assert_eq!(fol.stats().children_full, 0);
         test_assert_eq!(fol.stats().descents, MAX_CHILDREN as u64);
@@ -1706,6 +1752,9 @@ pub mod tests {
         test_assert_eq!(fol.stats().children_full, refusals);
         test_assert_eq!(fol.seq_counts(sid, KERNEL).map(|c| c.0), Some(0u16));
         let _ = fol.seq_release(sid, KERNEL);
+        for sid in live {
+            let _ = fol.seq_release(sid, KERNEL);
+        }
         fol.teardown();
         TestResult::Pass
     }
@@ -1921,6 +1970,68 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A prefix's `MAX_CHILDREN` slots bound its *live* continuations. A
+    /// sequence's block table is a path from the root, so a child no live
+    /// sequence references heads a subtree no live sequence references. One
+    /// task writing and releasing two-block sequences with distinct first
+    /// blocks used to fill the root's fan-out with dead continuations for the
+    /// rest of the boot — the leaf GC runs only on a full arena and never
+    /// takes a resident leaf — so every later prompt with a new first block
+    /// was refused with ENOSPC. The dead subtree must be reclaimed whole, its
+    /// frames returned, and nothing a live sequence holds touched.
+    fn test_dead_children_do_not_saturate_fanout() -> TestResult {
+        const DEAD: u64 = 7;
+        const LIVE: u64 = 8;
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        // A live bystander, opened first so it is the least recently used child.
+        let keep = fol.seq_create(2, LIVE).unwrap_or(usize::MAX);
+        test_assert!(keep != usize::MAX);
+        for &t in &prefix_tokens(80_000, 2) {
+            test_assert!(fol.seq_append(keep, LIVE, t).is_ok());
+        }
+        let held = [fol.seq_frame(keep, 0), fol.seq_frame(keep, 1)];
+        test_assert!(held[0].is_some() && held[1].is_some());
+        for round in 0..(MAX_CHILDREN as u32 - 1) {
+            let sid = fol.seq_create(2, DEAD).unwrap_or(usize::MAX);
+            test_assert!(sid != usize::MAX);
+            for &t in &prefix_tokens(100_000 + round * 100, 2) {
+                test_assert!(fol.seq_append(sid, DEAD, t).is_ok());
+            }
+            test_assert_eq!(fol.seq_release(sid, DEAD), Ok(2u16));
+        }
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS);
+
+        let sid = fol.seq_create(1, LIVE).unwrap_or(usize::MAX);
+        test_assert!(sid != usize::MAX);
+        for &t in &prefix_tokens(200_000, 1) {
+            test_assert!(
+                fol.seq_append(sid, LIVE, t).is_ok(),
+                "a new first block was refused while every other continuation was dead"
+            );
+        }
+        test_assert_eq!(fol.seq_counts(sid, LIVE).map(|c| c.0), Some(1u16));
+        test_assert!(fol.seq_frame(sid, 0).is_some());
+        test_assert_eq!(fol.stats().children_full, 0);
+        // Exactly one dead two-block subtree went: its two plaques and leaves.
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS - 1);
+        test_assert_eq!(fol.stats().leaf_gc, 2);
+        test_assert!(
+            fol.seq_frame(keep, 0) == held[0] && fol.seq_frame(keep, 1) == held[1],
+            "reclaiming a dead continuation moved a live one"
+        );
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        let _ = fol.seq_release(sid, LIVE);
+        let _ = fol.seq_release(keep, LIVE);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(
+            s.frames_freed == s.frames_backed,
+            "a reclaimed plaque's frame was not returned"
+        );
+        TestResult::Pass
+    }
+
     /// The proof must actually run and report `result=pass`.
     fn test_proof_line_passes() -> TestResult {
         let line = foliation_proof_line();
@@ -2098,6 +2209,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::proof_replays_a_recency_trace",
             test_proof_replays_a_recency_trace,
+        );
+        crate::testing::register_test(
+            "foliation::dead_children_do_not_saturate_fanout",
+            test_dead_children_do_not_saturate_fanout,
         );
     }
 }
