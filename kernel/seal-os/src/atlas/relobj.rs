@@ -16,6 +16,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use x86_64::{structures::paging::PageTableFlags, PhysAddr, VirtAddr};
 
+use crate::memory::virt::{set_identity_flags, KERNEL_RO_NX, KERNEL_RW_NX};
+
 /// Version of the chart object contract this loader implements.
 pub const CHART_FORMAT_VERSION: u32 = 1;
 
@@ -308,8 +310,9 @@ fn executable_flags() -> PageTableFlags {
 ///
 /// The executable half is mapped `RW + NX` while relocations are being applied
 /// and flipped to `RX` by [`ChartImage::seal`] before anything is called; it is
-/// never writable and executable at the same time. The data half stays `RW+NX`
-/// for its whole life.
+/// never writable and executable at the same time, and once sealed its frames
+/// are read-only through the kernel identity map as well. The data half stays
+/// `RW+NX` for its whole life.
 pub struct ChartImage {
     exec_base: u64,
     exec_frames: Vec<PhysAddr>,
@@ -394,19 +397,26 @@ impl ChartImage {
         })
     }
 
-    /// Flip the executable half from `RW+NX` to `RX`. Returns false if the
+    /// Flip the executable half from `RW+NX` to `RX`, and take write access
+    /// away from its frames' identity-map alias. Returns false if either
     /// remap failed, in which case the image must be discarded.
     pub fn seal(&mut self) -> bool {
         if self.sealed {
             return true;
         }
-        self.sealed = remap_region(self.exec_base, &self.exec_frames, executable_flags());
+        self.sealed = remap_region(self.exec_base, &self.exec_frames, executable_flags())
+            && self.exec_frames.iter().all(|f| {
+                // SAFETY: the image owns these frames and nothing reaches them
+                // through the identity map while the chart is being sealed.
+                unsafe { set_identity_flags(*f, KERNEL_RO_NX) }.is_ok()
+            });
         self.sealed
     }
 
-    /// True once the text half has been flipped to read+execute.
+    /// True once the text half is read+execute and none of its frames is
+    /// writable through the identity map, the latter read from live tables.
     pub fn is_sealed(&self) -> bool {
-        self.sealed
+        self.sealed && self.exec_frames.iter().all(|f| !identity_writable(*f))
     }
 
     /// Total resident bytes (both halves, page granular).
@@ -415,8 +425,29 @@ impl ChartImage {
     }
 }
 
+/// Whether the identity-map alias of `frame` is mapped writable.
+fn identity_writable(frame: PhysAddr) -> bool {
+    crate::memory::virt::leaf_flags(VirtAddr::new(frame.as_u64()))
+        .is_some_and(|f| f.contains(PageTableFlags::WRITABLE))
+}
+
 impl Drop for ChartImage {
     fn drop(&mut self) {
+        // Text frames go back to the allocator, whose next owner writes them
+        // through the identity map: give that alias its write access back.
+        for f in &self.exec_frames {
+            if identity_writable(*f) {
+                continue;
+            }
+            // SAFETY: the image still owns the frame, and nothing touches its
+            // identity alias before it is freed below.
+            if unsafe { set_identity_flags(*f, KERNEL_RW_NX) }.is_err() {
+                crate::serial_println!(
+                    "[Atlas] identity alias of frame {:#x} stays read-only",
+                    f.as_u64()
+                );
+            }
+        }
         // ponytail: frames are returned, the virtual range is not — the kernel
         // VA bump allocator has no free list. Add one if chart churn matters.
         unmap_frames(self.exec_base, &self.exec_frames);

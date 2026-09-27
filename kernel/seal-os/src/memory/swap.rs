@@ -177,9 +177,7 @@ unsafe fn read_phys_page(phys: PhysAddr, out: &mut [u8; 4096]) -> Result<(), vir
     } else {
         // Fallback scratch mapping for high physical addresses (>16 GiB identity map).
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        virt::map_page(scratch, phys, flags)?;
+        virt::map_page(scratch, phys, virt::KERNEL_RW_NX)?;
         core::ptr::copy_nonoverlapping(scratch.as_u64() as *const u8, out.as_mut_ptr(), 4096);
         let _ = virt::unmap_page(scratch);
     }
@@ -197,9 +195,7 @@ unsafe fn write_phys_page(phys: PhysAddr, data: &[u8; 4096]) -> Result<(), virt:
         core::ptr::copy_nonoverlapping(data.as_ptr(), addr as *mut u8, 4096);
     } else {
         let scratch = VirtAddr::new(0xffff_ffff_7000_0000);
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE;
-        virt::map_page(scratch, phys, flags)?;
+        virt::map_page(scratch, phys, virt::KERNEL_RW_NX)?;
         core::ptr::copy_nonoverlapping(data.as_ptr(), scratch.as_u64() as *mut u8, 4096);
         let _ = virt::unmap_page(scratch);
     }
