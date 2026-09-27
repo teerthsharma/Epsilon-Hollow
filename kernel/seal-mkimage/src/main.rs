@@ -1876,7 +1876,124 @@ fn check_kv_policy_text(text: &str) -> Result<(), String> {
         }
     }
     parse_ratio(line, "chat_foliation_beats_random=")?;
+
+    // Which policy wins flips with the pool size, so the proof sweeps it:
+    // every trace, every policy, at sizes on both sides of `pool_blocks`, the
+    // oracle bounding every point, and the headline equal to the sweep's own
+    // column at `pool_blocks`. Margins between policies are recorded, not
+    // gated.
+    let pools = parse_list(line, "sweep_pools=")?;
+    let headline = parse_metric(line, "pool_blocks=")?;
+    if pools.len() < 4
+        || !pools.iter().any(|&p| p < headline)
+        || !pools.iter().any(|&p| p > headline)
+    {
+        return Err(format!(
+            "KV policy sweep must span at least four pool sizes on both sides of pool_blocks={headline}: {pools:?}"
+        ));
+    }
+    let at = pools
+        .iter()
+        .position(|&p| p == headline)
+        .ok_or_else(|| format!("KV policy sweep skips pool_blocks={headline}: {pools:?}"))?;
+    for trace in ["boot", "chat", "chat16"] {
+        let belady = parse_list(line, &format!("sweep_{trace}_belady="))?;
+        if belady.last() <= belady.first() {
+            return Err(format!(
+                "KV policy sweep_{trace}_belady gains nothing from the largest pool, so the sweep did not change capacity: {belady:?}"
+            ));
+        }
+        for policy in ["foliation", "lru", "locality", "adaptive", "belady"] {
+            let key = format!("sweep_{trace}_{policy}=");
+            let hits = parse_list(line, &key)?;
+            if hits.len() != pools.len() {
+                return Err(format!(
+                    "KV policy sweep {key} has {} points for {} pool sizes",
+                    hits.len(),
+                    pools.len()
+                ));
+            }
+            if let Some(i) = (0..hits.len()).find(|&i| hits[i] > belady[i]) {
+                return Err(format!(
+                    "KV policy sweep beats the offline optimum at pool {}: {key}{}, belady {}",
+                    pools[i], hits[i], belady[i]
+                ));
+            }
+        }
+    }
+    for (prefix, trace) in [("", "boot"), ("chat_", "chat")] {
+        for policy in ["foliation", "lru", "locality", "belady"] {
+            let swept = parse_list(line, &format!("sweep_{trace}_{policy}="))?[at];
+            let reported = parse_metric(line, &format!("{prefix}hit_bp_{policy}="))?;
+            if swept != reported {
+                return Err(format!(
+                    "KV policy headline {prefix}hit_bp_{policy}={reported} disagrees with its own sweep at pool_blocks={headline}: {swept}"
+                ));
+            }
+        }
+    }
+
+    // The adaptive policy selects between two rankings the proof measures, so
+    // it is gated against them: at every sweep point it may trail the better
+    // of LRU and foliation by at most the margin, and it may not lose a
+    // random-null seed either of them beats. The margin lives here rather
+    // than in the kernel, so the kernel cannot loosen its own gate.
+    const ADAPTIVE_MARGIN_BP: u64 = 250;
+    for trace in ["boot", "chat", "chat16"] {
+        let adaptive = parse_list(line, &format!("sweep_{trace}_adaptive="))?;
+        let foliation = parse_list(line, &format!("sweep_{trace}_foliation="))?;
+        let lru = parse_list(line, &format!("sweep_{trace}_lru="))?;
+        for i in 0..pools.len() {
+            let best = foliation[i].max(lru[i]);
+            if adaptive[i] + ADAPTIVE_MARGIN_BP < best {
+                return Err(format!(
+                    "KV policy adaptive trails the better base policy by more than {ADAPTIVE_MARGIN_BP} bp on {trace} at pool {}: adaptive {}, best {best}",
+                    pools[i], adaptive[i]
+                ));
+            }
+        }
+    }
+    require_field_eq(line, "adaptive_null_regressions=", "0", label)?;
+    for key in [
+        "adaptive_beats_random=",
+        "chat_adaptive_beats_random=",
+        "chat16_adaptive_beats_random=",
+    ] {
+        parse_ratio(line, key)?;
+    }
+    if parse_metric(line, "duel_cycles_per_descent_adaptive=")? == 0 {
+        return Err(String::from(
+            "KV policy proof reports free duel bookkeeping for the adaptive policy",
+        ));
+    }
+
+    // The victim scan's cost is measured: a replay that evicted cannot have
+    // chosen its victims for free.
+    for policy in ["foliation", "lru", "adaptive"] {
+        let per = parse_metric(line, &format!("scan_cycles_per_eviction_{policy}="))?;
+        if parse_metric(line, &format!("evictions_{policy}="))? > 0 && per == 0 {
+            return Err(format!(
+                "KV policy proof reports a free eviction scan under {policy}"
+            ));
+        }
+
+    }
     Ok(())
+}
+
+/// `key=a,b,c` as a list of metrics.
+fn parse_list(line: &str, key: &str) -> Result<Vec<u64>, String> {
+    let value = line
+        .split_whitespace()
+        .find_map(|part| part.strip_prefix(key))
+        .ok_or_else(|| format!("missing metric `{key}`"))?;
+    value
+        .split(',')
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|e| format!("invalid list `{key}{value}`: {e}"))
+        })
+        .collect()
 }
 
 fn check_gpu_bench(log_path: &Path) -> Result<(), String> {
@@ -4447,7 +4564,7 @@ mod tests {
     const BUNDLE_PROOF_LOG: &str = "[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify=ok index_tampered=refused index_entries=4 store_index=ed25519_fixture provision_pkg=eph_installed requested=6 provisioned=4 not_provisioned=1 digest_ok=4 digest_refused=1 cache_hits=2 fixture=synthetic_test_fixture fixture_bytes=256 cache_hit=same_alloc refcount_peak=2 refcount_after_drop=1 cached_while_held=1 released=1 cached_after_release=0 absent_section=test-absent-fixture.section:not_provisioned corrupt_section=test-corrupt-fixture.section:digest_mismatch simulation=absent wifi=down wifi_section=none wifi_scan_entries=0 bt=down bt_section=none bt_scan_entries=0 result=pass\n";
     const FS_PARITY_LOG: &str = "[FSPARITY] proof version=1 fat_image=fat16_fixture fat_mounted=ok fat_image_bytes=1048576 fat_blank_digest=0x00000000cafe0001 ext2_image=ext2_rev1_1k_fixture ext2_mounted=ok ext2_image_bytes=1048576 ext2_blank_digest=0x00000000cafe0002 ops_fat=48 ops_ext2=48 files_compared=6 bytes_compared=4096 content_digest_fat=0x00000000feedbeef content_digest_ext2=0x00000000feedbeef content_parity=byte_for_byte dirs_compared=3 dirs_equal=3 stat_fields_compared=18 stat_fields_equal=18 error_cases=5 error_matches=5 divergences=0 divergence_kinds=none negative_control_digest=0x00000000deadbeef negative_control=detected negative_control_restored=ok result=pass\n";
     const MLFIT_PROOF_LOG: &str = "[MLFIT] proof version=1 subsystem=stratum window=256 embed_dim=8 kappa=1.500 steps_per_case=128 bytes_per_stream=4096 long_stream_steps=4096 long_stream_points=256 bounded=ok case=underfit truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=wellfit truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=overfit truth=overfit got=overfit loop=0.2000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=collapsing truth=collapsing got=collapsing loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=negctl truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_line truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_exp truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 monotone_loop_zero=ok negctl_flagged=no naive_gap_baseline_flagged=yes incremental_batch_agree=ok correct=7/7 result=pass\n";
-    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_locality=5000 hit_bp_belady=9000 gap_closed_bp=600 chat_requests=96 chat_descents=528 chat_hit_bp_foliation=5284 chat_hit_bp_lru=8068 chat_hit_bp_locality=6818 chat_hit_bp_belady=8143 chat_foliation_beats_random=0/32 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
+    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_locality=5000 hit_bp_belady=9000 gap_closed_bp=600 chat_requests=96 chat_descents=528 chat_hit_bp_foliation=5284 chat_hit_bp_lru=8068 chat_hit_bp_locality=6818 chat_hit_bp_belady=8143 chat_foliation_beats_random=0/32 sweep_pools=16,32,64,128 sweep_boot_foliation=100,4000,8200,9000 sweep_boot_lru=0,0,7600,9000 sweep_boot_locality=50,2000,5000,9000 sweep_boot_adaptive=100,4000,8100,9000 sweep_boot_belady=200,5000,9000,9000 sweep_chat_foliation=3000,4000,5284,7000 sweep_chat_lru=5000,7000,8068,8100 sweep_chat_locality=4000,6000,6818,8000 sweep_chat_adaptive=4900,6900,8000,8100 sweep_chat_belady=5500,7500,8143,8143 sweep_chat16_foliation=2000,3000,5113,6000 sweep_chat16_lru=1000,2000,3731,6000 sweep_chat16_locality=1500,2500,4000,6000 sweep_chat16_adaptive=2000,3000,5100,6000 sweep_chat16_belady=2500,3500,5378,6100 scan_cycles_per_eviction_foliation=900 scan_cycles_per_eviction_lru=850 adaptive_beats_random=32/32 chat_adaptive_beats_random=32/32 chat16_adaptive_beats_random=32/32 adaptive_null_regressions=0 evictions_adaptive=12 scan_cycles_per_eviction_adaptive=1300 duel_cycles_per_descent_adaptive=90 adaptive_duels=150 adaptive_duels_lru=0 adaptive_duels_foliation=2 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
     const GPU_BENCH_PROOF_LOG: &str = "[GPU-BENCH] proof version=1 arch=gfx900 backend=cpu_fallback gpu_present=0 hw_attempted=0 hw_reason=no_amd_gpu cycles=123456 kernels_real=1/3 spectral_step_bytes=256 blob_fnv1a=0x00000000cafef00d encoder_fnv1a=0x00000000cafef00d blob_matches_encoder=1 golden_words=64/64 decoded_insts=32/32 roundtrip_words=64/64 mnemonics_match=1 rsrc1=0x000c0081 rsrc2=0x00000090 ref_dim=512 ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact=512/512 cpu_ref_max_ulp=0 backend_exact=512/512 backend_max_ulp=0 result=pass\n";
     const KASLR_PROOF_LOG: &str = "[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base=0x1000000 image_size=0x400000 kernel_alias_base=0xffffffff81400000 kernel_alias_slide=0x1400000 kernel_alias_slots=512 kernel_alias_bits=9 heap_window_base=0xffff900040000000 heap_window_slide=0x40000000 heap_window_slots=4194304 heap_window_bits=22 total_bits=31 granule=0x200000 aligned=1 in_range=1 entropy=rdseed boot_nonce=0xa1b2c3d4e5f60718 resample_nonce=0x0718f6e5d4c3b2a1 resample_differs=1 cross_boot=external-diff active=1 result=pass\n";
     const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=1 wx_violations=0 wx_pages_scanned=1024 wx_scope=kernel-root wx_enforced=1 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
@@ -6436,7 +6553,12 @@ fn panic(info: &PanicInfo) -> ! {
         assert!(check_kv_policy_text(&beats_belady).is_err());
 
         // Losing to LRU is recorded, never gated.
-        let loses_to_lru = KV_POLICY_LOG.replace("hit_bp_foliation=8200", "hit_bp_foliation=7000");
+        let loses_to_lru = KV_POLICY_LOG
+            .replace("hit_bp_foliation=8200", "hit_bp_foliation=7000")
+            .replace(
+                "sweep_boot_foliation=100,4000,8200,9000",
+                "sweep_boot_foliation=100,4000,7000,9000",
+            );
         assert!(check_kv_policy_text(&loses_to_lru).is_ok());
 
         // The locality-only null and the recency-shaped chat trace are the
@@ -6464,6 +6586,139 @@ fn panic(info: &PanicInfo) -> ! {
         let locality_beats_belady =
             KV_POLICY_LOG.replace("hit_bp_locality=5000", "hit_bp_locality=9500");
         assert!(check_kv_policy_text(&locality_beats_belady).is_err());
+    }
+
+    #[test]
+    fn kv_policy_requires_a_pool_sweep_the_oracle_bounds() {
+        assert!(check_kv_policy_text(KV_POLICY_LOG).is_ok());
+
+        // Every trace under every policy, and the pool sizes themselves.
+        for field in [
+            "sweep_pools=16,32,64,128 ",
+            "sweep_boot_foliation=100,4000,8200,9000 ",
+            "sweep_boot_lru=0,0,7600,9000 ",
+            "sweep_boot_locality=50,2000,5000,9000 ",
+            "sweep_boot_belady=200,5000,9000,9000 ",
+            "sweep_chat_lru=5000,7000,8068,8100 ",
+            "sweep_chat16_foliation=2000,3000,5113,6000 ",
+            "sweep_chat16_lru=1000,2000,3731,6000 ",
+            "sweep_chat16_belady=2500,3500,5378,6100 ",
+        ] {
+            let dropped = KV_POLICY_LOG.replace(field, "");
+            assert!(
+                check_kv_policy_text(&dropped).is_err(),
+                "KV policy gate accepted a proof without {field}"
+            );
+        }
+
+        // A list that does not line up with the pool sizes.
+        let short = KV_POLICY_LOG.replace(
+            "sweep_chat16_locality=1500,2500,4000,6000",
+            "sweep_chat16_locality=1500,2500,4000",
+        );
+        assert!(check_kv_policy_text(&short).is_err());
+
+        // One sweep point where a realizable policy beats the oracle.
+        let beats_oracle = KV_POLICY_LOG.replace(
+            "sweep_chat16_lru=1000,2000,3731,6000",
+            "sweep_chat16_lru=1000,3600,3731,6000",
+        );
+        assert!(check_kv_policy_text(&beats_oracle).is_err());
+
+        // The headline replay must be the sweep's own column at pool_blocks.
+        let disagrees = KV_POLICY_LOG.replace(
+            "sweep_boot_foliation=100,4000,8200,9000",
+            "sweep_boot_foliation=100,4000,8100,9000",
+        );
+        assert!(check_kv_policy_text(&disagrees).is_err());
+
+        // A sweep whose pool sizes change nothing: the optimum is flat.
+        let flat = KV_POLICY_LOG.replace(
+            "sweep_chat16_belady=2500,3500,5378,6100",
+            "sweep_chat16_belady=6100,6100,6100,6100",
+        );
+        assert!(check_kv_policy_text(&flat).is_err());
+
+        // A sweep that skips, or does not bracket, the headline pool size.
+        let skips = KV_POLICY_LOG.replace("sweep_pools=16,32,64,128", "sweep_pools=16,32,48,128");
+        assert!(check_kv_policy_text(&skips).is_err());
+        let above_only =
+            KV_POLICY_LOG.replace("sweep_pools=16,32,64,128", "sweep_pools=64,72,80,128");
+        assert!(check_kv_policy_text(&above_only).is_err());
+    }
+
+    #[test]
+    fn kv_policy_requires_a_measured_eviction_scan() {
+        assert!(check_kv_policy_text(KV_POLICY_LOG).is_ok());
+        for field in [
+            "scan_cycles_per_eviction_foliation=900 ",
+            "scan_cycles_per_eviction_lru=850 ",
+        ] {
+            let dropped = KV_POLICY_LOG.replace(field, "");
+            assert!(
+                check_kv_policy_text(&dropped).is_err(),
+                "KV policy gate accepted a proof without {field}"
+            );
+        }
+        // A replay that evicted cannot have chosen its victims for free.
+        let free_scan = KV_POLICY_LOG.replace(
+            "scan_cycles_per_eviction_lru=850",
+            "scan_cycles_per_eviction_lru=0",
+        );
+        assert!(check_kv_policy_text(&free_scan).is_err());
+    }
+
+    #[test]
+    fn kv_policy_gates_the_adaptive_policy_on_both_base_policies() {
+        assert!(check_kv_policy_text(KV_POLICY_LOG).is_ok());
+
+        // Chat at pool 32: LRU 7000 is the better base policy, so 6750 is the
+        // floor and 6749 is past it.
+        let at_margin = KV_POLICY_LOG.replace(
+            "sweep_chat_adaptive=4900,6900,8000,8100",
+            "sweep_chat_adaptive=4900,6750,8000,8100",
+        );
+        assert!(check_kv_policy_text(&at_margin).is_ok());
+        let past_margin = KV_POLICY_LOG.replace(
+            "sweep_chat_adaptive=4900,6900,8000,8100",
+            "sweep_chat_adaptive=4900,6749,8000,8100",
+        );
+        assert!(check_kv_policy_text(&past_margin).is_err());
+
+        // Above the offline optimum at one point.
+        let beats_oracle = KV_POLICY_LOG.replace(
+            "sweep_chat16_adaptive=2000,3000,5100,6000",
+            "sweep_chat16_adaptive=2000,3000,5100,6200",
+        );
+        assert!(check_kv_policy_text(&beats_oracle).is_err());
+
+        // Losing a random seed that a base policy beats.
+        let regressed =
+            KV_POLICY_LOG.replace("adaptive_null_regressions=0", "adaptive_null_regressions=1");
+        assert!(check_kv_policy_text(&regressed).is_err());
+
+        // Free duel bookkeeping is not a measurement.
+        let free_duels = KV_POLICY_LOG.replace(
+            "duel_cycles_per_descent_adaptive=90",
+            "duel_cycles_per_descent_adaptive=0",
+        );
+        assert!(check_kv_policy_text(&free_duels).is_err());
+
+        for field in [
+            "sweep_boot_adaptive=100,4000,8100,9000 ",
+            "sweep_chat_adaptive=4900,6900,8000,8100 ",
+            "sweep_chat16_adaptive=2000,3000,5100,6000 ",
+            "adaptive_null_regressions=0 ",
+            "chat16_adaptive_beats_random=32/32 ",
+            "scan_cycles_per_eviction_adaptive=1300 ",
+            "duel_cycles_per_descent_adaptive=90 ",
+        ] {
+            let dropped = KV_POLICY_LOG.replace(field, "");
+            assert!(
+                check_kv_policy_text(&dropped).is_err(),
+                "KV policy gate accepted a proof without {field}"
+            );
+        }
     }
 
     #[test]
