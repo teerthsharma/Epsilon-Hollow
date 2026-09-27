@@ -54,6 +54,9 @@ pub struct PerCpu {
     pub pending_reschedule: bool,
     pub ap_ready: bool,
     pub tss_selector: SegmentSelector,
+    /// Where `syscall_entry` parks the user RSP between `swapgs` and loading
+    /// the kernel stack; read back into the syscall frame immediately after.
+    pub syscall_user_rsp: u64,
 }
 
 // PerCpu contains Vecs (inside ManifoldScheduler) so it is not Copy.
@@ -143,6 +146,7 @@ pub unsafe fn init_bsp() {
         pending_reschedule: false,
         ap_ready: true,
         tss_selector: SegmentSelector(0),
+        syscall_user_rsp: 0,
     });
 
     let per_cpu = &mut *ptr;
@@ -203,6 +207,7 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
             pending_reschedule: false,
             ap_ready: false,
             tss_selector: SegmentSelector(0),
+            syscall_user_rsp: 0,
         });
 
         let per_cpu = &mut *ptr;

@@ -154,6 +154,8 @@ pub extern "C" fn ap_main() {
         // Initialize local APIC timer (same frequency as BSP)
         crate::drivers::apic::init_local_apic_timer_for_ap();
 
+        // SYSCALL MSRs (EFER.SCE included) are per CPU.
+        crate::process::userspace::init_syscall_msrs();
         // This thread becomes the AP's idle task, so a yield has a context to
         // come back to.
         crate::process::scheduler::init();

@@ -61,8 +61,8 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 628
-justified 17
+total 630
+justified 19
 unjustified 611
 files 85
 file lib.rs 23 0
@@ -140,7 +140,7 @@ file security/features.rs 4 4
 file security/kpti.rs 6 0
 file security/mod.rs 1 0
 file security/retpoline.rs 1 0
-file security/smap_smep.rs 3 0
+file security/smap_smep.rs 5 2
 file sync/tests.rs 1 0
 file sync/ticket_lock.rs 1 0
 file sync/tlb.rs 2 0
