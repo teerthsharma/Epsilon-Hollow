@@ -2061,7 +2061,9 @@ impl Shell {
                     Ok(d) => d,
                     Err(e) => return format!("topcrypt decode: {}", e),
                 };
-                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let Some(topo) = crate::fs::topcrypt::import_from_bytes(&data, 0) else {
+                    return format!("topcrypt decode: '{}' is not a .topo file", arg1);
+                };
                 let decoded = crate::fs::topcrypt::decode_bytes(&topo);
                 let out_name = arg1.strip_suffix(".topo").unwrap_or(arg1);
                 if let Some(e) = self.deny(out_name, Permissions::W) {
@@ -2091,7 +2093,9 @@ impl Shell {
                 if let Some(e) = self.deny(arg1, Permissions::W) {
                     return format!("topcrypt lock: {}", e);
                 }
-                let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let Some(mut topo) = crate::fs::topcrypt::import_from_bytes(&data, 0) else {
+                    return format!("topcrypt lock: '{}' is not a .topo file", arg1);
+                };
                 let key = crate::security::topcrypt_guard::LYPNOS_KEY;
                 crate::fs::topcrypt::lock_file(&mut topo, key);
                 let serialized = crate::fs::topcrypt::export_to_bytes(&topo);
@@ -2117,7 +2121,9 @@ impl Shell {
                 if let Some(e) = self.deny(arg1, Permissions::W) {
                     return format!("topcrypt unlock: {}", e);
                 }
-                let mut topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let Some(mut topo) = crate::fs::topcrypt::import_from_bytes(&data, 0) else {
+                    return format!("topcrypt unlock: '{}' is not a .topo file", arg1);
+                };
                 let key = crate::security::topcrypt_guard::LYPNOS_KEY;
                 if !crate::fs::topcrypt::unlock_file(&mut topo, key) {
                     return format!(
@@ -2142,7 +2148,9 @@ impl Shell {
                     Ok(d) => d,
                     Err(e) => return format!("topcrypt info: {}", e),
                 };
-                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let Some(topo) = crate::fs::topcrypt::import_from_bytes(&data, 0) else {
+                    return format!("topcrypt info: '{}' is not a .topo file", arg1);
+                };
                 format!(
                     "Name: {}
 Blocks: {}
@@ -2195,7 +2203,9 @@ Seed: {:016x}",
                     Ok(d) => d,
                     Err(e) => return format!("topcrypt export: {}", e),
                 };
-                let topo = crate::fs::topcrypt::import_from_bytes(&data, 0);
+                let Some(topo) = crate::fs::topcrypt::import_from_bytes(&data, 0) else {
+                    return format!("topcrypt export: '{}' is not a .topo file", arg1);
+                };
                 let flat = crate::fs::topcrypt::decode_bytes(&topo);
                 let dest = if arg2.is_empty() {
                     format!("{}.flat", arg1)
@@ -3417,7 +3427,48 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Every `topcrypt` subcommand that reads a `.topo` file parses bytes from
+    /// a file the user named. A runt, a file with the wrong magic, and a real
+    /// `.topo` cut short by four bytes must each come back as an error line;
+    /// a well-formed file still decodes.
+    fn test_topcrypt_refuses_a_malformed_topo_file() -> TestResult {
+        use crate::fs::topcrypt::{encode_bytes, export_to_bytes};
+        let mut sh = Shell::new();
+        sh.cwd = sh.fs.root_id();
+        let root = sh.cwd;
+        let good = export_to_bytes(&encode_bytes(b"topcrypt shell fixture", 0x5EA1));
+        let mut cut = good.clone();
+        cut.truncate(good.len() - 4);
+        let files: [(&str, Vec<u8>); 3] = [
+            ("runt.topo", b"TOPC".to_vec()),
+            ("zero.topo", alloc::vec![0u8; 128]),
+            ("cut.topo", cut),
+        ];
+        for (name, bytes) in files.iter() {
+            test_assert!(sh.fs.store(name, bytes, root).is_ok(), "fixture store failed");
+            for sub in ["decode", "lock", "unlock", "info", "export"] {
+                let out = sh.execute(&format!("topcrypt {} {}", sub, name));
+                test_assert!(
+                    out.contains("is not a .topo file"),
+                    "a malformed .topo file was not refused"
+                );
+            }
+        }
+        // Positive control: the intact file decodes back to its bytes.
+        test_assert!(sh.fs.store("good.topo", &good, root).is_ok(), "fixture store failed");
+        let out = sh.execute("topcrypt decode good.topo");
+        test_assert!(out.starts_with("[TopCrypt] Decoded"), "intact .topo did not decode");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        // Chains topcrypt::tests: `fs::topcrypt` has no entry of its own in
+        // testing/runner.rs, and the shell is its main caller.
+        crate::fs::topcrypt::tests::register_all();
+        crate::testing::register_test(
+            "shell::topcrypt_refuses_a_malformed_topo_file",
+            test_topcrypt_refuses_a_malformed_topo_file,
+        );
         crate::testing::register_test(
             "shell::comment_starts_only_at_a_word_boundary",
             test_comment_starts_only_at_a_word_boundary,

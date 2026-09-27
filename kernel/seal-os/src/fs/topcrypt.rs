@@ -292,10 +292,14 @@ pub fn export_to_bytes(topo: &TopologicalFile) -> Vec<u8> {
 /// Deserialize a topological file from bytes (`.topo` wire format).
 /// The `seed` parameter is retained for API compatibility but ignored
 /// because the seed is embedded in the serialized data.
-pub fn import_from_bytes(data: &[u8], _seed: u64) -> TopologicalFile {
-    assert!(data.len() >= 62, "topo file too small");
-    assert_eq!(&data[0..4], b"TOPC", "invalid magic");
-    assert_eq!(data[4], 1, "unsupported version");
+///
+/// Returns `None` for anything that is not a well-formed `.topo` blob. Every
+/// caller feeds this bytes read straight off a user-named file, so a bad
+/// header or a truncated body must not panic the kernel.
+pub fn import_from_bytes(data: &[u8], _seed: u64) -> Option<TopologicalFile> {
+    if data.len() < 62 || &data[0..4] != b"TOPC" || data[4] != 1 {
+        return None;
+    }
 
     let mut name_hash = [0u8; 32];
     name_hash.copy_from_slice(&data[5..37]);
@@ -313,6 +317,13 @@ pub fn import_from_bytes(data: &[u8], _seed: u64) -> TopologicalFile {
     let lock_entropy = f64::from_le_bytes([
         data[54], data[55], data[56], data[57], data[58], data[59], data[60], data[61],
     ]);
+
+    // Bound the body against the declared block count *before* reserving, so a
+    // corrupt header can neither over-allocate nor index past `data`.
+    let body_len = usize::try_from(block_count).ok()?.checked_mul(68)?;
+    if data.len() < body_len.checked_add(62)? {
+        return None;
+    }
 
     let mut blocks = Vec::with_capacity(block_count as usize);
     let mut offset = 62;
@@ -335,14 +346,14 @@ pub fn import_from_bytes(data: &[u8], _seed: u64) -> TopologicalFile {
         });
     }
 
-    TopologicalFile {
+    Some(TopologicalFile {
         name_hash,
         block_count,
         embedding_seed,
         blocks,
         locked,
         lock_entropy,
-    }
+    })
 }
 
 /// Read a file via VFS and encode it topologically.
@@ -388,4 +399,79 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hasher.finalize().into()
+}
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    use super::*;
+    use crate::testing::TestResult;
+    use crate::{test_assert, test_assert_eq};
+
+    const FIXTURE: &[u8] = b"lypnos guard round trip fixture, longer than a single 64-byte block";
+
+    /// `.topo` on disk is `export_to_bytes`, never `decode_bytes`. Both take a
+    /// `&TopologicalFile` and return a `Vec<u8>`, so the compiler cannot tell
+    /// the serializer from the inverse transform at a call site. This can.
+    fn test_wire_format_round_trips() -> TestResult {
+        let topo = encode_bytes(FIXTURE, 0x5EA1);
+        let wire = export_to_bytes(&topo);
+        let Some(reparsed) = import_from_bytes(&wire, 0) else {
+            return TestResult::Fail("export_to_bytes output failed to reimport");
+        };
+        test_assert_eq!(reparsed.block_count, topo.block_count);
+        test_assert_eq!(reparsed.embedding_seed, topo.embedding_seed);
+        test_assert_eq!(&decode_bytes(&reparsed)[..FIXTURE.len()], FIXTURE);
+        TestResult::Pass
+    }
+
+    /// `decode_bytes` output carries no header, so it must never be mistaken
+    /// for a `.topo` file.
+    fn test_flat_bytes_are_not_a_topo_file() -> TestResult {
+        let topo = encode_bytes(FIXTURE, 0x5EA1);
+        test_assert!(
+            import_from_bytes(&decode_bytes(&topo), 0).is_none(),
+            "decode_bytes output was accepted as a .topo file"
+        );
+        TestResult::Pass
+    }
+
+    /// A short, misheaded, or truncated file, or a header whose block count
+    /// cannot fit the body, is rejected rather than indexed past the end or
+    /// reserved for.
+    fn test_malformed_input_is_rejected() -> TestResult {
+        test_assert!(import_from_bytes(b"TOPC", 0).is_none(), "runt accepted");
+        test_assert!(
+            import_from_bytes(&[0u8; 128], 0).is_none(),
+            "bad magic accepted"
+        );
+        let wire = export_to_bytes(&encode_bytes(FIXTURE, 0x5EA1));
+        let mut truncated = wire.clone();
+        truncated.truncate(wire.len() - 4);
+        test_assert!(
+            import_from_bytes(&truncated, 0).is_none(),
+            "truncated body accepted"
+        );
+        let mut huge = wire.clone();
+        huge[37..45].copy_from_slice(&u64::MAX.to_le_bytes());
+        test_assert!(
+            import_from_bytes(&huge, 0).is_none(),
+            "block count past the body accepted"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "filesystem::topcrypt_wire_format_round_trips",
+            test_wire_format_round_trips,
+        );
+        crate::testing::register_test(
+            "filesystem::topcrypt_flat_bytes_are_not_a_topo_file",
+            test_flat_bytes_are_not_a_topo_file,
+        );
+        crate::testing::register_test(
+            "filesystem::topcrypt_malformed_input_rejected",
+            test_malformed_input_is_rejected,
+        );
+    }
 }
