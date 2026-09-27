@@ -2042,7 +2042,10 @@ fn topcrypt_export_selected(app_state: &mut wm::app_state::AppState) -> String {
         },
         Err(_) => return format!("[TopCrypt] '{}' not found", name),
     };
-    let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
+    let topo = match fs::topcrypt::import_from_bytes(&data, 0) {
+        Some(t) => t,
+        None => return alloc::format!("[TopCrypt] '{}' is not a .topo file", name),
+    };
     let flat = fs::topcrypt::decode_bytes(&topo);
     let out_name = alloc::format!("{}.flat", name);
     match app_state.fs.store(&out_name, &flat, 0) {
@@ -2074,7 +2077,7 @@ fn topcrypt_import_selected(app_state: &mut wm::app_state::AppState) -> String {
     let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
     let blocks = topo.block_count as usize;
     let topo_name = alloc::format!("{}.topo", name);
-    let serialized = fs::topcrypt::decode_bytes(&topo);
+    let serialized = fs::topcrypt::export_to_bytes(&topo);
     match app_state
         .fs
         .store(&topo_name, &serialized, app_state.file_manager.cwd())

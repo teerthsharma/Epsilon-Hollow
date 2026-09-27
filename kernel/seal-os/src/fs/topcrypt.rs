@@ -460,7 +460,62 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Select `name` in the desktop file manager the way a click does.
+    fn select(app: &mut crate::wm::app_state::AppState, name: &str) -> bool {
+        let Ok(entries) = app.fs.ls(app.file_manager.cwd()) else {
+            return false;
+        };
+        let Some(i) = entries.iter().position(|e| e.name == name) else {
+            return false;
+        };
+        let y = 32 + i as u32 * (crate::graphics::font::CHAR_HEIGHT + 4);
+        app.file_manager.click(0, y, &app.fs);
+        app.file_manager.selected_name(&app.fs).as_deref() == Some(name)
+    }
+
+    /// The desktop's TopCrypt import (`topcrypt_import_selected` in lib.rs)
+    /// must write a `.topo` the shell and the desktop export can read back,
+    /// and the export must hand back the original bytes.
+    fn test_desktop_import_then_export_round_trips() -> TestResult {
+        let mut app = crate::wm::app_state::AppState::new();
+        let cwd = app.file_manager.cwd();
+        test_assert!(
+            app.fs.store("plain.bin", FIXTURE, cwd).is_ok(),
+            "fixture store failed"
+        );
+        test_assert!(select(&mut app, "plain.bin"), "could not select plain.bin");
+        crate::topcrypt_import_selected(&mut app);
+        let Ok(id) = app.fs.resolve_path_from("plain.bin.topo", cwd) else {
+            return TestResult::Fail("desktop import wrote no plain.bin.topo");
+        };
+        let Some(wire) = app.fs.inode(id).map(|i| i.data.clone()) else {
+            return TestResult::Fail("plain.bin.topo inode missing");
+        };
+        test_assert!(
+            import_from_bytes(&wire, 0).is_some(),
+            "desktop import wrote a file that is not a .topo"
+        );
+
+        test_assert!(select(&mut app, "plain.bin.topo"), "could not select the .topo");
+        crate::topcrypt_export_selected(&mut app);
+        let Ok(id) = app.fs.resolve_path_from("plain.bin.topo.flat", cwd) else {
+            return TestResult::Fail("desktop export wrote no plain.bin.topo.flat");
+        };
+        let Some(flat) = app.fs.inode(id).map(|i| i.data.clone()) else {
+            return TestResult::Fail("plain.bin.topo.flat inode missing");
+        };
+        test_assert!(
+            flat.len() >= FIXTURE.len() && &flat[..FIXTURE.len()] == FIXTURE,
+            "desktop export did not return the imported bytes"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "filesystem::topcrypt_desktop_import_then_export_round_trips",
+            test_desktop_import_then_export_round_trips,
+        );
         crate::testing::register_test(
             "filesystem::topcrypt_wire_format_round_trips",
             test_wire_format_round_trips,
