@@ -69,8 +69,8 @@ pub fn entropy_change_on_merge(size_a: u32, size_b: u32, total: u32) -> f64 {
 /// The dot-product form returned exactly zero for points 1e-8 apart, reporting
 /// distinct points as coincident, and gave `d(p, p)` up to 2.1e-8 over 200,000
 /// random points instead of 0. Separation checks operate precisely in that
-/// regime — `verify_separation` compares against `theta_min - 1e-6` — so the
-/// stable form is the one that belongs here.
+/// regime — `verify_separation` refuses a pair within its rounding radius of
+/// `theta_min` — so the stable form is the one that belongs here.
 ///
 /// The `cos(p1 - p2)` factor belongs on the `sin * sin` term. It was previously
 /// on the `cos * cos` term, which is the **latitude** formula (theta measured
