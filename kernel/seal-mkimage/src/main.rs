@@ -2067,7 +2067,7 @@ fn check_security_features_text(text: &str) -> Result<(), String> {
         ("stackguard_probe=", "runtime-guardband"),
         ("audit_probe=", "runtime-vfs"),
         ("wx_probe=", "runtime-pagewalk"),
-        ("wx_scope=", "kernel-alias"),
+        ("wx_scope=", "kernel-root"),
     ] {
         require_field_eq(line, key, expected, label)?;
     }
@@ -2113,11 +2113,11 @@ fn check_security_features_text(text: &str) -> Result<(), String> {
         }
     }
 
-    // W^X is measured, not gated: the kernel alias really is W+X today, so a
-    // passing `wx` would mean the field was faked.
-    parse_metric(line, "wx=")?;
-    parse_metric(line, "wx_violations=")?;
-    require_field_eq(line, "wx_enforced=", "0", label)?;
+    // W^X is enforced: no leaf reachable from the kernel's page-table root may
+    // be writable and executable, and the walk must have visited something.
+    require_field_eq(line, "wx=", "1", label)?;
+    require_field_eq(line, "wx_violations=", "0", label)?;
+    require_field_eq(line, "wx_enforced=", "1", label)?;
     require_metric_min(line, "wx_pages_scanned=", 1, label)?;
     Ok(())
 }
@@ -4450,7 +4450,7 @@ mod tests {
     const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_locality=5000 hit_bp_belady=9000 gap_closed_bp=600 chat_requests=96 chat_descents=528 chat_hit_bp_foliation=5284 chat_hit_bp_lru=8068 chat_hit_bp_locality=6818 chat_hit_bp_belady=8143 chat_foliation_beats_random=0/32 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
     const GPU_BENCH_PROOF_LOG: &str = "[GPU-BENCH] proof version=1 arch=gfx900 backend=cpu_fallback gpu_present=0 hw_attempted=0 hw_reason=no_amd_gpu cycles=123456 kernels_real=1/3 spectral_step_bytes=256 blob_fnv1a=0x00000000cafef00d encoder_fnv1a=0x00000000cafef00d blob_matches_encoder=1 golden_words=64/64 decoded_insts=32/32 roundtrip_words=64/64 mnemonics_match=1 rsrc1=0x000c0081 rsrc2=0x00000090 ref_dim=512 ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact=512/512 cpu_ref_max_ulp=0 backend_exact=512/512 backend_max_ulp=0 result=pass\n";
     const KASLR_PROOF_LOG: &str = "[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base=0x1000000 image_size=0x400000 kernel_alias_base=0xffffffff81400000 kernel_alias_slide=0x1400000 kernel_alias_slots=512 kernel_alias_bits=9 heap_window_base=0xffff900040000000 heap_window_slide=0x40000000 heap_window_slots=4194304 heap_window_bits=22 total_bits=31 granule=0x200000 aligned=1 in_range=1 entropy=rdseed boot_nonce=0xa1b2c3d4e5f60718 resample_nonce=0x0718f6e5d4c3b2a1 resample_differs=1 cross_boot=external-diff active=1 result=pass\n";
-    const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=0 wx_violations=12 wx_pages_scanned=1024 wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
+    const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=1 wx_violations=0 wx_pages_scanned=1024 wx_scope=kernel-root wx_enforced=1 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
     const UNSAFE_AUDIT_LOG: &str = "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version=1 blocks=4 justified=1 unjustified=3 files=2 undocumented_permille=750 rule=safety-comment-above-block result=pass\n";
     const UNSAFE_AUDIT_FIXTURE: &str = "# header\nversion 1\ntotal 4\njustified 1\nunjustified 3\nfiles 2\nfile lib.rs 3 1\nfile drivers/pci.rs 1 0\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture channel_endpoint=https://releases.seal-os.local/channel/stable/ channel_transport=fixture_loopback channel_index_signature=ed25519_fixture channel_index_version=3 channel_packages_fetched=1 channel_digest_ok=1 channel_rollback_refused=1 channel_tamper_refused=1 channel_digest_mismatch_refused=1 channel_package_signature_enforced=1 channel_live_probe=no_network channel_fail_closed=1 channel_unverified_fallback=0 result=pass\n";
@@ -6624,6 +6624,7 @@ fn panic(info: &PanicInfo) -> ! {
             "retpoline=1",
             "stackguard=1",
             "audit=1",
+            "wx=1",
         ] {
             let key = field.split('=').next().unwrap();
             let broken = SECURITY_FEATURES_LOG.replace(field, &format!("{key}=0"));
@@ -6648,7 +6649,7 @@ fn panic(info: &PanicInfo) -> ! {
             "stackguard_probe=runtime-guardband",
             "audit_probe=runtime-vfs",
             "wx_probe=runtime-pagewalk",
-            "wx_scope=kernel-alias",
+            "wx_scope=kernel-root",
         ] {
             let key = probe.split('=').next().unwrap();
             let broken = SECURITY_FEATURES_LOG.replace(probe, &format!("{key}=constant"));
@@ -6674,12 +6675,21 @@ fn panic(info: &PanicInfo) -> ! {
         let efer_lies = SECURITY_FEATURES_LOG.replace("efer=0xd01", "efer=0x501");
         assert!(check_security_features_text(&efer_lies).is_err());
 
-        // W^X is measured, not gated: the kernel alias really is W+X today.
-        let wx_claimed = SECURITY_FEATURES_LOG.replace("wx=0", "wx=1");
-        assert!(check_security_features_text(&wx_claimed).is_ok());
+        // W^X is enforced: one W+X kernel leaf, a probe that stops claiming
+        // enforcement, or a walk narrowed back to the alias fails the gate.
+        let wx_violated =
+            SECURITY_FEATURES_LOG.replace("wx=1 wx_violations=0", "wx=0 wx_violations=12");
+        assert!(check_security_features_text(&wx_violated).is_err());
 
-        let enforced = SECURITY_FEATURES_LOG.replace("wx_enforced=0", "wx_enforced=1");
-        assert!(check_security_features_text(&enforced).is_err());
+        let wx_miscounted = SECURITY_FEATURES_LOG.replace("wx_violations=0", "wx_violations=1");
+        assert!(check_security_features_text(&wx_miscounted).is_err());
+
+        let unenforced = SECURITY_FEATURES_LOG.replace("wx_enforced=1", "wx_enforced=0");
+        assert!(check_security_features_text(&unenforced).is_err());
+
+        let alias_only =
+            SECURITY_FEATURES_LOG.replace("wx_scope=kernel-root", "wx_scope=kernel-alias");
+        assert!(check_security_features_text(&alias_only).is_err());
 
         let unscanned =
             SECURITY_FEATURES_LOG.replace("wx_pages_scanned=1024", "wx_pages_scanned=0");

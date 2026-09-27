@@ -7,11 +7,13 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::VirtAddr;
 
 use super::{alloc_ap_cpu, PerCpu, CPU_COUNT};
 use crate::boot::ap_trampoline::{
     ap_trampoline, OFF_32BIT_CODE, OFF_64BIT_CODE, OFF_AP_MAIN_ADDR, OFF_AP_PER_CPU_PTR,
-    OFF_BSP_PML4, OFF_GDTR, OFF_GDT_START, OFF_LONG64_PTR, OFF_PROT32_PTR, TRAMPOLINE_PAGE,
+    OFF_BSP_PML4, OFF_GDTR, OFF_GDT_START, OFF_LONG64_PTR, OFF_PROT32_PTR, TRAMPOLINE_DATA,
+    TRAMPOLINE_PAGE,
 };
 use crate::serial_println;
 
@@ -65,8 +67,11 @@ pub fn smp_start_aps() {
 
     let bsp_apic_id = apic_ids[0];
 
-    // Prepare trampoline page at 0x8000.
-    prepare_trampoline_page();
+    // Prepare the trampoline code (0x8000) and data (0x9000) pages.
+    if !prepare_trampoline_page() {
+        serial_println!("[SMP] trampoline page could not be remapped; no AP started");
+        return;
+    }
 
     for i in 1..cpu_count {
         let apic_id = apic_ids[i];
@@ -79,8 +84,8 @@ pub fn smp_start_aps() {
 
         unsafe {
             AP_PER_CPU_PTR.store(per_cpu as *mut _ as u64, Ordering::SeqCst);
-            // Patch the trampoline page so the AP gets the correct pointer.
-            ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64)
+            // Patch the trampoline data page so the AP gets the correct pointer.
+            ((TRAMPOLINE_DATA + OFF_AP_PER_CPU_PTR) as *mut u64)
                 .write_unaligned(per_cpu as *mut _ as u64);
         }
         AP_READY_FLAG.store(false, Ordering::SeqCst);
@@ -140,6 +145,11 @@ pub fn smp_start_aps() {
 pub extern "C" fn ap_main() {
     unsafe {
         let per_cpu = &mut *(AP_PER_CPU_PTR.load(Ordering::SeqCst) as *mut PerCpu);
+
+        // The AP arrives on the trampoline's 5-entry GDT, which `ltr` below
+        // indexes past. Load the kernel GDT first; it reloads GS, so this must
+        // precede the GS base write.
+        crate::memory::gdt::init_gdt();
 
         // Set GS base
         Msr::new(0xC000_0101).write(per_cpu as *mut _ as u64);
@@ -229,22 +239,31 @@ fn send_startup_ipi(apic_id: u32, vector: u8) {
 // Trampoline page construction
 // ---------------------------------------------------------------------------
 
-fn prepare_trampoline_page() {
-    let page = TRAMPOLINE_PAGE as *mut u8;
+/// Write the trampoline code and data pages. The code page is written through
+/// an RW+NX identity leaf and sealed RX before returning; the data page stays
+/// RW+NX. Returns false, with no AP started, if a page could not be remapped.
+fn prepare_trampoline_page() -> bool {
+    let code_page = VirtAddr::new(TRAMPOLINE_PAGE);
 
+    // SAFETY: frames below 1 MiB are never handed out by the physical
+    // allocator, so both trampoline pages belong to this function alone, and
+    // no AP is running yet to fetch from the code page while it is remapped.
     unsafe {
-        // Zero the page
-        core::ptr::write_bytes(page, 0, 4096);
+        if crate::memory::virt::remap_page(code_page, crate::memory::virt::KERNEL_RW_NX).is_err() {
+            return false;
+        }
+        core::ptr::write_bytes(TRAMPOLINE_PAGE as *mut u8, 0, 4096);
+        core::ptr::write_bytes(TRAMPOLINE_DATA as *mut u8, 0, 4096);
 
         // Copy the raw bytes of the naked trampoline function into the page.
         let tramp = ap_trampoline as *const u8;
         let tramp_size = trampoline_size();
-        core::ptr::copy_nonoverlapping(tramp, page, tramp_size.min(4096));
+        core::ptr::copy_nonoverlapping(tramp, TRAMPOLINE_PAGE as *mut u8, tramp_size.min(4096));
 
         // GDTR descriptor at OFF_GDTR
-        let gdt_start = TRAMPOLINE_PAGE + OFF_GDT_START;
+        let gdt_start = TRAMPOLINE_DATA + OFF_GDT_START;
         let gdt_limit = (5 * 8 - 1) as u16; // 5 entries
-        let gdtr = (TRAMPOLINE_PAGE + OFF_GDTR) as *mut u8;
+        let gdtr = (TRAMPOLINE_DATA + OFF_GDTR) as *mut u8;
         gdtr.cast::<u16>().write_unaligned(gdt_limit);
         gdtr.add(2).cast::<u32>().write_unaligned(gdt_start as u32);
 
@@ -261,30 +280,34 @@ fn prepare_trampoline_page() {
         // 0x20: 64-bit data (ring 0)
         gdt.add(4).write_unaligned(0x0000_9200_0000_0000);
 
-        // Far-jump pointers
-        let prot32_ptr = (TRAMPOLINE_PAGE + OFF_PROT32_PTR) as *mut u8;
+        // Far-jump pointers. Both jumps assemble as `jmp m16:32` (32-bit
+        // offset, then selector), and the offset is linear: the code segments
+        // are flat, so it must include the page base.
+        let prot32_ptr = (TRAMPOLINE_DATA + OFF_PROT32_PTR) as *mut u8;
         prot32_ptr
-            .cast::<u16>()
-            .write_unaligned(OFF_32BIT_CODE as u16);
-        prot32_ptr.add(2).cast::<u16>().write_unaligned(0x0008);
+            .cast::<u32>()
+            .write_unaligned((TRAMPOLINE_PAGE + OFF_32BIT_CODE) as u32);
+        prot32_ptr.add(4).cast::<u16>().write_unaligned(0x0008);
 
-        let long64_ptr = (TRAMPOLINE_PAGE + OFF_LONG64_PTR) as *mut u8;
+        let long64_ptr = (TRAMPOLINE_DATA + OFF_LONG64_PTR) as *mut u8;
         long64_ptr
             .cast::<u32>()
-            .write_unaligned(OFF_64BIT_CODE as u32);
+            .write_unaligned((TRAMPOLINE_PAGE + OFF_64BIT_CODE) as u32);
         long64_ptr.add(4).cast::<u16>().write_unaligned(0x0018);
 
         // BSP PML4
         let pml4 = crate::memory::virt::bsp_pml4();
-        ((TRAMPOLINE_PAGE + OFF_BSP_PML4) as *mut u64).write_unaligned(pml4);
+        ((TRAMPOLINE_DATA + OFF_BSP_PML4) as *mut u64).write_unaligned(pml4);
 
         // AP per-cpu pointer (filled per-AP at runtime)
-        ((TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR) as *mut u64)
+        ((TRAMPOLINE_DATA + OFF_AP_PER_CPU_PTR) as *mut u64)
             .write_unaligned(AP_PER_CPU_PTR.load(Ordering::SeqCst));
 
         // ap_main address
-        ((TRAMPOLINE_PAGE + OFF_AP_MAIN_ADDR) as *mut u64)
+        ((TRAMPOLINE_DATA + OFF_AP_MAIN_ADDR) as *mut u64)
             .write_unaligned(ap_main as *const () as u64);
+
+        crate::memory::virt::remap_page(code_page, crate::memory::virt::KERNEL_RX).is_ok()
     }
 }
 

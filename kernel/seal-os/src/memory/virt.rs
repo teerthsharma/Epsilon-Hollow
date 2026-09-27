@@ -5,9 +5,15 @@
 //!
 //! On init we:
 //! 1. Allocate a fresh PML4.
-//! 2. Identity-map the first 16 GiB using 2 MiB huge pages (boot compatibility).
+//! 2. Identity-map the first 16 GiB RW+NX, using 2 MiB huge pages except where
+//!    4 KiB leaves are needed: the kernel image and the first 2 MiB.
 //! 3. Map the kernel image to `0xffffffff80000000` using 4 KiB pages.
-//! 4. Switch CR3.
+//! 4. Set EFER.NXE, switch CR3, set CR0.WP.
+//!
+//! W^X: the kernel executes out of the identity map at the address UEFI loaded
+//! it, so both views of the image get per-section flags read from its own PE
+//! section table — `.text` RX, `.rdata` R+NX, `.data` (which also holds `.bss`)
+//! RW+NX. Every other kernel leaf is RW+NX.
 //!
 //! All page-table pages are allocated from the physical allocator and accessed
 //! through the identity map (they live below 4 GiB).
@@ -16,7 +22,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{
-    registers::control::{Cr3, Cr3Flags},
+    registers::control::{Cr0, Cr0Flags, Cr3, Cr3Flags},
+    registers::model_specific::{Efer, EferFlags},
     structures::paging::page_table::PageTableEntry,
     structures::paging::{PageTable, PageTableFlags},
     PhysAddr, VirtAddr,
@@ -26,6 +33,137 @@ use x86_64::{
 /// accessed directly via `phys.as_u64() as *mut T`.
 pub const IDENTITY_MAP_SIZE: u64 = 16 * 1024 * 1024 * 1024; // 16 GiB
 const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2 MiB
+
+/// Leaf flags for kernel data: heap, stacks, page tables and the physical
+/// memory identity map. Writable, never executable.
+pub const KERNEL_RW_NX: PageTableFlags = PageTableFlags::PRESENT
+    .union(PageTableFlags::WRITABLE)
+    .union(PageTableFlags::NO_EXECUTE);
+/// Leaf flags for kernel code: read + execute, never writable.
+pub const KERNEL_RX: PageTableFlags = PageTableFlags::PRESENT;
+/// Leaf flags for read-only kernel data (`.rdata`, the PE headers).
+pub const KERNEL_RO_NX: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::NO_EXECUTE);
+
+/// PE/COFF section characteristics (PE format specification, "Section Flags").
+const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
+/// Sections tracked per image. The kernel links six.
+const MAX_IMAGE_SECTIONS: usize = 16;
+
+/// One section of a PE image: page-rounded RVA range and the leaf flags its
+/// pages get.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageSection {
+    pub start: u64,
+    pub end: u64,
+    pub flags: PageTableFlags,
+}
+
+/// Section layout of a loaded PE32+ image, read from its in-memory headers.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageLayout {
+    sections: [ImageSection; MAX_IMAGE_SECTIONS],
+    len: usize,
+}
+
+impl ImageLayout {
+    pub fn sections(&self) -> &[ImageSection] {
+        &self.sections[..self.len]
+    }
+
+    /// Leaf flags for the image page at byte `offset`: its section's flags, or
+    /// read-only NX for the PE headers and any gap between sections.
+    pub fn flags_at(&self, offset: u64) -> PageTableFlags {
+        self.sections()
+            .iter()
+            .find(|s| (s.start..s.end).contains(&offset))
+            .map_or(KERNEL_RO_NX, |s| s.flags)
+    }
+}
+
+/// Parse the section table out of the first bytes of a loaded PE32+ image.
+///
+/// `None` unless the headers describe a PE32+ image whose sections are page
+/// aligned — only then can each page carry its own section's permissions.
+/// Section flags are taken literally: a section marked both writable and
+/// executable is mapped W+X, where the W^X probe counts it.
+pub fn parse_pe_layout(hdr: &[u8]) -> Option<ImageLayout> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(hdr.get(o..o + 2)?.try_into().ok()?));
+    let u32_at = |o: usize| Some(u32::from_le_bytes(hdr.get(o..o + 4)?.try_into().ok()?));
+    if hdr.get(..2)? != b"MZ" {
+        return None;
+    }
+    let pe = u32_at(0x3c)? as usize;
+    if hdr.get(pe..pe + 4)? != b"PE\0\0" {
+        return None;
+    }
+    let count = u16_at(pe + 6)? as usize;
+    let opt = pe + 24;
+    // PE32+ magic, and a SectionAlignment that is a whole number of pages.
+    if u16_at(opt)? != 0x20b || u32_at(opt + 32)? % 4096 != 0 || count > MAX_IMAGE_SECTIONS {
+        return None;
+    }
+    let table = opt + u16_at(pe + 20)? as usize;
+    let empty = ImageSection {
+        start: 0,
+        end: 0,
+        flags: PageTableFlags::empty(),
+    };
+    let mut layout = ImageLayout {
+        sections: [empty; MAX_IMAGE_SECTIONS],
+        len: count,
+    };
+    for (i, slot) in layout.sections[..count].iter_mut().enumerate() {
+        let s = table + 40 * i;
+        let size = u64::from(u32_at(s + 8)?);
+        let start = u64::from(u32_at(s + 12)?);
+        let characteristics = u32_at(s + 36)?;
+        let mut flags = PageTableFlags::PRESENT;
+        if characteristics & IMAGE_SCN_MEM_WRITE != 0 {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if characteristics & IMAGE_SCN_MEM_EXECUTE == 0 {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+        *slot = ImageSection {
+            start,
+            end: start + size.div_ceil(4096) * 4096,
+            flags,
+        };
+    }
+    Some(layout)
+}
+
+/// The kernel image as [`init`] mapped it.
+#[derive(Clone, Copy, Debug)]
+pub struct KernelImage {
+    /// Physical load address, which is also the identity-mapped address the
+    /// kernel executes from.
+    pub base: u64,
+    /// Base of the higher-half alias.
+    pub alias: u64,
+    /// `None` when the PE section table could not be read.
+    pub layout: Option<ImageLayout>,
+}
+
+impl KernelImage {
+    /// Leaf flags for the image page at byte `offset`. An image whose section
+    /// table cannot be read keeps the old RWX mapping so the kernel still
+    /// boots; the W^X probe then counts every page of it.
+    pub fn flags_at(&self, offset: u64) -> PageTableFlags {
+        self.layout
+            .map_or(PageTableFlags::PRESENT | PageTableFlags::WRITABLE, |l| {
+                l.flags_at(offset)
+            })
+    }
+}
+
+static KERNEL_IMAGE: spin::Once<KernelImage> = spin::Once::new();
+
+/// The kernel image mapping recorded by [`init`].
+pub fn kernel_image() -> Option<&'static KernelImage> {
+    KERNEL_IMAGE.get()
+}
 
 /// Build-constant floor of the kernel heap virtual window.  KASLR slides the
 /// bump start forward inside this window; the floor itself is what the
@@ -85,27 +223,72 @@ pub unsafe fn init(kernel_base: PhysAddr, kernel_size: u64) -> Result<(), MapErr
         }
     }
 
+    let base = kernel_base.as_u64();
+    // SAFETY: UEFI loads the PE headers at the image base and its page tables,
+    // still live here, identity-map the whole image. Only the first page is
+    // read, and only when LoadedImage reported an image at all.
+    let layout = (base != 0 && kernel_size != 0).then(|| {
+        parse_pe_layout(core::slice::from_raw_parts(
+            base as *const u8,
+            kernel_size.min(4096) as usize,
+        ))
+    });
+    let image = *KERNEL_IMAGE.call_once(|| KernelImage {
+        base,
+        alias: kernel_higher_half,
+        layout: layout.flatten(),
+    });
+    if image.layout.is_none() {
+        crate::serial_println!(
+            "[VMM] kernel PE section table unreadable at {:#x}; image stays mapped RWX",
+            base
+        );
+    }
+
     let pml4_frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
     let pml4 = &mut *(pml4_frame.as_u64() as *mut PageTable);
     pml4.zero();
 
-    // Identity-map first 16 GiB with 2 MiB huge pages.
-    let id_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-    for phys in (0..IDENTITY_MAP_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
-        map_huge_page_2m(VirtAddr::new(phys), PhysAddr::new(phys), id_flags, pml4)?;
+    // Identity map, RW+NX, in 2 MiB leaves except where one leaf cannot carry
+    // the right flags: chunks overlapping the kernel image get 4 KiB leaves
+    // with per-section flags, and the first 2 MiB gets 4 KiB leaves so the AP
+    // trampoline page can be sealed RX on its own.
+    let image_range = base..base + kernel_size;
+    for chunk in (0..IDENTITY_MAP_SIZE).step_by(HUGE_PAGE_SIZE as usize) {
+        let chunk_end = chunk + HUGE_PAGE_SIZE;
+        if chunk != 0 && (chunk_end <= image_range.start || chunk >= image_range.end) {
+            map_huge_page_2m(
+                VirtAddr::new(chunk),
+                PhysAddr::new(chunk),
+                KERNEL_RW_NX,
+                pml4,
+            )?;
+            continue;
+        }
+        for phys in (chunk..chunk_end).step_by(4096) {
+            let flags = if image_range.contains(&phys) {
+                image.flags_at(phys - base)
+            } else {
+                KERNEL_RW_NX
+            };
+            map_page_inner(VirtAddr::new(phys), PhysAddr::new(phys), flags, pml4)?;
+        }
     }
 
-    // Map kernel to higher half with 4 KiB pages.
-    let kernel_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+    // Higher-half alias of the image, with the same per-section flags.
     for offset in (0..kernel_size).step_by(4096) {
-        let phys = kernel_base + offset;
         let virt = VirtAddr::new(kernel_higher_half + offset);
-        map_page_inner(virt, phys, kernel_flags, pml4)?;
+        map_page_inner(virt, kernel_base + offset, image.flags_at(offset), pml4)?;
     }
 
-    // Install the new page-table root.
+    // EFER.NXE before the new root goes live: without it bit 63 of every
+    // NO_EXECUTE entry is a reserved bit and the first walk through one faults.
+    Efer::update(|f| f.insert(EferFlags::NO_EXECUTE_ENABLE));
     let pml4_phys = x86_64::structures::paging::PhysFrame::containing_address(pml4_frame);
     Cr3::write(pml4_phys, Cr3Flags::empty());
+    // CR0.WP: supervisor writes honour read-only leaves. Without it `.text`
+    // and `.rdata` stay writable to the kernel whatever the tables say.
+    Cr0::update(|f| f.insert(Cr0Flags::WRITE_PROTECT));
 
     *PML4_VIRT.lock() = VirtAddr::new(pml4 as *mut _ as u64);
     BSP_PML4_PHYS.store(pml4_frame.as_u64(), Ordering::SeqCst);
@@ -372,6 +555,88 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
         return None;
     }
     Some(page_entry.addr() + (virt.as_u64() & 0xFFF))
+}
+
+/// Flags of the leaf entry (4 KiB, 2 MiB or 1 GiB) that maps `virt` in the
+/// current address space, or `None` when nothing maps it.
+///
+/// Leaf flags are a safe bound on effective permissions: a leaf without
+/// WRITABLE is not writable, and a leaf with NO_EXECUTE is not executable,
+/// whatever the upper levels say.
+pub fn leaf_flags(virt: VirtAddr) -> Option<PageTableFlags> {
+    let mut table = current_pml4_virt().as_u64() as *const PageTable;
+    if table.is_null() {
+        return None;
+    }
+    for level in (1..=4u64).rev() {
+        let idx = ((virt.as_u64() >> (3 + 9 * level)) & 0x1FF) as usize;
+        // SAFETY: the live PML4 and every table reached from it are physical
+        // frames inside the identity map (see the module docs); this is an
+        // aligned read-only load of one entry.
+        let entry = unsafe { &(&*table)[idx] };
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT) {
+            return None;
+        }
+        if level == 1 || (level < 4 && flags.contains(PageTableFlags::HUGE_PAGE)) {
+            return Some(flags);
+        }
+        table = entry.addr().as_u64() as *const PageTable;
+    }
+    None
+}
+
+/// Give the present 4 KiB page at `virt` new leaf flags, keeping its frame.
+/// This is the flip in a write-then-seal sequence: written while `RW+NX`,
+/// sealed `RX` before anything executes from it.
+///
+/// # Safety
+/// `virt` must be mapped by a 4 KiB leaf in the current address space, and
+/// nothing may touch the page until this returns (it is briefly unmapped).
+pub unsafe fn remap_page(virt: VirtAddr, flags: PageTableFlags) -> Result<(), MapError> {
+    let phys = unmap_page(virt).ok_or(MapError)?;
+    map_page(virt, phys, flags)
+}
+
+/// Give the identity-map alias of the 4 KiB frame at `phys` new leaf flags,
+/// first splitting the 2 MiB identity leaf that covers it into 4 KiB leaves
+/// with the same flags. This is how a frame that is executable through
+/// another mapping (sealed atlas chart text) stops being writable through the
+/// identity map, so no frame is writable through one kernel mapping and
+/// executable through another.
+///
+/// ponytail: a split identity leaf is never merged back; one page-table frame
+/// per 2 MiB touched, at most 8192. Merge on the last restore if that matters.
+///
+/// # Safety
+/// The caller must own the frame at `phys`, and nothing may touch its identity
+/// alias until this returns (it is briefly unmapped).
+pub unsafe fn set_identity_flags(phys: PhysAddr, flags: PageTableFlags) -> Result<(), MapError> {
+    if phys.as_u64() >= IDENTITY_MAP_SIZE {
+        return Err(MapError);
+    }
+    let virt = VirtAddr::new(phys.as_u64());
+    {
+        let root = PML4_VIRT.lock();
+        let pml4 = &mut *(root.as_u64() as *mut PageTable);
+        let pdpt = get_or_create_table(&mut pml4[((virt.as_u64() >> 39) & 0x1FF) as usize])?;
+        let pd = get_or_create_table(&mut pdpt[((virt.as_u64() >> 30) & 0x1FF) as usize])?;
+        let entry = &mut pd[((virt.as_u64() >> 21) & 0x1FF) as usize];
+        if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            let base = entry.addr();
+            let leaf = entry.flags() - PageTableFlags::HUGE_PAGE;
+            let frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
+            let pt = &mut *(frame.as_u64() as *mut PageTable);
+            for (i, e) in pt.iter_mut().enumerate() {
+                e.set_addr(base + i as u64 * 4096, leaf);
+            }
+            // Same permissions at 4 KiB granularity, so a stale 2 MiB TLB
+            // entry grants nothing new; `remap_page` below invalidates it for
+            // this address.
+            entry.set_addr(frame, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+        }
+    }
+    remap_page(virt, flags)
 }
 
 /// Helper: allocate a new zeroed page table if `entry` is unused,
@@ -847,7 +1112,55 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// W^X over the kernel's own image, read back from the live page tables
+    /// at both addresses it is mapped at (the identity map it executes from,
+    /// and the higher-half alias): no `.text` page is writable and no `.data`
+    /// page — `.bss` included — is executable. `.text` and `.data` are found
+    /// as the sections holding this function and a mutable static, so the
+    /// expectation does not come from the flags `init` computed.
+    fn test_kernel_image_wx() -> TestResult {
+        let Some(image) = kernel_image() else {
+            return TestResult::Fail("virt::init recorded no kernel image");
+        };
+        let Some(layout) = image.layout else {
+            return TestResult::Fail("kernel PE section table unreadable");
+        };
+        let section_of = |addr: u64| {
+            let rva = addr.wrapping_sub(image.base);
+            layout
+                .sections()
+                .iter()
+                .copied()
+                .find(|s| (s.start..s.end).contains(&rva))
+        };
+        let Some(text) = section_of(test_kernel_image_wx as *const () as u64) else {
+            return TestResult::Fail("no image section holds kernel code");
+        };
+        let Some(data) = section_of(core::ptr::addr_of!(VIRTUAL_BUMP) as u64) else {
+            return TestResult::Fail("no image section holds kernel statics");
+        };
+        test_assert!(text != data, "kernel code and statics share a section");
+        for view in [image.base, image.alias] {
+            for off in (text.start..text.end).step_by(4096) {
+                let flags = leaf_flags(VirtAddr::new(view + off));
+                test_assert!(
+                    flags.is_some_and(|f| !f.contains(PageTableFlags::WRITABLE)),
+                    "a kernel .text page is unmapped or writable"
+                );
+            }
+            for off in (data.start..data.end).step_by(4096) {
+                let flags = leaf_flags(VirtAddr::new(view + off));
+                test_assert!(
+                    flags.is_some_and(|f| f.contains(PageTableFlags::NO_EXECUTE)),
+                    "a kernel .data page is unmapped or executable"
+                );
+            }
+        }
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test("virt::kernel_image_wx", test_kernel_image_wx);
         crate::testing::register_test("virt::alloc_virtual_pages", test_alloc_virtual_pages);
         crate::testing::register_test(
             "virt::map_page_inner_refuses_present_leaf",
