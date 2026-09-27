@@ -36,6 +36,7 @@
       <li class="psub__sep" aria-hidden="true"></li>
       <li><a class="psub__link" href="#pillars">What it does</a></li>
       <li><a class="psub__link" href="#boot">It boots</a></li>
+      <li><a class="psub__link" href="#direction">Direction</a></li>
       <li><a class="psub__link" href="#claims">Every claim, drawn</a></li>
       <li class="psub__sep" aria-hidden="true"></li>
       <li><a class="psub__link" href="#limits">Limits</a></li>
@@ -53,7 +54,7 @@
       <h1 class="vhero__h1">An operating system whose day job is machine learning.</h1>
       <p class="vhero__sub">OS state is topology on the unit sphere S². Training runs get a kernel that measures the <em>shape</em> of their overfitting. Inference gets a KV cache that evicts by elementary collapse.</p>
       <ul class="vhero__facts" aria-label="Platform">
-        <li>bare-metal x86_64</li><li>UEFI</li><li><code>no_std</code> Rust</li><li>no POSIX</li><li>no libc</li>
+        <li>bare-metal x86_64</li><li>UEFI</li><li><code>no_std</code> Rust</li><li>own 69-call ABI today</li><li>next: the Linux kernel ABI</li>
       </ul>
       <div class="cta-row cta-row--left">
         <a class="pt__cta" href="https://github.com/teerthsharma/Epsilon-Hollow">View on GitHub</a>
@@ -99,11 +100,12 @@
           <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="pf-t">
             <title id="pf-t">Sequences share a prefix tree of KV blocks; a leaf no sequence uses is collapsed</title>
             <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" data-v="verdict" fill="var(--ink)"></text>
+            <text x="160" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">tree illustrative; the free-face rule is foliation's</text>
           </svg>
         </div>
         <p class="pcard__tag">foliation &middot; Seal ABI 130–134</p>
         <h3 class="pcard__h">A KV cache that is a prefix tree.</h3>
-        <p class="pcard__p">Live sequences share cached blocks wherever their prefixes agree, and a sequence's block table is its path down the tree. Eviction removes only a free face: a block that is resident, unreferenced and has no resident children. Sharing requires an exact token match.</p>
+        <p class="pcard__p">Live sequences share cached blocks wherever their prefixes agree, and a sequence's block table is its path down the tree. Eviction removes only a free face: a block that is resident, unreferenced and has no resident children. Sharing requires an exact token match. Its eviction order matches the optimum on a trace built so that recency always evicts the shared prefix, and loses to LRU on a multi-turn chat trace, so the system-call cache defaults to LRU. <a href="#foliation">Both traces, measured</a>.</p>
       </article>
       <article class="pcard pcard--mint" data-reveal>
         <div class="figc pcard__fig" style="--figc-ar:320/190">
@@ -138,11 +140,11 @@
   <div class="wrap fsec__grid">
     <div class="fsec__text" data-reveal>
       <p class="fsec__kicker"><b>It boots</b> &middot; QEMU &middot; OVMF</p>
-      <h2 class="fsec__h2" id="boot-h">Ten theorems, a filesystem, a desktop, an event loop.</h2>
-      <p class="fsec__p">The UEFI image boots under QEMU, checks T1 to T10 from <code>aether_verified</code> and panics if any fails, brings up its layers, draws a desktop and enters its event loop. CI boots every build this way and fails it without the theorem, SealShell, desktop and event-loop lines.</p>
+      <h2 class="fsec__h2" id="boot-h">Ten theorem checks, one refusal, a desktop, an event loop.</h2>
+      <p class="fsec__p">The UEFI image boots under QEMU and checks T1 to T10 from <code>aether_verified</code>. T4 is judged at the step the governor actually runs, where its gain margin fails, so the line says NOT CERTIFIED and boot goes on; any other failure panics. Then the kernel brings up its layers, draws a desktop and enters its event loop. CI boots every build this way and fails it without the theorem, SealShell, desktop and event-loop lines.</p>
       <div class="fsec__nums">
-        <span class="spec"><b class="spec__n spec__n--green">10 / 10</b><span class="spec__l">boot theorem lines VERIFIED</span></span>
-        <span class="spec"><b class="spec__n">8</b><span class="spec__l">Voronoi cells in the boot index, with Betti-0 of 1</span></span>
+        <span class="spec"><b class="spec__n spec__n--green">9 / 10</b><span class="spec__l">boot theorem lines VERIFIED</span></span>
+        <span class="spec"><b class="spec__n spec__n--coral">5.01</b><span class="spec__l">T4's α + β/dt at the runtime dt of 0.01; certifying needs &lt; 1</span></span>
       </div>
     </div>
     <div class="fsec__fig">
@@ -150,17 +152,19 @@
         <pre class="log" data-fig="boot" aria-label="Boot log">
 <span class="dim">$ qemu-system-x86_64 -machine q35 … seal-os.img</span>
 <span class="dim">…</span>
+<span>[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01</span>
+<span class="dim">…</span>
 <span>[THEOREM] T1/TSS VERIFIED</span>
 <span>[THEOREM] T2/SCM VERIFIED</span>
 <span>[THEOREM] T3/GMC VERIFIED</span>
-<span>[THEOREM] T4/AGCR VERIFIED</span>
+<span class="warn">[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 &gt;= 1 at dt=0.01</span>
 <span>[THEOREM] T5/HCS VERIFIED</span>
 <span>[THEOREM] T6/RGCS VERIFIED</span>
 <span>[THEOREM] T7/PHKP VERIFIED</span>
 <span>[THEOREM] T8/TEB VERIFIED</span>
 <span>[THEOREM] T9/CMA VERIFIED</span>
 <span>[THEOREM] T10/WPHB VERIFIED</span>
-<span class="ok">[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span>
+<span class="ok">[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths</span>
 <span class="dim">…</span>
 <span>[BOOT] Syscall FS ready</span>
 <span>[BOOT] All layers initialized.</span>
@@ -168,17 +172,74 @@
 <span>[SealShell] Loaded</span>
 <span class="ok">[BOOT] Seal OS desktop ready.</span>
 <span class="ok">[EVENT] Entering real event loop — keyboard and mouse active</span></pre>
-        <figcaption class="fig__cap">Lines are the kernel's own format strings, in boot order; "…" marks lines left out.</figcaption>
+        <figcaption class="fig__cap">Lines are the kernel's own format strings at 3c14df0, in boot order; "…" marks lines left out.</figcaption>
       </figure>
     </div>
   </div>
 </section>
 
+<!-- a region div, not a section, so the .fsec:nth-of-type backgrounds below keep their order -->
+<div class="band direction" id="direction" role="region" aria-labelledby="direction-h">
+  <div class="wrap">
+    <p class="hero__kicker" data-reveal>Accepted plan &middot; 2026-09-27</p>
+    <h2 class="sec__h2" id="direction-h" data-reveal>Direction: a Linux kernel replacement.</h2>
+    <p class="sec__lede" data-reveal>Seal OS is to boot under any Linux distribution as that distribution's kernel: the userland runs unmodified, the bootloader and initrd tooling work unchanged, and Linux drivers are usable. Seven decisions carry it: the Linux x86_64 syscall ABI as the only ABI, the Linux boot protocol, Linux drivers unmodified inside isolated LKL driver servers, ext4 behind a crash-consistency gate that a stock Linux kernel replays, the geometric subsystems kept under Linux permissions, progress counted by the Linux Test Project, and pinned ports for whatever is not built natively.</p>
+    <div class="heads" data-reveal>
+      <span class="spec"><b class="spec__n spec__n--coral">0</b><span class="spec__l">ring-3 instructions executed, with or without a <code>/bin/init</code></span></span>
+      <span class="spec"><b class="spec__n">1 / 49</b><span class="spec__l">syscalls made by five Ubuntu programs that reach the same call</span></span>
+      <span class="spec"><b class="spec__n">4,310</b><span class="spec__l">of 4,310 scanned kernel pages writable and executable; 0 of 24,004 since b3cf934</span></span>
+      <span class="spec"><b class="spec__n">853 / 924</b><span class="spec__l">Linux driver modules the licence gate refuses in the kernel</span></span>
+    </div>
+    <p class="fig__cap direction__note" data-reveal>The starting point, measured at 9ebbe2e; each number is a test under tests/linux_parity that fails there.</p>
+    <div class="scroll sec__body" data-reveal>
+      <table>
+        <thead>
+          <tr><th scope="col">milestone</th><th scope="col">scope</th><th scope="col">gate, in QEMU</th><th scope="col">status at c055594</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>M0</td><td>ring 3; syscall entry on a kernel stack with <code>swapgs</code>; user faults kill the process; kernel W^X; ext2 feature refusal; theorem lines from live state; CI green; <code>ports/</code></td><td><code>chase_boot.sh usermode-seal</code>, <code>wx</code>, <code>ext4</code>; <code>ring3-seal</code>; <code>write(fd, 0x1000, 1)</code> returns <code>-EFAULT</code></td><td>open, 0 of 11 items closed; landed: kernel W^X (<code>wx</code> passes), T4 refused at boot, <code>ports/</code> and PORTING.md</td></tr>
+          <tr><td>M1</td><td>per-process address spaces, page cache, fd tables, SIGSEGV</td><td>a boot-executed test per item</td><td>open; gate not yet written</td></tr>
+          <tr><td>M2</td><td>Linux ABI core: renumbering, six-argument dispatch, auxv, TLS, <code>futex</code>, <code>clone</code>, <code>/dev/seal</code></td><td>static glibc <code>hello</code> prints; busybox <code>sh</code> runs a script</td><td>open; <code>ring3-glibc</code> fails</td></tr>
+          <tr><td>M3</td><td>Linux boot protocol, EFI stub, command line, initramfs</td><td>GRUB loads Seal OS as <code>linux</code> to a busybox prompt</td><td>open; gate not yet written</td></tr>
+          <tr><td>M4–M6</td><td>Alpine without systemd; ext4 with jbd2; systemd distributions</td><td>Alpine to login; the crash-consistency gate; Debian, Ubuntu, Fedora and Arch to login</td><td>open; gates not yet written</td></tr>
+          <tr><td>M7–M8</td><td>ACPICA, ECAM, MSI, IOMMU, LKL driver servers; bare metal</td><td>an unmodified Linux driver behind a virtual IOMMU; one reference machine to login</td><td>open; ACPICA recorded as a planned port</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="grid grid--4 sec__body">
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/docs/design/LINUX-REPLACEMENT.md">
+        <p class="card__repo">docs/design/LINUX-REPLACEMENT.md</p>
+        <h3 class="card__title">The plan</h3>
+        <p class="card__body">Starting point, decisions D1 to D7, milestone gates and what stays reversible.</p>
+        <span class="card__link">Read the design <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/FUTURE_PLAN.md#phase-0-linux-kernel-replacement">
+        <p class="card__repo">FUTURE_PLAN.md</p>
+        <h3 class="card__title">Phase 0</h3>
+        <p class="card__body">One box per milestone and per M0 item, each ticked only when its gate passes.</p>
+        <span class="card__link">See the boxes <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/PORTING.md">
+        <p class="card__repo">PORTING.md</p>
+        <h3 class="card__title">Porting</h3>
+        <p class="card__body">Where ported code may run, how it is pinned and licence-gated, and when a native implementation replaces it.</p>
+        <span class="card__link">Read the rules <span aria-hidden="true">&#8250;</span></span>
+      </a>
+      <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/CONTRIBUTING.md">
+        <p class="card__repo">CONTRIBUTING.md</p>
+        <h3 class="card__title">Contributing</h3>
+        <p class="card__body">A RED test first, and every theorem line certified, refused or not checked.</p>
+        <span class="card__link">Start here <span aria-hidden="true">&#8250;</span></span>
+      </a>
+    </div>
+  </div>
+</div>
+
 <section class="claims" id="claims" aria-labelledby="claims-h">
   <div class="wrap">
     <p class="hero__kicker" data-reveal>Every claim, drawn</p>
     <h2 class="sec__h2" id="claims-h" data-reveal>Certify or refuse: the round that made the answers honest.</h2>
-    <p class="sec__lede" data-reveal>Eight results from the latest round. Each one was a number that the arithmetic, not the data, had chosen. Each figure below runs the rule it describes.</p>
+    <p class="sec__lede" data-reveal>Eight results from the certify-or-refuse round, then eleven more <a href="#imported">ported from related work</a> on 2026-09-27. Each one was a number that the arithmetic, not the data, had chosen. Each figure below runs the rule it describes.</p>
     <div class="heads" data-reveal>
       <span class="spec"><b class="spec__n">1,215 &rarr; 0</b><span class="spec__l">wrong nearest-centroid answers in 5,000 queries</span></span>
       <span class="spec"><b class="spec__n">0.96875 &rarr; 0</b><span class="spec__l">loop score of a loss curve that only falls</span></span>
@@ -206,7 +267,7 @@
             <text x="179.3" y="390" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">0.5</text>
             <text x="318.6" y="390" text-anchor="middle" font-size="11" fill="var(--muted)" class="mono">1.0</text>
             <text x="235" y="414" text-anchor="middle" font-size="13" fill="var(--muted)">minimum centroid separation <tspan class="mono" fill="var(--ink)" data-v="sep">1.2310</tspan> rad</text>
-            <text x="92" y="447" font-size="13" font-weight="600" fill="var(--green-700)" class="mono">[BOOT] All T1-T10 theorems VERIFIED</text>
+            <text x="92" y="447" font-size="13" font-weight="600" fill="var(--green-700)" class="mono">[THEOREM] T1/TSS VERIFIED</text>
             <text x="92" y="471" font-size="13" font-weight="600" fill="var(--coral-700)" class="mono">[THEOREM] T1/TSS FAILED</text>
           </svg>
         </div>
@@ -226,7 +287,7 @@
         <ul class="ev__list">
           <li><code>locate</code> over the cube returned [0, 1, 2, 3, 2, 3, 0, 1] before and [0 … 7] after</li>
           <li><code>ManifoldMemory::great_circle</code> had the same latitude formula: two equator points a quarter turn apart measured 0 (73372ac)</li>
-          <li>a QEMU boot of the release image prints <code>[BOOT] All T1-T10 theorems VERIFIED</code></li>
+          <li>a QEMU boot of the release image prints <code>[THEOREM] T1/TSS VERIFIED</code></li>
         </ul>
       </details>
     </div>
@@ -455,20 +516,58 @@
         </svg>
         <figcaption class="fig__cap">The tree is a sketch; the key is the collision pinned in the kernel's const assertion.</figcaption>
       </figure>
+      <figure class="fig">
+        <svg viewBox="0 0 470 340" role="img" aria-labelledby="fo2-t fo2-d">
+          <title id="fo2-t">Hit rates of four eviction policies and the Belady optimum on two traces</title>
+          <desc id="fo2-d">Hit rates in basis points, measured under QEMU with the same 24-block pool, on one common axis from 0 to 10,000. Boot trace, where the shared prefix returns only after 31 other blocks: Belady 952, foliation 952, the locality-only null 476, LRU 0, random 238 to 857 over 32 seeds. Chat trace, 4 live conversations served round robin, where reuse follows recency: Belady 8,143, foliation 5,284, the locality-only null 6,818, LRU 8,068, random 7,026 to 7,443 over 32 seeds. Foliation matches the optimum on the first trace and comes last on the second.</desc>
+          <g stroke="var(--hair)" stroke-width="1">
+            <line x1="132" x2="132" y1="46" y2="140"/><line x1="207" x2="207" y1="46" y2="140"/><line x1="282" x2="282" y1="46" y2="140"/><line x1="357" x2="357" y1="46" y2="140"/><line x1="432" x2="432" y1="46" y2="140"/>
+            <line x1="132" x2="132" y1="194" y2="288"/><line x1="207" x2="207" y1="194" y2="288"/><line x1="282" x2="282" y1="194" y2="288"/><line x1="357" x2="357" y1="194" y2="288"/><line x1="432" x2="432" y1="194" y2="288"/>
+          </g>
+          <text x="20" y="20" font-size="13" font-weight="600" fill="var(--ink)">boot trace: foliation matches Belady</text>
+          <text x="20" y="36" font-size="12" fill="var(--muted)">the shared prefix returns after 31 other blocks; the pool holds 24</text>
+          <g font-size="12" fill="var(--ink)" text-anchor="end">
+            <text x="124" y="58">Belady (optimum)</text><text x="124" y="77">foliation</text><text x="124" y="96">locality-only null</text><text x="124" y="115">LRU</text><text x="124" y="134">random, 32 seeds</text>
+            <text x="124" y="206">Belady (optimum)</text><text x="124" y="225">foliation</text><text x="124" y="244">locality-only null</text><text x="124" y="263">LRU</text><text x="124" y="282">random, 32 seeds</text>
+          </g>
+          <rect x="132" y="49" width="28.6" height="11" rx="3" fill="none" stroke="var(--ink)" stroke-width="1.2" stroke-dasharray="3 2"><title>boot trace, Belady: 952 bp</title></rect>
+          <rect x="132" y="68" width="28.6" height="11" rx="3" fill="var(--blue-500)"><title>boot trace, foliation: 952 bp</title></rect>
+          <rect x="132" y="87" width="14.3" height="11" rx="3" fill="#8a857b"><title>boot trace, locality-only null: 476 bp</title></rect>
+          <rect x="139.1" y="125" width="18.6" height="11" rx="3" fill="#8a857b" fill-opacity=".35" stroke="#8a857b"><title>boot trace, random over 32 seeds: 238 to 857 bp</title></rect>
+          <text x="20" y="168" font-size="13" font-weight="600" fill="var(--coral-700)">chat trace: foliation comes last</text>
+          <text x="20" y="184" font-size="12" fill="var(--muted)">4 live conversations, round robin; reuse follows recency</text>
+          <rect x="132" y="197" width="244.3" height="11" rx="3" fill="none" stroke="var(--ink)" stroke-width="1.2" stroke-dasharray="3 2"><title>chat trace, Belady: 8,143 bp</title></rect>
+          <rect x="132" y="216" width="158.5" height="11" rx="3" fill="var(--blue-500)"><title>chat trace, foliation: 5,284 bp</title></rect>
+          <rect x="132" y="235" width="204.5" height="11" rx="3" fill="#8a857b"><title>chat trace, locality-only null: 6,818 bp</title></rect>
+          <rect x="132" y="254" width="242" height="11" rx="3" fill="#8a857b"><title>chat trace, LRU: 8,068 bp</title></rect>
+          <rect x="342.8" y="273" width="12.5" height="11" rx="3" fill="#8a857b" fill-opacity=".35" stroke="#8a857b"><title>chat trace, random over 32 seeds: 7,026 to 7,443 bp</title></rect>
+          <g font-size="11" fill="var(--ink)">
+            <text class="mono" x="166.6" y="58">952</text><text class="mono" x="166.6" y="77">952</text><text class="mono" x="152.3" y="96">476</text><text class="mono" x="138" y="115">0</text><text class="mono" x="163.7" y="134">238–857</text>
+            <text class="mono" x="382.3" y="206">8,143</text><text class="mono" x="296.5" y="225">5,284</text><text class="mono" x="342.5" y="244">6,818</text><text class="mono" x="380" y="263">8,068</text><text class="mono" x="361.3" y="282">7,026–7,443</text>
+          </g>
+          <line x1="132" x2="432" y1="296" y2="296" stroke="var(--hair2)"/>
+          <g font-size="11" fill="var(--muted)" text-anchor="middle">
+            <text class="mono" x="132" y="313">0</text><text class="mono" x="207" y="313">2,500</text><text class="mono" x="282" y="313">5,000</text><text class="mono" x="357" y="313">7,500</text><text class="mono" x="432" y="313">10,000</text>
+          </g>
+          <text x="282" y="332" text-anchor="middle" font-size="11" fill="var(--muted)">hit rate, basis points; 10,000 means every descent hits</text>
+        </svg>
+        <figcaption class="fig__cap">Measured under QEMU. Boot trace: CI run 36165748105, locality null 264235c. Chat trace: 0ab2377, random range from a host replay.</figcaption>
+      </figure>
     </div>
     <div class="fsec__text" data-reveal>
-      <p class="fsec__kicker"><b>06</b> &middot; foliation KV cache &middot; 98b023b, 659c376, 90aa07e</p>
+      <p class="fsec__kicker"><b>06</b> &middot; foliation KV cache &middot; 98b023b, 659c376, 90aa07e, 0ab2377</p>
       <h2 class="fsec__h2" id="fol-h">The KV cache shares a block only when its tokens match.</h2>
-      <p class="fsec__p"><code>foliation</code> shares a cached block between sequences with the same prefix. It shared whenever a 64-bit <code>fold_key</code> matched and never compared tokens, so two different blocks could read each other's KV state. A leaf now stores its tokens. Eviction only ever collapses a free face, and a task that did not open a sequence gets <code>NoSuchSeq</code> from <code>SYS_KV_SEQ_APPEND</code>, <code>_RELEASE</code> and <code>_STATS</code>.</p>
+      <p class="fsec__p"><code>foliation</code> shares a cached block between sequences with the same prefix. It shared whenever a 64-bit <code>fold_key</code> matched and never compared tokens, so two different blocks could read each other's KV state. A leaf now stores its tokens. Eviction only ever collapses a free face, and a task that did not open a sequence gets <code>NoSuchSeq</code> from <code>SYS_KV_SEQ_APPEND</code>, <code>_RELEASE</code> and <code>_STATS</code>. Which free face to collapse is another matter: the foliation ranking matches the optimum on a trace built so that recency always evicts the shared prefix, and comes last on a multi-turn chat trace.</p>
       <div class="fsec__nums">
-        <span class="spec"><b class="spec__n">952 bp</b><span class="spec__l">foliation hit rate under QEMU, against 238 to 857 bp for random over 32 seeds</span></span>
-        <span class="spec"><b class="spec__n">32 / 32</b><span class="spec__l">seeds the foliation policy beats</span></span>
+        <span class="spec"><b class="spec__n spec__n--green">952 bp</b><span class="spec__l">boot trace: foliation, equal to Belady; LRU scores 0 by construction</span></span>
+        <span class="spec"><b class="spec__n spec__n--coral">5,284 bp</b><span class="spec__l">chat trace: foliation, against LRU's 8,068; it beats 0 of 32 random seeds</span></span>
       </div>
       <details class="ev">
-        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <summary class="ev__sum">How it was checked, 4 ways</summary>
         <ul class="ev__list">
           <li>the collision <code>0xe0e00501162145bc</code> was found by meet-in-the-middle against the shipped function and is pinned by a <code>const</code> assertion</li>
-          <li>the ABI default is now LRU, because the ranking wins only at a capacity cliff</li>
+          <li>the ABI default is LRU: with 16 live conversations instead of 4 the chat result reverses, 5,113 bp against LRU's 3,731 (one mutation build), so the winner follows whether reuse distance exceeds the pool</li>
+          <li>a locality-only null, the ranking without its entrant count, scores 476 bp on the boot trace and 6,818 on the chat trace; <code>--check-kv-policy</code> requires both traces (40d3568)</li>
           <li>a foreign release, append and stats read are refused while the owner's blocks stay referenced</li>
         </ul>
       </details>
@@ -503,19 +602,20 @@
       </figure>
     </div>
     <div class="fsec__text" data-reveal>
-      <p class="fsec__kicker"><b>07</b> &middot; governor, T4/AGCR &middot; c5b5853, 6c450d4, 2605f70</p>
+      <p class="fsec__kicker"><b>07</b> &middot; governor, T4/AGCR &middot; c5b5853, 6c450d4, 2605f70, 3c14df0</p>
       <h2 class="fsec__h2" id="gov-h">The governor stopped certifying runs that did not converge.</h2>
-      <p class="fsec__p">epsilon-os checked T4 at boot with dt = 1, while the governor ticks at dt = 0.01, where the margin is 5.01. The READY line now says T4 is not active. <code>verify_theorem</code> certified runs whose error stalled or grew, and now refuses at the first step that does not contract. <code>/mv</code> ran two ticks whose derivative spike threw ε from 0.001 to 10.0. It now runs none.</p>
+      <p class="fsec__p">epsilon-os checked T4 at boot with dt = 1, while the governor ticks at dt = 0.01, where the margin is 5.01. The READY line now says T4 is not active, and the seal-os boot gate now refuses T4 the same way. <code>verify_theorem</code> certified runs whose error stalled or grew, and now refuses at the first step that does not contract. <code>/mv</code> ran two ticks whose derivative spike threw ε from 0.001 to 10.0. It now runs none.</p>
       <div class="fsec__nums">
         <span class="spec"><b class="spec__n">70 &rarr; 12</b><span class="spec__l">of 420 configurations still certified</span></span>
         <span class="spec"><b class="spec__n spec__n--coral">5.01</b><span class="spec__l">α + β/dt at the runtime dt; certification needs &lt; 1</span></span>
       </div>
       <details class="ev">
-        <summary class="ev__sum">How it was checked, 3 ways</summary>
+        <summary class="ev__sum">How it was checked, 4 ways</summary>
         <ul class="ev__list">
           <li>a run with ε pinned at 0.1 holds e = 1.7 at every step; it was certified and is now refused at step 1</li>
           <li>ε and the tick count are pinned bit-identical across one <code>/mv</code></li>
           <li>boot prints <code>[READY] Manifold filesystem online. Not active: T4/AGCR NOT CERTIFIED.</code></li>
+          <li>seal-os boot prints <code>[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 &gt;= 1 at dt=0.01</code>, and <code>--check-theorem-log</code> rejects a VERIFIED line at that margin; with the gate put back at dt = 1, the in-kernel harness passes 563 of 564 and the log gate fails (3c14df0)</li>
         </ul>
       </details>
     </div>
@@ -558,7 +658,33 @@
   </div>
 </section>
 
-
+<section class="band imported" id="imported" aria-labelledby="imported-h">
+  <div class="wrap">
+    <p class="hero__kicker" data-reveal>Imported &middot; 2026-09-27</p>
+    <h2 class="sec__h2" id="imported-h" data-reveal>Eleven fixes ported from related work.</h2>
+    <p class="sec__lede" data-reveal>Each port started from a test that failed for the reason in the "before" column and passes after it. The numbers are quoted from the commit that landed each one; all eleven are in the README's table with their test counts.</p>
+    <div class="scroll sec__body" data-reveal>
+      <table>
+        <thead>
+          <tr><th scope="col">from</th><th scope="col">rule ported</th><th scope="col">where</th><th scope="col">before</th><th scope="col">after</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>cleave</td><td>union-find join: the absorbed root points at the survivor</td><td><code>cut_tree</code>, aether-core</td><td class="no">points [0, 1, 10] cut at k = 1 gave two clusters</td><td class="ok">one cluster (14a3bb1)</td></tr>
+          <tr><td>cleave</td><td>the same join</td><td>entropy merge, epsilon-os ManifoldFS</td><td class="no">a file stored after a merge landed in the emptied cell</td><td class="ok">routed to the survivor (82e034f)</td></tr>
+          <tr><td>resolvent</td><td>refuse non-finite logits before the softmax</td><td><code>scheduled_attention</code>, aether-core</td><td class="no"><code>q = [1e200]</code>, <code>k = [-1e200]</code> returned <code>Ok([NaN])</code></td><td class="ok"><code>NonFiniteScore</code> at row 0, column 0 (c26d88a)</td></tr>
+          <tr><td>resolvent</td><td>the same refusal, in the reference kernels</td><td><code>sparse_attention</code>, <code>dense_masked_attention</code></td><td class="no">the dense reference answered <code>Ok([NaN])</code> where <code>scheduled_attention</code> refused</td><td class="ok">both refuse (af416fa)</td></tr>
+          <tr><td>sigmoid</td><td>Chebyshev keep: σ from the scores judged; no spread, no pruning</td><td><code>regulate_entropy</code>, aether-core heap</td><td class="no">64 of 64 objects pruned in one pass, against a proved ceiling of 16</td><td class="ok">within the ceiling (f20f6b2)</td></tr>
+          <tr><td>separatrix</td><td>decide <code>d &lt; ε</code> only where the error interval clears ε</td><td><code>rips_betti_1</code>, aether-core</td><td class="no">unit square at ε = fl(√2): β₁ = 1, exact 0</td><td class="ok">refused, naming pair (0, 2) (82e4a8f)</td></tr>
+          <tr><td>separatrix</td><td>certify a pair only where d − R &gt; θ<sub>min</sub>, R the rounding radius</td><td><code>verify_separation</code>, aether-core and aether_verified</td><td class="no">a pair 0.4999995 apart at θ<sub>min</sub> = 0.5, and a NaN pair, were certified</td><td class="ok">both refused (2014ddb)</td></tr>
+          <tr><td>branchcut</td><td>an injective map onto m values misassigns at least n − m; checked to be 0</td><td>8-cell index of the scheduler, compositor and firewall</td><td class="no">slots 3 and 6 unreachable: <code>locate</code> gave [0, 1, 2, 0, 4, 5, 0, 7]</td><td class="ok">[0 … 7], on the cube (87d7b10)</td></tr>
+          <tr><td>branchcut</td><td>the same certificate, for the router</td><td>route index, seal-os network</td><td class="no">5 distinct slots of 8; a lookup searched only its own cell and missed a route 0.08 rad away</td><td class="ok">[0 … 7], and the nearest route over every cell (9702061)</td></tr>
+          <tr><td>triton-lang/kernels#22</td><td>sink plus local window, used as a null</td><td><code>Policy::Locality</code>, foliation</td><td class="no">no replay separated the entrant term from depth</td><td class="ok">476 bp against foliation's 952 on the boot trace (264235c)</td></tr>
+          <tr><td>NeMo-Relay#481</td><td>a stable scaffold under varying turns</td><td>chat trace, foliation proof</td><td class="no">the proof replayed only a trace LRU loses by construction</td><td class="ok">foliation 5,284 bp against LRU 8,068 (0ab2377)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
 
 <section class="band band--tint" id="how" aria-labelledby="how-h">
   <div class="wrap">
@@ -586,28 +712,32 @@
     <p class="sec__lede" data-reveal>All of them, in one place.</p>
     <ul class="limits">
       <li data-reveal>
+        <h3>No user program has run</h3>
+        <p>No ring-3 instruction has executed. <code>/bin/init</code> is absent from the image; with one present, boot stops after <code>[execve] Loading '/bin/init'</code>. Syscall entry stores onto the caller's stack. Everything on the desktop, the shell included, is kernel code. Reaching ring 3 is milestone M0 of the <a href="#direction">Direction</a>.</p>
+      </li>
+      <li data-reveal>
         <h3>Kernel tests do not run on the host</h3>
         <p><code>kernel/seal-os</code> is excluded from the Cargo workspace, so its <code>#[cfg(test)]</code> tests are never compiled or run. Kernel checks run only in the in-kernel harness and the <code>seal-mkimage</code> boot proofs under QEMU, and the harness job fires only after CI succeeds. That is why several seal-os fixes here are pinned by compile-time assertions.</p>
       </li>
       <li data-reveal>
         <h3>Synthetic results are screening only</h3>
-        <p><code>stratum</code>'s fixtures and <code>foliation</code>'s 30-request trace are synthetic, and nothing has been run against a real model. The foliation win is a capacity cliff: LRU reaches the same 9.52% hit rate from 32 plaques up.</p>
+        <p><code>stratum</code>'s fixtures and <code>foliation</code>'s two traces are synthetic, and nothing has been run against a real model. Which eviction order wins follows the trace: foliation matches the optimum where recency always evicts the shared prefix, and loses to LRU, 5,284 bp against 8,068, where reuse follows recency. With 16 live conversations instead of 4 it wins again. Both traces run at one pool size.</p>
       </li>
       <li data-reveal>
-        <h3>T4 is not certified at runtime</h3>
-        <p>In epsilon-os, T4/AGCR reports NOT CERTIFIED at the governor's runtime dt = 0.01. The gains satisfy the margin only at dt = 1.0.</p>
+        <h3>T4 is refused, and no step size earns it</h3>
+        <p>epsilon-os and the seal-os boot both report T4/AGCR NOT CERTIFIED at the governor's runtime dt = 0.01, where α + β/dt = 5.01. The margin assumes unit plant gain; the loop the code runs has a gain of about 10⁶ and 2-cycles between ε = 0.001 and 10 at dt = 0.01, 0.0506 and 1 alike (dcc35b6). The governor needs a redesign, not a new dt.</p>
       </li>
       <li data-reveal>
         <h3>A certificate covers the question as posed</h3>
-        <p>It says rounding and the choice of threshold cannot change the answer. It says nothing about whether the scale, the ratio of 10 or the embedding on S² was the right question. The points, scores and trees in figures 3, 4, 6 and 8 are chosen for the picture; the rules applied to them are the code's.</p>
+        <p>It says rounding and the choice of threshold cannot change the answer. It says nothing about whether the scale, the ratio of 10 or the embedding on S² was the right question. The points, scores and trees in figures 3, 4, 6 and 8 are chosen for the picture; the rules applied to them are the code's. The hit rates in figure 6 are measured, not chosen.</p>
       </li>
       <li data-reveal>
-        <h3>Outside this change</h3>
-        <p>From the README's status table: TLS does not interoperate with a stock TLS 1.3 server; AMD GPU dispatch has never executed; WiFi and Bluetooth ship no vendor firmware; KASLR moves mappings, not the image base; kernel W^X is measured and not enforced; 585 of the kernel's 594 <code>unsafe</code> blocks carry no written safety justification.</p>
+        <h3>Elsewhere in the kernel</h3>
+        <p>From the README's Limits: TLS accepts Ed25519 certificates only; AMD GPU dispatch has never executed; WiFi and Bluetooth are PCI probes only; KASLR moves mappings, not the image base; 611 of the kernel's 627 <code>unsafe</code> blocks carry no safety comment. Kernel W^X is now enforced, with 0 of 24,004 scanned pages writable and executable (b3cf934).</p>
       </li>
       <li data-reveal>
         <h3>Where the numbers come from</h3>
-        <p>Every "before" figure is quoted from the commit named beside it. The nearest-centroid "after" figures, the stratum scores and the workspace count were re-run at <code>0f040e0</code> on Windows 11 with rustc 1.97.1: <code>cargo test --workspace</code> passed 849, failed 0, ignored 2. The QEMU results are quoted from the commits.</p>
+        <p>Every "before" figure is quoted from the commit named beside it. The nearest-centroid "after" figures, the stratum scores and the workspace count were re-run at <code>0f040e0</code> on Windows 11 with rustc 1.97.1: <code>cargo test --workspace</code> passed 849, failed 0, ignored 2. The 2026-09-27 results are quoted from the commits named beside them; at <code>c055594</code>, <code>cargo test -p aether-core -p epsilon-os</code> passed 490, failed 0. The QEMU results are quoted from the commits.</p>
       </li>
     </ul>
   </div>
@@ -646,7 +776,7 @@ cargo +stable run --release        <span class="c"># writes seal-os.img next to 
   -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
   -nographic -m 4G -no-reboot -no-shutdown | tee /tmp/seal-os.log
 cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --check-theorem-log /tmp/seal-os.log
-<span class="c"># expect: [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths</span></code></pre>
+<span class="c"># expect: [BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths</span></code></pre>
       </div>
     </div>
   </div>
@@ -689,7 +819,7 @@ cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --
       <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow#readme">
         <p class="card__repo">README.md</p>
         <h3 class="card__title">The whole kernel</h3>
-        <p class="card__body">Architecture, subsystems and the full status table, candid about what is not real yet.</p>
+        <p class="card__body">Architecture, measured results, the theorem table, the Linux-replacement direction and one Limits list.</p>
         <span class="card__link">Read the README <span aria-hidden="true">&#8250;</span></span>
       </a>
       <a class="card" data-reveal href="https://teerthsharma.github.io/work.html#p-epsilon-hollow">
