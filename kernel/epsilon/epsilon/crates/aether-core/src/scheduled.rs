@@ -69,6 +69,12 @@ pub enum ScheduleError {
         q_block: usize,
         block: usize,
     },
+    /// A causal score was NaN or infinite: `q.k` overflowed, or an input held a
+    /// NaN. The row's denominator is positive only when its scores are numbers.
+    NonFiniteScore {
+        row: usize,
+        col: usize,
+    },
     OffsetsLengthMismatch {
         expected: usize,
         actual: usize,
@@ -385,6 +391,10 @@ fn validate_launch(
 ///
 /// Positions inside a scheduled block are still masked causally, so a scheduled
 /// diagonal block contributes only its lower triangle.
+///
+/// A NaN or infinite score is refused with [`ScheduleError::NonFiniteScore`]
+/// rather than folded in: finite `q` and `k` can still overflow `q.k`, and the
+/// row then has no number to normalise by.
 pub fn scheduled_attention(
     q: &[f64],
     k: &[f64],
@@ -426,6 +436,10 @@ pub fn scheduled_attention(
                         dot += q[row * head_dim + d] * k[col * head_dim + d];
                     }
                     *score = dot * scale;
+                    // from teerthsharma/resolvent ceqjepa/operator.py:194: refuse non-finite logits
+                    if !score.is_finite() {
+                        return Err(ScheduleError::NonFiniteScore { row, col });
+                    }
                     if *score > tile_max {
                         tile_max = *score;
                     }
@@ -475,7 +489,8 @@ pub fn scheduled_attention(
             let l = denominator[local_m];
             for d in 0..head_dim {
                 // `l` is positive for every row: the local window always schedules
-                // the diagonal block, and a row always sees at least itself.
+                // the diagonal block, a row always sees at least itself, and that
+                // score is finite or the row was refused above.
                 out[row * head_dim + d] = accumulator[local_m * head_dim + d] / l;
             }
         }
