@@ -68,6 +68,7 @@ and headers, not that the kernel reaches the desktop.
 | `kernel/aether/Aether-Lang/crates/aegis-cli` | Host CLI for AEGIS runtime experiments |
 | `kernel/aether/Aether-Lang/crates/repl-core` | Shared REPL/runner support |
 | `tools/ubuntu-alloc-bench` | Native Ubuntu allocator comparison harness |
+| `tools/math-mutation-gate` | Mutation gate over the aether-core, epsilon and aether-verified mathematics; run by `scripts/ci_parity.sh` |
 
 ## Aether documentation boundary
 

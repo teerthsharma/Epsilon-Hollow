@@ -7927,8 +7927,8 @@ which is more ceremony than a test script deserves, and it is the only version o
 this that survives a kill it cannot intercept.
 
 Three separate kills, three recoveries. Only one was observed printing its
-own message - `RECOVERED ... restored .../aether_tss.rs` - because Python
-buffers stdout when piped and the other two runs were killed before the buffer
+own message - `RECOVERED ... restored .../aether_tss.rs` - because the host
+interpreter buffers stdout when piped and the other two runs were killed before the buffer
 flushed. Those two are confirmed by the weaker evidence that the file returned
 to unmodified in `git status` and its backup was gone. The message now flushes
 on write, since a recovery notice lost to buffering is the same silent failure
