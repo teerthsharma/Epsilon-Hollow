@@ -96,8 +96,17 @@ pub struct ObjectHeader {
 /// Note: Liveness is now stored in the SpatialBlock for SIMD access.
 #[derive(Debug, Clone)]
 pub enum HeapSlot<T> {
-    Free { next_free: usize },
-    Occupied { header: ObjectHeader, data: T },
+    /// `generation` is the last generation this slot handed out (0 = never
+    /// used); the next occupant gets `generation + 1`. A slot freed at
+    /// `u32::MAX` is retired: it is never linked into the free list again.
+    Free {
+        next_free: usize,
+        generation: u32,
+    },
+    Occupied {
+        header: ObjectHeader,
+        data: T,
+    },
 }
 
 /// A Spatial Block acting as a leaf in the memory tree.
@@ -118,32 +127,10 @@ impl<T> Default for SpatialBlock<T> {
     fn default() -> Self {
         Self {
             liveness: [0.0; 8],
-            slots: [
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-                HeapSlot::Free {
-                    next_free: usize::MAX,
-                },
-            ],
+            slots: core::array::from_fn(|_| HeapSlot::Free {
+                next_free: usize::MAX,
+                generation: 0,
+            }),
             occupied_mask: 0,
         }
     }
@@ -259,21 +246,27 @@ impl<T> ManifoldHeap<T> {
     pub fn alloc(&mut self, data: T) -> Gc<T> {
         self.entropy_counter += 1;
 
-        let (block_idx, slot_idx) = if let Some(head) = self.free_head {
+        let (block_idx, slot_idx, last_generation) = if let Some(head) = self.free_head {
             let (b, s) = Self::resolve_index(head);
+            let mut last_generation = 0;
             // Verify and update free_head
             if b < self.blocks.len() {
-                if let HeapSlot::Free { next_free } = &self.blocks[b].slots[s] {
+                if let HeapSlot::Free {
+                    next_free,
+                    generation,
+                } = &self.blocks[b].slots[s]
+                {
                     if *next_free == usize::MAX {
                         self.free_head = None;
                     } else {
                         self.free_head = Some(*next_free);
                     }
+                    last_generation = *generation;
                 } else {
                     return Gc::new(0, 0); // Corrupt free-list; return a dead handle
                 }
             }
-            (b, s)
+            (b, s, last_generation)
         } else {
             // Bump allocation
             let next_blk_idx = self.blocks.len();
@@ -283,17 +276,20 @@ impl<T> ManifoldHeap<T> {
             for i in 1..7 {
                 self.blocks[next_blk_idx].slots[i] = HeapSlot::Free {
                     next_free: next_blk_idx * 8 + i + 1,
+                    generation: 0,
                 };
             }
             self.blocks[next_blk_idx].slots[7] = HeapSlot::Free {
                 next_free: usize::MAX,
+                generation: 0,
             };
 
             self.free_head = Some(next_blk_idx * 8 + 1);
-            (next_blk_idx, 0)
+            (next_blk_idx, 0, 0)
         };
 
-        let generation = 1;
+        // Cannot overflow: a slot freed at u32::MAX is retired, never re-listed.
+        let generation = last_generation + 1;
         self.blocks[block_idx].slots[slot_idx] = HeapSlot::Occupied {
             header: ObjectHeader {
                 marked: false,
@@ -488,8 +484,10 @@ impl<T> ManifoldHeap<T> {
                 block.liveness[s_idx] *= 0.95;
 
                 let should_prune;
+                let mut generation = 0;
 
                 if let HeapSlot::Occupied { header, .. } = &mut block.slots[s_idx] {
+                    generation = header.generation;
                     let is_marked = header.marked;
                     let is_safe = guard.is_safe(block.liveness[s_idx]);
 
@@ -505,13 +503,19 @@ impl<T> ManifoldHeap<T> {
 
                 if should_prune {
                     block.occupied_mask &= !(1 << s_idx);
-                    let next = if let Some(h) = new_free_head {
-                        h
+                    if generation == u32::MAX {
+                        // Every generation is spent; reuse would alias old handles.
+                        block.slots[s_idx] = HeapSlot::Free {
+                            next_free: usize::MAX,
+                            generation,
+                        };
                     } else {
-                        usize::MAX
-                    };
-                    block.slots[s_idx] = HeapSlot::Free { next_free: next };
-                    new_free_head = Some(b_idx * 8 + s_idx);
+                        block.slots[s_idx] = HeapSlot::Free {
+                            next_free: new_free_head.unwrap_or(usize::MAX),
+                            generation,
+                        };
+                        new_free_head = Some(b_idx * 8 + s_idx);
+                    }
 
                     pruned += 1;
                 }
@@ -553,6 +557,53 @@ mod tests {
         let (b1, _) = ManifoldHeap::<i32>::resolve_index(h9.index);
         assert_eq!(b1, 1);
         assert_eq!(heap.blocks.len(), 2);
+    }
+
+    /// Allocate 16 objects and heat all but the first, so the next
+    /// regulation pass prunes exactly that one. Returns its handle.
+    fn sixteen_with_cold_first(heap: &mut ManifoldHeap<i32>) -> Gc<i32> {
+        let handles: Vec<_> = (0..16).map(|i| heap.alloc(i)).collect();
+        for h in &handles[1..] {
+            for _ in 0..8 {
+                heap.touch(*h);
+            }
+        }
+        handles[0]
+    }
+
+    #[test]
+    fn test_stale_handle_reads_none_after_slot_reuse() {
+        let mut heap = ManifoldHeap::<i32>::new();
+        let cold = sixteen_with_cold_first(&mut heap);
+        assert_eq!(heap.regulate_entropy(|_| {}), 1);
+
+        let fresh = heap.alloc(999);
+        assert_eq!(fresh.index(), cold.index(), "slot was not reused");
+        assert_ne!(fresh.generation(), cold.generation());
+        assert_eq!(heap.get(cold), None);
+        assert_eq!(heap.get_mut(cold), None);
+        assert_eq!(heap.get(fresh), Some(&999));
+    }
+
+    #[test]
+    fn test_slot_at_max_generation_is_retired() {
+        let mut heap = ManifoldHeap::<i32>::new();
+        let cold = sixteen_with_cold_first(&mut heap);
+        let (b, s) = ManifoldHeap::<i32>::resolve_index(cold.index());
+        if let HeapSlot::Occupied { header, .. } = &mut heap.blocks[b].slots[s] {
+            header.generation = u32::MAX;
+        }
+        assert_eq!(heap.regulate_entropy(|_| {}), 1);
+
+        // Any next generation would wrap and alias an old handle, so the slot
+        // must never be handed out again.
+        for i in 0..64 {
+            assert_ne!(
+                heap.alloc(i).index(),
+                cold.index(),
+                "exhausted slot was reused"
+            );
+        }
     }
 
     #[test]
