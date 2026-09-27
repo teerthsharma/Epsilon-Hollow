@@ -98,6 +98,8 @@ See `docs/BOOT.md` for detailed boot options, headless modes, and GDB stub flags
 | Security / theorem gates | `kernel/seal-os/src/security/` | `SECURITY.md` |
 | Graphics / window manager | `kernel/seal-os/src/wm/` | `docs/VRAM_TOPOLOGY_FAST_PATH.md` |
 | Build / CI | `.github/workflows/`, `scripts/` | `docs/CI.md`, `docs/LOCAL_CI.md` |
+| Linux kernel replacement (ABI, boot, parity gates) | `tests/linux_parity/`, `kernel/seal-os/src/syscall/` | [`docs/design/LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md) |
+| Ports of existing kernel code | `ports/` | [`PORTING.md`](PORTING.md), [`ports/README.md`](ports/README.md) |
 
 ## Debugging
 
@@ -181,15 +183,69 @@ cargo bench --workspace --no-run
 
 Include before/after numbers in the PR description. See `BENCHMARKS.md` for expected ranges and how to read regression output.
 
-## Theorem-gate requirements (T1–T5)
+## Theorem status lines (T1–T10)
 
-Seal OS kernel code is organized around ten theorems (T1–T10). Changes that touch **T1–T5 runtime paths** must:
+Seal OS kernel code is organized around ten theorems (T1–T10), stated in `docs/THEOREMS.md`. The rule for every change, from D5 of [`docs/design/LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md):
 
-1. Preserve the existing theorem gate (or extend it with a new proof / invariant).
-2. Update `docs/THEOREMS.md` if the theorem statement, proof sketch, or runtime check changes.
-3. Ensure the headless boot proof still prints `All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths`.
+1. Every theorem line the kernel prints reports exactly one of **certified**, **refused** with its reason, or **not checked**.
+2. The status is computed from the running kernel's state when the line is printed, never from a string constant, a build flag, or a fixture.
+3. A change may turn a line from certified to refused when the certificate was unearned. The commit that does so says so in its message body, naming the theorem and the reason.
+4. Refusal is reported, not fatal: the M0 target boots with T4 refused.
+5. A change to a theorem statement, proof sketch, or runtime check updates `docs/THEOREMS.md` in the same commit.
 
-If you are unsure whether your change affects a theorem gate, open a draft PR and tag `@teerthsharma` for review.
+Until the M0 item "theorem lines from live state" lands, the kernel still prints the fixed banner `[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths` (`kernel/seal-os/src/lib.rs:2151`), panics when a theorem fails (`kernel/seal-os/src/lib.rs:2148`), and CI requires that banner through `seal-mkimage --check-theorem-log` (`kernel/seal-mkimage/src/main.rs:1138`) and `--check-runtime-theorems` (`kernel/seal-mkimage/src/main.rs:9069`). A change that turns a line to refused fails those checks unless it lands with that M0 item, which replaces them.
+
+## RED test first
+
+Every behavioural change starts from a test that fails without it.
+
+1. Write the test and run it on the parent commit. It fails, and for the reason it names. A setup failure (exit 2, a missing binary, a VM that never booted) is not RED.
+2. Make the change. The same test, unmodified, passes.
+3. The commit message or PR quotes both results: the failing assertion or serial line, then the passing run.
+
+A test never seen failing is not a gate. For milestone work the test that ticks a box in [`FUTURE_PLAN.md`](FUTURE_PLAN.md) Phase 0 is a QEMU gate (D6); source-inspection tests are pre-checks. Ports follow the same order ([`PORTING.md`](PORTING.md)).
+
+## Linux-parity gates
+
+[`tests/linux_parity/`](tests/linux_parity/) pins each row of the starting-point table in [`docs/design/LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md). Each finding is bound to a test that fails on `9ebbe2e`, the commit the plan was measured at; tests named `*_control` pass there, proving the failures are property results rather than a broken setup. A change turns specific findings green; none is deleted or weakened to get there. The gate for each milestone item is listed in [`FUTURE_PLAN.md`](FUTURE_PLAN.md) Phase 0.
+
+Host tests (Python 3.11+ with pytest):
+
+```bash
+python -m pytest tests/linux_parity -q
+```
+
+Most files inspect kernel source and need nothing else. `test_foreman_userland.py` boots the built image under QEMU and `test_foreman_image_userland.py` runs the built `seal-mkimage`; both need the image built first, and `tests/linux_parity/conftest.py` looks for QEMU, OVMF and `seal-mkimage.exe` at Windows paths.
+
+QEMU gates need the image built first:
+
+```bash
+(cd kernel/seal-os && cargo +nightly build --release)
+(cd kernel/seal-mkimage && cargo +stable run --release)
+```
+
+`chase_boot.sh` (modes `usermode`, `usermode-seal`, `ext4`, `wx`) runs on a Linux host as is. On Windows it runs from Git Bash and reaches `gcc`, `mke2fs` and `e2fsck` through WSL:
+
+```bash
+MSYS2_ARG_CONV_EXCL="PATH=" LINUX="wsl -e env PATH=/usr/sbin:/usr/bin" \
+QEMU="/c/Program Files/qemu/qemu-system-x86_64.exe" \
+OVMF="C:/Program Files/qemu/share/edk2-x86_64-code.fd" \
+bash tests/linux_parity/chase_boot.sh usermode-seal
+```
+
+`MSYS2_ARG_CONV_EXCL="PATH="` stops Git Bash from rewriting the `PATH=/usr/sbin:/usr/bin` argument into a Windows path before WSL receives it.
+
+`cameron_qemu_milestone.sh` (cases `ring3-seal`, `ring3-linux`, `ring3-glibc`, `ahci-root`, `virtio-root`, `ext4-root`) runs from a WSL shell at the repository root, with `gcc` and `mke2fs` installed in WSL and the Windows QEMU build reached through interop. It converts paths with `wslpath`, so it does not run on a plain Linux host:
+
+```bash
+bash tests/linux_parity/cameron_qemu_milestone.sh ring3-seal
+```
+
+Both scripts exit 0 when the property holds, 1 when it is violated (RED), and 2 on a setup failure. Exit 2 is no verdict and is never reported as RED or as a pass.
+
+## Linux experience is welcome
+
+People who know Linux internals, have read the Linux source, or maintain Linux code are welcome in every part of the tree. No clean-room restriction applies, because Linux code runs only inside separate driver-server programs (D3): LKL built from a pinned upstream tree, in user mode, reaching the kernel over virtio-style rings. The MIT kernel does not reimplement the in-kernel Linux driver API (D3 rejects that shim), so there is no derived copy of `include/linux` to keep clean. Linux source text is not copied into `kernel/`; implementing the documented userspace ABI (D1) is the work itself. Code ported from any upstream follows [`PORTING.md`](PORTING.md).
 
 ## Good first issues
 
