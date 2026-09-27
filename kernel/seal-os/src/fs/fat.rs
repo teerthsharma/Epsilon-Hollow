@@ -71,7 +71,11 @@ pub struct FatFs {
     dev_num: u32,
     bpb: BiosParameterBlock,
     fat_type: FatType,
+    /// First sector of the FAT that reads use.
     fat_start: u64,
+    /// FAT copies that writes keep in step: the first at `fat_start`, each
+    /// next one `sectors_per_fat` further on.
+    fat_copies: u8,
     root_dir_start: u64,
     data_start: u64,
     clusters: u32,
@@ -107,6 +111,7 @@ impl FatFs {
             },
             fat_type: FatType::Fat12,
             fat_start: 0,
+            fat_copies: 0,
             root_dir_start: 0,
             data_start: 0,
             clusters: 0,
@@ -142,7 +147,7 @@ impl FatFs {
         } else {
             bpb.fat_size_16 as u32
         };
-        if fat_size == 0 || total_sectors == 0 {
+        if fat_size == 0 || total_sectors == 0 || bpb.num_fats == 0 {
             return Err(VfsError::IoError);
         }
 
@@ -165,9 +170,21 @@ impl FatFs {
         self.data_start = self.root_dir_start + root_dir_sectors as u64;
         self.sectors_per_fat = fat_size;
         self.root_dir_sectors = root_dir_sectors;
+        self.fat_copies = bpb.num_fats;
 
         if self.fat_type == FatType::Fat32 {
             self.root_cluster = bpb.root_cluster;
+            // BPB_ExtFlags (offset 40): bit 7 set turns mirroring off and
+            // leaves only the FAT numbered in bits 0-3 live.
+            let ext_flags = u16::from_le_bytes([buf[40], buf[41]]);
+            if ext_flags & 0x80 != 0 {
+                let active = (ext_flags & 0x0F) as u8;
+                if active >= bpb.num_fats {
+                    return Err(VfsError::IoError);
+                }
+                self.fat_start += active as u64 * fat_size as u64;
+                self.fat_copies = 1;
+            }
         } else {
             self.root_cluster = 0;
         }
@@ -456,19 +473,12 @@ impl FatFs {
                     buf[entry_offset] = (buf[entry_offset] & 0x0F) | (((value << 4) & 0xF0) as u8);
                     buf[entry_offset + 1] = ((value >> 4) & 0x0FF) as u8;
                 }
-                block::write_block(
-                    self.dev_num,
-                    fat_sector,
-                    &buf[..self.bytes_per_sector as usize],
-                )
-                .map_err(|_| VfsError::IoError)?;
+                self.write_fat_sector(fat_sector, &buf[..self.bytes_per_sector as usize])?;
                 if entry_offset == self.bytes_per_sector as usize - 1 {
-                    block::write_block(
-                        self.dev_num,
+                    self.write_fat_sector(
                         fat_sector + 1,
                         &buf[self.bytes_per_sector as usize..self.bytes_per_sector as usize + 1],
-                    )
-                    .map_err(|_| VfsError::IoError)?;
+                    )?;
                 }
             }
             FatType::Fat16 => {
@@ -479,8 +489,7 @@ impl FatFs {
                 block::read_block(self.dev_num, fat_sector, &mut buf)
                     .map_err(|_| VfsError::IoError)?;
                 buf[entry_offset..entry_offset + 2].copy_from_slice(&(value as u16).to_le_bytes());
-                block::write_block(self.dev_num, fat_sector, &buf)
-                    .map_err(|_| VfsError::IoError)?;
+                self.write_fat_sector(fat_sector, &buf)?;
             }
             FatType::Fat32 => {
                 let fat_offset = cluster * 4;
@@ -497,9 +506,18 @@ impl FatFs {
                 ]);
                 let new_val = (existing & 0xF0000000) | (value & 0x0FFFFFFF);
                 buf[entry_offset..entry_offset + 4].copy_from_slice(&new_val.to_le_bytes());
-                block::write_block(self.dev_num, fat_sector, &buf)
-                    .map_err(|_| VfsError::IoError)?;
+                self.write_fat_sector(fat_sector, &buf)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Writes one FAT sector, addressed within the FAT at `fat_start`, to
+    /// the same sector of every copy in `fat_copies`.
+    fn write_fat_sector(&self, lba: u64, data: &[u8]) -> Result<(), VfsError> {
+        for copy in 0..self.fat_copies as u64 {
+            block::write_block(self.dev_num, lba + copy * self.sectors_per_fat as u64, data)
+                .map_err(|_| VfsError::IoError)?;
         }
         Ok(())
     }
@@ -1548,7 +1566,111 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Mounts the two-FAT parity fixture and drives every FAT write path
+    /// through the VFS: `create` allocates, a three-cluster `write` extends
+    /// the chain twice, `unlink` frees one. Copies that disagree are what
+    /// `fsck.fat` reports as a FAT mismatch, and another OS may repair the
+    /// volume from the stale copy.
+    fn test_every_fat_copy_matches_after_writes() -> TestResult {
+        let disk: &'static TestDisk = Box::leak(Box::new(TestDisk {
+            data: Mutex::new(crate::fs::parity::format_fat16()),
+            sector_size: 512,
+        }));
+        register_block_device(0xFA77, disk);
+        let mut fs = FatFs::new(0xFA77);
+        test_assert!(fs.mount().is_ok(), "parity fixture must mount");
+
+        let Ok(kept) = fs.create("/KEPT.BIN") else {
+            return TestResult::Fail("create /KEPT.BIN failed");
+        };
+        test_assert!(
+            fs.write(kept, &alloc::vec![0xA5u8; 1500], 0).is_ok(),
+            "three-cluster write failed"
+        );
+        let Ok(gone) = fs.create("/GONE.TMP") else {
+            return TestResult::Fail("create /GONE.TMP failed");
+        };
+        test_assert!(fs.write(gone, b"x", 0).is_ok(), "one-byte write failed");
+        test_assert!(fs.unlink("/GONE.TMP").is_ok(), "unlink failed");
+
+        let fat_bytes = fs.sectors_per_fat as usize * 512;
+        let first = fs.bpb.reserved_sectors as usize * 512;
+        let data = disk.data.lock();
+        let copy1 = &data[first..first + fat_bytes];
+        let copy2 = &data[first + fat_bytes..first + 2 * fat_bytes];
+        // Control: the writes reached copy 1, so the equality below is not
+        // two blank FATs agreeing.
+        test_assert!(
+            copy1[4..].iter().any(|&b| b != 0),
+            "writes never reached FAT copy 1"
+        );
+        test_assert!(copy1 == copy2, "FAT copy 2 differs from copy 1 after writes");
+        TestResult::Pass
+    }
+
+    /// A 16-sector disk carrying a FAT32 boot sector with two 2-sector FATs.
+    /// `mount` reads only sector 0, so the claimed 70000 sectors (enough
+    /// clusters to be FAT32) never need to exist.
+    fn make_fat32(dev_num: u32, ext_flags: u16) -> &'static TestDisk {
+        let disk: &'static TestDisk = Box::leak(Box::new(TestDisk::new(16, 512)));
+        {
+            let mut d = disk.data.lock();
+            d[11..13].copy_from_slice(&512u16.to_le_bytes());
+            d[13] = 1; // sectors per cluster
+            d[14..16].copy_from_slice(&1u16.to_le_bytes()); // reserved sectors
+            d[16] = 2; // NumFATs
+            d[32..36].copy_from_slice(&70_000u32.to_le_bytes());
+            d[36..40].copy_from_slice(&2u32.to_le_bytes()); // FATSz32
+            d[40..42].copy_from_slice(&ext_flags.to_le_bytes());
+            d[510] = 0x55;
+            d[511] = 0xAA;
+        }
+        register_block_device(dev_num, disk);
+        disk
+    }
+
+    /// BPB_ExtFlags bit 7 clear mirrors every FAT; set, only the FAT named
+    /// in bits 0-3 is live, and both reads and writes must use it alone.
+    fn test_fat32_ext_flags_select_the_written_copies() -> TestResult {
+        // (ExtFlags, FAT 0 written, FAT 1 written)
+        for (dev, ext_flags, in_fat0, in_fat1) in [
+            (0xFA78, 0x0000u16, true, true),
+            (0xFA79, 0x0081u16, false, true),
+        ] {
+            let disk = make_fat32(dev, ext_flags);
+            let mut fs = FatFs::new(dev);
+            test_assert!(fs.mount().is_ok(), "FAT32 boot sector must mount");
+            test_assert!(fs.fat_type == FatType::Fat32, "geometry must select FAT32");
+            test_assert!(fs.write_fat_entry(5, 0x0FFF_FFFF).is_ok(), "FAT write failed");
+            test_assert!(
+                matches!(fs.read_fat_entry(5), Ok(0x0FFF_FFFF)),
+                "entry must read back from the FAT it was written to"
+            );
+            let d = disk.data.lock();
+            // Cluster 5 sits at byte 20 of each FAT; FAT 0 starts at
+            // sector 1, FAT 1 at sector 3.
+            let written = |sector: usize| d[sector * 512 + 20..sector * 512 + 24] != [0; 4];
+            test_assert!(written(1) == in_fat0, "FAT 0 written state is wrong for ExtFlags");
+            test_assert!(written(3) == in_fat1, "FAT 1 written state is wrong for ExtFlags");
+        }
+        // An active FAT the volume does not have is a corrupt boot sector.
+        make_fat32(0xFA7A, 0x0082);
+        test_assert!(
+            FatFs::new(0xFA7A).mount().is_err(),
+            "ExtFlags naming FAT 2 of 2 must refuse to mount"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "fat::every_fat_copy_matches_after_writes",
+            test_every_fat_copy_matches_after_writes,
+        );
+        crate::testing::register_test(
+            "fat::fat32_ext_flags_select_the_written_copies",
+            test_fat32_ext_flags_select_the_written_copies,
+        );
         crate::testing::register_test(
             "fat::cyclic_chain_fails_closed_instead_of_hanging",
             test_cyclic_chain_fails_closed_instead_of_hanging,
