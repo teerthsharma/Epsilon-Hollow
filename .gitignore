@@ -219,8 +219,8 @@ docs/*-agents.md
 docs/*-agent-grid.md
 docs/*-status-report.md
 
-# transient byte copies written by scripts/math_mutation_gate.py
+# transient byte copies written by tools/math-mutation-gate
 *.gate-backup
 
-# lock held by scripts/math_mutation_gate.py while it is rewriting sources
-scripts/.gate.lock
+# lock held by tools/math-mutation-gate while it is rewriting sources
+tools/math-mutation-gate/.gate.lock

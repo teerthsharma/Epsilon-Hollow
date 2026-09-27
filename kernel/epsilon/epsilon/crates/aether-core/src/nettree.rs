@@ -266,8 +266,8 @@ impl NetTree {
 ///
 /// Shared by the bisection and the closed form so the two cannot diverge on
 /// what they reject. It was duplicated when the closed form was added, which
-/// left the gate mutating only the first copy - the fragment audit in
-/// `scripts/math_mutation_gate.py` caught that before the mutation ran.
+/// left the gate mutating only the first copy - the mutation gate's fragment
+/// audit (now `tools/math-mutation-gate`) caught that before the mutation ran.
 fn is_admissible_distance(d: f64) -> bool {
     d.is_finite() && d >= 0.0
 }
