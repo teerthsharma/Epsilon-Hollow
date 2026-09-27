@@ -1220,8 +1220,10 @@ fn free_slot(sockets: &mut [SocketSlot], slot: usize) {
 /// Called from `poll`, which is the only part of the stack that runs on its
 /// own: a connection reaches CLOSED or leaves TIME-WAIT because of a segment or
 /// a clock, not because anyone called anything.
-fn reap_finished_sockets(sockets: &mut [SocketSlot]) {
-    let now = crate::drivers::interrupts::ticks();
+///
+/// `now` is a parameter so a test can hold the clock still: `poll` passes the
+/// live `ticks()`, which a timer interrupt can move between any two lines.
+fn reap_finished_sockets(sockets: &mut [SocketSlot], now: u64) {
     for slot in 0..sockets.len() {
         if slot_sock(sockets, slot).is_some_and(|sock| sock.is_finished(now)) {
             free_slot(sockets, slot);
@@ -1916,7 +1918,7 @@ pub fn poll() {
         }
         // After the retransmit pass, so a socket collected here is one that had
         // nothing left to resend anyway.
-        reap_finished_sockets(&mut sockets);
+        reap_finished_sockets(&mut sockets, crate::drivers::interrupts::ticks());
     }
     flush_tx();
 }
@@ -2184,19 +2186,27 @@ pub mod tests {
             .count()
     }
 
-    /// Rewind a socket's 2MSL clock by `by` ticks.
+    /// Spin until the live tick counter moves.
     ///
-    /// The same experiment as waiting, and the only one available: `ticks()` is
-    /// a live counter no test may advance, which is why `age_retransmit_queue`
-    /// rewinds its entries rather than the clock.
-    fn age_time_wait(handle: usize, by: u64) {
-        let mut sockets = TCP_SOCKETS.lock();
-        let Some(slot) = resolve(&sockets, handle) else {
-            return;
-        };
-        if let Some(sock) = slot_sock_mut(&mut sockets, slot) {
-            sock.time_wait_since = sock.time_wait_since.wrapping_sub(by);
+    /// A timer interrupt landing between the segment that stamps a clock and
+    /// the check that measures it is what a boundary measured against
+    /// `ticks()` loses to at random. Forcing it on every run turns that flake
+    /// into a failure. It relies on the ~1 kHz timer, as `cpu::smp`'s waits
+    /// do; `test_main` runs after it is started.
+    fn wait_for_tick() {
+        let start = crate::drivers::interrupts::ticks();
+        while crate::drivers::interrupts::ticks() == start {
+            core::hint::spin_loop();
         }
+    }
+
+    /// The reap `poll` runs, at a tick the case names instead of `ticks()`.
+    ///
+    /// A one-tick boundary cannot be measured against the live counter: the
+    /// ~1 kHz timer moves it between the segment that stamps the hold and the
+    /// reap that measures it, and the hold then ends "a tick early".
+    fn reap_at(now: u64) {
+        reap_finished_sockets(&mut TCP_SOCKETS.lock(), now);
     }
 
     /// Age every queued segment by `by` ticks.
@@ -3182,21 +3192,25 @@ pub mod tests {
             state(handle) == TcpState::TimeWait,
             "the peer's FIN did not take the closing socket to TIME-WAIT"
         );
+        let Some(since) = with_sock(handle, |sock| sock.time_wait_since) else {
+            return TestResult::Fail("the TIME-WAIT socket left the table before its hold began");
+        };
+        // The live clock moves past the stamp, as it did in the runs this case
+        // used to lose, so the boundary below is measured from `since` alone.
+        wait_for_tick();
 
         poll();
         test_assert!(
             state(handle) == TcpState::TimeWait,
             "TIME-WAIT was collected immediately: a delayed duplicate can now be read as a new connection"
         );
-        age_time_wait(handle, TIME_WAIT_TICKS - 1);
-        poll();
+        reap_at(since.wrapping_add(TIME_WAIT_TICKS - 1));
         test_assert!(
             state(handle) == TcpState::TimeWait,
             "the 2MSL hold ended a tick early"
         );
 
-        age_time_wait(handle, 1);
-        poll();
+        reap_at(since.wrapping_add(TIME_WAIT_TICKS));
         test_assert!(
             state(handle) == TcpState::Closed,
             "the 2MSL hold never ended: the socket holds its four-tuple for the life of the machine"
