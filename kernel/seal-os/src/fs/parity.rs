@@ -293,8 +293,10 @@ pub fn format_fat16() -> Vec<u8> {
         hidden_sectors: 0,
         total_sectors_32: 0,
         fat_size_32: 0,
+        ext_flags: 0,
+        fs_ver: 0,
         root_cluster: 0,
-        _padding: [0; 468],
+        _padding: [0; 464],
     };
     put(&mut img, 0, &bpb);
     img[510] = 0x55;
