@@ -96,6 +96,11 @@ pub enum Policy {
     /// Belady optimum over a supplied future key trace. Oracle, not runnable
     /// online.
     Belady,
+    /// Depth, then recency: the foliation ranking without `entrants`.
+    /// Same-budget locality-only null — root-adjacent blocks, where sinks and
+    /// shared prompts sit, outlive deep ones; within a depth, recent outlives
+    /// old.
+    Locality,
 }
 
 /// Why a KV-cache operation was refused.
@@ -819,6 +824,8 @@ impl Foliation {
                 Policy::Lru => [l.last_use, 0, 0],
                 Policy::Random => [0, 0, 0],
                 Policy::Belady => [u64::MAX - self.next_use(l.key), l.last_use, 0],
+                // from https://github.com/triton-lang/kernels/pull/22: sink + local window, as a null
+                Policy::Locality => [u64::MAX - l.depth as u64, l.last_use, 0],
             };
             if self.policy == Policy::Random {
                 // Reservoir sample so the null model is uniform over the same
@@ -1141,6 +1148,7 @@ pub fn foliation_proof_line() -> String {
     let lru = replay(Policy::Lru, &trace, &keys, null_seed(0));
     let rnd = replay(Policy::Random, &trace, &keys, null_seed(0));
     let opt = replay(Policy::Belady, &trace, &keys, null_seed(0));
+    let loc = replay(Policy::Locality, &trace, &keys, null_seed(0));
 
     // The random null is a distribution over seeds, not the single draw in
     // `rnd` (seed 0, kept so `hit_bp_random` stays comparable across proof
@@ -1177,22 +1185,27 @@ pub fn foliation_proof_line() -> String {
     let memory_ok = fo.frames_failed == 0
         && fo.frames_backed > 0
         && fo.frames_freed == fo.frames_backed
-        && lru.frames_freed == lru.frames_backed;
+        && lru.frames_freed == lru.frames_backed
+        && loc.frames_freed == loc.frames_backed;
     let sharing_ok = shared_blocks == HOT_PREFIX_BLOCKS as u64 && frames_identical;
     let refcount_ok = refcount_after == 1 && survivors == HOT_PREFIX_BLOCKS as u64;
     let safety_ok = fo.referenced_evictions == 0
         && lru.referenced_evictions == 0
         && rnd.referenced_evictions == 0
+        && loc.referenced_evictions == 0
         && fo.collapse_violations == 0
-        && lru.collapse_violations == 0;
+        && lru.collapse_violations == 0
+        && loc.collapse_violations == 0;
     let refusals_ok = budget_refused && exhaustion_refused && referenced_free_refused;
     // The offline optimum must dominate every realizable policy on the same
     // candidate set. If it does not, the benchmark is measuring something else.
-    let oracle_sane = opt.hit_bp >= fo.hit_bp && opt.hit_bp >= lru.hit_bp;
+    let oracle_sane =
+        opt.hit_bp >= fo.hit_bp && opt.hit_bp >= lru.hit_bp && opt.hit_bp >= loc.hit_bp;
     let trace_ok = null_ok
         && fo.descents == lru.descents
         && fo.descents == rnd.descents
         && fo.descents == opt.descents
+        && fo.descents == loc.descents
         && fo.descents as usize == keys.len();
 
     let result = if memory_ok
@@ -1215,7 +1228,7 @@ blocks_admitted={} frames_backed={} frames_freed={} frames_failed={} \
 shared_descents={} bytes_saved={} \
 probe_shared_blocks={} probe_frames_identical={} probe_refcount_after_partial_free={} probe_survivors_resident={} \
 evictions_foliation={} evictions_lru={} evictions_random={} \
-hit_bp_foliation={} hit_bp_lru={} hit_bp_random={} hit_bp_belady={} gap_closed_bp={} \
+hit_bp_foliation={} hit_bp_lru={} hit_bp_random={} hit_bp_locality={} hit_bp_belady={} gap_closed_bp={} \
 random_seeds={} hit_bp_random_min={} hit_bp_random_max={} random_distinct_outcomes={} \
 foliation_beats_random={}/{} \
 referenced_evictions={} collapse_violations={} \
@@ -1245,6 +1258,7 @@ result={}",
         fo.hit_bp,
         lru.hit_bp,
         rnd.hit_bp,
+        loc.hit_bp,
         opt.hit_bp,
         gap_closed_bp,
         NULL_SEEDS,
@@ -1253,8 +1267,11 @@ result={}",
         digests.len(),
         null_beaten,
         NULL_SEEDS,
-        fo.referenced_evictions + lru.referenced_evictions + rnd.referenced_evictions,
-        fo.collapse_violations + lru.collapse_violations,
+        fo.referenced_evictions
+            + lru.referenced_evictions
+            + rnd.referenced_evictions
+            + loc.referenced_evictions,
+        fo.collapse_violations + lru.collapse_violations + loc.collapse_violations,
         if budget_refused { 1 } else { 0 },
         if exhaustion_refused { 1 } else { 0 },
         if referenced_free_refused { 1 } else { 0 },
@@ -1323,6 +1340,7 @@ refused_budget={} refused_exhaustion={} refused_referenced_free={}",
                 Policy::Lru => "lru",
                 Policy::Random => "random",
                 Policy::Belady => "belady",
+                Policy::Locality => "locality",
             },
             ABI_POOL_BLOCKS,
             f.resident(),
@@ -1839,6 +1857,40 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Value of `key` in the proof line; an `N/M` fraction reads as `N`.
+    fn proof_metric(line: &str, key: &str) -> Option<u64> {
+        line.split_whitespace()
+            .find_map(|t| t.strip_prefix(key))
+            .and_then(|v| v.split('/').next())
+            .and_then(|v| v.parse().ok())
+    }
+
+    /// The proof must replay a same-budget locality-only null: depth, then
+    /// recency, which is the foliation ranking with `entrants` removed.
+    /// Without it a win over random and LRU cannot be credited to the H0
+    /// multiplicity rather than to depth alone. The null must be a third
+    /// policy, so it may not score exactly what LRU or foliation scores, and
+    /// the offline optimum must dominate it like every other policy.
+    fn test_locality_null_is_measured() -> TestResult {
+        let line = foliation_proof_line();
+        crate::serial_println!("  kvpolicy: {}", line);
+        let loc = proof_metric(&line, "hit_bp_locality=");
+        test_assert!(
+            loc.is_some(),
+            "the proof does not measure a locality-only null"
+        );
+        let loc = loc.unwrap_or(0);
+        let lru = proof_metric(&line, "hit_bp_lru=").unwrap_or(0);
+        let fol = proof_metric(&line, "hit_bp_foliation=").unwrap_or(0);
+        let opt = proof_metric(&line, "hit_bp_belady=").unwrap_or(0);
+        test_assert!(
+            loc != lru && loc != fol,
+            "the locality null scored exactly what LRU or foliation scored"
+        );
+        test_assert!(opt >= loc, "oracle below the locality null");
+        TestResult::Pass
+    }
+
     /// The cache syscalls serve under LRU. The foliation ranking only wins at
     /// a capacity cliff on a synthetic trace, so it is selected explicitly by
     /// the boot proof and is not the default for real callers.
@@ -1906,5 +1958,9 @@ pub mod tests {
             test_random_null_spans_seeds,
         );
         crate::testing::register_test("foliation::abi_default_is_lru", test_abi_default_is_lru);
+        crate::testing::register_test(
+            "foliation::locality_null_is_measured",
+            test_locality_null_is_measured,
+        );
     }
 }
