@@ -16,7 +16,8 @@ The current measurable target is:
 1. Build `seal-os.efi` from Rust.
 2. Package a bootable UEFI disk image.
 3. Boot the image in a VM from Windows through WSL2 QEMU or Oracle VirtualBox.
-4. Capture serial proof that all T1-T10 theorem gates pass.
+4. Capture serial proof that the T1-T10 theorem gate passes: nine lines
+   `VERIFIED` and T4/AGCR refused at the runtime governor step, margin 5.01.
 5. Capture pixel proof that the desktop frame is nonblank and has the primary
    control surface visible.
 6. Mount the persistent ManifoldFS partition from the AHCI disk.
@@ -107,17 +108,18 @@ The serial log must contain:
 [BENCH] tls-encrypt api=TlsSession::encrypt fixture=psk_aes_128_gcm_record plaintext_bytes=1024 record_bytes=1045 tag_bytes=16 decrypt_match=1 write_seq=1 read_seq=1 p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BENCH] topo-render-3d api=topo_render::render_mesh fixture=grid_1024 quality=2 vertices=561 triangles=1024 window=256x256 nonblack_px=<n> sample_hash=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
 [BENCH] tensor-render api=tensor_viz_pipeline fixture=csv_100x100 quality=0 rows=100 cols=100 elements=10000 points=10000 triangles=19602 window=220x180 csv_bytes=<n> nonblack_px=<n> sample_hash=<n> p50_cycles=<n> p95_cycles=<n> max_cycles=<n> result=pass
+[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
-[THEOREM] T4/AGCR VERIFIED
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
 [THEOREM] T5/HCS VERIFIED
 [THEOREM] T6/RGCS VERIFIED
 [THEOREM] T7/PHKP VERIFIED
 [THEOREM] T8/TEB VERIFIED
 [THEOREM] T9/CMA VERIFIED
 [THEOREM] T10/WPHB VERIFIED
-[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
 [LAAMBA] app proof: version=1 native_app=kernel window=LAAMBA_Governor window_id=<n> launcher_id=10 desktop_icon=1 start_menu=1 aether_host_window_id=<n> runtime_bridge=rust_native_manifest python_runtime=0 result=pass
 [AHCI] Registered as block device 0x800
@@ -311,7 +313,8 @@ Current passed baseline on this workspace:
 - Full serial proof gate: `seal-mkimage --check-vm-proof`
 - Aether runtime gate: `seal-mkimage --check-aether-runtime`
 - LAAMBA app gate: `seal-mkimage --check-laamba-app-proof`
-- Serial proof: T1-T10 verified, desktop proof frame blitted, desktop ready,
+- Serial proof: nine theorem lines verified and T4/AGCR not certified,
+  desktop proof frame blitted, desktop ready,
   event loop active
 - Aether proof: boot log contains
   `[Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok`

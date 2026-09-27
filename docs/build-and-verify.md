@@ -89,7 +89,8 @@ checker. The captured-pixel lane additionally records a PPM proof screen.
 Hard proof categories include:
 
 - exact version banner and early memory/interrupt/syscall markers;
-- all T1-T10 theorem lines and the theorem summary;
+- the T1-T10 theorem lines (nine `VERIFIED`, T4/AGCR `NOT CERTIFIED` with its
+  margin at the runtime governor step) and the `9 of 10` theorem summary;
 - allocator, scheduler, filesystem, networking, TLS, and renderer markers;
 - AHCI identity, block registration, sector-zero readability, and persistent
   ManifoldFS mounting;

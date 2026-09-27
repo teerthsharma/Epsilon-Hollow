@@ -81,16 +81,19 @@ the halt loop. QEMU's `-nographic` lane uses this serial observability path.
 
 `init_theorems` calls `verify_topology_theorems` and stores one boolean per
 theorem in `THEOREM_STATES`. It also initializes the geometric governor and
-performs a test lookup in an eight-cell spherical Voronoi index. A false theorem
-result causes a panic:
+performs a test lookup in an eight-cell spherical Voronoi index. T4 is judged at
+the gains and step the runtime governors use (dt = 0.01), where its gain margin
+is 5.01, so it is reported as not certified and boot continues. Any other false
+theorem result causes a panic:
 
 ```text
 Seal OS theorem core failed boot verification
 ```
 
-The boot summary states that all ten are verified while only T1-T5 are active
-in runtime paths. This is intentional. It distinguishes “the boot certificate
-passed” from “the theorem controls a live hot path.”
+The boot summary reads `9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED;
+T1-T3, T5 ACTIVE in runtime paths`. It distinguishes "the boot check passed"
+from "the theorem controls a live hot path", and a refused certificate from
+both.
 
 ## Scheduler startup
 

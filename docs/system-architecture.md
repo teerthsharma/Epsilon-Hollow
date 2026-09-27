@@ -110,8 +110,9 @@ also owns several source, proof-log, manifest, and release-contract checks.
    runtime initialization without desktop rendering.
 6. **Verify the theorem core.** `init_theorems` calls
    `verify_topology_theorems`, updates the ten live state flags, initializes the
-   governor and an eight-cell spherical Voronoi index, then panics if any check
-   fails.
+   governor and an eight-cell spherical Voronoi index, reports T4/AGCR as not
+   certified at the runtime governor step (margin 5.01), and panics if any
+   other check fails.
 7. **Initialize storage and services.** Drivers, VFS, swap, authentication
    databases, scheduler tasks, package registry, Aether runtime, networking,
    USB, prefetch, async runtime, and games are initialized in the paths that

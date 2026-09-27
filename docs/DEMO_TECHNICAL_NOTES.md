@@ -187,7 +187,7 @@ Before each take:
 
 After each take:
 
-- [ ] Check serial log contains all T1–T10 verified lines
+- [ ] Check serial log contains the nine `VERIFIED` theorem lines and `[THEOREM] T4/AGCR NOT CERTIFIED`
 - [ ] Check video has no host UI artifacts (taskbar, notifications)
 - [ ] Rename files with take number: `demo_take_01.mp4`, `serial_take_01.log`
 

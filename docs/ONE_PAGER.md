@@ -27,7 +27,7 @@ Traditional OS kernels treat memory, files, and scheduling as separate 1D proble
 | Boot | UEFI native, no GRUB, no POSIX |
 | VMs | QEMU + Oracle VirtualBox verified |
 | CI | 16-job pipeline, theorem-gated |
-| Theorems | T1–T10 boot-verified; T1–T5 runtime-active |
+| Theorems | T1–T10 boot-checked: nine verified, T4 refused at the runtime governor step; T1–T3, T5 runtime-active |
 | Formal proofs | Lean 4 (full + layered + boot-gated) |
 | Image size | ~1 MB (smaller than Redox) |
 

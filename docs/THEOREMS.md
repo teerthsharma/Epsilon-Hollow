@@ -8,13 +8,16 @@ This is the theorem map for Seal OS. It separates three things that must not be 
 
 ## Boot Gate
 
-`kernel/seal-os/src/lib.rs` links `aether_verified` and calls `verify_topology_theorems()` from `init_theorems()`. The kernel sets `THEOREM_STATES[0..10]` from those checks and panics if any fail.
+`kernel/seal-os/src/lib.rs` links `aether_verified` and calls `verify_topology_theorems()` from `init_theorems()`. The kernel sets `THEOREM_STATES[0..10]` from those checks. T4 is judged at the gains and step every runtime governor uses (`GOVERNOR_ALPHA`, `GOVERNOR_BETA`, `GOVERNOR_DT` = 0.01, 0.05, 0.01); there the gain margin α + β/dt is 5.01, so T4 is reported as not certified and boot continues. Any other failed check panics (commit `3c14df0`).
 
-Boot status string:
+Boot status lines:
 
 ```text
-[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 ```
+
+`seal-mkimage --check-theorem-log` requires the other nine `VERIFIED` lines, the T4 refusal with its margin and `dt`, and the `9 of 10` summary, and rejects `[THEOREM] T4/AGCR VERIFIED` while the margin is at least 1. No step size earns T4: the margin treats the plant as unit gain, while the loop the code runs has gain 1/ε² ≈ 10⁶ at equilibrium (commit `dcc35b6`), so the governor needs a redesign.
 
 ## Summary
 
@@ -23,7 +26,7 @@ Boot status string:
 | T1 | TSS - Topological State Synchronization | ManifoldFS lookup/placement, scheduler task cells, TopoRAM locality | Yes | Layered TSS packing algebra; separation placeholder |
 | T2 | SCM - Spectral Contraction Mapping | File prefetch state, scheduler prediction, TopoRAM prefetch | Yes | Full algebraic contraction and convergence |
 | T3 | GMC - Geodesic Memory Consolidation | ManifoldFS entropy merge, memory fragmentation heuristics | Yes | Bounded termination full; entropy comparison placeholder |
-| T4 | AGCR - Adaptive Governor Convergence Rate | Scheduler timeslice, ManifoldFS governor, compositor pacing | Yes | Full governor/gain-margin algebra |
+| T4 | AGCR - Adaptive Governor Convergence Rate | Scheduler timeslice, ManifoldFS governor, compositor pacing | Yes; refused at the runtime step dt = 0.01, margin 5.01 | Full governor/gain-margin algebra |
 | T5 | HCS - Hyperbolic Capacity Separation | Directory depth ratio, memory lifetime class, power mapping | Yes | Full cross-multiplied separation identity |
 | T6 | RGCS - Ring-Allreduce Gradient Coherence | ML/HFT world-model sync bound, boot-gated | Yes | Full non-negative tangent-deviation bound |
 | T7 | PHKP - Persistent Homology KV Partitioning | ML cache/latency bound, boot-gated | Yes | Placeholder locality lemma; Rust latency check active |

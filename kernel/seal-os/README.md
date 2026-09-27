@@ -2,7 +2,7 @@
 
 **The Geometrical Operating System** - where OS state is geometry on S^2 and same-filesystem moves have an O(1) metadata-surgery core. The boot benchmark proves that core through a persistent mock block-store path with `persistence_bytes_per_move=0`.
 
-Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are source-gated against T1-T5, captured VM proofs pass the T1-T10 theorem gate through the `aether_verified` no_std crate, and Aether-Lang is the native OS language layer above the Rust kernel.
+Seal OS is a bare-metal x86_64 operating system built from scratch. Runtime kernel subsystems are source-gated against T1-T5, captured VM proofs pass the T1-T10 theorem gate through the `aether_verified` no_std crate (nine lines `VERIFIED`; T4/AGCR `NOT CERTIFIED`, because its gain margin is 5.01 at the runtime governor step), and Aether-Lang is the native OS language layer above the Rust kernel.
 
 ## Quick Start
 
@@ -97,7 +97,7 @@ Layer 3   │ Framebuffer: 1024x768x32, 8x16 font, boot splash
 Layer 2   │ Interrupts: IDT, PIC, timer (IRQ0), keyboard, mouse
 Layer 1   │ Memory: 16MB heap, bump allocator
 Layer 0   │ Boot: UEFI PE/COFF, GOP framebuffer, GPT/FAT ESP image
-          └────── T1-T10 BOOT GATE; T1-T5 RUNTIME THEOREMS ──────
+          └────── T1-T10 BOOT GATE, T4 REFUSED; T1-T3, T5 RUNTIME THEOREMS ──────
 ```
 
 ## Theorem Integration
