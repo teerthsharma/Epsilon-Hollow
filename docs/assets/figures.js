@@ -929,51 +929,86 @@
     var V = [], D = [], t;
     for (t = 0; t < 128; t++) V.push(0.3 + 0.01 * Math.abs(t - 100));
     for (t = 0; t < 128; t++) D.push(0.05 + 0.55 * Math.exp(-t / 22));
+    /* fold_score's reading of the window. Every path edge is in the complex
+       here, so the path is a spanning tree and each counted cross edge (i, j)
+       closes exactly one cycle: the stretch of the run from point i to point j,
+       shut by that edge. Those are the loops drawn, and there are cyc of them. */
     function model(series) {
-      var raw = delayCloud(series), R = arcResample(raw), e = mstMax(R), win = series.slice(-64);
-      if (isMonotone(raw)) return { R: R, E: [], score: 0, win: win, mono: true };
-      var f = foldEdges(R, e * 1.68, true);
-      return { R: R, E: f.E, score: Math.min(1, f.cyc / R.length), win: win, mono: false };
+      var raw = delayCloud(series), R = arcResample(raw), win = series.slice(-64);
+      if (isMonotone(raw)) return { R: R, L: [], cyc: 0, score: 0, win: win };
+      var f = foldEdges(R, mstMax(R) * 1.68, true);
+      var L = f.E.filter(function (e) { return e[2] === 'cross'; }).sort(function (a, b) { return a[1] - b[1]; });
+      if (L.length !== f.cyc) throw new Error('stratum pillar: loops drawn != cycles counted');
+      return { R: R, L: L, cyc: f.cyc, score: Math.min(1, f.cyc / R.length), win: win };
     }
     var M = [model(V), model(D)];
     function layout(m) {
       var lo = Math.min.apply(null, m.win), hi = Math.max.apply(null, m.win);
-      m.curve = m.win.map(function (v, i) { return [16 + i / 63 * 128, 160 - (v - lo) / (hi - lo) * 118]; });
+      m.curve = m.win.map(function (v, i) { return [16 + i / 63 * 128, 160 - (v - lo) / (hi - lo) * 112]; });
       var pr = m.R.map(function (p) { return [p[0] - p[2], (p[0] + p[1] + p[2]) / 3]; });
       var xs = pr.map(function (p) { return p[0]; }), ys = pr.map(function (p) { return p[1]; });
       var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
-      m.cloud = pr.map(function (p) { return [180 + (p[0] - x0) / (x1 - x0 || 1) * 124, 160 - (p[1] - y0) / (y1 - y0 || 1) * 118]; });
+      m.cloud = pr.map(function (p) { return [208 + (p[0] - x0) / (x1 - x0 || 1) * 64, 160 - (p[1] - y0) / (y1 - y0 || 1) * 112]; });
     }
     M.forEach(layout);
-    var SLOT = 5600;
-    function draw(t) {
-      var g = fitCanvas(canvas, 320, 190), which = REDUCED ? 0 : Math.floor(t / SLOT) % 2, m = M[which];
-      var k = REDUCED ? 1 : ease((t % SLOT) / 2600), n = Math.max(2, Math.round(k * m.curve.length));
-      var col = which ? C.b5 : C.v5;
-      g.lineJoin = 'round'; g.lineCap = 'round';
-      g.strokeStyle = rgb(col, 0.95); g.lineWidth = 2.2; g.beginPath();
-      for (var i = 0; i < n; i++) { var p = m.curve[i]; if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }
-      g.stroke();
-      var hd = m.curve[n - 1]; g.fillStyle = rgb(col, 1); g.beginPath(); g.arc(hd[0], hd[1], 3.5, 0, TAU); g.fill();
-      var cn = Math.max(2, Math.round(k * m.cloud.length));
-      g.strokeStyle = rgb(C.ink, 0.45); g.lineWidth = 1.1; g.beginPath();
-      for (i = 0; i < cn; i++) { p = m.cloud[i]; if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }
-      g.stroke();
-      var ea = REDUCED ? 1 : Math.max(0, Math.min(1, ((t % SLOT) - 2400) / 900));
-      if (ea > 0 && !m.mono) {
-        /* the loop the fold closes, shaded, with the edges that close it */
-        g.fillStyle = rgb(C.c5, 0.12 * ea); g.beginPath();
-        m.cloud.forEach(function (q, j) { if (j) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
-        g.closePath(); g.fill();
-        m.E.forEach(function (e) {
-          if (e[2] !== 'cross') return;
-          var a = m.cloud[e[0]], b = m.cloud[e[1]];
-          g.strokeStyle = rgb(C.c5, 0.3 * ea); g.lineWidth = 1;
-          g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
-        });
+    function trace(g, P, i, j) { g.beginPath(); g.moveTo(P[i][0], P[i][1]); for (var q = i + 1; q <= j; q++) g.lineTo(P[q][0], P[q][1]); }
+    /* the point and heading a fraction f of the way round the cycle: P[i] .. P[j] along the run, then the edge back */
+    function walk(P, i, j, f) {
+      var seg = [], total = 0, q, a, b, d;
+      for (q = i; q <= j; q++) { a = P[q]; b = P[q < j ? q + 1 : i]; d = Math.hypot(b[0] - a[0], b[1] - a[1]); seg.push(d); total += d; }
+      var s = (f - Math.floor(f)) * total;
+      for (q = i; q <= j; q++) {
+        d = seg[q - i]; a = P[q]; b = P[q < j ? q + 1 : i];
+        if (s <= d && d > 0) return [a[0] + (b[0] - a[0]) * s / d, a[1] + (b[1] - a[1]) * s / d, Math.atan2(b[1] - a[1], b[0] - a[0])];
+        s -= d;
       }
-      for (i = 0; i < cn; i++) { p = m.cloud[i]; g.fillStyle = rgb(col, 0.9); g.beginPath(); g.arc(p[0], p[1], 1.7, 0, TAU); g.fill(); }
-      verdict(svg, which ? 'only falls: loop_score certified 0' : 'folds back: loop_score ' + m.score.toFixed(3), which ? 'var(--green-700)' : 'var(--coral-700)');
+      return [P[i][0], P[i][1], 0];
+    }
+    var SLOT = 5600, RUN = 1800, LAP = 2200;
+    function draw(t) {
+      var g = fitCanvas(canvas, 320, 190), which = REDUCED ? 0 : Math.floor(t / SLOT) % 2, m = M[which], ts = t % SLOT;
+      var n = m.cloud.length, h = REDUCED ? n - 1 : Math.max(1, Math.round(ease(ts / RUN) * (n - 1)));
+      var col = which ? C.b5 : C.v5;
+      /* the outermost loop closed so far: the run has reached point j, and the edge back to i shuts it */
+      var shut = m.L.filter(function (e) { return e[1] <= h; }), out = shut[shut.length - 1];
+      g.lineJoin = 'round'; g.lineCap = 'round';
+      if (out) {
+        trace(g, m.cloud, out[0], out[1]); g.closePath();
+        g.fillStyle = rgb(C.c5, 0.08); g.fill();
+        g.strokeStyle = rgb(C.c5, 0.2); g.lineWidth = 10; g.stroke();
+        /* the stretch of the run that loop spans, on the loss curve. Every delay
+           step of the V is √3·s long, so resampling moves no point and cloud
+           index q is window step q. */
+        trace(g, m.curve, out[0], out[1]); g.closePath();
+        g.fillStyle = rgb(C.c5, 0.1); g.fill();
+      }
+      [m.curve, m.cloud].forEach(function (P) {
+        g.strokeStyle = rgb(col, 0.95); g.lineWidth = 2.2; trace(g, P, 0, h); g.stroke();
+        g.fillStyle = rgb(C.raised, 1); g.strokeStyle = rgb(col, 1); g.lineWidth = 1.6;
+        g.beginPath(); g.arc(P[0][0], P[0][1], 3, 0, TAU); g.fill(); g.stroke();
+      });
+      if (out) {
+        var a = m.cloud[out[0]], b = m.cloud[out[1]];
+        g.strokeStyle = rgb(C.c5, 1); g.lineWidth = 2.4; g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke();
+        a = m.curve[out[0]]; b = m.curve[out[1]];
+        g.strokeStyle = rgb(C.c5, 0.8); g.lineWidth = 1.2; g.setLineDash([3, 3]);
+        g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke(); g.setLineDash([]);
+        /* once the run has come back, the way round the loop */
+        if (h === n - 1) {
+          g.strokeStyle = rgb(C.c5, 1); g.lineWidth = 1.8;
+          [0.125, 0.375, 0.625, 0.875].forEach(function (f) {
+            var w = walk(m.cloud, out[0], out[1], f);
+            g.save(); g.translate(w[0], w[1]); g.rotate(w[2]); g.beginPath(); g.moveTo(-3, -4); g.lineTo(2, 0); g.lineTo(-3, 4); g.stroke(); g.restore();
+          });
+          if (!REDUCED && ts > RUN) {
+            var w = walk(m.cloud, out[0], out[1], (ts - RUN) / LAP);
+            g.fillStyle = rgb(C.c5, 1); g.beginPath(); g.arc(w[0], w[1], 3.2, 0, TAU); g.fill();
+          }
+        }
+      }
+      [m.curve[h], m.cloud[h]].forEach(function (p) { g.fillStyle = rgb(col, 1); g.beginPath(); g.arc(p[0], p[1], 3.5, 0, TAU); g.fill(); });
+      if (which) verdict(svg, 'only falls: an open arc, loop_score certified 0', 'var(--green-700)');
+      else verdict(svg, 'folds back: ' + m.cyc + ' loops close, loop_score ' + m.score.toFixed(3), 'var(--coral-700)');
     }
     register(canvas, draw, 0);
   }

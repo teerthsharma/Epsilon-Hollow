@@ -80,11 +80,13 @@
       <article class="pcard pcard--violet" data-reveal>
         <div class="figc pcard__fig" style="--figc-ar:320/190">
           <canvas data-fig="p-stratum" aria-hidden="true"></canvas>
-          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="ps-t">
-            <title id="ps-t">A loss curve and its delay embedding: a fold closes a loop, a monotone run does not</title>
+          <svg class="figc__lab" viewBox="0 0 320 190" role="img" aria-labelledby="ps-t ps-d">
+            <title id="ps-t">A validation loss that falls and climbs back closes a loop in its delay embedding; one that only falls draws an open arc</title>
+            <desc id="ps-d">Two of stratum's test curves, drawn in turn. Left: the last 64 steps of the validation loss. Right: its delay embedding, the points (v_t, v_t−1, v_t−2) resampled at uniform arc length and drawn flat, with each axis scaled to fit, which is illustrative. The V, 0.3 + 0.01·|t − 100|, falls and climbs back. Each time the climbing arm comes within 1.68 times the largest spanning-tree edge of a point the falling arm passed, that Rips edge shuts the stretch of the run between them into a loop. 25 nested loops close, one after another as the run climbs, and loop_score is 25 / 64 = 0.391. The outermost stays drawn as a closed ring with arrows showing the way round it: down the falling arm, up the climbing arm, and back along the edge. The stretch of the run it spans is shaded on the loss curve. The exponential decay 0.05 + 0.55·exp(−t/22) only falls: its embedding is an open arc that never comes back, and loop_score is certified 0 before any complex is built.</desc>
             <text x="80" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">validation loss</text>
             <text x="240" y="182" text-anchor="middle" font-size="11" fill="var(--muted)">delay embedding</text>
             <text x="160" y="16" text-anchor="middle" font-size="12" font-weight="600" data-v="verdict" fill="var(--ink)"></text>
+            <text x="160" y="32" text-anchor="middle" font-size="11" fill="var(--muted)">loops and score by fold_score's rule; flat layout illustrative</text>
           </svg>
         </div>
         <p class="pcard__tag">stratum &middot; Seal ABI 120–124</p>
