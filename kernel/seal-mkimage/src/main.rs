@@ -1859,14 +1859,23 @@ fn check_kv_policy_text(text: &str) -> Result<(), String> {
     // Belady is the offline optimum: no online policy may beat it. The
     // foliation-vs-LRU margin is recorded by the kernel and deliberately not
     // gated here — gating on it would pay for a faked benchmark.
-    let belady = parse_metric(line, "hit_bp_belady=")?;
-    let foliation = parse_metric(line, "hit_bp_foliation=")?;
-    if belady < foliation {
-        return Err(format!(
-            "KV policy proof beats the offline optimum, so the benchmark is wrong: hit_bp_foliation={foliation}, hit_bp_belady={belady}"
-        ));
+    // Both traces must be present: the LRU-adversarial one and the
+    // recency-shaped chat trace, each with the locality-only null.
+    for (prefix, policies) in [
+        ("", ["hit_bp_foliation=", "hit_bp_lru=", "hit_bp_locality="]),
+        ("chat_", ["chat_hit_bp_foliation=", "chat_hit_bp_lru=", "chat_hit_bp_locality="]),
+    ] {
+        let belady = parse_metric(line, &format!("{prefix}hit_bp_belady="))?;
+        for key in policies {
+            let hit = parse_metric(line, key)?;
+            if belady < hit {
+                return Err(format!(
+                    "KV policy proof beats the offline optimum, so the benchmark is wrong: {key}{hit}, {prefix}hit_bp_belady={belady}"
+                ));
+            }
+        }
     }
-    parse_metric(line, "hit_bp_lru=")?;
+    parse_ratio(line, "chat_foliation_beats_random=")?;
     Ok(())
 }
 
@@ -4438,7 +4447,7 @@ mod tests {
     const BUNDLE_PROOF_LOG: &str = "[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify=ok index_tampered=refused index_entries=4 store_index=ed25519_fixture provision_pkg=eph_installed requested=6 provisioned=4 not_provisioned=1 digest_ok=4 digest_refused=1 cache_hits=2 fixture=synthetic_test_fixture fixture_bytes=256 cache_hit=same_alloc refcount_peak=2 refcount_after_drop=1 cached_while_held=1 released=1 cached_after_release=0 absent_section=test-absent-fixture.section:not_provisioned corrupt_section=test-corrupt-fixture.section:digest_mismatch simulation=absent wifi=down wifi_section=none wifi_scan_entries=0 bt=down bt_section=none bt_scan_entries=0 result=pass\n";
     const FS_PARITY_LOG: &str = "[FSPARITY] proof version=1 fat_image=fat16_fixture fat_mounted=ok fat_image_bytes=1048576 fat_blank_digest=0x00000000cafe0001 ext2_image=ext2_rev1_1k_fixture ext2_mounted=ok ext2_image_bytes=1048576 ext2_blank_digest=0x00000000cafe0002 ops_fat=48 ops_ext2=48 files_compared=6 bytes_compared=4096 content_digest_fat=0x00000000feedbeef content_digest_ext2=0x00000000feedbeef content_parity=byte_for_byte dirs_compared=3 dirs_equal=3 stat_fields_compared=18 stat_fields_equal=18 error_cases=5 error_matches=5 divergences=0 divergence_kinds=none negative_control_digest=0x00000000deadbeef negative_control=detected negative_control_restored=ok result=pass\n";
     const MLFIT_PROOF_LOG: &str = "[MLFIT] proof version=1 subsystem=stratum window=256 embed_dim=8 kappa=1.500 steps_per_case=128 bytes_per_stream=4096 long_stream_steps=4096 long_stream_points=256 bounded=ok case=underfit truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=wellfit truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=overfit truth=overfit got=overfit loop=0.2000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=collapsing truth=collapsing got=collapsing loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=negctl truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_line truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_exp truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 monotone_loop_zero=ok negctl_flagged=no naive_gap_baseline_flagged=yes incremental_batch_agree=ok correct=7/7 result=pass\n";
-    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_belady=9000 gap_closed_bp=600 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
+    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_locality=5000 hit_bp_belady=9000 gap_closed_bp=600 chat_requests=96 chat_descents=528 chat_hit_bp_foliation=5284 chat_hit_bp_lru=8068 chat_hit_bp_locality=6818 chat_hit_bp_belady=8143 chat_foliation_beats_random=0/32 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
     const GPU_BENCH_PROOF_LOG: &str = "[GPU-BENCH] proof version=1 arch=gfx900 backend=cpu_fallback gpu_present=0 hw_attempted=0 hw_reason=no_amd_gpu cycles=123456 kernels_real=1/3 spectral_step_bytes=256 blob_fnv1a=0x00000000cafef00d encoder_fnv1a=0x00000000cafef00d blob_matches_encoder=1 golden_words=64/64 decoded_insts=32/32 roundtrip_words=64/64 mnemonics_match=1 rsrc1=0x000c0081 rsrc2=0x00000090 ref_dim=512 ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact=512/512 cpu_ref_max_ulp=0 backend_exact=512/512 backend_max_ulp=0 result=pass\n";
     const KASLR_PROOF_LOG: &str = "[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base=0x1000000 image_size=0x400000 kernel_alias_base=0xffffffff81400000 kernel_alias_slide=0x1400000 kernel_alias_slots=512 kernel_alias_bits=9 heap_window_base=0xffff900040000000 heap_window_slide=0x40000000 heap_window_slots=4194304 heap_window_bits=22 total_bits=31 granule=0x200000 aligned=1 in_range=1 entropy=rdseed boot_nonce=0xa1b2c3d4e5f60718 resample_nonce=0x0718f6e5d4c3b2a1 resample_differs=1 cross_boot=external-diff active=1 result=pass\n";
     const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=0 wx_violations=12 wx_pages_scanned=1024 wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
@@ -6433,6 +6442,32 @@ fn panic(info: &PanicInfo) -> ! {
         // Losing to LRU is recorded, never gated.
         let loses_to_lru = KV_POLICY_LOG.replace("hit_bp_foliation=8200", "hit_bp_foliation=7000");
         assert!(check_kv_policy_text(&loses_to_lru).is_ok());
+
+        // The locality-only null and the recency-shaped chat trace are the
+        // comparisons that keep the headline honest; a proof that drops
+        // either one must not pass.
+        for field in [
+            "hit_bp_locality=5000 ",
+            "chat_hit_bp_foliation=5284 ",
+            "chat_hit_bp_lru=8068 ",
+            "chat_hit_bp_locality=6818 ",
+            "chat_hit_bp_belady=8143 ",
+            "chat_foliation_beats_random=0/32 ",
+        ] {
+            let dropped = KV_POLICY_LOG.replace(field, "");
+            assert!(
+                check_kv_policy_text(&dropped).is_err(),
+                "KV policy gate accepted a proof without {field}"
+            );
+        }
+
+        // No policy may beat the offline optimum on either trace.
+        let chat_beats_belady =
+            KV_POLICY_LOG.replace("chat_hit_bp_belady=8143", "chat_hit_bp_belady=8000");
+        assert!(check_kv_policy_text(&chat_beats_belady).is_err());
+        let locality_beats_belady =
+            KV_POLICY_LOG.replace("hit_bp_locality=5000", "hit_bp_locality=9500");
+        assert!(check_kv_policy_text(&locality_beats_belady).is_err());
     }
 
     #[test]
