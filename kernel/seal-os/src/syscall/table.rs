@@ -335,7 +335,18 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A write refused by a read-only mount reaches the caller as EROFS, not
+    /// the EIO every unmapped `VfsError` falls through to.
+    fn test_read_only_vfs_error_is_erofs() -> TestResult {
+        test_assert_eq!(vfs_error_to_errno(VfsError::ReadOnly), 30);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "syscall::read_only_vfs_error_is_erofs",
+            test_read_only_vfs_error_is_erofs,
+        );
         crate::testing::register_test(
             "syscall::setuid_reports_dropped_uid_write",
             test_setuid_reports_dropped_uid_write,
@@ -585,6 +596,7 @@ fn vfs_error_to_errno(e: VfsError) -> i64 {
         VfsError::PermissionDenied => 13, // EACCES
         VfsError::InvalidPath => 22,      // EINVAL
         VfsError::TooManySymlinks => 40,  // ELOOP
+        VfsError::ReadOnly => 30,         // EROFS
         _ => 5,                           // EIO
     }
 }

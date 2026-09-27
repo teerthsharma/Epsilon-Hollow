@@ -57,6 +57,8 @@ pub enum VfsError {
     IoError,
     PermissionDenied,
     InvalidOperation,
+    /// The filesystem is mounted read-only (EROFS).
+    ReadOnly,
 }
 
 impl core::fmt::Display for VfsError {
@@ -71,6 +73,7 @@ impl core::fmt::Display for VfsError {
             Self::IoError => write!(f, "I/O error"),
             Self::PermissionDenied => write!(f, "permission denied"),
             Self::InvalidOperation => write!(f, "invalid operation"),
+            Self::ReadOnly => write!(f, "read-only filesystem"),
         }
     }
 }
@@ -108,6 +111,10 @@ pub trait FileSystem: Send + Sync {
     /// success, and the on-disk filesystems do not override it.
     fn fsync(&mut self, _handle: VfsHandle) -> Result<(), VfsError> {
         Ok(())
+    }
+    /// `true` when every mutating call returns `VfsError::ReadOnly`.
+    fn is_read_only(&self) -> bool {
+        false
     }
 }
 
@@ -251,6 +258,15 @@ impl Vfs {
         }
         best.map(|(i, _, rel)| (i, rel))
             .or_else(|| root_idx.map(|i| (i, path)))
+    }
+
+    /// Whether the mount `path` routes to refuses writes. For callers that
+    /// must not put their data on a read-only volume at all (swap, the audit
+    /// log), rather than learn it from a failed write.
+    pub fn is_read_only(&self, path: &str) -> bool {
+        Self::canonicalize_path(path)
+            .and_then(|p| self.find_mount(&p).map(|(i, _)| i))
+            .is_some_and(|i| self.mounts[i].fs.lock().is_read_only())
     }
 
     pub fn lookup(&self, path: &str) -> Result<VfsHandle, VfsError> {

@@ -29,6 +29,38 @@ pub const EXT2_S_IFDIR: u16 = 0x4000;
 pub const EXT2_S_IFCHR: u16 = 0x2000;
 pub const EXT2_S_IFIFO: u16 = 0x1000;
 
+/// `s_feature_incompat`: directory entries carry a `file_type` byte.
+pub const EXT2_FEATURE_INCOMPAT_FILETYPE: u32 = 0x0002;
+/// `s_feature_ro_compat`: superblock backups only in groups 0, 1 and powers of 3, 5, 7.
+pub const EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
+/// `s_feature_ro_compat`: regular files keep the high 32 bits of their size in `i_dir_acl`.
+pub const EXT2_FEATURE_RO_COMPAT_LARGE_FILE: u32 = 0x0002;
+
+/// INCOMPAT features this driver implements. Any other bit changes the on-disk
+/// layout (extents, 64-bit descriptors, flex_bg, meta_bg, inline data, a
+/// journal awaiting recovery, ...) in a way this file cannot parse, so `mount`
+/// refuses the volume. Linux's ext2 driver accepts FILETYPE and META_BG;
+/// META_BG is left out because `read_bgd` assumes one contiguous descriptor
+/// table after the superblock.
+const INCOMPAT_SUPPORTED: u32 = EXT2_FEATURE_INCOMPAT_FILETYPE;
+/// RO_COMPAT features this driver keeps consistent when it writes. Any other
+/// bit (metadata_csum, gdt_csum, huge_file, dir_nlink, extra_isize, quota,
+/// bigalloc, ...) is readable by this file but would be corrupted by its writes,
+/// so `mount` succeeds read-only. SPARSE_SUPER: this driver never reads or
+/// writes a superblock or descriptor backup, and the groups that hold them mark
+/// those blocks used in their bitmaps. LARGE_FILE: `file_size` reads and
+/// `write` updates `i_dir_acl` as the high size word.
+const RO_COMPAT_SUPPORTED: u32 =
+    EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE;
+/// Highest `s_rev_level` whose superblock layout this driver knows
+/// (`EXT2_DYNAMIC_REV`). Linux mounts a higher revision read-only; so does this.
+const EXT2_MAX_SUPP_REV: u32 = 1;
+/// `i_flags` bit marking a directory as htree-indexed (COMPAT `dir_index`).
+/// This driver adds and removes entries linearly, which leaves any index stale,
+/// so every directory it modifies drops the flag and is linear from then on —
+/// what Linux's ext2 driver does, and what ext3/ext4 and e2fsck expect.
+const EXT2_INDEX_FL: u32 = 0x1000;
+
 /// Ext2 Superblock (on-disk structure).
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +161,9 @@ pub struct Ext2Fs {
     inodes_per_group: u32,
     inode_size: u32,
     buffer_cache: Mutex<BufferCache>,
+    /// Set by `mount` when the volume uses an RO_COMPAT feature outside
+    /// `RO_COMPAT_SUPPORTED` or a revision above `EXT2_MAX_SUPP_REV`.
+    read_only: bool,
 }
 
 impl Ext2Fs {
@@ -142,7 +177,39 @@ impl Ext2Fs {
             inodes_per_group: 0,
             inode_size: 0,
             buffer_cache: Mutex::new(BufferCache::new(64, 1024)), // default 1 KiB blocks, resized on mount
+            read_only: false,
         }
+    }
+
+    /// `Err(ReadOnly)` on a volume mounted read-only. Every entry point that
+    /// changes the volume calls this before touching the buffer cache, so a
+    /// refused write leaves neither the disk nor the cache changed.
+    fn writable(&self) -> Result<(), VfsError> {
+        if self.read_only {
+            return Err(VfsError::ReadOnly);
+        }
+        Ok(())
+    }
+
+    /// Size of `inode` in bytes. For a regular file on a dynamic-revision
+    /// volume `i_dir_acl` is the high 32 bits (`i_size_high`, LARGE_FILE); for
+    /// everything else it is not part of the size.
+    fn file_size(&self, inode: &Inode) -> u64 {
+        let size = inode.i_size as u64;
+        if self.size_high_in_use(inode) {
+            size | ((inode.i_dir_acl as u64) << 32)
+        } else {
+            size
+        }
+    }
+
+    fn size_high_in_use(&self, inode: &Inode) -> bool {
+        (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFREG
+            && self
+                .superblock
+                .as_ref()
+                .map(|sb| sb.s_rev_level >= 1)
+                .unwrap_or(false)
     }
 
     /// Read a block through the buffer cache.
@@ -322,6 +389,23 @@ impl Ext2Fs {
             return Err(VfsError::IoError);
         }
 
+        // Feature bits are checked whatever `s_rev_level` says, as Linux does:
+        // they were once set without bumping the revision, so a revision-0
+        // superblock can still carry them. Checked before any geometry field
+        // is trusted, because an INCOMPAT feature changes what those fields mean.
+        let incompat = sb.s_feature_incompat & !INCOMPAT_SUPPORTED;
+        if incompat != 0 {
+            crate::serial_println!(
+                "[EXT2] dev {:#x}: mount refused: unsupported INCOMPAT features {:#x} (s_feature_incompat={:#x})",
+                self.dev_num,
+                incompat,
+                { sb.s_feature_incompat }
+            );
+            return Err(VfsError::NotSupported);
+        }
+        let ro_compat = sb.s_feature_ro_compat & !RO_COMPAT_SUPPORTED;
+        let read_only = ro_compat != 0 || sb.s_rev_level > EXT2_MAX_SUPP_REV;
+
         // The extent of the device this superblock claims to describe. The
         // read above already resolved `dev_num` through the same registry, so
         // a device missing here means it was unregistered mid-mount.
@@ -332,6 +416,16 @@ impl Ext2Fs {
             .ok_or(VfsError::IoError)?;
 
         let block_size = Self::validate_superblock(&sb, device_sectors)?;
+        if read_only {
+            crate::serial_println!(
+                "[EXT2] dev {:#x}: mounted read-only: unsupported RO_COMPAT features {:#x} (s_feature_ro_compat={:#x}), s_rev_level={}",
+                self.dev_num,
+                ro_compat,
+                { sb.s_feature_ro_compat },
+                { sb.s_rev_level }
+            );
+        }
+        self.read_only = read_only;
         self.superblock = Some(sb);
         self.block_size = block_size;
         self.inodes_per_group = sb.s_inodes_per_group;
@@ -574,18 +668,7 @@ impl Ext2Fs {
         mut offset: u64,
         mut buf: &mut [u8],
     ) -> Result<usize, VfsError> {
-        let size = inode.i_size as u64;
-        let total_size = if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFREG
-            && self
-                .superblock
-                .as_ref()
-                .map(|sb| sb.s_rev_level >= 1)
-                .unwrap_or(false)
-        {
-            size | ((inode.i_dir_acl as u64) << 32)
-        } else {
-            size
-        };
+        let total_size = self.file_size(inode);
 
         // `total_size` is disk-controlled (directly for `i_size`, and via
         // the `i_dir_acl` high-bits extension for large regular files) and
@@ -941,6 +1024,7 @@ impl Ext2Fs {
 
     /// Scan block group descriptor bitmaps for a free block.
     pub fn allocate_block(&mut self) -> Result<u32, VfsError> {
+        self.writable()?;
         let sb = self.superblock.ok_or(VfsError::IoError)?;
         let total_groups = sb.s_blocks_count.div_ceil(sb.s_blocks_per_group);
 
@@ -997,6 +1081,7 @@ impl Ext2Fs {
     /// write. Fails closed, because a block outside the volume cannot be
     /// freed into any group correctly.
     pub fn free_block(&mut self, block: u32) -> Result<(), VfsError> {
+        self.writable()?;
         let sb = self.superblock.ok_or(VfsError::IoError)?;
         if block < sb.s_first_data_block || block >= sb.s_blocks_count {
             return Err(VfsError::InvalidOperation);
@@ -1019,6 +1104,7 @@ impl Ext2Fs {
 
     /// Scan inode bitmaps for a free inode.
     pub fn allocate_inode(&mut self) -> Result<u32, VfsError> {
+        self.writable()?;
         let sb = self.superblock.ok_or(VfsError::IoError)?;
         let total_groups = sb.s_inodes_count.div_ceil(sb.s_inodes_per_group);
 
@@ -1064,6 +1150,7 @@ impl Ext2Fs {
     /// bitmap rather than a bad write. `read_inode` already refuses `ino == 0`
     /// for its own division; this is the same refusal on the free path.
     pub fn free_inode(&mut self, ino: u32) -> Result<(), VfsError> {
+        self.writable()?;
         let sb = self.superblock.ok_or(VfsError::IoError)?;
         if ino == 0 || ino > sb.s_inodes_count {
             return Err(VfsError::InvalidOperation);
@@ -1221,6 +1308,7 @@ impl Ext2Fs {
         }
 
         let mut dir_inode = self.read_inode(dir_ino)?;
+        dir_inode.i_flags &= !EXT2_INDEX_FL;
         let needed = Self::dir_entry_size(name.len());
         let dir_size = self.checked_dir_size(&dir_inode)?;
 
@@ -1398,6 +1486,7 @@ impl Ext2Fs {
 
     fn remove_dir_entry(&mut self, dir_ino: u32, name: &str) -> Result<(), VfsError> {
         let mut dir_inode = self.read_inode(dir_ino)?;
+        dir_inode.i_flags &= !EXT2_INDEX_FL;
         let size = self.checked_dir_size(&dir_inode)?;
         let mut dir_data = alloc::vec![0u8; size];
         self.read_inode_data(&dir_inode, 0, &mut dir_data)?;
@@ -1516,6 +1605,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn write(&mut self, handle: VfsHandle, buf: &[u8], offset: u64) -> Result<usize, VfsError> {
+        self.writable()?;
         let mut inode = self.read_inode(handle.inode as u32)?;
         if (inode.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR {
             return Err(VfsError::InvalidOperation);
@@ -1526,8 +1616,14 @@ impl FileSystem for Ext2Fs {
 
         let written = self.write_inode_data(&mut inode, offset, buf)?;
 
-        if end > inode.i_size as u64 {
+        // Compared against the whole size, not `i_size` alone: a file of 4 GiB
+        // or more keeps its high word in `i_dir_acl`, and a write inside it
+        // must neither shrink it to `end` nor leave the high word stale.
+        if end > self.file_size(&inode) {
             inode.i_size = end as u32;
+            if self.size_high_in_use(&inode) {
+                inode.i_dir_acl = (end >> 32) as u32;
+            }
         }
         inode.i_mtime = crate::drivers::interrupts::ticks() as u32;
         self.write_inode(handle.inode as u32, &inode)?;
@@ -1535,6 +1631,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn create(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
+        self.writable()?;
         let (parent_path, name) = Self::split_last(path);
         if name.is_empty() {
             return Err(VfsError::InvalidPath);
@@ -1576,6 +1673,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn mkdir(&mut self, path: &str) -> Result<VfsHandle, VfsError> {
+        self.writable()?;
         let (parent_path, name) = Self::split_last(path);
         if name.is_empty() {
             return Err(VfsError::InvalidPath);
@@ -1652,6 +1750,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), VfsError> {
+        self.writable()?;
         let (parent_path, name) = Self::split_last(path);
         if name.is_empty() {
             return Err(VfsError::InvalidPath);
@@ -1741,18 +1840,7 @@ impl FileSystem for Ext2Fs {
             _ => VfsNodeType::File,
         };
 
-        let size = inode.i_size as u64;
-        let total_size = if node_type == VfsNodeType::File
-            && self
-                .superblock
-                .as_ref()
-                .map(|sb| sb.s_rev_level >= 1)
-                .unwrap_or(false)
-        {
-            size | ((inode.i_dir_acl as u64) << 32)
-        } else {
-            size
-        };
+        let total_size = self.file_size(&inode);
 
         let (major, minor) =
             if node_type == VfsNodeType::CharDevice || node_type == VfsNodeType::BlockDevice {
@@ -1777,6 +1865,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn rmdir(&mut self, path: &str) -> Result<(), VfsError> {
+        self.writable()?;
         let (parent_path, name) = Self::split_last(path);
         if name.is_empty() {
             return Err(VfsError::InvalidPath);
@@ -1835,6 +1924,7 @@ impl FileSystem for Ext2Fs {
     }
 
     fn rename(&mut self, old: &str, new: &str) -> Result<(), VfsError> {
+        self.writable()?;
         let (old_parent, old_name) = Self::split_last(old);
         let (new_parent, new_name) = Self::split_last(new);
 
@@ -1910,6 +2000,7 @@ impl FileSystem for Ext2Fs {
                 }
                 old_dir_data[name_start..name_start + new_name.len()]
                     .copy_from_slice(new_name.as_bytes());
+                old_dir_inode.i_flags &= !EXT2_INDEX_FL;
                 self.write_inode_data(&mut old_dir_inode, 0, &old_dir_data)?;
                 self.write_inode(old_parent_ino, &old_dir_inode)?;
             } else {
@@ -1979,6 +2070,7 @@ impl FileSystem for Ext2Fs {
         major: u32,
         minor: u32,
     ) -> Result<VfsHandle, VfsError> {
+        self.writable()?;
         let (parent_path, name) = Self::split_last(path);
         if name.is_empty() {
             return Err(VfsError::InvalidPath);
@@ -2057,6 +2149,10 @@ impl FileSystem for Ext2Fs {
         self.buffer_cache.lock().sync();
         Ok(())
     }
+
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -2065,7 +2161,7 @@ impl FileSystem for Ext2Fs {
 pub mod tests {
     use super::*;
     use crate::testing::TestResult;
-    use crate::test_assert;
+    use crate::{test_assert, test_assert_eq};
 
     /// Device extent large enough that the device bound cannot be what a test
     /// is observing. Tests that isolate one non-device superblock field pass
@@ -2141,6 +2237,7 @@ pub mod tests {
             inodes_per_group: 0,
             inode_size: 128,
             buffer_cache: Mutex::new(BufferCache::new(1, block_size as usize)),
+            read_only: false,
         }
     }
 
@@ -2863,7 +2960,282 @@ pub mod tests {
         TestResult::Pass
     }
 
+    // ── Feature gate, exercised through the real `mount()` ───────────────
+    //
+    // These run the whole mount path against a RAM block device holding the
+    // FS-parity fixture (`fs::parity::format_ext2`: rev 1, no feature bits,
+    // one group of 1024 1-KiB blocks), with superblock fields patched per test.
+
+    /// Block-device number of the RAM disk below; clear of the AHCI (0x800),
+    /// FS-parity (0x900, 0x901), scratch (0x5CA0) and FAT-test (0xFA7x) devices.
+    const FEATURE_TEST_DEV: u32 = 0xE272;
+    static FEATURE_TEST_DISK: Mutex<Option<&'static crate::fs::parity::MemDisk>> = Mutex::new(None);
+
+    /// Superblock byte offsets (the ext2 on-disk layout, as `ext2_format` writes it).
+    const SB_MAGIC: usize = 56;
+    const SB_REV_LEVEL: usize = 76;
+    const SB_FEATURE_COMPAT: usize = 92;
+    const SB_FEATURE_INCOMPAT: usize = 96;
+    const SB_FEATURE_RO_COMPAT: usize = 100;
+
+    /// Load the fixture, with each `(offset, value)` written into its
+    /// superblock, onto the test RAM disk and return the disk.
+    fn feature_disk(fields: &[(usize, u32)]) -> &'static crate::fs::parity::MemDisk {
+        let mut image = crate::fs::parity::format_ext2();
+        for &(off, value) in fields {
+            let at = 1024 + off;
+            if off == SB_MAGIC {
+                image[at..at + 2].copy_from_slice(&(value as u16).to_le_bytes());
+            } else {
+                image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        let mut slot = FEATURE_TEST_DISK.lock();
+        let disk = *slot.get_or_insert_with(|| {
+            let disk: &'static crate::fs::parity::MemDisk =
+                alloc::boxed::Box::leak(alloc::boxed::Box::new(crate::fs::parity::MemDisk::new()));
+            crate::drivers::block::register_block_device(FEATURE_TEST_DEV, disk);
+            disk
+        });
+        disk.load(image);
+        disk
+    }
+
+    /// The INCOMPAT set `mke2fs -t ext4` writes by default (e2fsprogs 1.47):
+    /// filetype, extent, 64bit, flex_bg, metadata_csum_seed — what the
+    /// `chase_boot.sh ext4` and `cameron_qemu_milestone.sh ext4-root` disks carry.
+    const EXT4_DEFAULT_INCOMPAT: u32 = 0x0002 | 0x0040 | 0x0080 | 0x0200 | 0x2000;
+
+    /// RED: `mount()` never read `s_feature_incompat`, so a distro ext4 volume
+    /// mounted as ext2 and the kernel went on to create `/swap.topo` on it.
+    /// Every INCOMPAT bit other than FILETYPE must refuse the mount — on a
+    /// revision-0 superblock too, where Linux still checks them — and the
+    /// refusal must not write the disk.
+    fn test_unknown_incompat_feature_refuses_mount() -> TestResult {
+        let mut cases: Vec<(u32, u32)> = Vec::new();
+        cases.push((EXT4_DEFAULT_INCOMPAT, 1));
+        cases.push((EXT4_DEFAULT_INCOMPAT, 0));
+        // Every single bit except FILETYPE: compression, recover, journal_dev,
+        // meta_bg, extent, 64bit, mmp, flex_bg, ea_inode, dirdata, csum_seed,
+        // largedir, inline_data, encrypt, casefold, and every unassigned bit.
+        for bit in 0..32 {
+            let feature = 1u32 << bit;
+            if feature != EXT2_FEATURE_INCOMPAT_FILETYPE {
+                cases.push((feature | EXT2_FEATURE_INCOMPAT_FILETYPE, 1));
+            }
+        }
+        for (incompat, rev) in cases {
+            let disk = feature_disk(&[(SB_FEATURE_INCOMPAT, incompat), (SB_REV_LEVEL, rev)]);
+            let before = disk.digest();
+            let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+            test_assert!(
+                matches!(fs.mount(), Err(VfsError::NotSupported)),
+                "a volume with an INCOMPAT feature outside FILETYPE must not mount"
+            );
+            test_assert!(
+                fs.superblock.is_none(),
+                "a refused mount must leave the driver unmounted"
+            );
+            test_assert_eq!(disk.digest(), before);
+        }
+        TestResult::Pass
+    }
+
+    /// RED: an RO_COMPAT feature this driver does not keep consistent
+    /// (metadata_csum here: every block it writes would carry a stale
+    /// checksum) must mount read-only, serve reads, and refuse every write
+    /// with `VfsError::ReadOnly` (EROFS at the syscall boundary) without
+    /// changing a byte of the disk. A revision above 1 is handled the same
+    /// way, as Linux does.
+    fn test_unknown_ro_compat_feature_mounts_read_only() -> TestResult {
+        let metadata_csum = 0x0400;
+        for fields in [
+            &[
+                (SB_FEATURE_RO_COMPAT, RO_COMPAT_SUPPORTED | metadata_csum),
+                (SB_FEATURE_INCOMPAT, EXT2_FEATURE_INCOMPAT_FILETYPE),
+            ][..],
+            &[(SB_REV_LEVEL, 2)][..],
+        ] {
+            let disk = feature_disk(fields);
+            let before = disk.digest();
+            let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+            test_assert!(
+                fs.mount().is_ok(),
+                "the volume must still mount for reading"
+            );
+            test_assert!(fs.is_read_only(), "and it must mount read-only");
+
+            let root = match fs.lookup("/") {
+                Ok(h) => h,
+                Err(_) => return TestResult::Fail("lookup of / must work read-only"),
+            };
+            test_assert!(fs.readdir(root).is_ok(), "readdir must work read-only");
+
+            let refused = |r: Result<(), VfsError>| matches!(r, Err(VfsError::ReadOnly));
+            test_assert!(refused(fs.create("/f").map(|_| ())), "create");
+            test_assert!(refused(fs.mkdir("/d").map(|_| ())), "mkdir");
+            test_assert!(
+                refused(fs.mknod("/n", VfsNodeType::CharDevice, 1, 3).map(|_| ())),
+                "mknod"
+            );
+            test_assert!(refused(fs.write(root, b"x", 0).map(|_| ())), "write");
+            test_assert!(refused(fs.unlink("/f")), "unlink");
+            test_assert!(refused(fs.rmdir("/d")), "rmdir");
+            test_assert!(refused(fs.rename("/a", "/b")), "rename");
+            test_assert!(refused(fs.allocate_block().map(|_| ())), "allocate_block");
+            test_assert!(refused(fs.allocate_inode().map(|_| ())), "allocate_inode");
+            test_assert!(refused(fs.free_block(30)), "free_block");
+            test_assert!(refused(fs.free_inode(12)), "free_inode");
+
+            test_assert!(fs.sync().is_ok(), "sync of a clean read-only volume");
+            test_assert_eq!(disk.digest(), before);
+        }
+        TestResult::Pass
+    }
+
+    /// The same read-only volume behind the VFS: `Vfs::create` returns
+    /// `ReadOnly`, and `Vfs::is_read_only` — what swap and the audit log
+    /// consult before choosing a volume — reports it.
+    fn test_vfs_refuses_writes_to_read_only_ext2() -> TestResult {
+        let disk = feature_disk(&[(SB_FEATURE_RO_COMPAT, 0x0400)]);
+        let before = disk.digest();
+        let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+        test_assert!(fs.mount().is_ok());
+        let mut v = crate::fs::vfs::Vfs::new();
+        test_assert!(v.mount("/", alloc::boxed::Box::new(fs)).is_ok());
+        test_assert!(v.is_read_only("/swap.topo"));
+        test_assert!(matches!(v.create("/swap.topo"), Err(VfsError::ReadOnly)));
+        test_assert!(matches!(v.mkdir("/var"), Err(VfsError::ReadOnly)));
+        test_assert!(v
+            .mount(
+                "/var/log",
+                alloc::boxed::Box::new(crate::fs::manifold_fs::ManifoldFS::new_ramfs())
+            )
+            .is_ok());
+        test_assert!(
+            !v.is_read_only("/var/log/audit.log"),
+            "a ramfs over the read-only root is writable"
+        );
+        test_assert_eq!(disk.digest(), before);
+        TestResult::Pass
+    }
+
+    /// GREEN: the fixture as formatted (no feature bits), and the INCOMPAT and
+    /// RO_COMPAT bits `mke2fs -t ext2` sets by default (filetype; sparse_super,
+    /// large_file) alongside its COMPAT bits (ext_attr, resize_inode,
+    /// dir_index), must mount read-write, and a write must reach the disk.
+    fn test_plain_ext2_mounts_read_write() -> TestResult {
+        for fields in [
+            &[][..],
+            &[
+                (SB_FEATURE_INCOMPAT, EXT2_FEATURE_INCOMPAT_FILETYPE),
+                (SB_FEATURE_RO_COMPAT, RO_COMPAT_SUPPORTED),
+                (SB_FEATURE_COMPAT, 0x0008 | 0x0010 | 0x0020),
+            ][..],
+        ] {
+            let disk = feature_disk(fields);
+            let before = disk.digest();
+            let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+            test_assert!(fs.mount().is_ok(), "a plain ext2 volume must mount");
+            test_assert!(!fs.is_read_only(), "read-write");
+            let h = match fs.create("/f") {
+                Ok(h) => h,
+                Err(_) => return TestResult::Fail("create on a read-write mount"),
+            };
+            test_assert_eq!(fs.write(h, b"seal", 0).unwrap_or(0), 4);
+            let mut buf = [0u8; 4];
+            test_assert_eq!(fs.read(h, &mut buf, 0).unwrap_or(0), 4);
+            test_assert_eq!(&buf, b"seal");
+            test_assert!(fs.sync().is_ok());
+            test_assert!(disk.digest() != before, "the write must reach the disk");
+        }
+        TestResult::Pass
+    }
+
+    /// A superblock without the ext2 magic is not ext2 and must not mount.
+    fn test_bad_magic_refuses_mount() -> TestResult {
+        feature_disk(&[(SB_MAGIC, 0xEF52)]);
+        let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+        test_assert!(fs.mount().is_err(), "a wrong s_magic must refuse the mount");
+        TestResult::Pass
+    }
+
+    /// LARGE_FILE is in `RO_COMPAT_SUPPORTED`, which holds only if `write`
+    /// treats `i_dir_acl` as the high size word. It compared `end` with the low
+    /// word alone, so a write at offset 0 into a 4 GiB file set `i_size` to 4
+    /// and left the high word: the file became 4 GiB + 4 bytes.
+    fn test_write_inside_large_file_keeps_its_size() -> TestResult {
+        feature_disk(&[(SB_FEATURE_RO_COMPAT, EXT2_FEATURE_RO_COMPAT_LARGE_FILE)]);
+        let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+        test_assert!(fs.mount().is_ok());
+        let h = match fs.create("/big") {
+            Ok(h) => h,
+            Err(_) => return TestResult::Fail("create"),
+        };
+        let ino = h.inode as u32;
+        let mut inode = fs.read_inode(ino).unwrap_or(make_dir_inode(0));
+        inode.i_size = 0;
+        inode.i_dir_acl = 1; // 4 GiB exactly
+        test_assert!(fs.write_inode(ino, &inode).is_ok());
+
+        test_assert_eq!(fs.write(h, b"seal", 0).unwrap_or(0), 4);
+        let after = fs.read_inode(ino).unwrap_or(make_dir_inode(0));
+        test_assert_eq!({ after.i_size }, 0);
+        test_assert_eq!({ after.i_dir_acl }, 1);
+
+        // Growing past it moves both words.
+        test_assert_eq!(fs.write(h, b"seal", (1u64 << 32) + 10).unwrap_or(0), 4);
+        let grown = fs.read_inode(ino).unwrap_or(make_dir_inode(0));
+        test_assert_eq!({ grown.i_size }, 14);
+        test_assert_eq!({ grown.i_dir_acl }, 1);
+        TestResult::Pass
+    }
+
+    /// COMPAT dir_index: this driver edits directories linearly, so it must
+    /// clear an htree index flag on every directory it changes, or ext3/ext4
+    /// would search a stale index and miss the entry.
+    fn test_directory_change_clears_htree_index_flag() -> TestResult {
+        feature_disk(&[(SB_FEATURE_COMPAT, 0x0020)]);
+        let mut fs = Ext2Fs::new(FEATURE_TEST_DEV);
+        test_assert!(fs.mount().is_ok());
+        let mut root = fs.read_inode(2).unwrap_or(make_dir_inode(0));
+        root.i_flags |= EXT2_INDEX_FL;
+        test_assert!(fs.write_inode(2, &root).is_ok());
+        test_assert!(fs.create("/f").is_ok());
+        let root = fs.read_inode(2).unwrap_or(make_dir_inode(0));
+        test_assert_eq!({ root.i_flags } & EXT2_INDEX_FL, 0);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "ext2::unknown_incompat_feature_refuses_mount",
+            test_unknown_incompat_feature_refuses_mount,
+        );
+        crate::testing::register_test(
+            "ext2::unknown_ro_compat_feature_mounts_read_only",
+            test_unknown_ro_compat_feature_mounts_read_only,
+        );
+        crate::testing::register_test(
+            "ext2::vfs_refuses_writes_to_read_only_ext2",
+            test_vfs_refuses_writes_to_read_only_ext2,
+        );
+        crate::testing::register_test(
+            "ext2::plain_ext2_mounts_read_write",
+            test_plain_ext2_mounts_read_write,
+        );
+        crate::testing::register_test(
+            "ext2::bad_magic_refuses_mount",
+            test_bad_magic_refuses_mount,
+        );
+        crate::testing::register_test(
+            "ext2::write_inside_large_file_keeps_its_size",
+            test_write_inside_large_file_keeps_its_size,
+        );
+        crate::testing::register_test(
+            "ext2::directory_change_clears_htree_index_flag",
+            test_directory_change_clears_htree_index_flag,
+        );
         crate::testing::register_test(
             "ext2::oversized_dir_i_size_is_rejected",
             test_oversized_dir_i_size_is_rejected,
