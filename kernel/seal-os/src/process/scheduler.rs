@@ -257,26 +257,14 @@ pub struct SchedulerSelectProbe {
 
 impl ManifoldScheduler {
     pub fn new() -> Self {
-        // (theta, phi) centroids on the {0, pi/2, pi} lattice. Spelled with the
-        // exact constants rather than 1.57 / 3.14 so the cell boundaries agree
-        // with the full-precision centroids lib.rs feeds to the TSS separation
-        // proof; the truncated literals were off by ~1.6e-3 rad.
-        use core::f64::consts::{FRAC_PI_2, PI};
-        let centroids = [
-            (0.0, 0.0),
-            (FRAC_PI_2, 0.0),
-            (PI, 0.0),
-            (0.0, FRAC_PI_2),
-            (FRAC_PI_2, FRAC_PI_2),
-            (PI, FRAC_PI_2),
-            (0.0, PI),
-            (FRAC_PI_2, PI),
-        ];
+        // The cube-vertex cells lib.rs feeds to the TSS separation proof. The
+        // {0, pi/2, pi} lattice this used put cells 0, 3, 6 on one pole, so
+        // cells 3 and 6 never received a task.
         Self {
             slab: TaskSlab::new(),
             next_id: 1,
             current: None,
-            voronoi: SphericalVoronoiIndex::<8>::new(centroids),
+            voronoi: SphericalVoronoiIndex::<8>::new(aether_core::tss::CUBE_CENTROIDS),
             cell_queues: [
                 CellQueue::new(),
                 CellQueue::new(),

@@ -104,9 +104,23 @@ impl Default for PersistenceConfig {
 pub enum PersistenceError {
     InvalidDimension,
     InvalidRadius,
-    TooManyPoints { actual: usize, max: usize },
-    TooManySimplices { max: usize },
+    TooManyPoints {
+        actual: usize,
+        max: usize,
+    },
+    TooManySimplices {
+        max: usize,
+    },
     EmptyInput,
+    /// Points `i` and `j` sit `gap` from the edge threshold, inside the
+    /// `needed_margin` their distance's rounding can move, so the float edge set
+    /// is not certified to be the exact one.
+    UndecidedEdge {
+        i: usize,
+        j: usize,
+        gap: f64,
+        needed_margin: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
