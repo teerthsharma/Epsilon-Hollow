@@ -673,6 +673,24 @@ fn the_kernel_rejects_a_hand_built_row_with_a_duplicate_block() {
 }
 
 #[test]
+fn an_overflowed_score_is_refused_rather_than_answered_as_nan() {
+    // `l > 0` holds only when the row's own score is a number. Finite q and k
+    // still overflow q.k: 1e200 * -1e200 is -inf, so the only key's tile is
+    // skipped as if it lay in the future and the row divides 0 by 0; with
+    // 1e200 * 1e200 = +inf the weight is exp(inf - inf) = NaN. The exact weight
+    // of a lone key is 1, but no finite score exists to read that from.
+    let schedule = dense_causal_block_schedule(1);
+    for (q, k) in [(1e200, -1e200), (1e200, 1e200), (f64::NAN, 1.0)] {
+        let out = scheduled_attention(&[q], &[k], &[3.0], 1, 1, &schedule, 1);
+        assert_eq!(
+            out,
+            Err(ScheduleError::NonFiniteScore { row: 0, col: 0 }),
+            "q = {q:e}, k = {k:e} was not refused"
+        );
+    }
+}
+
+#[test]
 fn an_empty_row_is_rejected_rather_than_producing_nan() {
     // softmax over no keys is 0/0. The Triton builder guarantees every row has at
     // least its own block; the Rust type enforces it.
