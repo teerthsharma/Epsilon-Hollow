@@ -516,12 +516,16 @@ impl MarkovChain {
     pub fn generate(&self, seed: &str, length: usize) -> String {
         let mut result = String::from(seed);
         for _ in 0..length {
-            let window = if result.len() >= self.order {
-                &result[result.len() - self.order..]
-            } else {
-                &result
-            };
-            match self.sample_next(window) {
+            // The last `order` characters, as the keys were built in `train`.
+            // Cutting at `order` bytes from the end lands inside a multi-byte
+            // character of the seed and panics.
+            let start = result
+                .char_indices()
+                .rev()
+                .take(self.order)
+                .last()
+                .map_or(result.len(), |(i, _)| i);
+            match self.sample_next(&result[start..]) {
                 Some(ch) => result.push(ch),
                 None => break,
             }
@@ -841,6 +845,25 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: `MarkovChain::generate` windowed the text by its last `order`
+    /// *bytes*, `&result[result.len() - order..]`. A seed whose multi-byte
+    /// character straddles that cut — `ml generate éab`, or the same line in a
+    /// script run by `source` — sliced inside a character and panicked, which
+    /// under `panic = "abort"` halts the machine. Registered last: before the
+    /// fix it takes the rest of the run down with it.
+    fn test_generate_accepts_multibyte_seed() -> TestResult {
+        for seed in ["éab", "xéab", "日本語", "\u{fffd}ab"] {
+            test_assert!(
+                demo_generate_text(seed, 16).starts_with(seed),
+                "the seed must lead the generated text"
+            );
+        }
+        // A seed that ends on a key the corpus holds still continues.
+        let text = demo_generate_text("é Seal", 16);
+        test_assert!(text.len() > "é Seal".len(), "generation stopped at the seed");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "ml_engine::deserialize_truncated_buffer_rejected",
@@ -885,6 +908,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::release_task_frees_kv_and_fit",
             test_release_task_frees_kv_and_fit,
+        );
+        crate::testing::register_test(
+            "ml_engine::generate_accepts_multibyte_seed",
+            test_generate_accepts_multibyte_seed,
         );
     }
 }
