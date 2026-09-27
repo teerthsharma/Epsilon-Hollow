@@ -1,8 +1,8 @@
 import { GitCommit, Trash2, BarChart3 } from "lucide-react";
-import { useStore } from "../store";
+import { usePick } from "../store";
 
 export default function ExperimentTimeline() {
-  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = useStore();
+  const { experiments, analysisResult, battleResult, regressResult, classifyResult, setAnalysisResult, setBattleResult, setRegressResult, setClassifyResult } = usePick("experiments", "analysisResult", "battleResult", "regressResult", "classifyResult", "setAnalysisResult", "setBattleResult", "setRegressResult", "setClassifyResult");
 
   const handleSelect = (exp: any) => {
     if (!exp.result) return;

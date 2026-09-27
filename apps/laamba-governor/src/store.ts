@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 
 export interface Dataset {
   name: string;
@@ -230,3 +231,11 @@ export const useStore = create<AppStore>((set) => ({
   isRunning: false,
   setRunning: (r) => set({ isRunning: r }),
 }));
+
+/**
+ * Subscribe to the named fields only. A bare `useStore()` returns the whole
+ * state, so its caller re-renders on every `set`, including each `addLog`;
+ * this re-renders only when one of `keys` changes (shallow compare).
+ */
+export const usePick = <K extends keyof AppStore>(...keys: K[]): Pick<AppStore, K> =>
+  useStore(useShallow((s) => Object.fromEntries(keys.map((k) => [k, s[k]])) as Pick<AppStore, K>));

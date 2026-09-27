@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Zap, Cpu, Globe, Atom, AudioWaveform, Database, HardDrive, Play, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type Dataset, type EngineResult, type AnalysisResult } from "../store";
+import { usePick, type Dataset, type EngineResult, type AnalysisResult } from "../store";
 
 const ICON_MAP: Record<string, any> = {
   physics: Zap, topology: Database, systems: HardDrive,
@@ -19,7 +19,7 @@ interface EngineInfo {
 }
 
 export default function EngineRack() {
-  const { activeEngine, setActiveEngine, selectedDataset, selectDataset, addLog, setAnalysisResult, setEngineResult, addExperiment, updateExperiment } = useStore();
+  const { activeEngine, setActiveEngine, selectedDataset, selectDataset, addLog, setAnalysisResult, setEngineResult, addExperiment, updateExperiment } = usePick("activeEngine", "setActiveEngine", "selectedDataset", "selectDataset", "addLog", "setAnalysisResult", "setEngineResult", "addExperiment", "updateExperiment");
   const [engines, setEngines] = useState<EngineInfo[]>([]);
   const [running, setRunning] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);

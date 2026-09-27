@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { Terminal, Trash2 } from "lucide-react";
-import { useStore } from "../store";
+import { usePick } from "../store";
 
 export default function ConsolePanel() {
-  const { logs, clearLogs } = useStore();
+  const { logs, clearLogs } = usePick("logs", "clearLogs");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

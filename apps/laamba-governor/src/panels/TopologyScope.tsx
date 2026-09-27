@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from "react";
 import { Activity, Box, BarChart3, GitGraph } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useStore } from "../store";
+import { usePick } from "../store";
 import * as THREE from "three";
 
 const MODES = [
@@ -24,7 +24,7 @@ const TOPO_COLORS: Record<string, string> = {
 
 // ── Persistence Diagram (from vitals) ──
 function PersistenceDiagram() {
-  const { vitalsResult, analysisResult } = useStore();
+  const { vitalsResult, analysisResult } = usePick("vitalsResult", "analysisResult");
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -168,7 +168,7 @@ function PersistenceDiagram() {
 
 // ── Betti Curves (from vitals) ──
 function BettiCurves() {
-  const { vitalsResult, analysisResult } = useStore();
+  const { vitalsResult, analysisResult } = usePick("vitalsResult", "analysisResult");
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -305,7 +305,7 @@ function PointCloud({ data, color }: { data: number[][]; color: string }) {
 }
 
 function ManifoldViewer() {
-  const { vitalsResult, analysisResult } = useStore();
+  const { vitalsResult, analysisResult } = usePick("vitalsResult", "analysisResult");
 
   // Use REAL data points from backend PCA, NOT synthetic RNG
   const points = useMemo(() => {
@@ -346,7 +346,7 @@ function ManifoldViewer() {
 
 // ── Convergence (from battle) ──
 function ConvergenceView() {
-  const { battleResult, analysisResult } = useStore();
+  const { battleResult, analysisResult } = usePick("battleResult", "analysisResult");
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
