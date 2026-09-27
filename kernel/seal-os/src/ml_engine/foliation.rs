@@ -242,6 +242,17 @@ pub struct FoliationStats {
     pub refused_referenced_free: u64,
     /// Descents that could not share because fan-out was saturated.
     pub children_full: u64,
+    /// TSC cycles spent choosing eviction victims: the O(pool_blocks) frontier
+    /// scan, measured around every call, whatever the policy.
+    pub scan_cycles: u64,
+}
+
+/// Time-stamp counter. A cost measure for the proof and the stats line, never
+/// an input to any decision.
+fn tsc() -> u64 {
+    // SAFETY: RDTSC reads a counter and has no memory effects; every x86_64
+    // CPU implements it.
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 /// Kernel-side paged KV cache over a prefix foliation.
@@ -729,7 +740,10 @@ impl Foliation {
     /// disagreeing.
     fn admit(&mut self, leaf: u16) -> Result<(), FoliationError> {
         if self.free_slots.is_empty() {
-            let victim = match self.pick_victim() {
+            let t0 = tsc();
+            let picked = self.pick_victim();
+            self.stats.scan_cycles += tsc().wrapping_sub(t0);
+            let victim = match picked {
                 Some(v) => v,
                 None => {
                     self.stats.refused_exhaustion += 1;
@@ -890,8 +904,36 @@ const _: () =
 
 const CHAT_CONVERSATIONS: u32 = 16;
 const CHAT_LIVE: u32 = 4;
+/// Every conversation live at once: reuse distance then exceeds the pool and
+/// the chat result reverses.
+const CHAT_LIVE_WIDE: u32 = 16;
 const CHAT_TURNS: u32 = 6;
 const CHAT_SYSTEM_BLOCKS: usize = 2;
+
+/// Pool sizes the proof replays every trace at, bracketing
+/// `BENCH_POOL_BLOCKS`. The smallest holds the longest request, so no
+/// admission is refused for capacity and every point measures victim choice
+/// alone.
+const SWEEP_POOLS: [usize; 6] = [8, 12, 16, 24, 32, 48];
+/// Index of `BENCH_POOL_BLOCKS` in `SWEEP_POOLS`: the headline column.
+const HEADLINE_AT: usize = 3;
+const _: () = assert!(SWEEP_POOLS[HEADLINE_AT] == BENCH_POOL_BLOCKS);
+/// Policies the sweep replays. Belady is last and bounds every row before it.
+const SWEPT: [Policy; 4] = [
+    Policy::Foliation,
+    Policy::Lru,
+    Policy::Locality,
+    Policy::Belady,
+];
+const SW_FOL: usize = 0;
+const SW_LRU: usize = 1;
+const SW_LOC: usize = 2;
+const SW_BELADY: usize = SWEPT.len() - 1;
+const _: () = assert!(
+    HOT_PREFIX_BLOCKS + TAIL_BLOCKS <= SWEEP_POOLS[0]
+        && COLD_PREFIX_BLOCKS + TAIL_BLOCKS <= SWEEP_POOLS[0]
+        && CHAT_SYSTEM_BLOCKS + CHAT_TURNS as usize <= SWEEP_POOLS[0]
+);
 
 /// One request: the token stream a sequence will append.
 fn build_trace() -> Vec<Vec<u32>> {
@@ -926,18 +968,18 @@ fn build_trace() -> Vec<Vec<u32>> {
     trace
 }
 
-/// Multi-turn chat: `CHAT_LIVE` conversations served round robin, each turn
+/// Multi-turn chat: `live` conversations served round robin, each turn
 /// resending a shared system prompt and the conversation so far plus one new
 /// block. A conversation ends after `CHAT_TURNS` turns and the next takes its
 /// slot. Reuse follows recency — the block a conversation wrote last is the
 /// first one its next turn re-reads past the prompt — so this is the request
 /// shape the boot trace is not.
 // from https://github.com/NVIDIA/NeMo-Relay/pull/481: a stable scaffold under varying turns
-fn build_chat_trace() -> Vec<Vec<u32>> {
+fn build_chat_trace(live: u32) -> Vec<Vec<u32>> {
     let mut trace = Vec::new();
+    let mut started = live;
     // (conversation, turns already served)
-    let mut live: Vec<(u32, u32)> = (0..CHAT_LIVE).map(|c| (c, 0)).collect();
-    let mut started = CHAT_LIVE;
+    let mut live: Vec<(u32, u32)> = (0..live).map(|c| (c, 0)).collect();
     while !live.is_empty() {
         let mut next = Vec::new();
         for (conv, done) in live {
@@ -1000,11 +1042,20 @@ struct Replay {
     frames_backed: u64,
     frames_freed: u64,
     frames_failed: u64,
+    refused_exhaustion: u64,
+    /// Cycles in the victim scan.
+    scan_cycles: u64,
 }
 
-/// Replay `trace` under `policy`. `seed` drives `Policy::Random` only.
+/// Replay `trace` under `policy` at the headline pool size.
 fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay {
-    let mut fol = Foliation::new(BENCH_POOL_BLOCKS, BENCH_LEAF_ARENA, BENCH_MAX_SEQS, policy);
+    replay_at(BENCH_POOL_BLOCKS, policy, trace, keys, seed)
+}
+
+/// Replay `trace` under `policy` with `pool` plaques. `seed` drives
+/// `Policy::Random` only.
+fn replay_at(pool: usize, policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay {
+    let mut fol = Foliation::new(pool, BENCH_LEAF_ARENA, BENCH_MAX_SEQS, policy);
     fol.rng = seed;
     if policy == Policy::Belady {
         fol.set_oracle(keys.to_vec());
@@ -1038,7 +1089,53 @@ fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay
         frames_backed: s.frames_backed,
         frames_freed: after.frames_freed,
         frames_failed: s.frames_failed,
+        refused_exhaustion: s.refused_exhaustion,
+        scan_cycles: s.scan_cycles,
     }
+}
+
+/// Hit rate of `policy` on one trace at every `SWEEP_POOLS` size, and whether
+/// every one of those replays held the cache invariants with no admission
+/// refused.
+fn sweep(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> ([u64; SWEEP_POOLS.len()], bool) {
+    let mut hits = [0u64; SWEEP_POOLS.len()];
+    let mut ok = true;
+    for (i, &pool) in SWEEP_POOLS.iter().enumerate() {
+        let r = replay_at(pool, policy, trace, keys, null_seed(0));
+        hits[i] = r.hit_bp;
+        ok &= r.descents as usize == keys.len()
+            && r.refused_exhaustion == 0
+            && r.frames_failed == 0
+            && r.frames_freed == r.frames_backed
+            && r.referenced_evictions == 0
+            && r.collapse_violations == 0;
+    }
+    (hits, ok)
+}
+
+/// `a,b,c` — the proof's list encoding.
+fn csv(values: &[u64]) -> String {
+    values
+        .iter()
+        .map(|v| format!("{}", v))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A cycle cost of `policy` on `trace`, the lower of two identical replays.
+/// Hit counts are deterministic and cycle counts are not: under QEMU the first
+/// replay also pays translation, and a host that deschedules the vCPU
+/// stretches whichever replay it lands in.
+fn cycle_cost(policy: Policy, trace: &[Vec<u32>], keys: &[u64], cost: fn(&Replay) -> u64) -> u64 {
+    (0..2)
+        .map(|_| cost(&replay(policy, trace, keys, null_seed(0))))
+        .min()
+        .unwrap_or(0)
+}
+
+/// Victim-scan cycles per eviction.
+fn per_eviction(r: &Replay) -> u64 {
+    r.scan_cycles.checked_div(r.evictions).unwrap_or(0)
 }
 
 /// Two sequences with an identical prefix must land on identical plaques, and
@@ -1226,7 +1323,7 @@ pub fn foliation_proof_line() -> String {
     // A second request shape, whose reuse follows recency. Its margins are
     // recorded, not gated; every replay of it must hold the same invariants
     // the boot trace does.
-    let chat = build_chat_trace();
+    let chat = build_chat_trace(CHAT_LIVE);
     let chat_keys = trace_keys(&chat);
     let chat_fo = replay(Policy::Foliation, &chat, &chat_keys, null_seed(0));
     let chat_lru = replay(Policy::Lru, &chat, &chat_keys, null_seed(0));
@@ -1258,6 +1355,61 @@ pub fn foliation_proof_line() -> String {
         chat_referenced += r.referenced_evictions;
         chat_violations += r.collapse_violations;
     }
+
+    // Pool-size sweep: every trace, every realizable policy and the oracle, at
+    // every `SWEEP_POOLS` size. Which policy wins follows whether reuse
+    // distance exceeds the pool, so one pool size cannot carry a policy claim.
+    // Recorded, not gated, except that the oracle bounds every point and the
+    // headline replays above must be the sweep's own column at
+    // `BENCH_POOL_BLOCKS`.
+    let wide = build_chat_trace(CHAT_LIVE_WIDE);
+    let wide_keys = trace_keys(&wide);
+    let traces = [
+        ("boot", &trace, &keys),
+        ("chat", &chat, &chat_keys),
+        ("chat16", &wide, &wide_keys),
+    ];
+    let mut table = [[[0u64; SWEEP_POOLS.len()]; SWEPT.len()]; 3];
+    let mut sweep_ok = true;
+    let mut sweep_fields = String::new();
+    for ((name, tr, ks), rows) in traces.iter().zip(table.iter_mut()) {
+        for (row, &policy) in rows.iter_mut().zip(&SWEPT) {
+            let (hits, ok) = sweep(policy, tr, ks);
+            *row = hits;
+            sweep_ok &= ok;
+            sweep_fields.push_str(&format!(
+                " sweep_{}_{}={}",
+                name,
+                policy_tag(policy),
+                csv(row)
+            ));
+        }
+        let belady = rows[SW_BELADY];
+        sweep_ok &= rows
+            .iter()
+            .all(|row| row.iter().zip(&belady).all(|(h, b)| h <= b));
+    }
+    let col = |trace: usize, row: usize| table[trace][row][HEADLINE_AT];
+    sweep_ok &= [fo.hit_bp, lru.hit_bp, loc.hit_bp, opt.hit_bp]
+        == [
+            col(0, SW_FOL),
+            col(0, SW_LRU),
+            col(0, SW_LOC),
+            col(0, SW_BELADY),
+        ]
+        && [
+            chat_fo.hit_bp,
+            chat_lru.hit_bp,
+            chat_loc.hit_bp,
+            chat_opt.hit_bp,
+        ] == [
+            col(1, SW_FOL),
+            col(1, SW_LRU),
+            col(1, SW_LOC),
+            col(1, SW_BELADY),
+        ];
+    let scan_fo = cycle_cost(Policy::Foliation, &trace, &keys, per_eviction);
+    let scan_lru = cycle_cost(Policy::Lru, &trace, &keys, per_eviction);
 
     // Fraction of the LRU -> Belady headroom the foliation policy closed, in
     // basis points. Negative means the policy lost to LRU.
@@ -1301,6 +1453,7 @@ pub fn foliation_proof_line() -> String {
         && refusals_ok
         && oracle_sane
         && trace_ok
+        && sweep_ok
     {
         "pass"
     } else {
@@ -1319,6 +1472,8 @@ random_seeds={} hit_bp_random_min={} hit_bp_random_max={} random_distinct_outcom
 foliation_beats_random={}/{} \
 chat_requests={} chat_descents={} chat_hit_bp_foliation={} chat_hit_bp_lru={} chat_hit_bp_locality={} \
 chat_hit_bp_belady={} chat_foliation_beats_random={}/{} \
+sweep_pools={}{} \
+scan_cycles_per_eviction_foliation={} scan_cycles_per_eviction_lru={} \
 referenced_evictions={} collapse_violations={} \
 refused_budget={} refused_exhaustion={} refused_referenced_free={} \
 complexity=descend<={}_children,evict<={}_plaques,lookup=O(1)_indexed \
@@ -1363,6 +1518,10 @@ result={}",
         chat_opt.hit_bp,
         chat_beaten,
         NULL_SEEDS,
+        csv(&SWEEP_POOLS.map(|p| p as u64)),
+        sweep_fields,
+        scan_fo,
+        scan_lru,
         fo.referenced_evictions
             + lru.referenced_evictions
             + rnd.referenced_evictions
@@ -1414,6 +1573,17 @@ pub fn with_global<R>(f: impl FnOnce(&mut Foliation) -> R) -> R {
     f(guard.as_mut().expect("foliation initialised above"))
 }
 
+/// Proof tag of a policy.
+fn policy_tag(p: Policy) -> &'static str {
+    match p {
+        Policy::Foliation => "foliation",
+        Policy::Lru => "lru",
+        Policy::Random => "random",
+        Policy::Belady => "belady",
+        Policy::Locality => "locality",
+    }
+}
+
 /// Map a refusal to an errno for the syscall layer.
 pub fn errno(e: FoliationError) -> i64 {
     match e {
@@ -1434,14 +1604,8 @@ pub fn global_stats_line() -> String {
         format!(
             "policy={} pool_blocks={} resident={} descents={} shared={} admits={} \
 evictions={} frames_backed={} frames_freed={} leaf_gc={} children_full={} \
-refused_budget={} refused_exhaustion={} refused_referenced_free={}",
-            match f.policy() {
-                Policy::Foliation => "foliation",
-                Policy::Lru => "lru",
-                Policy::Random => "random",
-                Policy::Belady => "belady",
-                Policy::Locality => "locality",
-            },
+refused_budget={} refused_exhaustion={} refused_referenced_free={} scan_cycles={}",
+            policy_tag(f.policy()),
             ABI_POOL_BLOCKS,
             f.resident(),
             s.descents,
@@ -1455,6 +1619,7 @@ refused_budget={} refused_exhaustion={} refused_referenced_free={}",
             s.refused_budget,
             s.refused_exhaustion,
             s.refused_referenced_free,
+            s.scan_cycles,
         )
     })
 }
@@ -2024,6 +2189,93 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Comma-separated list value of `key` in the proof line.
+    fn proof_list(line: &str, key: &str) -> Option<Vec<u64>> {
+        let v = line.split_whitespace().find_map(|t| t.strip_prefix(key))?;
+        v.split(',').map(|x| x.parse().ok()).collect()
+    }
+
+    /// One pool size is one point, and which policy wins flips with it. The
+    /// proof must replay every trace — the LRU-adversarial boot trace, the
+    /// 4-live chat trace and the 16-live chat trace — at pool sizes on both
+    /// sides of the headline geometry, under every realizable policy, with the
+    /// offline optimum bounding every point. The headline figures must be the
+    /// sweep's own measurement at `BENCH_POOL_BLOCKS`, not a separate run that
+    /// could disagree with it.
+    fn test_proof_sweeps_pool_sizes() -> TestResult {
+        let line = foliation_proof_line();
+        let pools = proof_list(&line, "sweep_pools=");
+        test_assert!(pools.is_some(), "the proof does not sweep the pool size");
+        let pools = pools.unwrap_or_default();
+        test_assert!(pools.len() >= 4, "a pool sweep needs at least four sizes");
+        test_assert!(
+            pools.iter().any(|&p| p < BENCH_POOL_BLOCKS as u64)
+                && pools.iter().any(|&p| p > BENCH_POOL_BLOCKS as u64),
+            "the sweep does not bracket the headline pool size"
+        );
+        let at = pools.iter().position(|&p| p == BENCH_POOL_BLOCKS as u64);
+        test_assert!(at.is_some(), "the sweep skips the headline pool size");
+        let at = at.unwrap_or(0);
+        for trace in ["boot", "chat", "chat16"] {
+            let belady = proof_list(&line, &format!("sweep_{trace}_belady="));
+            test_assert!(belady.is_some(), "a trace is not swept under Belady");
+            let belady = belady.unwrap_or_default();
+            test_assert_eq!(belady.len(), pools.len());
+            test_assert!(
+                belady.last() > belady.first(),
+                "the optimum gains nothing from the largest pool, so the sweep did not change capacity"
+            );
+            for policy in ["foliation", "lru", "locality"] {
+                let hits = proof_list(&line, &format!("sweep_{trace}_{policy}="));
+                test_assert!(hits.is_some(), "a trace is not swept under a policy");
+                let hits = hits.unwrap_or_default();
+                test_assert_eq!(hits.len(), pools.len());
+                test_assert!(
+                    hits.iter().zip(&belady).all(|(h, b)| h <= b),
+                    "a policy beats the offline optimum at some pool size"
+                );
+            }
+        }
+        for (sweep, headline) in [
+            ("sweep_boot_foliation=", "hit_bp_foliation="),
+            ("sweep_boot_lru=", "hit_bp_lru="),
+            ("sweep_boot_locality=", "hit_bp_locality="),
+            ("sweep_boot_belady=", "hit_bp_belady="),
+            ("sweep_chat_foliation=", "chat_hit_bp_foliation="),
+            ("sweep_chat_lru=", "chat_hit_bp_lru="),
+            ("sweep_chat_locality=", "chat_hit_bp_locality="),
+            ("sweep_chat_belady=", "chat_hit_bp_belady="),
+        ] {
+            let col = proof_list(&line, sweep).and_then(|v| v.get(at).copied());
+            test_assert!(
+                col.is_some() && col == proof_metric(&line, headline),
+                "the headline disagrees with the sweep at the headline pool size"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// The victim scan is the one O(pool) step on the admission path. Its cost
+    /// must be measured, not read off the complexity table: every replay that
+    /// evicts must report the cycles it spent choosing victims per eviction,
+    /// and the ABI stats line must carry the same counter for the live cache.
+    fn test_eviction_scan_is_measured() -> TestResult {
+        let line = foliation_proof_line();
+        for policy in ["foliation", "lru"] {
+            let per = proof_metric(&line, &format!("scan_cycles_per_eviction_{policy}="));
+            test_assert!(per.is_some(), "the eviction scan cost is not reported");
+            test_assert!(
+                per.unwrap_or(0) > 0,
+                "a replay that evicted reports a free eviction scan"
+            );
+        }
+        test_assert!(
+            global_stats_line().contains(" scan_cycles="),
+            "the ABI stats line does not report the eviction scan cost"
+        );
+        TestResult::Pass
+    }
+
     /// The cache syscalls serve under LRU. The foliation ranking only wins at
     /// a capacity cliff on a synthetic trace, so it is selected explicitly by
     /// the boot proof and is not the default for real callers.
@@ -2098,6 +2350,14 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::proof_replays_a_recency_trace",
             test_proof_replays_a_recency_trace,
+        );
+        crate::testing::register_test(
+            "foliation::proof_sweeps_pool_sizes",
+            test_proof_sweeps_pool_sizes,
+        );
+        crate::testing::register_test(
+            "foliation::eviction_scan_is_measured",
+            test_eviction_scan_is_measured,
         );
     }
 }
