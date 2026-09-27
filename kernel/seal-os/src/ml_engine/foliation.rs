@@ -882,6 +882,17 @@ const BENCH_POOL_BLOCKS: usize = 24;
 const BENCH_LEAF_ARENA: usize = 256;
 const BENCH_MAX_SEQS: usize = 8;
 
+// The boot trace admits more distinct blocks between two reads of its hot
+// prefix than the pool holds, so recency has always evicted the prefix by the
+// time it returns: LRU's 0 on it is a property of the trace.
+const _: () =
+    assert!(TAIL_BLOCKS + COLD_PER_ROUND * (COLD_PREFIX_BLOCKS + TAIL_BLOCKS) > BENCH_POOL_BLOCKS);
+
+const CHAT_CONVERSATIONS: u32 = 16;
+const CHAT_LIVE: u32 = 4;
+const CHAT_TURNS: u32 = 6;
+const CHAT_SYSTEM_BLOCKS: usize = 2;
+
 /// One request: the token stream a sequence will append.
 fn build_trace() -> Vec<Vec<u32>> {
     let mut trace = Vec::new();
@@ -911,6 +922,42 @@ fn build_trace() -> Vec<Vec<u32>> {
             trace.push(tokens);
             req += 1;
         }
+    }
+    trace
+}
+
+/// Multi-turn chat: `CHAT_LIVE` conversations served round robin, each turn
+/// resending a shared system prompt and the conversation so far plus one new
+/// block. A conversation ends after `CHAT_TURNS` turns and the next takes its
+/// slot. Reuse follows recency — the block a conversation wrote last is the
+/// first one its next turn re-reads past the prompt — so this is the request
+/// shape the boot trace is not.
+// from https://github.com/NVIDIA/NeMo-Relay/pull/481: a stable scaffold under varying turns
+fn build_chat_trace() -> Vec<Vec<u32>> {
+    let mut trace = Vec::new();
+    // (conversation, turns already served)
+    let mut live: Vec<(u32, u32)> = (0..CHAT_LIVE).map(|c| (c, 0)).collect();
+    let mut started = CHAT_LIVE;
+    while !live.is_empty() {
+        let mut next = Vec::new();
+        for (conv, done) in live {
+            let mut tokens: Vec<u32> = (0..CHAT_SYSTEM_BLOCKS * BLOCK_TOKENS)
+                .map(|j| 1000 + j as u32)
+                .collect();
+            for turn in 0..=done {
+                for j in 0..BLOCK_TOKENS as u32 {
+                    tokens.push(100_000 + conv * 1000 + turn * 10 + j);
+                }
+            }
+            trace.push(tokens);
+            if done + 1 < CHAT_TURNS {
+                next.push((conv, done + 1));
+            } else if started < CHAT_CONVERSATIONS {
+                next.push((started, 0));
+                started += 1;
+            }
+        }
+        live = next;
     }
     trace
 }
@@ -1176,6 +1223,42 @@ pub fn foliation_proof_line() -> String {
     let (shared_blocks, refcount_after, survivors, frames_identical) = share_and_refcount_probe();
     let (budget_refused, exhaustion_refused, referenced_free_refused) = refusal_probe();
 
+    // A second request shape, whose reuse follows recency. Its margins are
+    // recorded, not gated; every replay of it must hold the same invariants
+    // the boot trace does.
+    let chat = build_chat_trace();
+    let chat_keys = trace_keys(&chat);
+    let chat_fo = replay(Policy::Foliation, &chat, &chat_keys, null_seed(0));
+    let chat_lru = replay(Policy::Lru, &chat, &chat_keys, null_seed(0));
+    let chat_loc = replay(Policy::Locality, &chat, &chat_keys, null_seed(0));
+    let chat_opt = replay(Policy::Belady, &chat, &chat_keys, null_seed(0));
+    let chat_holds = |r: &Replay| {
+        r.descents as usize == chat_keys.len()
+            && r.frames_failed == 0
+            && r.frames_freed == r.frames_backed
+            && r.hit_bp <= chat_opt.hit_bp
+    };
+    let mut chat_ok = chat_holds(&chat_fo)
+        && chat_holds(&chat_lru)
+        && chat_holds(&chat_loc)
+        && chat_holds(&chat_opt);
+    let mut chat_referenced = chat_fo.referenced_evictions
+        + chat_lru.referenced_evictions
+        + chat_loc.referenced_evictions
+        + chat_opt.referenced_evictions;
+    let mut chat_violations = chat_fo.collapse_violations
+        + chat_lru.collapse_violations
+        + chat_loc.collapse_violations
+        + chat_opt.collapse_violations;
+    let mut chat_beaten = 0u64;
+    for i in 0..NULL_SEEDS {
+        let r = replay(Policy::Random, &chat, &chat_keys, null_seed(i));
+        chat_beaten += u64::from(chat_fo.hit_bp > r.hit_bp);
+        chat_ok &= chat_holds(&r);
+        chat_referenced += r.referenced_evictions;
+        chat_violations += r.collapse_violations;
+    }
+
     // Fraction of the LRU -> Belady headroom the foliation policy closed, in
     // basis points. Negative means the policy lost to LRU.
     let gap = opt.hit_bp as i64 - lru.hit_bp as i64;
@@ -1195,13 +1278,16 @@ pub fn foliation_proof_line() -> String {
         && loc.referenced_evictions == 0
         && fo.collapse_violations == 0
         && lru.collapse_violations == 0
-        && loc.collapse_violations == 0;
+        && loc.collapse_violations == 0
+        && chat_referenced == 0
+        && chat_violations == 0;
     let refusals_ok = budget_refused && exhaustion_refused && referenced_free_refused;
     // The offline optimum must dominate every realizable policy on the same
     // candidate set. If it does not, the benchmark is measuring something else.
     let oracle_sane =
         opt.hit_bp >= fo.hit_bp && opt.hit_bp >= lru.hit_bp && opt.hit_bp >= loc.hit_bp;
     let trace_ok = null_ok
+        && chat_ok
         && fo.descents == lru.descents
         && fo.descents == rnd.descents
         && fo.descents == opt.descents
@@ -1231,6 +1317,8 @@ evictions_foliation={} evictions_lru={} evictions_random={} \
 hit_bp_foliation={} hit_bp_lru={} hit_bp_random={} hit_bp_locality={} hit_bp_belady={} gap_closed_bp={} \
 random_seeds={} hit_bp_random_min={} hit_bp_random_max={} random_distinct_outcomes={} \
 foliation_beats_random={}/{} \
+chat_requests={} chat_descents={} chat_hit_bp_foliation={} chat_hit_bp_lru={} chat_hit_bp_locality={} \
+chat_hit_bp_belady={} chat_foliation_beats_random={}/{} \
 referenced_evictions={} collapse_violations={} \
 refused_budget={} refused_exhaustion={} refused_referenced_free={} \
 complexity=descend<={}_children,evict<={}_plaques,lookup=O(1)_indexed \
@@ -1267,11 +1355,23 @@ result={}",
         digests.len(),
         null_beaten,
         NULL_SEEDS,
+        chat.len(),
+        chat_fo.descents,
+        chat_fo.hit_bp,
+        chat_lru.hit_bp,
+        chat_loc.hit_bp,
+        chat_opt.hit_bp,
+        chat_beaten,
+        NULL_SEEDS,
         fo.referenced_evictions
             + lru.referenced_evictions
             + rnd.referenced_evictions
-            + loc.referenced_evictions,
-        fo.collapse_violations + lru.collapse_violations + loc.collapse_violations,
+            + loc.referenced_evictions
+            + chat_referenced,
+        fo.collapse_violations
+            + lru.collapse_violations
+            + loc.collapse_violations
+            + chat_violations,
         if budget_refused { 1 } else { 0 },
         if exhaustion_refused { 1 } else { 0 },
         if referenced_free_refused { 1 } else { 0 },
@@ -1891,6 +1991,39 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// The boot trace re-reads its only reusable prefix after 31 other blocks
+    /// against a 24-plaque pool, so LRU scores 0 there by construction. The
+    /// proof must also replay a request shape whose reuse follows recency —
+    /// multi-turn chat, each turn resending the conversation so far — or its
+    /// margins describe the trace rather than the policy. On that shape LRU
+    /// must reach 90% of the offline optimum, and the optimum must dominate
+    /// every policy.
+    fn test_proof_replays_a_recency_trace() -> TestResult {
+        let line = foliation_proof_line();
+        let lru = proof_metric(&line, "chat_hit_bp_lru=");
+        test_assert!(
+            lru.is_some(),
+            "the proof replays only a trace LRU loses by construction"
+        );
+        let lru = lru.unwrap_or(0);
+        let fol = proof_metric(&line, "chat_hit_bp_foliation=").unwrap_or(u64::MAX);
+        let loc = proof_metric(&line, "chat_hit_bp_locality=").unwrap_or(u64::MAX);
+        let opt = proof_metric(&line, "chat_hit_bp_belady=").unwrap_or(0);
+        test_assert!(
+            lru * 10 >= opt * 9,
+            "LRU is below 90% of the optimum on the chat trace, so reuse there does not follow recency"
+        );
+        test_assert!(
+            opt >= fol && opt >= loc,
+            "oracle below a realizable policy on the chat trace"
+        );
+        test_assert!(
+            proof_metric(&line, "chat_foliation_beats_random=").is_some(),
+            "the random null is not replayed on the chat trace"
+        );
+        TestResult::Pass
+    }
+
     /// The cache syscalls serve under LRU. The foliation ranking only wins at
     /// a capacity cliff on a synthetic trace, so it is selected explicitly by
     /// the boot proof and is not the default for real callers.
@@ -1961,6 +2094,10 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::locality_null_is_measured",
             test_locality_null_is_measured,
+        );
+        crate::testing::register_test(
+            "foliation::proof_replays_a_recency_trace",
+            test_proof_replays_a_recency_trace,
         );
     }
 }
