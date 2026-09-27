@@ -329,4 +329,41 @@ mod tests {
         // One apart in 4e9: the resultant falls under the guard, heavier still wins.
         assert_eq!(merged(a, b, [2_000_000_000, 2_000_000_001], 4.0), b);
     }
+
+    /// Anywhere on the sphere, a merge lands on the minor arc between the pair,
+    /// no farther from the heavier centroid than from the lighter one. A
+    /// minimum-image lift in phi meets this only on the equator and meridians:
+    /// elsewhere a line of linearly interpolated (theta, phi) leaves the arc.
+    #[test]
+    fn merge_lands_on_the_minor_arc_for_any_pair() {
+        let mut s = 0x5EA1_u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = 0;
+        while checked < 2000 {
+            let a = (next() * PI, next() * TAU);
+            let b = (next() * PI, next() * TAU);
+            let d = great_circle_distance(a, b);
+            if !(1e-3..3.0).contains(&d) {
+                continue;
+            }
+            let (wa, wb) = (1 + (next() * 5.0) as u32, 1 + (next() * 5.0) as u32);
+            let m = merged(a, b, [wa, wb], 3.0);
+            let (da, db) = (great_circle_distance(m, a), great_circle_distance(m, b));
+            assert!(
+                fabs(da + db - d) < 1e-9,
+                "off the arc: {a:?} {b:?} -> {m:?}"
+            );
+            if wa > wb {
+                assert!(da <= db + 1e-12, "{a:?}x{wa} {b:?}x{wb} -> {m:?}");
+            } else if wb > wa {
+                assert!(db <= da + 1e-12, "{a:?}x{wa} {b:?}x{wb} -> {m:?}");
+            }
+            checked += 1;
+        }
+    }
 }
