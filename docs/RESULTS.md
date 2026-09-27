@@ -1,23 +1,32 @@
-<!-- Seal OS v0.4.7.5 README. The pre-2026-09-27 development record is docs/RECORD.md. -->
+# Seal OS: measured results, provenance and imported work
 
-# Seal OS: a `no_std` Rust x86_64 kernel whose topological answers come with a certificate or a refusal
+Measured results, provenance and imported work for Seal OS; the README links here.
 
-**Seal OS is a monolithic UEFI kernel that runs two machine-learning workload services in kernel space, a loss-trajectory fit detector and a prefix-tree KV cache, and returns each topological quantity it computes either with a certificate that floating-point rounding cannot change it or with a refusal that names the input responsible.**
+Until 2026-09-27 this material opened the README. It moved here unchanged except for links made relative to `docs/`, the repository line count (which stays in the README, where CI rewrites it), the per-theorem runtime status table (now in [THEOREMS.md](THEOREMS.md#status-at-runtime-inputs)), a new section recounting Linux coverage for the README's charts, and dated updates where a later commit on `main` changed a finding. Nothing measured was dropped.
 
-`https://github.com/teerthsharma/Epsilon-Hollow` · Project page with every certify-or-refuse result drawn as a live figure: <https://teerthsharma.github.io/Epsilon-Hollow/> · Measured results and provenance: [docs/RESULTS.md](docs/RESULTS.md)
-
-[![DOI 10.5281/zenodo.20264206](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20264206-1682D4?style=flat-square)](https://doi.org/10.5281/zenodo.20264206)
-[![License: MIT](https://img.shields.io/github/license/teerthsharma/epsilon-hollow?style=flat-square&color=00aaff)](LICENSE)
-
-Invented by Teerth Sharma (https://teerthsharma.vercel.app/), teerths57@gmail.com
-
-Every number below carries its provenance: a command that reproduces it, a CI run id with its commit, a commit whose message records the run, or the words "stated, not re-measured". The verification pass of 2026-09-27 measured at commit `9ebbe2e`; CI numbers come from run [36165748105](https://github.com/teerthsharma/Epsilon-Hollow/actions/runs/36165748105) on the same commit. Results that landed later that day, on branch `revamp/certify-or-refuse`, are quoted from the commit that landed each one. File and line references are to the tree at `c055594`. The development history that earlier versions of this file carried (verifier findings, red-gate investigations, per-round logs) is preserved verbatim in [docs/RECORD.md](docs/RECORD.md).
+Every number below carries its provenance: a command that reproduces it, a CI run id with its commit, a commit whose message records the run, or the words "stated, not re-measured". The verification pass of 2026-09-27 measured at commit `9ebbe2e`; CI numbers come from run [36165748105](https://github.com/teerthsharma/Epsilon-Hollow/actions/runs/36165748105) on the same commit. Results that landed later that day, on branch `revamp/certify-or-refuse`, are quoted from the commit that landed each one. File and line references are to the tree at `c055594`. The development history that earlier versions of the README carried (verifier findings, red-gate investigations, per-round logs) is preserved verbatim in [docs/RECORD.md](RECORD.md).
 
 ---
 
-## Abstract
+## Summary
 
 Seal OS is a research kernel for x86_64, written in `no_std` Rust, booted only through UEFI, with its own 69-call system-call ABI. It tests one proposition: a kernel that serves machine-learning workloads can compute their structure itself, the shape of a training run's validation curve and the prefix structure of an inference server's KV cache, and it should refuse to return a discrete answer whose value was chosen by floating-point rounding rather than by the data. Component counts are certified by an empty band around the scale in the minimum-spanning-tree merge heights, attention top-k by Higham error intervals, and nearest-centroid lookup on S² by a distance-to-boundary test; before that test, the grid-hash index answered 1,215 of 5,000 seeded queries wrongly while reporting a hit rate of 1.0000 (commit `cdb4a4e`, as stated on the project page). Under QEMU, the `foliation` KV policy matches the Belady hit rate on a synthetic trace built so that recency always evicts the shared prefix (952 bp, LRU 0 bp; CI run 36165748105) and loses to LRU on a multi-turn chat trace (5,284 bp against 8,068; commit `0ab2377`), so the system-call-facing cache defaults to LRU; `stratum` classifies 7 of 7 synthetic runs, including a negative control that a train/validation gap threshold misclassifies. The accepted direction is for Seal OS to replace the Linux kernel under an unmodified distribution; no ring-3 instruction has yet executed (see Direction). What does not work is stated once, in Limits.
+
+## Linux coverage, counted
+
+The README draws these counts as charts. Each is read from the failure message of a check that is RED by design, because it is the gate for open work; recounted at `a50b8d6` on 2026-09-27 on Windows 11 with the host runner, over the checks under [tests/linux_parity/](../tests/linux_parity/). The Linux side was captured once by `tests/linux_parity/chase_measure_linux.sh` on Ubuntu 26.04 LTS (glibc 2.43, gcc 15.2.0, running on kernel 6.6.87.2-microsoft-standard-WSL2) and is checked in as `tests/linux_parity/chase_linux_measured.json`.
+
+| Quantity | Count at `a50b8d6` | Measured by |
+|---|---|---|
+| Linux x86_64 system calls that reach the same call in Seal dispatch | 1 of 386 (`write`, number 1) | Linux: `arch/x86/entry/syscalls/syscall_64.tbl` at Linux master 7.3.0-rc4, 339 `common` plus 47 `64` entries, fetched and counted on 2026-09-27. Seal: the 69 dispatched numbers in `kernel/seal-os/src/syscall/table.rs`, compared by name; no other Seal number carries the Linux call of the same number. The Ubuntu 26.04 `asm/unistd_64.h` behind the glibc fixture defines 385 numbers; the count of 1 holds against either table |
+| System calls made by five Ubuntu programs (`cat`, a shell pipeline, a static hello, `systemd --version`, `true`) | 49 distinct: 1 reaches the same call, 22 reach a different Seal call, 26 reach no handler | host runner: `test_chase_syscall_abi`, `test_linux_syscall_numbers_reach_the_same_call_in_seal_dispatch`. Example misroutes: `access` reaches rmdir, `getgid` reaches package removal, `munmap` reaches mkdir |
+| Distinct system calls of a static glibc `hello` (`gcc -static -O2`) | 1 of 12 reaches the same call; 11 are misrouted or unhandled | host runner: `test_cameron_linux_abi_surface` |
+| Kernel symbols imported by the 480 driver modules under `drivers/` of that kernel | Seal OS exports 4 of 7,243 | host runner: `test_chase_linux_drivers`. Binary reuse is pinned as well: 924 of 924 modules carry one vermagic string and per-symbol CRCs, and the licence gate refuses 853 of 924 |
+| M0 items whose gate passes | 4 of 11 | Ticked boxes in [FUTURE_PLAN.md, Phase 0](../FUTURE_PLAN.md#phase-0-linux-kernel-replacement) at `a50b8d6` |
+| Milestones M0 to M8 passed | 0 of 9 | Same |
+| Distributions that boot on Seal OS | 0 | The M3 and later gates are not yet written |
+
+The driver-symbol count is not a target. Decision D3 of the accepted plan runs Linux drivers unmodified inside separate driver servers built from LKL, the Linux kernel as a library, so Seal OS never has to export those symbols itself; the count records why that decision was taken.
 
 ## Background
 
@@ -145,11 +154,7 @@ With the shipped gains $\alpha = 0.01$, $\beta = 0.05$, the margin is 0.06 at $\
 | System calls | `syscall/` | 1,972 | Dispatch table. |
 | Other | `lib.rs`, `sandbox.rs`, `tuner.rs` | 2,520 + 1,290 + 717 | Boot sequence and theorem gate, sandbox, tuner. |
 
-The surrounding workspace supplies the mathematics and the tooling: `aether-core` (certified β₀, certified top-k, trajectory shape, spherical Voronoi indices, SCM, governor), `aether-verified` (Rust theorem kernels and their Lean 4 sources), `epsilon-os` (a host-side model of ManifoldFS that runs the T4 check at runtime constants), Aether-Lang (a scripting language whose `no_std` runtime the kernel embeds), and `seal-mkimage` (the disk-image builder and every boot-log gate). Repository-wide line count, rewritten on each push to `main` by `.github/workflows/loc.yml`; the assembly figure counts only `.S`, `.s` and `.asm` files, so the kernel's `global_asm!` and `asm!` blocks are not in it:
-
-<!-- RUST_LINE_COUNT_START -->
-**189926 lines of Rust** across 507 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **191749 total**
-<!-- RUST_LINE_COUNT_END -->
+The surrounding workspace supplies the mathematics and the tooling: `aether-core` (certified β₀, certified top-k, trajectory shape, spherical Voronoi indices, SCM, governor), `aether-verified` (Rust theorem kernels and their Lean 4 sources), `epsilon-os` (a host-side model of ManifoldFS that runs the T4 check at runtime constants), Aether-Lang (a scripting language whose `no_std` runtime the kernel embeds), and `seal-mkimage` (the disk-image builder and every boot-log gate). The repository-wide line count is in the README, where `.github/workflows/loc.yml` rewrites it on each push to `main`; its assembly figure counts only `.S`, `.s` and `.asm` files, so the kernel's `global_asm!` and `asm!` blocks are not in it.
 
 ### Seal ABI
 
@@ -169,7 +174,7 @@ User code enters through `syscall` and leaves through `sysretq` (`process/usersp
 
 | Serial marker | Gate | What the line must show (run 36165748105) |
 |---|---|---|
-| `[THEOREM] T1/TSS` … `T10/WPHB` | `--check-theorem-log` | Run 36165748105 required ten `VERIFIED` lines. Since commit `3c14df0` the gate requires nine (T1–T3, T5–T10), reads `alpha`, `beta` and `dt` from the `[T4/AGCR] Governor online` line, requires `[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01` and the summary `9 of 10 theorems VERIFIED`, and rejects a `T4/AGCR VERIFIED` line while the margin is at least 1. The theorem table below says what each line checks. |
+| `[THEOREM] T1/TSS` … `T10/WPHB` | `--check-theorem-log` | Run 36165748105 required ten `VERIFIED` lines. Since commit `3c14df0` the gate requires nine (T1–T3, T5–T10), reads `alpha`, `beta` and `dt` from the `[T4/AGCR] Governor online` line, requires `[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01` and the summary `9 of 10 theorems VERIFIED`, and rejects a `T4/AGCR VERIFIED` line while the margin is at least 1. The theorem table in [THEOREMS.md](THEOREMS.md#status-at-runtime-inputs) says what each line checks. |
 | `[BENCH] manifold-teleport` | `--check-benchmark-log` | Same-inode move with `fs_mode=mock_block` and `persistence_bytes_per_move=0`, at most 7 metadata operations. |
 | `[ManifoldPkg] proof` | `--check-theorem-log` | Parse, install, extract, list and remove of an embedded package with `signature=ed25519_fixture` and `registry_index=ed25519_fixture`; rollback, tamper and digest-mismatch refusals. The channel transport is `fixture_loopback`: Public remote release channel is still pending. |
 | `[SECURITY] audit proof` | `--check-theorem-log` | Audit buffer flushed and read back from `/var/log/audit.log`. |
@@ -188,22 +193,7 @@ TopCrypt is topological encoding/obfuscation, not cryptographic protection: `fs/
 
 ### Theorem gates T1–T10
 
-`init_theorems` in `kernel/seal-os/src/lib.rs` (`lib.rs:2122-2193`) evaluates `verify_topology_theorems` (`lib.rs:2195-2249`) at boot. The boot log of run 36165748105 printed all ten as `VERIFIED`. Since commit `3c14df0`, a T4 whose gain margin fails at the runtime step is reported, not fatal: boot prints `[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01` and `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths`, and any other false entry still panics (in-kernel harness 564 / 564 on that commit, local QEMU, stated in its message). What each line establishes differs per theorem. "Certified" below means the condition holds at the inputs the running kernel uses; "refused" means it was evaluated there and fails; "not checked" means it was evaluated only on fixed boot constants, or nothing at runtime consumes it. Lean sources are in `kernel/aether/aether-verified/lean/EpsilonTheorems.lean`; the Lean 4 CI job built them in run 36165748105, and `--check-lean-proof-hygiene` rejects `sorry`, `admit` and `axiom`.
-
-| ID | Name | Lean artifact | Boot evaluation | Status at runtime inputs, and where decided |
-|---|---|---|---|---|
-| T1 | TSS | `tss_packing_bound`, layered on a named cap-area hypothesis; `tss_separation_guarantee` is a `True` placeholder | Packing bound and pairwise separation of the 8 boot centroids | **Partly.** The scheduler, compositor and firewall indices (commit `87d7b10`) and the router index (commit `9702061`) build from `aether_core::tss::CUBE_CENTROIDS` (`process/scheduler.rs:267`, `wm/compositor.rs:130`, `net/firewall.rs:76`, `net/topological.rs:67`), the cube whose values the boot check evaluates from its own copy in `lib.rs`; nothing checks that the two copies agree. Since commit `2014ddb` the separation check certifies a pair only beyond its rounding radius. The ManifoldFS cells (`fs/voronoi_cap.rs:74`) still build from another centroid set. |
-| T2 | SCM | `scm_contraction` proves only the inequality $1 - \alpha < 1$ for $\alpha \in (0,1)$ | One pair contracted at $\alpha = 0.1$ | **Certified**, elementarily: the operator $(1-\alpha)S + \alpha P$ contracts by $1-\alpha < 1$ at the runtime gains 0.7 (`process/scheduler.rs:280`, `fs/manifold_fs.rs:277`) and 0.3 (`net/firewall.rs:67`). |
-| T3 | GMC | `gmc_bounded_termination` proved; `gmc_entropy_nonincreasing` is a `True` placeholder | Fixed constants (100, 50, 1000) and `max_merges(8) == 7` | **Not checked.** |
-| T4 | AGCR | `agcr_gain_margin_stable`, conditional on (9) | Evaluated at `GOVERNOR_DT` = 0.01 (`lib.rs:2217-2223`), margin 5.01; before commit `3c14df0`, at $\Delta t = 1.0$ | **Refused**, at boot and at runtime. Every runtime call passes `GOVERNOR_DT` (`process/scheduler.rs:548`, `fs/manifold_fs.rs:810`, `wm/compositor.rs:520`, `549`), and the boot line reads `NOT CERTIFIED`. `epsilon-os` refuses it too (`epsilon-os/src/manifold_fs.rs:31-39`, `world.rs:596-604`). No step size earns it (section 5). |
-| T5 | HCS | `hcs_separation`, an exact identity | Fixed constants | **Not checked.** |
-| T6 | RGCS | `rgcs_coherence_bound` (non-negativity) | Fixed constants | **Not checked**; no runtime consumer. |
-| T7 | PHKP | `phkp_perfect_locality` is a `True` placeholder | Fixed constants | **Not checked**; no runtime consumer. |
-| T8 | TEB | `teb_energy_nonneg` | Landauer bound at 300 K lies in (2.8e-21, 2.9e-21) J | **Not checked**; no runtime consumer. |
-| T9 | CMA | `cma_linear_accumulation` | Fixed constants | **Not checked**; no runtime consumer. |
-| T10 | WPHB | `wphb_topological_advantage`, `wphb_multi_model` | Fixed constants | **Not checked**; no runtime consumer. |
-
-The per-theorem proof strengths and closure criteria are in [docs/THEOREMS.md](docs/THEOREMS.md) and [kernel/aether/aether-verified/lean/README.md](kernel/aether/aether-verified/lean/README.md).
+The status of each theorem line at the kernel's runtime inputs (certified, refused or not checked, and where each is decided) is in [THEOREMS.md, Status at runtime inputs](THEOREMS.md#status-at-runtime-inputs).
 
 ## Results
 
@@ -273,7 +263,7 @@ Values are from CI run 36165748105 unless a later commit is named in the row.
 
 Substrate: GitHub-hosted `ubuntu-latest` runner, QEMU `-machine q35 -cpu qemu64,+rdrand -m 4G` without `-accel kvm`, so QEMU runs its TCG emulator and every cycle count above is an emulated TSC delta, not a hardware measurement. Toolchains: rustc 1.100.0-nightly (f7575a9da 2026-09-24) for the kernel, rustc 1.98.1 for host crates. Reproduce with `seal-mkimage --check-benchmark-log /tmp/seal-os.log` after a boot.
 
-The comparison table in [docs/BENCHMARK_PLAN.md](docs/BENCHMARK_PLAN.md) is not a blanket victory claim. Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists, bound by `--check-current-benchmark-proof`; the native Ubuntu 26.04 allocator job was skipped in run 36165748105, so every row is raw Ubuntu artifact pending. Where Seal OS must still prove superiority: every row of that plan, since none has been measured on the same machine.
+The comparison table in [docs/BENCHMARK_PLAN.md](BENCHMARK_PLAN.md) is not a blanket victory claim. Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists, bound by `--check-current-benchmark-proof`; the native Ubuntu 26.04 allocator job was skipped in run 36165748105, so every row is raw Ubuntu artifact pending. Where Seal OS must still prove superiority: every row of that plan, since none has been measured on the same machine.
 
 ## Results imported from related work
 
@@ -297,41 +287,7 @@ Techniques ported from the author's other repositories and from upstream pull re
 
 Seven further changes landed in the same round and are not imports. Kernel W^X is enforced: `.text` and the AP trampoline code page are RX and every other kernel page NX, the `[SECURITY-FEATURES]` probe walks every present leaf from the kernel root, and `tests/linux_parity/chase_boot.sh wx` turns from RED (4,310 of 4,310 pages W+X) to GREEN (`wx_violations=0` of 24,004 scanned); the AP bring-up defects on the same path (two far-jump pointers, a GDTR write over the trampoline's `call rax`, and `ltr` against the temporary GDT) are fixed; in-kernel 564 / 564 (commit `b3cf934`, local QEMU). The TCP 2MSL test no longer fails when a timer tick lands between the FIN and the reap (commit `1735b2c`, results in the test table). `manifold_acl`'s `hash_path` takes the first 8 bytes of SHA-256: the old polynomial hash sent a 1,024-symbol Thue–Morse path and its complement to one value, so the second access skipped the anomaly check (commit `e887a79`; in-kernel 570 / 570). `fs/fat.rs` `write_fat_entry` writes every live FAT copy and honours the FAT32 ExtFlags mirroring field: two new in-kernel tests were RED (563 / 565) and the suite is 565 / 565 under QEMU after the fix (commit `1c24631`). The seal-os boot gate refuses T4 at the runtime step (commit `3c14df0`, above). `epsilon-os` gained a guard test that a T4 certificate must be backed by the loop settling; it passes while the gate refuses, and fails under a `GOVERNOR_DT = 1.0` mutant, 45 / 48 (commit `dcc35b6`). `seal-mkimage --check-kv-policy` now requires the locality-null and chat-trace fields, so a kernel that stopped reporting either comparison fails the boot gate (commit `40d3568`; `seal-mkimage` tests 80 / 80).
 
-## Quick Start
-
-```bash
-git clone https://github.com/teerthsharma/Epsilon-Hollow
-cd Epsilon-Hollow
-
-# Host crates (stable toolchain)
-cargo test --workspace
-
-# Kernel: nightly, x86_64-unknown-uefi, build-std
-(cd kernel/seal-os && cargo +nightly build --release)
-
-# GPT disk image: FAT ESP with EFI/BOOT/BOOTX64.EFI plus a ManifoldFS partition
-(cd kernel/seal-mkimage && cargo +stable run --release)
-
-# Boot exactly as CI does (OVMF path as packaged by Debian and Ubuntu)
-timeout 240 qemu-system-x86_64 -machine q35 -cpu qemu64,+rdrand \
-  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-  -device ahci,id=seal_sata \
-  -drive if=none,id=seal_disk,file=kernel/seal-os/target/x86_64-unknown-uefi/release/seal-os.img,format=raw,media=disk \
-  -device ide-hd,drive=seal_disk,bus=seal_sata.0,unit=0 \
-  -nographic -m 4G -no-reboot -no-shutdown | tee /tmp/seal-os.log
-
-# Check the serial log with the gates CI runs
-gate() { cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- "$@"; }
-gate --check-theorem-log /tmp/seal-os.log
-gate --check-kv-policy /tmp/seal-os.log
-gate --check-mlfit-proof /tmp/seal-os.log
-gate --check-fs-parity /tmp/seal-os.log
-gate --check-benchmark-log /tmp/seal-os.log
-```
-
-A successful boot reaches `[BOOT] Seal OS desktop ready.` and `[EVENT] Entering real event loop` on the serial console; QEMU keeps running until `timeout` stops it, which CI treats as success. `scripts/test_kernel.sh` builds the `test-mode` kernel, boots it and prints `ALL TESTS PASSED` when every registered in-kernel test passes. On Windows, `kernel/seal-os/run-qemu.ps1` boots the image; `kernel/seal-os/build-vbox.ps1` and `smoke-vbox.ps1` convert and smoke-test it under VirtualBox. The full CI job list is in [docs/CI.md](docs/CI.md).
-
-## Requirements
+## Build requirements
 
 | Component | Requirement | Where it is set |
 |---|---|---|
@@ -342,27 +298,11 @@ A successful boot reaches `[BOOT] Seal OS desktop ready.` and `[EVENT] Entering 
 | Display | 1024×768 framebuffer for the desktop; the serial console carries every proof line. | `graphics/`, checked by the `[GFX] desktop-proof` line |
 | Proofs (optional) | Lean 4 v4.7.0 with mathlib v4.7.0; `lake build` in `kernel/aether/aether-verified/lean`. | `lean-toolchain` |
 
-## Repository layout
-
-| Path | Contents |
-|---|---|
-| `kernel/seal-os/` | The kernel; see [kernel/seal-os/ARCHITECTURE.md](kernel/seal-os/ARCHITECTURE.md) and [kernel/seal-os/TESTING.md](kernel/seal-os/TESTING.md) |
-| `kernel/seal-mkimage/` | Disk-image builder and every `--check-*` gate |
-| `kernel/epsilon/epsilon/crates/` | `aether-core` (mathematics), `epsilon` and `epsilon-os` (host-side ManifoldFS and world model) |
-| `kernel/aether/` | `aether-verified` (Rust and Lean 4), Aether-Lang crates, `aether-link` (IO scheduling, with the `io_cycle_8_lbas` bench regression gate) |
-| `kernel/seal-graph/`, `kernel/seal-jit/`, `kernel/seal-net80211/` | ML graph artifact format and executor, execution-plan autotune memo, IEEE 802.11 frame codec and WPA2/WPA3 supplicant state machine |
-| `tools/ubuntu-alloc-bench/` | Ubuntu allocator baseline for the comparison gate |
-| `apps/laamba-governor/` | Tauri desktop application (host side) |
-| `docs/` | Design documents ([LINUX-REPLACEMENT](docs/design/LINUX-REPLACEMENT.md), [THEOREMS](docs/THEOREMS.md), [MANIFOLDFS](docs/MANIFOLDFS.md), [THREAT_MODEL](docs/THREAT_MODEL.md), [UNSAFE_INVENTORY](docs/UNSAFE_INVENTORY.md), [GPU_ACCELERATION](docs/GPU_ACCELERATION.md)), the project page `index.html`, and [RECORD.md](docs/RECORD.md) |
-| `ports/` | Upstream kernel code Seal OS uses where it has no native implementation, one pinned and licence-gated `PORT.toml` per port; see [PORTING.md](PORTING.md) and [ports/README.md](ports/README.md). One port is recorded, ACPICA, as planned; nothing is vendored |
-| `tests/linux_parity/`, `tests/ports/` | The Linux-replacement starting-point tests (host-runner pre-checks and the QEMU scripts `chase_boot.sh` and `cameron_qemu_milestone.sh`) and the port licence gate (host runner) |
-| `infrastructure/`, the rest of `tests/`, `future/` | Legacy host tooling and excluded experiments, outside the build, boot and proof paths per [docs/HOST_LANGUAGE_QUARANTINE.md](docs/HOST_LANGUAGE_QUARANTINE.md) |
-
 ## Direction
 
-**Goal.** Seal OS boots under any Linux distribution as that distribution's kernel. The distribution's userland runs unmodified, its bootloader and initrd tooling work unchanged, and Linux device drivers are usable; components Seal OS does not implement natively are brought in as ports of existing open-source kernel code. This is an owner decision, recorded as the accepted plan in [docs/design/LINUX-REPLACEMENT.md](docs/design/LINUX-REPLACEMENT.md) (commit `4c5abfd`); it supersedes the earlier policy that rejected POSIX, Linux, libc and GRUB compatibility.
+**Goal.** Seal OS boots under any Linux distribution as that distribution's kernel. The distribution's userland runs unmodified, its bootloader and initrd tooling work unchanged, and Linux device drivers are usable; components Seal OS does not implement natively are brought in as ports of existing open-source kernel code. This is an owner decision, recorded as the accepted plan in [docs/design/LINUX-REPLACEMENT.md](design/LINUX-REPLACEMENT.md) (commit `4c5abfd`); it supersedes the earlier policy that rejected POSIX, Linux, libc and GRUB compatibility.
 
-**Starting point.** Every finding in the plan's starting-point table is bound to a test that fails at `9ebbe2e`: 25 host-runner test functions under [tests/linux_parity/](tests/linux_parity/), of which 21 fail there and 3 controls and 1 cost measurement pass, and the QEMU modes of `chase_boot.sh` and `cameron_qemu_milestone.sh` (commits `811b82e`, `3c26040`, `91f857e`, `c2d4ba3`). They show that no ring-3 instruction has ever executed; that syscall entry stores onto the caller's stack; that 1 of the 49 distinct syscalls made by five Ubuntu programs reaches the same call in Seal dispatch; that the ELF loader builds no auxiliary vector; that the image carries no Linux boot protocol; that the ext2 driver mounts a distribution's ext4 volume as ext2; and that 4,310 of 4,310 scanned kernel pages are writable and executable, the one finding since turned GREEN (commit `b3cf934`). An audit pass re-ran the findings: of 105 claims, 4 were struck, and none of the four is cited in the design document (stated by the audit pass, not re-measured here; commit `e2f1fb9` replaced the one the table had cited).
+**Starting point.** Every finding in the plan's starting-point table is bound to a test that fails at `9ebbe2e`: 25 host-runner test functions under [tests/linux_parity/](../tests/linux_parity/), of which 21 fail there and 3 controls and 1 cost measurement pass, and the QEMU modes of `chase_boot.sh` and `cameron_qemu_milestone.sh` (commits `811b82e`, `3c26040`, `91f857e`, `c2d4ba3`). They show that no ring-3 instruction has ever executed; that syscall entry stores onto the caller's stack; that 1 of the 49 distinct syscalls made by five Ubuntu programs reaches the same call in Seal dispatch; that the ELF loader builds no auxiliary vector; that the image carries no Linux boot protocol; that the ext2 driver mounts a distribution's ext4 volume as ext2; and that 4,310 of 4,310 scanned kernel pages are writable and executable, the one finding since turned GREEN (commit `b3cf934`). An audit pass re-ran the findings: of 105 claims, 4 were struck, and none of the four is cited in the design document (stated by the audit pass, not re-measured here; commit `e2f1fb9` replaced the one the table had cited).
 
 **Decisions.**
 
@@ -374,11 +314,11 @@ A successful boot reaches `[BOOT] Seal OS desktop ready.` and `[EVENT] Entering 
 - **D6.** Progress is the Linux Test Project `syscalls` pass count plus a negative security suite, and every milestone gate executes in QEMU; source-inspection tests are pre-checks only.
 - **D7.** Components not built natively are ported under `ports/`, pinned by hash and licence-gated; a native implementation replaces a port only by passing the same gate.
 
-**Milestones.** Each gate is a test that fails at `9ebbe2e`. A box in [FUTURE_PLAN.md, Phase 0](FUTURE_PLAN.md#phase-0-linux-kernel-replacement) is ticked only when its gate passes, with the passing run cited.
+**Milestones.** Each gate is a test that fails at `9ebbe2e`. A box in [FUTURE_PLAN.md, Phase 0](../FUTURE_PLAN.md#phase-0-linux-kernel-replacement) is ticked only when its gate passes, with the passing run cited.
 
 | # | Scope | Gate | Status at `c055594` |
 |---|---|---|---|
-| M0 | Substrate and safety: ring 3 executes; syscall entry with `swapgs` and a kernel stack; user faults kill the process; user-copy fixups; kernel W^X; ext2 feature refusal; package-removal privilege check; lock order; theorem lines from live state; CI green; `ports/` | QEMU: `chase_boot.sh usermode-seal`, `cameron_qemu_milestone.sh ring3-seal`, `chase_boot.sh wx`, `chase_boot.sh ext4`; `write(fd, 0x1000, 1)` returns `-EFAULT` | Open; 0 of 11 items ticked. Landed: kernel W^X, with `chase_boot.sh wx` passing locally (`b3cf934`); the boot T4 refusal (`3c14df0`; the other lines still come from fixed inputs); and `ports/`, [PORTING.md](PORTING.md) and the rewritten [CONTRIBUTING.md](CONTRIBUTING.md), with the port licence gate at 12 passed (`03ba455`) |
+| M0 | Substrate and safety: ring 3 executes; syscall entry with `swapgs` and a kernel stack; user faults kill the process; user-copy fixups; kernel W^X; ext2 feature refusal; package-removal privilege check; lock order; theorem lines from live state; CI green; `ports/` | QEMU: `chase_boot.sh usermode-seal`, `cameron_qemu_milestone.sh ring3-seal`, `chase_boot.sh wx`, `chase_boot.sh ext4`; `write(fd, 0x1000, 1)` returns `-EFAULT` | Open; 0 of 11 items ticked. Landed: kernel W^X, with `chase_boot.sh wx` passing locally (`b3cf934`); the boot T4 refusal (`3c14df0`; the other lines still come from fixed inputs); and `ports/`, [PORTING.md](../PORTING.md) and the rewritten [CONTRIBUTING.md](../CONTRIBUTING.md), with the port licence gate at 12 passed (`03ba455`) |
 | M1 | Process model: per-process address spaces with VMAs, page cache, per-process fd tables, wait queues, SIGSEGV delivery | One boot-executed test per item | Open; gate not yet written |
 | M2 | Linux ABI core: D1 renumbering, six-argument dispatch, auxv, TLS, `execve`, `futex`, `clone` threads, `/dev/seal` | A static glibc `hello` prints on serial; static busybox `sh` runs a script | Open; `cameron_qemu_milestone.sh ring3-glibc` exists and fails, the busybox gate is not yet written |
 | M3 | Linux boot: setup header, EFI stub, command line, initramfs, `seal-kernel` package layout | GRUB loads Seal OS as `linux` with an Alpine initramfs and reaches a busybox prompt | Open; gate not yet written |
@@ -388,11 +328,13 @@ A successful boot reaches `[BOOT] Seal OS desktop ready.` and `[EVENT] Entering 
 | M7 | Hardware: ACPICA port, ECAM, MSI/MSI-X, IOMMU, LKL driver server | An unmodified Linux driver in a driver server passes its QEMU device model behind a virtual IOMMU | Open; ACPICA recorded as a planned port, its gate not yet written |
 | M8 | Bare metal | One reference machine boots a distribution to login | Open; no machine chosen before M7 passes |
 
-**Reversibility.** Every milestone lands behind its own gate, and the existing Seal image keeps booting. A distribution keeps its Linux kernel as the default boot entry until M6 passes on that distribution. No write to a foreign filesystem is enabled before the D4 crash-consistency gate passes. Contributions start from [CONTRIBUTING.md](CONTRIBUTING.md) (a RED test first; theorem lines certified, refused or not checked) and, for ports, [PORTING.md](PORTING.md) and [ports/README.md](ports/README.md).
+Update at `a50b8d6`: four M0 items now pass their gates and are ticked in [FUTURE_PLAN.md, Phase 0](../FUTURE_PLAN.md#phase-0-linux-kernel-replacement): kernel W^X (commit `b3cf934`), ext2 feature refusal (commit `d42e815`; `chase_boot.sh ext4` refuses a distribution ext4 volume and leaves it byte-identical), the privilege check on package removal (commit `667a1c8`; in-kernel 575 / 575), and `ports/` with PORTING.md and CONTRIBUTING.md (commit `03ba455`). No milestone has passed.
+
+**Reversibility.** Every milestone lands behind its own gate, and the existing Seal image keeps booting. A distribution keeps its Linux kernel as the default boot entry until M6 passes on that distribution. No write to a foreign filesystem is enabled before the D4 crash-consistency gate passes. Contributions start from [CONTRIBUTING.md](../CONTRIBUTING.md) (a RED test first; theorem lines certified, refused or not checked) and, for ports, [PORTING.md](../PORTING.md) and [ports/README.md](../ports/README.md).
 
 ## Limits
 
-Items marked "code reading" were found by reading the source at `9ebbe2e` on 2026-09-27 and have not yet been reproduced at runtime; their line references are at `c055594`.
+Items marked "code reading" were found by reading the source at `9ebbe2e` on 2026-09-27 and have not yet been reproduced at runtime; their line references are at `c055594`. Where a later commit on `main` changed a finding, the item carries a dated update.
 
 1. **Syscall entry is unsafe to use from ring 3 (code reading).** `syscall` does not change `rsp`, and `syscall_entry` pushes the register frame and calls into Rust on that user-controlled stack: there is no switch to a kernel stack and no `swapgs` (`process/userspace.rs:129-166`). IA32_FMASK = 0x200 leaves TF, DF and AC set in ring 0. The kernel never sets `EFER.SCE`, so `syscall` from ring 3 works only if firmware left it set; the `[SECURITY-FEATURES]` line of run 36165748105 reads `efer=0xd00`, with SCE clear. The source pre-checks `test_cameron_syscall_entry` and `test_foreman_abi_substrate` under `tests/linux_parity/` pin these findings (host runner).
 2. **No task is ever scheduled (code reading).** `PerCpu::current_task` is assigned only inside `schedule()` (`process/scheduler.rs:534`), and every non-test caller of `schedule()` returns early while it is null (`scheduler.rs:1382`, `1396`; `cpu/smp.rs:170-176`); the comment at `scheduler.rs:1486-1491` states the same. The three tasks spawned at boot never run.
@@ -402,11 +344,7 @@ Items marked "code reading" were found by reading the source at `9ebbe2e` on 202
 6. **CI is red, and some milestones are weak.** The QEMU job of run 36165748105 fails at the language-hygiene gate, on line 7930 of the previous README and on `scripts/ci_parity.sh:163-164`; the gates after it in that job did not run. This README and `docs/` pass the gate; `scripts/ci_parity.sh` still fails it. Two of the 25 milestones are string matches that prove little: "Syscalls verified" matches `[BOOT] SYSCALL/SYSRET MSRs programmed`, and "Scheduler started" matches any line containing `Scheduler`.
 7. **The ML services have never seen a real model.** Every `stratum` and `foliation` number comes from a synthetic fixture. `FitAction` is advisory and enforced nowhere (`ml_engine/stratum.rs:170-178`). Which KV policy wins depends on the trace. On the boot trace, where the hot prefix returns only after 31 other blocks against a 24-block pool, foliation reaches Belady's 952 bp and LRU scores 0. On the chat trace, where reuse follows recency, foliation loses to LRU (5,284 bp against 8,068), to the locality-only null (6,818) and to all 32 random seeds; with 16 live conversations instead of 4 the chat result reverses again (5,113 against 3,731, one mutation build) (commits `264235c`, `0ab2377`). The sign follows whether reuse distance exceeds the pool, both traces are synthetic, and both run at one pool size. The band for $\kappa$ in (6) is proved only for a symmetric fold; an asymmetric fold closes later. Whether kernel placement of the KV cache buys anything over user-space PagedAttention has not been measured.
 8. **Hardware coverage is one QEMU configuration.** In CI, AHCI works and NVMe, HDA, xHCI and every NIC are reported absent. `virtio_blk::init` has no caller, so the same image attached as virtio-blk boots and falls back to ramfs (`cameron_qemu_milestone.sh virtio-root`, commit `91f857e`). There is no driver binding framework, no PCIe ECAM and no MSI; WiFi and Bluetooth are PCI probes only. The GPU path has executed only on the CPU fallback.
-9. **Filesystems and networking are partial.** There is no ext4, and the ext2 driver never reads `s_feature_incompat` (`fs/ext2.rs:308`): it mounts a distribution's `mkfs.ext4` volume as ext2 (`chase_boot.sh ext4`, commit `3c26040`, where the volume's bytes stayed identical) and then attempts to create `/swap.topo` on it (design document, starting point). FAT is not mounted in the VFS, and on this branch FAT32 reads its root cluster from byte offset 40 instead of 44, so a FAT32 root walk fails; the fix, commit `5534767`, is on `main` and not merged here. sysfs exposes only PCI devices. TLS accepts Ed25519 certificates only, so a server presenting an RSA or ECDSA certificate is refused, and no socket system call exposes the network stack. The doc-claim contract in `kernel/seal-mkimage/src/main.rs` (`check_doc_claim_contract_text`) still requires this README to contain the phrases "Minimal TLS 1.3 PSK record path" and "no X.509/PKI/ECDHE gate yet". The second is out of date: the `[TLS]` line of run 36165748105 reports `x509=1 chain_verify=1 ecdhe=1`, and only the `[BENCH] tls-encrypt` fixture (`psk_aes_128_gcm_record`) is PSK-only. Both phrases are quoted here because the gate requires them.
+9. **Filesystems and networking are partial.** There is no ext4, and the ext2 driver never reads `s_feature_incompat` (`fs/ext2.rs:308`): it mounts a distribution's `mkfs.ext4` volume as ext2 (`chase_boot.sh ext4`, commit `3c26040`, where the volume's bytes stayed identical) and then attempts to create `/swap.topo` on it (design document, starting point). FAT is not mounted in the VFS, and on this branch FAT32 reads its root cluster from byte offset 40 instead of 44, so a FAT32 root walk fails; the fix, commit `5534767`, is on `main` and not merged here. (Update at `a50b8d6`: both findings are fixed on `main`. ext2 refuses unknown INCOMPAT features and mounts unknown RO_COMPAT features read-only, and `chase_boot.sh ext4` leaves a distribution ext4 volume byte-identical, commit `d42e815`; FAT32 reads its root cluster from offset 44, commit `5534767`.) sysfs exposes only PCI devices. TLS accepts Ed25519 certificates only, so a server presenting an RSA or ECDSA certificate is refused, and no socket system call exposes the network stack. The doc-claim contract in `kernel/seal-mkimage/src/main.rs` (`check_doc_claim_contract_text`) still requires this README to contain the phrases "Minimal TLS 1.3 PSK record path" and "no X.509/PKI/ECDHE gate yet". The second is out of date: the `[TLS]` line of run 36165748105 reports `x509=1 chain_verify=1 ecdhe=1`, and only the `[BENCH] tls-encrypt` fixture (`psk_aes_128_gcm_record`) is PSK-only. Both phrases are quoted here because the gate requires them.
 10. **Security mitigations are measured, not complete.** Kernel W^X holds since commit `b3cf934`, with two stated gaps: the probe classifies leaf flags per mapping, so a frame writable through one mapping and executable through another is caught only by construction, and the AP still runs with `CR0.CD` and `NW` set while `smp_start_aps` stays disabled; under `-cpu qemu64` without RDRAND the probe line still reads `result=fail` because `kaslr=0`. KASLR randomises mappings, not the image base; SMEP and SMAP were not exercised because the CI CPU model lacks them; 611 of 627 `unsafe` blocks carry no safety comment (audit fixture at `b3cf934`). `manifold_acl::check_access` runs on every lookup and exec and refuses access Linux permits: T5 denies uid 27 and above on root-owned files unless group and other bits are all set, so uid 1000 cannot read a 0644 file (`fs/vfs.rs:276`, `321`, `355`; code reading, from the design document's starting point).
 11. **No performance comparison exists.** Every cycle count is from QEMU TCG. No Ubuntu or Linux comparison has been run.
 12. **Formal verification covers side lemmas.** The Lean files prove algebraic facts about constants and bounds; three theorem statements and one pruning bound are `True` placeholders, and no Lean statement is connected to kernel code by refinement.
-
-## Citation and license
-
-Cite with [CITATION.cff](CITATION.cff) or DOI [10.5281/zenodo.20264206](https://doi.org/10.5281/zenodo.20264206). Released under the MIT License ([LICENSE](LICENSE)). The tree contains no GPL code; `deny.toml` bans copyleft licenses except LGPL-3.0 for the transitive `wav` crate. Security reports: [SECURITY.md](SECURITY.md). Contributions: [CONTRIBUTING.md](CONTRIBUTING.md).

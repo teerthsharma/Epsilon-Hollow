@@ -34,6 +34,25 @@ Boot status lines:
 | T9 | CMA - Cross-Manifold Alignment | Pipeline alignment error bound, boot-gated | Yes | Full non-negative accumulation; Rust SVD/curvature check active |
 | T10 | WPHB - World Predictive Horizon Bound | Predictive horizon bound, boot-gated | Yes | Full monotonic horizon inequality |
 
+## Status at runtime inputs
+
+`init_theorems` in `kernel/seal-os/src/lib.rs` (`lib.rs:2122-2193`) evaluates `verify_topology_theorems` (`lib.rs:2195-2249`) at boot. The boot log of run 36165748105 printed all ten as `VERIFIED`. Since commit `3c14df0`, a T4 whose gain margin fails at the runtime step is reported, not fatal: boot prints `[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01` and `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths`, and any other false entry still panics (in-kernel harness 564 / 564 on that commit, local QEMU, stated in its message). What each line establishes differs per theorem. "Certified" below means the condition holds at the inputs the running kernel uses; "refused" means it was evaluated there and fails; "not checked" means it was evaluated only on fixed boot constants, or nothing at runtime consumes it. Lean sources are in `kernel/aether/aether-verified/lean/EpsilonTheorems.lean`; the Lean 4 CI job built them in run 36165748105, and `--check-lean-proof-hygiene` rejects `sorry`, `admit` and `axiom`.
+
+Equation numbers and "section 5" refer to [RESULTS.md, Theoretical Foundation](RESULTS.md#theoretical-foundation). This table moved here from the README on 2026-09-27.
+
+| ID | Name | Lean artifact | Boot evaluation | Status at runtime inputs, and where decided |
+|---|---|---|---|---|
+| T1 | TSS | `tss_packing_bound`, layered on a named cap-area hypothesis; `tss_separation_guarantee` is a `True` placeholder | Packing bound and pairwise separation of the 8 boot centroids | **Partly.** The scheduler, compositor and firewall indices (commit `87d7b10`) and the router index (commit `9702061`) build from `aether_core::tss::CUBE_CENTROIDS` (`process/scheduler.rs:267`, `wm/compositor.rs:130`, `net/firewall.rs:76`, `net/topological.rs:67`), the cube whose values the boot check evaluates from its own copy in `lib.rs`; nothing checks that the two copies agree. Since commit `2014ddb` the separation check certifies a pair only beyond its rounding radius. The ManifoldFS cells (`fs/voronoi_cap.rs:74`) still build from another centroid set. |
+| T2 | SCM | `scm_contraction` proves only the inequality $1 - \alpha < 1$ for $\alpha \in (0,1)$ | One pair contracted at $\alpha = 0.1$ | **Certified**, elementarily: the operator $(1-\alpha)S + \alpha P$ contracts by $1-\alpha < 1$ at the runtime gains 0.7 (`process/scheduler.rs:280`, `fs/manifold_fs.rs:277`) and 0.3 (`net/firewall.rs:67`). |
+| T3 | GMC | `gmc_bounded_termination` proved; `gmc_entropy_nonincreasing` is a `True` placeholder | Fixed constants (100, 50, 1000) and `max_merges(8) == 7` | **Not checked.** |
+| T4 | AGCR | `agcr_gain_margin_stable`, conditional on (9) | Evaluated at `GOVERNOR_DT` = 0.01 (`lib.rs:2217-2223`), margin 5.01; before commit `3c14df0`, at $\Delta t = 1.0$ | **Refused**, at boot and at runtime. Every runtime call passes `GOVERNOR_DT` (`process/scheduler.rs:548`, `fs/manifold_fs.rs:810`, `wm/compositor.rs:520`, `549`), and the boot line reads `NOT CERTIFIED`. `epsilon-os` refuses it too (`epsilon-os/src/manifold_fs.rs:31-39`, `world.rs:596-604`). No step size earns it ([RESULTS.md, section 5](RESULTS.md#5-the-t4-governor-and-its-gain-margin)). |
+| T5 | HCS | `hcs_separation`, an exact identity | Fixed constants | **Not checked.** |
+| T6 | RGCS | `rgcs_coherence_bound` (non-negativity) | Fixed constants | **Not checked**; no runtime consumer. |
+| T7 | PHKP | `phkp_perfect_locality` is a `True` placeholder | Fixed constants | **Not checked**; no runtime consumer. |
+| T8 | TEB | `teb_energy_nonneg` | Landauer bound at 300 K lies in (2.8e-21, 2.9e-21) J | **Not checked**; no runtime consumer. |
+| T9 | CMA | `cma_linear_accumulation` | Fixed constants | **Not checked**; no runtime consumer. |
+| T10 | WPHB | `wphb_topological_advantage`, `wphb_multi_model` | Fixed constants | **Not checked**; no runtime consumer. |
+
 ## Runtime Applications
 
 T1 is applied by `kernel/seal-os/src/fs/voronoi_cap.rs`, `kernel/seal-os/src/fs/manifold_fs.rs`, `kernel/seal-os/src/process/scheduler.rs`, and `kernel/seal-os/src/memory/topo_ram.rs`.
