@@ -187,7 +187,7 @@ Seal OS kernel code is organized around ten theorems (T1–T10). Changes that to
 
 1. Preserve the existing theorem gate (or extend it with a new proof / invariant).
 2. Update `docs/THEOREMS.md` if the theorem statement, proof sketch, or runtime check changes.
-3. Ensure the headless boot proof still prints `All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths`.
+3. Ensure the headless boot proof still prints `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths` and passes `seal-mkimage --check-theorem-log`. T4 is refused because `alpha + beta/dt = 5.01 >= 1` at the runtime governor step `GOVERNOR_DT = 0.01`.
 
 If you are unsure whether your change affects a theorem gate, open a draft PR and tag `@teerthsharma` for review.
 

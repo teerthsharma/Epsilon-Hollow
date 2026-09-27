@@ -288,7 +288,7 @@ impl ManifoldScheduler {
                 CellQueue::new(),
             ],
             cell_bitmap: 0,
-            governor: GeometricGovernor::new(),
+            governor: GeometricGovernor::with_gains(crate::GOVERNOR_ALPHA, crate::GOVERNOR_BETA),
             predictor: SpectralContractionOperator::new(0.7),
             predict_state: [0.0; 8],
             timeslice_base: 10,
@@ -557,7 +557,7 @@ impl ManifoldScheduler {
             } else {
                 1.5
             };
-            self.governor.adapt(deviation, 0.01);
+            self.governor.adapt(deviation, crate::GOVERNOR_DT);
 
             let next_ctx = &next_task.context as *const TaskContext;
             // Update TSS RSP0 if switching to a userspace task
