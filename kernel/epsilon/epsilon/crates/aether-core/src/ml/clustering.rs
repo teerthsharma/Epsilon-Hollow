@@ -589,14 +589,23 @@ impl<const D: usize> AgglomerativeClustering<D> {
         // Apply first (n - k) merges
         let n_merges_to_apply = result.n_merges.saturating_sub(k.saturating_sub(1));
 
+        // Merge `m` names its cluster `n + m`, an id no point carries, so each
+        // dendrogram id is resolved to the point label its members hold.
+        let n = result.n_points;
+        let mut root = [0usize; 2 * MAX_POINTS];
+        for (i, r) in root.iter_mut().enumerate().take(n) {
+            *r = i;
+        }
         for m in 0..n_merges_to_apply {
             let (a, b, _, _) = result.merges[m];
-            // All points with label b get label a
-            for label in labels.iter_mut().take(result.n_points) {
-                if *label == b {
-                    *label = a;
+            // from teerthsharma/cleave cleave/persist.py:181: tracks join — the absorbed root points at the survivor
+            let (ra, rb) = (root[a], root[b]);
+            for label in labels.iter_mut().take(n) {
+                if *label == rb {
+                    *label = ra;
                 }
             }
+            root[n + m] = ra;
         }
 
         // Renumber labels to be consecutive
@@ -692,6 +701,31 @@ mod tests {
         assert!(result.labels[0] == result.labels[1]); // Same cluster
         assert!(result.labels[2] == result.labels[3]); // Same cluster
         assert!(result.labels[0] != result.labels[2]); // Different clusters
+    }
+
+    /// The dendrogram names a merged cluster by a fresh id `n + m`. No point
+    /// carries such an id, so a cut that relabels points by dendrogram ids
+    /// drops every merge that joins an already-merged cluster.
+    #[test]
+    fn cut_tree_carries_a_merged_cluster_into_its_later_merges() {
+        let hc = AgglomerativeClustering::<1>::new(Linkage::Single);
+
+        // (0, 1) merges into cluster 3, then cluster 3 meets point 2.
+        let three = [[0.0], [1.0], [10.0]];
+        let r = hc.fit(&three, 3);
+        assert_eq!((r.merges[0].0, r.merges[0].1), (0, 1));
+        assert_eq!((r.merges[1].0, r.merges[1].1), (3, 2));
+        assert_eq!(&hc.cut_tree(&r, 1)[..3], &[0, 0, 0], "k = 1 is one cluster");
+
+        // Two groups of five: every merge after a group's first joins a
+        // merged cluster.
+        let two: Vec<[f64; 1]> = (0..5).chain(100..105).map(|x| [x as f64]).collect();
+        let labels = hc.cut_tree(&hc.fit(&two, 10), 2);
+        assert_eq!(
+            &labels[..10],
+            &[0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            "k = 2 splits the groups"
+        );
     }
 
     #[test]
