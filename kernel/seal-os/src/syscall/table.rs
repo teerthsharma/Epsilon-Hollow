@@ -861,6 +861,12 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
 
     let result = match num {
         SYS_EXIT => {
+            crate::serial_println!(
+                "[userspace] task {} exited with status {} (context_switches={})",
+                task_id,
+                arg0 as i64,
+                crate::process::scheduler::context_switches()
+            );
             crate::process::scheduler::mark_current_dead();
             crate::process::scheduler::yield_current();
             SyscallResult::ok(0)

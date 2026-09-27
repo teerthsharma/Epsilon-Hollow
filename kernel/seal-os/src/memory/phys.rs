@@ -77,6 +77,19 @@ pub const USABLE_FRAMES: usize = 65536;
 /// Frames below 4 GiB are identity-mapped by the bootloader.
 pub const LOW_FRAME_LIMIT: usize = (4 * 1024 * 1024 * 1024) / 4096;
 
+/// Physical memory never handed out, kept for user pages to hide.
+///
+/// A process page table shares the kernel's identity map, and a user page at
+/// virtual address V hides the kernel's view of physical frame V while that
+/// process's CR3 is live (see `process::elf::map_user_page`). Static non-PIE
+/// executables are linked at 0x400000, so the frames behind that window must
+/// hold no kernel object. 4 MiB covers the text, data and bss of the static
+/// programs the milestones run (busybox, a glibc `hello`).
+///
+/// ponytail: fixed 4 MiB alias window. Upgrade path: move the kernel and its
+/// map of physical memory to the upper half, then drop this reservation.
+pub const USER_ALIAS_WINDOW: core::ops::Range<u64> = 0x40_0000..0x80_0000;
+
 /// One bit per 4 KiB frame.  `1` = used, `0` = free.
 static BITMAP: Mutex<[u64; BITMAP_U64S]> = Mutex::new([u64::MAX; BITMAP_U64S]);
 
@@ -424,6 +437,7 @@ pub unsafe fn init(
             if overlaps(PhysAddr::new(addr), kernel_start, kernel_end)
                 || overlaps(PhysAddr::new(addr), fb_start, fb_end)
                 || addr < 0x10_0000
+                || USER_ALIAS_WINDOW.contains(&addr)
             {
                 continue;
             }

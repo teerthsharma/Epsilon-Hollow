@@ -93,6 +93,9 @@ impl Task {
         let xsave_size = xsave_area_size();
         let xsave_storage = vec![0u8; xsave_size + 64];
         let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
+        // SAFETY: 64-byte-aligned start of `xsave_storage`, which holds
+        // `xsave_area_size()` (>= FXSAVE_SIZE) bytes past the alignment slack.
+        unsafe { super::context_switch::init_fpu_area(xsave_ptr) };
 
         let context = init_task_context(&mut kernel_stack, entry, xsave_ptr);
 
@@ -156,6 +159,9 @@ impl Task {
         let xsave_size = xsave_area_size();
         let xsave_storage = vec![0u8; xsave_size + 64];
         let xsave_ptr = align_up(xsave_storage.as_ptr() as usize, 64) as *mut u8;
+        // SAFETY: 64-byte-aligned start of `xsave_storage`, which holds
+        // `xsave_area_size()` (>= FXSAVE_SIZE) bytes past the alignment slack.
+        unsafe { super::context_switch::init_fpu_area(xsave_ptr) };
 
         let mut context = TaskContext::zero();
         // When first scheduled, jump to enter_userspace_trampoline(entry, stack, pt)
@@ -163,7 +169,8 @@ impl Task {
         context.rdi = entry_point;
         context.rsi = user_stack_top;
         context.rdx = page_table;
-        context.rsp = stack_top;
+        // Entered through `ret`: the RSP a `call` would leave (see init_task_context).
+        context.rsp = stack_top - 8;
         context.rflags = 0x202; // IF set
         context.xsave_ptr = xsave_ptr;
 

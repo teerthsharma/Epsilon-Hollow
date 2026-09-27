@@ -8,12 +8,36 @@
 //! SMAP prevents the kernel from reading/writing user pages unless explicitly
 //! allowed via `stac`/`clac`.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::registers::control::Cr4;
 
 /// Upper limit of user address space (non-canonical gap starts here).
 const USER_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000;
 static USER_ACCESS_FAULTS: AtomicU64 = AtomicU64::new(0);
+
+/// Set once `enable_smap_smep` has turned CR4.SMAP on. `stac` and `clac` are
+/// #UD on a CPU without SMAP (QEMU's `qemu64` model is one), so the user-copy
+/// helpers issue them only when this is set; without SMAP there is no AC gate
+/// to open.
+static SMAP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Open the SMAP gate for an explicit user access (`stac`). Not `nomem`: it is
+/// a compiler barrier, so the user access cannot be moved out from between it
+/// and `clac`.
+fn stac() {
+    if SMAP_ACTIVE.load(Ordering::Relaxed) {
+        // SAFETY: only reached once CR4.SMAP is set, so the CPU has STAC.
+        unsafe { core::arch::asm!(".byte 0x0f, 0x01, 0xcb", options(nostack)) };
+    }
+}
+
+/// Close the SMAP gate again (`clac`). A barrier for the same reason as `stac`.
+fn clac() {
+    if SMAP_ACTIVE.load(Ordering::Relaxed) {
+        // SAFETY: only reached once CR4.SMAP is set, so the CPU has CLAC.
+        unsafe { core::arch::asm!(".byte 0x0f, 0x01, 0xca", options(nostack)) };
+    }
+}
 
 /// Check whether the CPU supports SMEP/SMAP via CPUID leaf 7.
 pub fn has_smep_smap() -> bool {
@@ -37,6 +61,7 @@ pub unsafe fn enable_smap_smep() {
     unsafe {
         Cr4::write_raw(cr4);
     }
+    SMAP_ACTIVE.store(true, Ordering::Relaxed);
 }
 
 /// Return true if both SMEP and SMAP are currently enabled in CR4.
@@ -90,15 +115,15 @@ pub unsafe fn copy_from_user(kernel_buf: &mut [u8], user_ptr: *const u8) -> Resu
     if !is_user_ptr(user_ptr, kernel_buf.len()) {
         return Err(());
     }
+    // stac — set AC flag, allowing supervisor access to user pages
+    stac();
     unsafe {
-        // stac — set AC flag, allowing supervisor access to user pages
         // SAFETY: Range validation rejects null, overflow, and kernel-half
         // pointers. Full mapped-page validation is tracked separately.
-        core::arch::asm!(".byte 0x0f, 0x01, 0xcb", options(nomem, nostack));
         core::ptr::copy_nonoverlapping(user_ptr, kernel_buf.as_mut_ptr(), kernel_buf.len());
-        // clac — clear AC flag, re-enabling SMAP protection
-        core::arch::asm!(".byte 0x0f, 0x01, 0xca", options(nomem, nostack));
     }
+    // clac — clear AC flag, re-enabling SMAP protection
+    clac();
     Ok(())
 }
 
@@ -115,13 +140,13 @@ pub unsafe fn copy_to_user(user_ptr: *mut u8, kernel_buf: &[u8]) -> Result<(), (
     if !is_user_ptr(user_ptr, kernel_buf.len()) {
         return Err(());
     }
+    stac();
     unsafe {
         // SAFETY: Range validation rejects null, overflow, and kernel-half
         // pointers. Full mapped/writable-page validation is tracked separately.
-        core::arch::asm!(".byte 0x0f, 0x01, 0xcb", options(nomem, nostack));
         core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), user_ptr, kernel_buf.len());
-        core::arch::asm!(".byte 0x0f, 0x01, 0xca", options(nomem, nostack));
     }
+    clac();
     Ok(())
 }
 

@@ -451,18 +451,16 @@ fn boot_graphical(fb: &'static Framebuffer) {
         x86_64::instructions::hlt();
     }
 
-    // This runs before `init_scheduler()` below, but moving it after would
-    // change nothing. `set_current_user` writes the uid into the scheduler's
-    // current task, and there is never one: `ManifoldScheduler::current` is
-    // assigned only inside `schedule()`, which both `yield_current()` and
-    // `scheduler_tick()` refuse to enter while `PerCpu::current_task` is null —
-    // and that field is cleared by nothing and set only by that same
-    // assignment. So the write is dropped here and would still be dropped after
-    // `init_scheduler()`, after the first yield, and after every timer tick.
-    // The identity survives only in `passwd::BOOT_USER`, which
-    // `passwd::get_current_user()` reads and `scheduler::current_uid()` does
-    // not — see `current_uid`'s note for why it must not until
-    // `ManifoldFS::stat` reports real per-node ownership.
+    // This runs before `init_scheduler()` below, which is what makes the boot
+    // thread a task. `set_current_user` writes the uid into the scheduler's
+    // current task and there is none yet, so the write is dropped and the boot
+    // thread's task starts, and stays, at uid 0. Moving this after
+    // `init_scheduler()` would land the login uid on the boot thread and turn
+    // on `manifold_acl` denials for every root-owned node it reads — see
+    // `current_uid`'s note for why it must not until `ManifoldFS::stat`
+    // reports real per-node ownership. The identity survives in
+    // `passwd::BOOT_USER`, which `passwd::get_current_user()` reads and user
+    // processes are spawned with.
     if let Some(user) = login.authenticated_user() {
         crate::security::passwd::set_current_user(user.clone());
         serial_println!(
@@ -549,7 +547,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
     // When they yield, we resume here and continue desktop initialisation.
     serial_println!("[BOOT] Scheduler first yield start");
     process::scheduler::yield_current();
-    serial_println!("[BOOT] Scheduler first yield returned");
+    serial_println!(
+        "[BOOT] Scheduler first yield returned (context_switches={})",
+        process::scheduler::context_switches()
+    );
 
     // Layer 1.1b: application processors. This is the correct call site — it is
     // the earliest point where every precondition holds: ACPI has parsed the
@@ -2251,9 +2252,12 @@ fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
 #[cfg(not(test))]
 fn init_scheduler() {
     process::scheduler::init();
-    process::scheduler::spawn("kernel", 10, kernel_task_main);
-    process::scheduler::spawn("compositor", 8, compositor_task_main);
-    process::scheduler::spawn("shell", 5, shell_task_main);
+    // Placeholder loops that only yield: one priority, below the boot thread
+    // and user processes (ADOPTED_THREAD_PRIORITY), so they take turns and
+    // only run when nothing real is ready.
+    process::scheduler::spawn("kernel", 1, kernel_task_main);
+    process::scheduler::spawn("compositor", 1, compositor_task_main);
+    process::scheduler::spawn("shell", 1, shell_task_main);
 
     serial_println!(
         "[Scheduler] {} tasks, running '{}', epsilon={:.4}",
