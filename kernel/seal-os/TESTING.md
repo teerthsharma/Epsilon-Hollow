@@ -71,20 +71,23 @@ The log must contain:
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
-[THEOREM] T4/AGCR VERIFIED
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
 [THEOREM] T5/HCS VERIFIED
 [THEOREM] T6/RGCS VERIFIED
 [THEOREM] T7/PHKP VERIFIED
 [THEOREM] T8/TEB VERIFIED
 [THEOREM] T9/CMA VERIFIED
 [THEOREM] T10/WPHB VERIFIED
-[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 [BOOT] Desktop proof frame blit done
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
 ```
 
 The log must not contain panic, fault, watchdog, or QEMU fatal markers.
+`--check-theorem-log` reads alpha, beta and dt from the
+`[T4/AGCR] Governor online:` line (the values every runtime governor uses) and
+fails a log that reports `T4/AGCR VERIFIED` while `alpha + beta/dt >= 1`.
 
 ## Rust Audit Gates
 

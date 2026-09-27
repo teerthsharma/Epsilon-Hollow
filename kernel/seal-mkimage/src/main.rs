@@ -1120,22 +1120,74 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-fn check_theorem_log(log_path: &Path) -> Result<(), String> {
-    let text =
-        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+/// Boot theorem gate: T1-T3 and T5-T10 must each be VERIFIED. T4/AGCR is
+/// judged against `alpha + beta/dt < 1` at the gains and step the kernel
+/// prints on its `Governor online` line (the values the runtime governor
+/// uses): VERIFIED is accepted only when that margin holds, otherwise the log
+/// must carry the refusal line with the margin and dt.
+fn check_theorem_gate_text(text: &str) -> Result<(), String> {
     let required = [
-        EXPECTED_SEAL_OS_BANNER,
         "[THEOREM] T1/TSS VERIFIED",
         "[THEOREM] T2/SCM VERIFIED",
         "[THEOREM] T3/GMC VERIFIED",
-        "[THEOREM] T4/AGCR VERIFIED",
         "[THEOREM] T5/HCS VERIFIED",
         "[THEOREM] T6/RGCS VERIFIED",
         "[THEOREM] T7/PHKP VERIFIED",
         "[THEOREM] T8/TEB VERIFIED",
         "[THEOREM] T9/CMA VERIFIED",
         "[THEOREM] T10/WPHB VERIFIED",
-        "[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
+    ];
+    let governor = find_marker_line(text, "[T4/AGCR] Governor online:")?;
+    let gain = |key: &str| -> Result<f64, String> {
+        let value = parse_field(governor, key)?;
+        value
+            .parse::<f64>()
+            .map_err(|e| format!("invalid governor field `{key}{value}`: {e}"))
+    };
+    let (alpha, beta, dt) = (gain("alpha=")?, gain("beta=")?, gain("dt=")?);
+    let margin = alpha + beta / dt;
+    let t4_verified = text.contains("[THEOREM] T4/AGCR VERIFIED");
+    let t4_line = if margin < 1.0 {
+        String::from("[THEOREM] T4/AGCR VERIFIED")
+    } else if t4_verified {
+        return Err(format!(
+            "T4/AGCR reported VERIFIED while alpha+beta/dt={margin:.2} >= 1 at runtime dt={dt}"
+        ));
+    } else {
+        format!("[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={margin:.2} >= 1 at dt={dt}")
+    };
+    let summary = if margin < 1.0 {
+        "[BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths"
+    } else {
+        "[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths"
+    };
+    let failed: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("[THEOREM]") && line.contains("FAILED"))
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!(
+            "theorem failure lines found: {}",
+            failed.join(" | ")
+        ));
+    }
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .chain([t4_line.as_str(), summary])
+        .filter(|pattern| !text.contains(pattern))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("missing theorem patterns: {}", missing.join(" | ")));
+    }
+    Ok(())
+}
+
+fn check_theorem_log(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    let required = [
+        EXPECTED_SEAL_OS_BANNER,
         "[ALLOC] O(1) proof:",
         "[BENCH] toporam-alloc",
         "[BENCH] alloc-frame",
@@ -1174,16 +1226,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "triple fault",
         "qemu: fatal",
     ];
-    let failed: Vec<&str> = text
-        .lines()
-        .filter(|line| line.contains("[THEOREM]") && line.contains("FAILED"))
-        .collect();
-    if !failed.is_empty() {
-        return Err(format!(
-            "theorem failure lines found: {}",
-            failed.join(" | ")
-        ));
-    }
+    check_theorem_gate_text(&text)?;
     let fatal: Vec<&str> = text
         .lines()
         .filter(|line| fatal_markers.iter().any(|marker| line.contains(marker)))
@@ -5929,6 +5972,81 @@ with:
         assert!(check_cow_proof_text(&bad_accounting).is_err());
     }
 
+    const T4_GOVERNOR_LOG: &str =
+        "[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01\n";
+    const NINE_THEOREMS_LOG: &str = "\
+[THEOREM] T1/TSS VERIFIED
+[THEOREM] T2/SCM VERIFIED
+[THEOREM] T3/GMC VERIFIED
+[THEOREM] T5/HCS VERIFIED
+[THEOREM] T6/RGCS VERIFIED
+[THEOREM] T7/PHKP VERIFIED
+[THEOREM] T8/TEB VERIFIED
+[THEOREM] T9/CMA VERIFIED
+[THEOREM] T10/WPHB VERIFIED
+";
+    const T4_REFUSAL_LOG: &str = "\
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
+";
+
+    #[test]
+    fn theorem_gate_accepts_t4_refused_at_runtime_dt() {
+        let log = format!("{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        assert_eq!(check_theorem_gate_text(&log), Ok(()));
+    }
+
+    #[test]
+    fn theorem_gate_rejects_t4_certified_at_runtime_dt() {
+        // The pre-fix kernel: T4 certified at dt=1.0 while the runtime steps at 0.01.
+        let pre_fix = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert!(check_theorem_gate_text(&pre_fix).is_err());
+
+        // Same verdict with a self-consistent 10/10 summary is still refused.
+        let ten = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert!(check_theorem_gate_text(&ten).is_err());
+    }
+
+    #[test]
+    fn theorem_gate_requires_t4_reason_governor_step_and_the_other_nine() {
+        let no_reason = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{}",
+            T4_REFUSAL_LOG.replace(": alpha+beta/dt=5.01 >= 1 at dt=0.01", "")
+        );
+        assert!(check_theorem_gate_text(&no_reason).is_err());
+
+        let no_dt = format!(
+            "{}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}",
+            T4_GOVERNOR_LOG.replace(" dt=0.01", "")
+        );
+        assert!(check_theorem_gate_text(&no_dt).is_err());
+
+        let no_t7 = format!(
+            "{T4_GOVERNOR_LOG}{}{T4_REFUSAL_LOG}",
+            NINE_THEOREMS_LOG.replace("[THEOREM] T7/PHKP VERIFIED\n", "")
+        );
+        assert!(check_theorem_gate_text(&no_t7).is_err());
+    }
+
+    #[test]
+    fn theorem_gate_requires_t4_verified_when_margin_holds() {
+        let stable_gov = T4_GOVERNOR_LOG.replace("dt=0.01", "dt=1");
+        let certified = format!(
+            "{stable_gov}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert_eq!(check_theorem_gate_text(&certified), Ok(()));
+
+        let refused = format!("{stable_gov}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        assert!(check_theorem_gate_text(&refused).is_err());
+    }
+
     #[test]
     fn panic_serial_contract_rejects_formatting_macro_in_panic_handler() {
         let serial = r#"
@@ -9066,7 +9184,10 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
             &[
                 "pub static THEOREM_STATES",
                 "THEOREM_STATES[idx].store",
-                "[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
+                "pub const GOVERNOR_DT: f64",
+                "gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT)",
+                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
+                "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
             ][..],
         ),
         (
@@ -9095,7 +9216,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "fn select_next_task",
                 "self.voronoi.locate",
                 ".apply(&self.predict_state, &next_task.manifold_embedding)",
-                "self.governor.adapt",
+                "self.governor.adapt(deviation, crate::GOVERNOR_DT)",
                 "process_tree",
                 "hyperbolic process tree",
             ][..],
@@ -9110,7 +9231,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "fn update_prefetch_state",
                 "self.scm.apply",
                 "self.check_entropy_and_merge",
-                "self.governor.adapt",
+                "self.governor.adapt(deviation, crate::GOVERNOR_DT)",
                 "fn update_hyperbolic_ratio",
                 "theorem_status_text",
                 "T1/TSS",
@@ -9125,7 +9246,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "use aether_core::governor::GeometricGovernor",
                 "fn screen_point_cell",
                 "self.voronoi.locate",
-                "self.governor.adapt",
+                "self.governor.adapt(1.0, crate::GOVERNOR_DT)",
                 "T1: screen-space Voronoi chooses",
                 "T4: Adaptive FPS",
             ][..],

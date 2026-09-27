@@ -155,6 +155,13 @@ pub const THEOREM_NAMES: [&str; THEOREM_COUNT] = [
     "T10/WPHB",
 ];
 
+/// T4/AGCR governor gains and step. Every runtime `GeometricGovernor` is built
+/// with these gains and stepped with this dt; the boot T4 gate checks
+/// `alpha + beta/dt < 1` at exactly these values.
+pub const GOVERNOR_ALPHA: f64 = 0.01;
+pub const GOVERNOR_BETA: f64 = 0.05;
+pub const GOVERNOR_DT: f64 = 0.01;
+
 #[cfg(not(test))]
 #[no_mangle]
 pub fn kernel_main(info: &BootInfo) -> ! {
@@ -2116,17 +2123,26 @@ fn init_theorems() {
     use aether_core::governor::GeometricGovernor;
     use aether_core::tss::SphericalVoronoiIndex;
 
+    const T4: usize = 3;
     let theorem_ok = verify_topology_theorems();
-    let mut all_verified = true;
     for (idx, ok) in theorem_ok.iter().enumerate() {
         THEOREM_STATES[idx].store(*ok, Ordering::Relaxed);
-        all_verified &= *ok;
     }
+    // T4 is refused, not failed, when its gain margin does not hold at the
+    // runtime governor step; the governor itself still runs.
+    let t4_margin = GOVERNOR_ALPHA + GOVERNOR_BETA / GOVERNOR_DT;
+    let t4_refused = !theorem_ok[T4] && t4_margin >= 1.0;
 
     let governor = GeometricGovernor::new();
     let epsilon = governor.epsilon();
     GOVERNOR_EPSILON.store(epsilon.to_bits(), Ordering::Relaxed);
-    serial_println!("[T4/AGCR] Governor online: epsilon = {:.4}", epsilon);
+    serial_println!(
+        "[T4/AGCR] Governor online: epsilon = {:.4} alpha={} beta={} dt={}",
+        epsilon,
+        GOVERNOR_ALPHA,
+        GOVERNOR_BETA,
+        GOVERNOR_DT
+    );
 
     let centroids = tss_boot_centroids();
     let voronoi = SphericalVoronoiIndex::<TSS_BOOT_CELL_COUNT>::new(centroids);
@@ -2136,19 +2152,44 @@ fn init_theorems() {
         cell
     );
 
-    for (name, ok) in THEOREM_NAMES.iter().zip(theorem_ok.iter()) {
-        serial_println!(
-            "[THEOREM] {} {}",
-            name,
-            if *ok { "VERIFIED" } else { "FAILED" }
-        );
+    for (idx, (name, ok)) in THEOREM_NAMES.iter().zip(theorem_ok.iter()).enumerate() {
+        if idx == T4 && t4_refused {
+            serial_println!(
+                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
+                t4_margin,
+                GOVERNOR_DT
+            );
+        } else {
+            serial_println!(
+                "[THEOREM] {} {}",
+                name,
+                if *ok { "VERIFIED" } else { "FAILED" }
+            );
+        }
     }
 
-    if !all_verified {
+    let failed = theorem_ok
+        .iter()
+        .enumerate()
+        .any(|(idx, ok)| !ok && !(idx == T4 && t4_refused));
+    if failed {
         panic!("Seal OS theorem core failed boot verification");
     }
 
-    serial_println!("[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths");
+    let verified = theorem_ok.iter().filter(|ok| **ok).count();
+    if t4_refused {
+        serial_println!(
+            "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
+            verified,
+            THEOREM_COUNT
+        );
+    } else {
+        serial_println!(
+            "[BOOT] {} of {} theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
+            verified,
+            THEOREM_COUNT
+        );
+    }
 }
 
 fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
@@ -2173,11 +2214,13 @@ fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
     let t3 =
         aether_gmc::verify_entropy_nonincreasing(100, 50, 1000) && aether_gmc::max_merges(8) == 7;
 
-    let rho = aether_agcr::contraction_rate(0.01, 0.05, 1.0);
+    // T4 is judged at the gains and step every runtime governor uses. At
+    // GOVERNOR_DT = 0.01 the margin alpha + beta/dt is 5.01, so T4 is refused.
+    let rho = aether_agcr::contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
     let t4 = rho > 0.0
         && rho < 1.0
         && aether_agcr::half_life(rho).is_finite()
-        && aether_agcr::gain_margin_stable(0.01, 0.05, 1.0);
+        && aether_agcr::gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
 
     let t5 =
         aether_hcs::verify_hcs(1.0, 4, 128, 10) && aether_hcs::separation_ratio(1.0, 4, 10) > 60.0;

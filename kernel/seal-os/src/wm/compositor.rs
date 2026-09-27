@@ -142,7 +142,7 @@ impl Compositor {
             next_id: 1,
             mouse: MouseState::new(),
             voronoi: SphericalVoronoiIndex::<8>::new(centroids),
-            governor: GeometricGovernor::new(),
+            governor: GeometricGovernor::with_gains(crate::GOVERNOR_ALPHA, crate::GOVERNOR_BETA),
             frame_count: 0,
             dragging: None,
             dragging_resize: None,
@@ -531,7 +531,7 @@ impl Compositor {
         self.draw_taskbar_indicators(fb);
 
         self.dirty_rects.clear();
-        self.governor.adapt(1.0, 0.01);
+        self.governor.adapt(1.0, crate::GOVERNOR_DT);
     }
 
     pub fn compose_full(&mut self, fb: &Framebuffer) {
@@ -560,7 +560,7 @@ impl Compositor {
         cursor::draw_cursor(fb, self.mouse.x, self.mouse.y);
         self.draw_taskbar_indicators(fb);
         self.dirty_rects.clear();
-        self.governor.adapt(1.0, 0.01);
+        self.governor.adapt(1.0, crate::GOVERNOR_DT);
     }
 
     fn blit_window(&self, fb: &Framebuffer, win: &Window, clip: &Rect) {
