@@ -35,6 +35,18 @@ pub struct PerCpu {
     pub double_fault_stack: [u8; 4096],
     pub tss: TaskStateSegment,
     pub scheduler: ManifoldScheduler,
+    /// Guards `scheduler`. It is a leaf lock: the innermost lock anywhere it
+    /// is taken, and nothing outside the scheduler is called while it is held.
+    ///
+    /// Lock order, outer to inner: VFS, `FILE_TABLE`, `manifold_acl`, passwd
+    /// and group lookups, then `scheduler_lock`. Those callers take it
+    /// themselves (`current_uid`/`current_gid`/`current_groups`/`current_task_id`
+    /// on every VFS lookup, `governor_epsilon` from `manifold_acl::check_access`),
+    /// so any work that can reach them — ELF loading, `groups_for_uid` reading
+    /// /etc/passwd — happens before this lock is taken (see
+    /// `scheduler::spawn_user`). `spin::Mutex` is not reentrant: taking it again
+    /// on the same CPU spins forever. `schedule()` only `try_lock`s it with
+    /// interrupts disabled, since the interrupted code may hold it.
     pub scheduler_lock: spin::Mutex<()>,
     pub ticks: u64,
     pub is_idle: bool,

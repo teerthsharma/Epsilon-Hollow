@@ -402,21 +402,19 @@ impl ManifoldScheduler {
         id
     }
 
-    pub fn spawn_user(
+    /// Queue a userspace task for an ELF image `loaded` has already mapped.
+    /// Runs under `scheduler_lock`, so it only builds and queues the task: the
+    /// ELF load and the group lookup, which reach the VFS, happen in the free
+    /// `spawn_user` before the lock is taken.
+    fn spawn_user(
         &mut self,
         name: &str,
         priority: u8,
-        elf_data: &[u8],
-        file_mode: u16,
-        file_uid: u32,
-        file_gid: u32,
+        loaded: &super::elf::LoadedElf,
         real_uid: u32,
         real_gid: u32,
-    ) -> Result<u64, super::elf::ElfError> {
-        let aslr_base = crate::security::aslr::randomize_mmap_base();
-        let loaded = super::elf::load(elf_data, aslr_base, file_mode, file_uid, file_gid)?;
-        super::elf::load_dynamic_dependencies(&loaded.dynamic, loaded.page_table)?;
-
+        groups: Vec<u32>,
+    ) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -432,7 +430,8 @@ impl ManifoldScheduler {
         task.gid = real_gid;
         task.euid = real_uid;
         task.egid = real_gid;
-        task.groups = crate::security::group::groups_for_uid(real_uid);
+        task.groups = groups;
+        let (file_mode, file_uid, file_gid) = (loaded.file_mode, loaded.file_uid, loaded.file_gid);
 
         // setuid / setgid handling
         if file_mode & 0o4000 != 0 {
@@ -452,7 +451,7 @@ impl ManifoldScheduler {
                     "[scheduler] spawn_user: slab index {} invalid after alloc",
                     idx
                 );
-                return Ok(0);
+                return 0;
             }
         }
         let cell = match self.slab.get(idx) {
@@ -462,11 +461,11 @@ impl ManifoldScheduler {
                     "[scheduler] spawn_user: slab index {} vanished after update",
                     idx
                 );
-                return Ok(0);
+                return 0;
             }
         };
         self.enqueue(cell, idx, priority);
-        Ok(id)
+        id
     }
 
     pub fn tick(&mut self) {
@@ -1451,6 +1450,13 @@ pub fn spawn(name: &'static str, priority: u8, entry: fn()) -> u64 {
 }
 
 /// Spawn a userspace task from an ELF blob on the current CPU.
+///
+/// The ELF load (whose dynamic dependencies are read through the VFS) and
+/// `groups_for_uid` (which reads /etc/passwd and /etc/group through the VFS)
+/// run before `scheduler_lock` is taken: every VFS lookup takes that lock
+/// itself through `current_uid()` and `manifold_acl`'s `governor_epsilon()`,
+/// and the lock is not reentrant. Holding it across them deadlocked the first
+/// `execve` of every boot. See the lock order at `PerCpu::scheduler_lock`.
 pub fn spawn_user(
     name: &'static str,
     priority: u8,
@@ -1461,12 +1467,16 @@ pub fn spawn_user(
     real_uid: u32,
     real_gid: u32,
 ) -> Result<u64, super::elf::ElfError> {
+    let aslr_base = crate::security::aslr::randomize_mmap_base();
+    let loaded = super::elf::load(elf_data, aslr_base, file_mode, file_uid, file_gid)?;
+    super::elf::load_dynamic_dependencies(&loaded.dynamic, loaded.page_table)?;
+    let groups = crate::security::group::groups_for_uid(real_uid);
     unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
-        cpu.scheduler.spawn_user(
-            name, priority, elf_data, file_mode, file_uid, file_gid, real_uid, real_gid,
-        )
+        Ok(cpu
+            .scheduler
+            .spawn_user(name, priority, &loaded, real_uid, real_gid, groups))
     }
 }
 
