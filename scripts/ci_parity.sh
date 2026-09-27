@@ -160,8 +160,8 @@ else
 fi
 
 # ---- the loop's own gate ----------------------------------------------------
-if [ -f scripts/math_mutation_gate.py ]; then
-  line=$(python scripts/math_mutation_gate.py --quick 2>&1 | grep -E 'caught,' | tail -1)
+if [ -f tools/math-mutation-gate/Cargo.toml ]; then
+  line=$(cargo run -p math-mutation-gate -- --quick 2>&1 | grep -E 'caught,' | tail -1)
   case "$line" in
     *"0 survived"*"0 did not compile"*"0 skipped"*) note "mutation gate" "ok - $line" ;;
     *"did not compile"*) note "mutation gate" "FAIL - a mutation the compiler rejected proves nothing: $line"; fail=1 ;;

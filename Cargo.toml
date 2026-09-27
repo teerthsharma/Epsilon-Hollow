@@ -15,6 +15,7 @@ members = [
     "kernel/seal-jit",
     "kernel/seal-net80211",
     "tools/ubuntu-alloc-bench",
+    "tools/math-mutation-gate",
 ]
 exclude = [
     "kernel/aether/Aether-Lang/crates/aether-kernel",
