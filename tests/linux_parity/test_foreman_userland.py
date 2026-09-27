@@ -11,7 +11,7 @@ whose whole body is `SYS_WRITE("[userspace] Hello from Seal OS userspace!")`
 then `SYS_EXIT`. If ring-3 worked, that string would reach the serial log on the
 fallback path. It does not.
 
-Control: the boot banner and all ten theorem markers are asserted first. They
+Control: the boot banner, desktop and T1 theorem marker are asserted first. They
 pass, proving the image boots and the serial capture works — so a failure of the
 userland assertion is a real property failure, not a dead VM.
 """
@@ -29,7 +29,7 @@ def test_boot_reaches_desktop_control(serial: str):
     # Positive controls: the machine boots and the log is captured.
     assert "Seal OS v0.4.7.5" in serial, "boot banner absent — VM/log setup failed, not a property result"
     assert "[BOOT] Seal OS desktop ready." in serial, "desktop never came up — setup failure"
-    assert "[THEOREM] T1/TSS VERIFIED" in serial
+    assert "[THEOREM] T1/TSS CERTIFIED: " in serial
 
 
 def test_a_userland_process_runs_and_makes_a_syscall(serial: str):

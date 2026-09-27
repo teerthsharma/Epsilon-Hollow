@@ -79,7 +79,8 @@ impl VoronoiCap {
         }
     }
 
-    fn default_centroids() -> [(f64, f64); VORONOI_CELLS] {
+    /// The table every `VoronoiCap` indexes from; `theorems` certifies T1 on it.
+    pub(crate) fn default_centroids() -> [(f64, f64); VORONOI_CELLS] {
         let mut c = [(0.0, 0.0); VORONOI_CELLS];
         for (i, slot) in c.iter_mut().enumerate() {
             *slot = (

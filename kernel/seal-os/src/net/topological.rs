@@ -39,8 +39,15 @@ static ROUTE_CELLS: Mutex<[Vec<RouteEntry>; VORONOI_K]> = Mutex::new([
 
 // T2: Spectral routing prediction -- traffic history per destination cell.
 static TRAFFIC_HISTORY: Mutex<[f64; VORONOI_K]> = Mutex::new([0.0; VORONOI_K]);
+/// Gain of every spectral contraction operator this module builds.
+const SCM_ALPHA: f64 = 0.3;
 static SPECTRAL_OP: Mutex<SpectralContractionOperator<VORONOI_K>> =
-    Mutex::new(SpectralContractionOperator { alpha: 0.3 });
+    Mutex::new(SpectralContractionOperator { alpha: SCM_ALPHA });
+
+/// `alpha` of the running routing predictor, as `theorems` certifies T2 from.
+pub fn scm_alpha() -> f64 {
+    SPECTRAL_OP.lock().alpha
+}
 
 // T5: Connection tracking as sparse attention graph on S².
 static CONN_GRAPH: Mutex<Option<SparseAttentionGraph<3>>> = Mutex::new(None);
@@ -189,7 +196,7 @@ pub fn track_connection(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16, 
             // T2: Update rate vector (sliding window approx)
             c.rate_vector[0] += bytes as f64;
             // Predict lifetime
-            let op = SpectralContractionOperator::<8>::new(0.3);
+            let op = SpectralContractionOperator::<8>::new(SCM_ALPHA);
             let pred = [0.0; 8];
             let next = op.apply(&c.rate_vector, &pred);
             c.predicted_lifetime = next.iter().sum();
@@ -197,7 +204,7 @@ pub fn track_connection(src: IpAddr, dst: IpAddr, src_port: u16, dst_port: u16, 
         }
     }
     // New connection.
-    let op = SpectralContractionOperator::<8>::new(0.3);
+    let op = SpectralContractionOperator::<8>::new(SCM_ALPHA);
     let pred = [0.0; 8];
     let next = op.apply(&[bytes as f64; 8], &pred);
     conns.push(ConnectionState {

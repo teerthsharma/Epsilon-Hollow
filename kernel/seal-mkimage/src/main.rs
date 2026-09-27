@@ -1120,46 +1120,40 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-/// Boot theorem gate: T1-T3 and T5-T10 must each be VERIFIED. T4/AGCR is
-/// judged against `alpha + beta/dt < 1` at the gains and step the kernel
-/// prints on its `Governor online` line (the values the runtime governor
-/// uses): VERIFIED is accepted only when that margin holds, otherwise the log
-/// must carry the refusal line with the margin and dt.
+/// Boot theorem gate. Every T1-T10 line states a verdict (`CERTIFIED`,
+/// `NOT CERTIFIED` or `NOT CHECKED`) followed by what it was computed from,
+/// and the gate recomputes each verdict from that evidence. A line whose
+/// verdict cannot be recomputed from evidence it carries, the pre-live bare
+/// `VERIFIED` banner above all, is rejected.
+///
+/// - T1/TSS must be CERTIFIED at the epsilon the `Governor online` line
+///   reports: `theta_min = 2 asin(eps/2)`, `cells <= P_max(theta_min)`, and the
+///   smallest separation over the running tables above `theta_min`.
+/// - T2/SCM must be CERTIFIED: every operator gain in (0, 1], `max_lip` the
+///   largest `1 - alpha`, `max_ratio` the largest measured `|1 - alpha|`.
+/// - T4/AGCR is CERTIFIED exactly when `alpha + beta/dt < 1` at the governor
+///   line's gains and step, and NOT CERTIFIED with that margin otherwise.
+/// - T3/GMC, T5/HCS and T6-T10 must be NOT CHECKED with a reason: no running
+///   instance carries their parameters, so no evidence rule exists for them.
+/// - The `[BOOT] Theorems:` tally must count what the ten lines say.
 fn check_theorem_gate_text(text: &str) -> Result<(), String> {
-    let required = [
-        "[THEOREM] T1/TSS VERIFIED",
-        "[THEOREM] T2/SCM VERIFIED",
-        "[THEOREM] T3/GMC VERIFIED",
-        "[THEOREM] T5/HCS VERIFIED",
-        "[THEOREM] T6/RGCS VERIFIED",
-        "[THEOREM] T7/PHKP VERIFIED",
-        "[THEOREM] T8/TEB VERIFIED",
-        "[THEOREM] T9/CMA VERIFIED",
-        "[THEOREM] T10/WPHB VERIFIED",
+    const NAMES: [&str; 10] = [
+        "T1/TSS", "T2/SCM", "T3/GMC", "T4/AGCR", "T5/HCS", "T6/RGCS", "T7/PHKP", "T8/TEB",
+        "T9/CMA", "T10/WPHB",
     ];
-    let governor = find_marker_line(text, "[T4/AGCR] Governor online:")?;
-    let gain = |key: &str| -> Result<f64, String> {
-        let value = parse_field(governor, key)?;
+    const CERTIFIED: &str = "CERTIFIED";
+    const NOT_CERTIFIED: &str = "NOT CERTIFIED";
+    const NOT_CHECKED: &str = "NOT CHECKED";
+    // Rounding of a `{:.4}` value, twice over.
+    const TOL4: f64 = 2e-4;
+    // Rounding of a `{:.2}` value, twice over.
+    const TOL2: f64 = 1e-2;
+
+    let num = |line: &str, key: &str| -> Result<f64, String> {
+        let value = parse_field(line, key)?;
         value
             .parse::<f64>()
-            .map_err(|e| format!("invalid governor field `{key}{value}`: {e}"))
-    };
-    let (alpha, beta, dt) = (gain("alpha=")?, gain("beta=")?, gain("dt=")?);
-    let margin = alpha + beta / dt;
-    let t4_verified = text.contains("[THEOREM] T4/AGCR VERIFIED");
-    let t4_line = if margin < 1.0 {
-        String::from("[THEOREM] T4/AGCR VERIFIED")
-    } else if t4_verified {
-        return Err(format!(
-            "T4/AGCR reported VERIFIED while alpha+beta/dt={margin:.2} >= 1 at runtime dt={dt}"
-        ));
-    } else {
-        format!("[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={margin:.2} >= 1 at dt={dt}")
-    };
-    let summary = if margin < 1.0 {
-        "[BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths"
-    } else {
-        "[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths"
+            .map_err(|e| format!("invalid theorem field `{key}{value}`: {e}"))
     };
     let failed: Vec<&str> = text
         .lines()
@@ -1171,14 +1165,142 @@ fn check_theorem_gate_text(text: &str) -> Result<(), String> {
             failed.join(" | ")
         ));
     }
-    let missing: Vec<&str> = required
+
+    let governor = find_marker_line(text, "[T4/AGCR] Governor online:")?;
+    let gov_eps = governor
+        .split_once("epsilon = ")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .ok_or_else(|| format!("governor line has no epsilon: `{governor}`"))?
+        .parse::<f64>()
+        .map_err(|e| format!("invalid governor epsilon: {e}"))?;
+    let (alpha, beta, dt) = (
+        num(governor, "alpha=")?,
+        num(governor, "beta=")?,
+        num(governor, "dt=")?,
+    );
+
+    let mut verdicts: Vec<(&str, &str)> = Vec::with_capacity(NAMES.len());
+    for name in NAMES {
+        let marker = format!("[THEOREM] {name} ");
+        let line = find_marker_line(text, &marker)?;
+        let rest = &line[marker.len()..];
+        let verdict = [NOT_CERTIFIED, NOT_CHECKED, CERTIFIED]
+            .into_iter()
+            .find_map(|v| rest.strip_prefix(v)?.strip_prefix(": ").map(|d| (v, d)))
+            .filter(|(_, detail)| !detail.trim().is_empty())
+            .ok_or_else(|| {
+                format!("{name} line states no verdict with its evidence or reason: `{line}`")
+            })?;
+        verdicts.push(verdict);
+    }
+
+    // T1/TSS.
+    let (verdict, t1) = verdicts[0];
+    if verdict != CERTIFIED {
+        return Err(format!(
+            "T1/TSS must be CERTIFIED at the running tables, got `{verdict}: {t1}`"
+        ));
+    }
+    let eps = num(t1, "eps=")?;
+    if (eps - gov_eps).abs() > TOL4 {
+        return Err(format!(
+            "T1/TSS eps={eps} is not the running governor's epsilon {gov_eps}"
+        ));
+    }
+    let theta = 2.0 * (eps / 2.0).clamp(-1.0, 1.0).asin();
+    if (num(t1, "theta_min=")? - theta).abs() > TOL4 {
+        return Err(format!(
+            "T1/TSS theta_min is not 2 asin(eps/2) = {theta:.4}"
+        ));
+    }
+    let p_max = 4.0 / (theta / 2.0).sin().powi(2);
+    let cells = num(t1, "cells=")?;
+    let min_sep = num(t1, "min_sep=")?;
+    parse_field(t1, "covers=")?;
+    if cells > p_max || min_sep <= theta + TOL4 {
+        return Err(format!(
+            "T1/TSS evidence does not certify: cells={cells} p_max={p_max:.1} min_sep={min_sep} theta_min={theta:.4}"
+        ));
+    }
+
+    // T2/SCM.
+    let (verdict, t2) = verdicts[1];
+    if verdict != CERTIFIED {
+        return Err(format!(
+            "T2/SCM must be CERTIFIED at the running operators, got `{verdict}: {t2}`"
+        ));
+    }
+    let mut gains = Vec::new();
+    for op in parse_field(t2, "operators=")?.split(',') {
+        let gain = op
+            .split_once(':')
+            .and_then(|(_, a)| a.parse::<f64>().ok())
+            .ok_or_else(|| format!("T2/SCM operator `{op}` is not name:alpha"))?;
+        gains.push(gain);
+    }
+    parse_field(t2, "unread=")?;
+    let max_lip = gains
         .iter()
-        .copied()
-        .chain([t4_line.as_str(), summary])
-        .filter(|pattern| !text.contains(pattern))
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!("missing theorem patterns: {}", missing.join(" | ")));
+        .map(|a| 1.0 - a)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_ratio = gains.iter().map(|a| (1.0 - a).abs()).fold(0.0, f64::max);
+    if gains.iter().any(|a| !(*a > 0.0 && *a <= 1.0))
+        || (num(t2, "max_lip=")? - max_lip).abs() > TOL2
+        || (num(t2, "max_ratio=")? - max_ratio).abs() > TOL2
+    {
+        return Err(format!(
+            "T2/SCM evidence does not certify a contraction: `{t2}`"
+        ));
+    }
+
+    // T4/AGCR, at the gains and step every runtime governor uses.
+    let margin = alpha + beta / dt;
+    let t4 = if margin < 1.0 {
+        (
+            CERTIFIED,
+            format!("alpha+beta/dt={margin:.2} < 1 at dt={dt}"),
+        )
+    } else {
+        (
+            NOT_CERTIFIED,
+            format!("alpha+beta/dt={margin:.2} >= 1 at dt={dt}"),
+        )
+    };
+    if verdicts[3] != (t4.0, t4.1.as_str()) {
+        return Err(format!(
+            "T4/AGCR must read `{}: {}` at alpha={alpha} beta={beta} dt={dt}, got `{}: {}`",
+            t4.0, t4.1, verdicts[3].0, verdicts[3].1
+        ));
+    }
+
+    // No evidence rule exists for these: they must not claim a verdict.
+    for idx in [2usize, 4, 5, 6, 7, 8, 9] {
+        if verdicts[idx].0 != NOT_CHECKED {
+            return Err(format!(
+                "{} has no running instance to check, yet reads `{}`",
+                NAMES[idx], verdicts[idx].0
+            ));
+        }
+    }
+
+    let group = |wanted: &str| -> (usize, String) {
+        let names: Vec<&str> = NAMES
+            .iter()
+            .zip(&verdicts)
+            .filter(|(_, (v, _))| *v == wanted)
+            .map(|(n, _)| *n)
+            .collect();
+        (names.len(), names.join(" "))
+    };
+    let ((c, cn), (r, rn), (u, un)) = (group(CERTIFIED), group(NOT_CERTIFIED), group(NOT_CHECKED));
+    let tally = format!(
+        "[BOOT] Theorems: {c} certified ({cn}), {r} not certified ({rn}), {u} not checked ({un})"
+    );
+    let found = find_marker_line(text, "[BOOT] Theorems:")?;
+    if found != tally {
+        return Err(format!(
+            "theorem tally `{found}` does not count the lines: `{tally}`"
+        ));
     }
     Ok(())
 }
@@ -5994,6 +6116,7 @@ with:
 
     const T4_GOVERNOR_LOG: &str =
         "[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01\n";
+    /// The pre-live banner (base a50b8d6): bare verdicts computed from literals.
     const NINE_THEOREMS_LOG: &str = "\
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
@@ -6009,62 +6132,185 @@ with:
 [THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
 [BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 ";
+    /// The lines a QEMU boot of the live-state kernel printed.
+    const LIVE_THEOREMS_LOG: &str = "\
+[THEOREM] T1/TSS CERTIFIED: eps=0.1000 theta_min=0.1000 cells=8 p_max=1600.0 min_sep=0.7854 covers=scheduler+compositor+firewall+route,manifoldfs
+[THEOREM] T2/SCM CERTIFIED: operators=manifoldfs:0.70,firewall:0.30,route:0.30 max_lip=0.70 max_ratio=0.7000 unread=scheduler
+[THEOREM] T3/GMC NOT CHECKED: no running instance merges clusters here: TopoRAM's T3 path is a run-count ratio and ManifoldFS mounts after this check
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
+[THEOREM] T5/HCS NOT CHECKED: no running instance embeds a tree with curvature, dimension and depth: TopoRAM's T5 path is an access-density threshold and the scheduler's process tree is a parent/child map
+[THEOREM] T6/RGCS NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T7/PHKP NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T8/TEB NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T9/CMA NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T10/WPHB NOT CHECKED: no kernel subsystem runs it
+[BOOT] Theorems: 2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked (T3/GMC T5/HCS T6/RGCS T7/PHKP T8/TEB T9/CMA T10/WPHB)
+";
+
+    fn live(edit: impl Fn(String) -> String) -> String {
+        edit(format!("{T4_GOVERNOR_LOG}{LIVE_THEOREMS_LOG}"))
+    }
+
+    /// Every line of the pre-live banner is computed from literals and carries
+    /// no evidence: nothing in it can be checked against the running kernel.
+    #[test]
+    fn theorem_gate_rejects_lines_without_live_evidence() {
+        let folded = format!("{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        assert!(
+            check_theorem_gate_text(&folded).is_err(),
+            "the gate accepted T1-T3 and T5-T10 as VERIFIED with no live evidence"
+        );
+    }
 
     #[test]
-    fn theorem_gate_accepts_t4_refused_at_runtime_dt() {
-        let log = format!("{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
-        assert_eq!(check_theorem_gate_text(&log), Ok(()));
+    fn theorem_gate_accepts_live_lines_with_t4_refused_at_runtime_dt() {
+        assert_eq!(check_theorem_gate_text(&live(|s| s)), Ok(()));
     }
 
     #[test]
     fn theorem_gate_rejects_t4_certified_at_runtime_dt() {
-        // The pre-fix kernel: T4 certified at dt=1.0 while the runtime steps at 0.01.
-        let pre_fix = format!(
-            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
-             [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
-        );
-        assert!(check_theorem_gate_text(&pre_fix).is_err());
-
-        // Same verdict with a self-consistent 10/10 summary is still refused.
-        let ten = format!(
-            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
-             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
-        );
-        assert!(check_theorem_gate_text(&ten).is_err());
+        let claimed = live(|s| {
+            s.replace(
+                "T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1",
+                "T4/AGCR CERTIFIED: alpha+beta/dt=5.01 < 1",
+            )
+            .replace(
+                "2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR)",
+                "3 certified (T1/TSS T2/SCM T4/AGCR), 0 not certified ()",
+            )
+        });
+        assert!(check_theorem_gate_text(&claimed).is_err());
     }
 
     #[test]
-    fn theorem_gate_requires_t4_reason_governor_step_and_the_other_nine() {
-        let no_reason = format!(
-            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{}",
-            T4_REFUSAL_LOG.replace(": alpha+beta/dt=5.01 >= 1 at dt=0.01", "")
-        );
+    fn theorem_gate_requires_t4_reason_governor_step_and_every_line() {
+        let no_reason = live(|s| s.replace(": alpha+beta/dt=5.01 >= 1 at dt=0.01", ""));
         assert!(check_theorem_gate_text(&no_reason).is_err());
 
-        let no_dt = format!(
-            "{}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}",
-            T4_GOVERNOR_LOG.replace(" dt=0.01", "")
-        );
+        let no_dt = live(|s| s.replacen(" dt=0.01\n", "\n", 1));
         assert!(check_theorem_gate_text(&no_dt).is_err());
 
-        let no_t7 = format!(
-            "{T4_GOVERNOR_LOG}{}{T4_REFUSAL_LOG}",
-            NINE_THEOREMS_LOG.replace("[THEOREM] T7/PHKP VERIFIED\n", "")
-        );
+        let no_t7 = live(|s| {
+            s.replace(
+                "[THEOREM] T7/PHKP NOT CHECKED: no kernel subsystem runs it\n",
+                "",
+            )
+        });
         assert!(check_theorem_gate_text(&no_t7).is_err());
+
+        let twice = live(|s| format!("{s}[THEOREM] T1/TSS VERIFIED\n"));
+        assert!(check_theorem_gate_text(&twice).is_err());
     }
 
     #[test]
-    fn theorem_gate_requires_t4_verified_when_margin_holds() {
-        let stable_gov = T4_GOVERNOR_LOG.replace("dt=0.01", "dt=1");
-        let certified = format!(
-            "{stable_gov}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
-             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+    fn theorem_gate_requires_t4_certified_when_margin_holds() {
+        let stable = |t4: &str, tally: &str| {
+            live(|s| {
+                s.replace(
+                    "T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01",
+                    t4,
+                )
+                .replace("beta=0.05 dt=0.01\n", "beta=0.05 dt=1\n")
+                .replace(
+                    "2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR)",
+                    tally,
+                )
+            })
+        };
+        let certified = stable(
+            "T4/AGCR CERTIFIED: alpha+beta/dt=0.06 < 1 at dt=1",
+            "3 certified (T1/TSS T2/SCM T4/AGCR), 0 not certified ()",
         );
         assert_eq!(check_theorem_gate_text(&certified), Ok(()));
 
-        let refused = format!("{stable_gov}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        let refused = stable(
+            "T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01",
+            "2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR)",
+        );
         assert!(check_theorem_gate_text(&refused).is_err());
+    }
+
+    /// T1 is recomputed from its own evidence and tied to the governor line.
+    #[test]
+    fn theorem_gate_recomputes_t1_from_its_evidence() {
+        for (from, to) in [
+            // epsilon other than the running governor's
+            ("eps=0.1000 theta_min=0.1000", "eps=0.2000 theta_min=0.2003"),
+            // theta_min that is not 2 asin(eps/2)
+            ("theta_min=0.1000", "theta_min=0.0100"),
+            // tables closer than theta_min
+            ("min_sep=0.7854", "min_sep=0.0900"),
+            // more cells than P_max packs
+            ("cells=8", "cells=4000"),
+            // coverage unstated
+            (" covers=scheduler+compositor+firewall+route,manifoldfs", ""),
+            // the running tables refused
+            ("T1/TSS CERTIFIED:", "T1/TSS NOT CERTIFIED:"),
+        ] {
+            let broken = live(|s| s.replace(from, to));
+            assert!(
+                check_theorem_gate_text(&broken).is_err(),
+                "T1 accepted with `{from}` -> `{to}`"
+            );
+        }
+    }
+
+    /// T2 is recomputed from the operator gains it lists.
+    #[test]
+    fn theorem_gate_recomputes_t2_from_its_evidence() {
+        for (from, to) in [
+            // identity operator: Lipschitz 1
+            ("firewall:0.30", "firewall:0.00"),
+            // alpha > 1: expands while 1 - alpha claims a contraction
+            ("route:0.30", "route:1.50"),
+            ("max_lip=0.70", "max_lip=0.30"),
+            ("max_ratio=0.7000", "max_ratio=0.1000"),
+            (" unread=scheduler", ""),
+            ("operators=manifoldfs:0.70,", "operators=manifoldfs,"),
+        ] {
+            let broken = live(|s| s.replace(from, to));
+            assert!(
+                check_theorem_gate_text(&broken).is_err(),
+                "T2 accepted with `{from}` -> `{to}`"
+            );
+        }
+    }
+
+    /// No evidence rule exists for T3, T5 or T6-T10, so no verdict is
+    /// accepted for them, and the tally must count the lines.
+    #[test]
+    fn theorem_gate_rejects_a_verdict_it_cannot_recompute() {
+        // Tallies are rewritten to match, so only the missing evidence rule
+        // can reject these.
+        let t3 = live(|s| {
+            s.replace(
+                "T3/GMC NOT CHECKED: no running instance merges clusters here: TopoRAM's T3 path is a run-count ratio and ManifoldFS mounts after this check",
+                "T3/GMC CERTIFIED: sizes=100,50 n=1000",
+            )
+            .replace(
+                "2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked (T3/GMC T5/HCS",
+                "3 certified (T1/TSS T2/SCM T3/GMC), 1 not certified (T4/AGCR), 6 not checked (T5/HCS",
+            )
+        });
+        assert!(check_theorem_gate_text(&t3).is_err());
+
+        let t8 = live(|s| {
+            s.replace(
+                "T8/TEB NOT CHECKED: no kernel subsystem runs it",
+                "T8/TEB CERTIFIED: landauer=2.87e-21",
+            )
+            .replace(
+                "2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked (T3/GMC T5/HCS T6/RGCS T7/PHKP T8/TEB T9/CMA",
+                "3 certified (T1/TSS T2/SCM T8/TEB), 1 not certified (T4/AGCR), 6 not checked (T3/GMC T5/HCS T6/RGCS T7/PHKP T9/CMA",
+            )
+        });
+        assert!(check_theorem_gate_text(&t8).is_err());
+
+        let bare = live(|s| s.replace("T9/CMA NOT CHECKED: no kernel subsystem runs it", "T9/CMA NOT CHECKED: "));
+        assert!(check_theorem_gate_text(&bare).is_err());
+
+        let miscounted = live(|s| s.replace("7 not checked", "6 not checked"));
+        assert!(check_theorem_gate_text(&miscounted).is_err());
     }
 
     #[test]
@@ -9247,11 +9493,46 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
             "lib.rs",
             &[
                 "pub static THEOREM_STATES",
-                "THEOREM_STATES[idx].store",
                 "pub const GOVERNOR_DT: f64",
-                "gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT)",
-                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
-                "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
+                "pub mod theorems;",
+                "theorems::init();",
+            ][..],
+        ),
+        // Every verdict is computed from the definitions the running
+        // instances read: the scheduler governor's live epsilon, the S^2
+        // tables the indexes were built from, the gains of the operators.
+        (
+            "theorems.rs",
+            &[
+                "THEOREM_STATES[idx].store",
+                "crate::process::scheduler::governor_epsilon()",
+                "centroids: aether_core::tss::CUBE_CENTROIDS",
+                "crate::fs::voronoi_cap::VoronoiCap::default_centroids()",
+                "crate::fs::manifold_fs::SCM_ALPHA",
+                "crate::net::firewall::scm_alpha()",
+                "crate::net::topological::scm_alpha()",
+                "op.apply(&s1, &pred)",
+                "aether_agcr::gain_margin_stable(alpha, beta, dt)",
+                "gains: (GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT)",
+                "[BOOT] Theorems: {} certified ({}), {} not certified ({}), {} not checked ({})",
+            ][..],
+        ),
+        (
+            "fs/voronoi_cap.rs",
+            &[
+                "pub(crate) fn default_centroids()",
+                "SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids)",
+            ][..],
+        ),
+        (
+            "net/firewall.rs",
+            &["pub fn scm_alpha() -> f64", "RATE_SCM.lock().alpha"][..],
+        ),
+        (
+            "net/topological.rs",
+            &[
+                "SpectralContractionOperator { alpha: SCM_ALPHA }",
+                "SPECTRAL_OP.lock().alpha",
             ][..],
         ),
         (
@@ -9277,6 +9558,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "use aether_core::scm::SpectralContractionOperator",
                 "use aether_core::governor::GeometricGovernor",
                 "predictor: SpectralContractionOperator<8>",
+                "SphericalVoronoiIndex::<8>::new(aether_core::tss::CUBE_CENTROIDS)",
                 "fn select_next_task",
                 "self.voronoi.locate",
                 ".apply(&self.predict_state, &next_task.manifold_embedding)",
@@ -9291,6 +9573,8 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "use super::voronoi_cap::VoronoiCap",
                 "use aether_core::scm::SpectralContractionOperator",
                 "use aether_core::governor::GeometricGovernor",
+                "pub const SCM_ALPHA: f64",
+                "scm: SpectralContractionOperator::new(SCM_ALPHA)",
                 "self.voronoi.locate",
                 "fn update_prefetch_state",
                 "self.scm.apply",
@@ -9308,6 +9592,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
             &[
                 "use aether_core::tss::SphericalVoronoiIndex",
                 "use aether_core::governor::GeometricGovernor",
+                "SphericalVoronoiIndex::<8>::new(aether_core::tss::CUBE_CENTROIDS)",
                 "fn screen_point_cell",
                 "self.voronoi.locate",
                 "self.governor.adapt(1.0, crate::GOVERNOR_DT)",
@@ -9335,11 +9620,22 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
         (
             "wm/taskbar.rs",
             &[
-                "use crate::{GOVERNOR_EPSILON, THEOREM_COUNT, THEOREM_STATES}",
-                "THEOREM_STATES[i].load",
+                "use crate::{GOVERNOR_EPSILON, THEOREM_COUNT}",
+                "crate::theorems::status(i)",
                 "GOVERNOR_EPSILON.load",
             ][..],
         ),
+    ];
+
+    // The pre-live gate fed these literals to the theorem functions; a line
+    // computed from them certifies nothing about the running kernel.
+    let folded = [
+        ("lib.rs", "fn verify_topology_theorems"),
+        ("theorems.rs", "theta_min_from_epsilon(0."),
+        ("theorems.rs", "apply_operator("),
+        ("theorems.rs", "verify_entropy_nonincreasing("),
+        ("theorems.rs", "verify_hcs("),
+        ("theorems.rs", "aether_world::"),
     ];
 
     let mut findings = Vec::new();
@@ -9351,6 +9647,17 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
             if !text.contains(needle) {
                 findings.push(format!("{} missing `{needle}`", path.display()));
             }
+        }
+    }
+    for (rel, needle) in folded {
+        let path = seal.join(rel);
+        let text =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+        if text.contains(needle) {
+            findings.push(format!(
+                "{} computes a theorem from literal inputs: `{needle}`",
+                path.display()
+            ));
         }
     }
 

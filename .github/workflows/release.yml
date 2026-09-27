@@ -131,7 +131,7 @@ jobs:
           check "UEFI boot complete" "UEFI boot"
           check "Seal OS ${EXPECTED_TAG}" "release banner"
           check "No persistent disk found. Falling back to ramfs." "live ISO ramfs fallback"
-          check "\\[BOOT\\] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED" "theorem summary: 9 of 10 verified, T4 refused"
+          check "\\[BOOT\\] Theorems: 2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked" "theorem tally from live state: T1-T2 certified, T4 refused"
           check "\\[THEOREM\\] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01" "T4 refused with its gain-margin reason"
           check "\\[BENCH\\] topo-render-3d .*result=pass" "topological render benchmark"
           check "\\[BENCH\\] tensor-render .*result=pass" "tensor render benchmark"

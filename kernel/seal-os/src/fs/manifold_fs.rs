@@ -26,6 +26,9 @@ use super::voronoi_cap::VoronoiCap;
 use crate::drivers::interrupts;
 
 const VORONOI_CELLS: usize = 8;
+/// Gain of the prefetch predictor every ManifoldFS instance builds; `theorems`
+/// certifies T2 on it.
+pub const SCM_ALPHA: f64 = 0.7;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
 const TELEPORT_METADATA_OPS: u64 = 7;
 
@@ -273,7 +276,7 @@ impl ManifoldFS {
             store,
             voronoi,
             root_id,
-            scm: SpectralContractionOperator::new(0.7),
+            scm: SpectralContractionOperator::new(SCM_ALPHA),
             access_state: [0.0; 3],
             last_prefetch_prediction: None,
             prefetch_hits: 0,
@@ -338,7 +341,7 @@ impl ManifoldFS {
             store: BlockStore::new(),
             voronoi: VoronoiCap::new(),
             root_id,
-            scm: SpectralContractionOperator::new(0.7),
+            scm: SpectralContractionOperator::new(SCM_ALPHA),
             access_state: [0.0; 3],
             last_prefetch_prediction: None,
             prefetch_hits: 0,
@@ -1485,16 +1488,7 @@ fn payload_similarity_full(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
 }
 
 fn theorem_status_text(idx: usize) -> &'static str {
-    let ok = crate::THEOREM_STATES[idx].load(core::sync::atomic::Ordering::Relaxed);
-    if ok {
-        if idx < 5 {
-            "ACTIVE"
-        } else {
-            "VERIFIED"
-        }
-    } else {
-        "FAILED"
-    }
+    crate::theorems::status_text(idx)
 }
 
 fn now_ms() -> u64 {

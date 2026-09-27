@@ -66,6 +66,16 @@ static SOURCE_RATES: Mutex<Vec<SourceRate>> = Mutex::new(Vec::new());
 static RATE_SCM: Mutex<SpectralContractionOperator<RATE_VEC_DIM>> =
     Mutex::new(SpectralContractionOperator { alpha: 0.3 });
 
+/// `alpha` of the running rate predictor, as `theorems` certifies T2 from.
+pub fn scm_alpha() -> f64 {
+    RATE_SCM.lock().alpha
+}
+
+#[cfg(feature = "test-mode")]
+pub fn set_scm_alpha(alpha: f64) {
+    RATE_SCM.lock().alpha = alpha;
+}
+
 // T3: Destination port entropy window.
 static PORT_HISTORY: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 

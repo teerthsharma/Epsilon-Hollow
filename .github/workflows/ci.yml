@@ -373,7 +373,7 @@ jobs:
           check "IDT + PIC initialized" "Interrupts configured"
           check "Governor online" "T4 governor started"
           check "Voronoi index: 8 cells" "T1 Voronoi active"
-          check "\\[BOOT\\] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED" "Theorem summary: 9 of 10 verified, T4 refused"
+          check "\\[BOOT\\] Theorems: 2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked" "Theorem tally from live state: T1-T2 certified, T4 refused"
           check "\\[THEOREM\\] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01" "T4 refused with its gain-margin reason"
           check "\\[BENCH\\] toporam-alloc" "TopoRAM target-cell benchmark emitted"
           check "\\[BENCH\\] alloc-frame" "Physical allocator benchmark emitted"
