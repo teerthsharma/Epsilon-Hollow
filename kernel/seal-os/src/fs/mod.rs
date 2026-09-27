@@ -26,6 +26,7 @@ pub mod vfs;
 pub mod voronoi_cap;
 
 use alloc::boxed::Box;
+use vfs::FileSystem as _;
 
 /// Flush all mounted filesystems.
 pub fn sync() -> Result<(), vfs::VfsError> {
@@ -53,16 +54,28 @@ pub fn init_vfs() -> Result<(), vfs::VfsError> {
     };
 
     // If ManifoldFS is primary and ext2 is available, use ext2 as the raw-byte backend.
+    // A volume `Ext2Fs::mount` refuses (unsupported INCOMPAT features) is never
+    // attached or mounted; the refusal and its feature bits are logged by `mount`.
     let root_fs: Box<dyn vfs::FileSystem> = if let Some(ref mut mfs) = manifold {
         let mut ext2 = ext2::Ext2Fs::new(0x800);
         if ext2.mount().is_ok() {
-            crate::serial_println!("[VFS] Ext2 attached as ManifoldFS persistence backend");
-            mfs.set_ext2_backend(ext2);
+            if ext2.is_read_only() {
+                crate::serial_println!(
+                    "[VFS] Ext2 on AHCI port 0 is read-only; not attached as ManifoldFS persistence backend"
+                );
+            } else {
+                crate::serial_println!("[VFS] Ext2 attached as ManifoldFS persistence backend");
+                mfs.set_ext2_backend(ext2);
+            }
         }
         Box::new(manifold.take().unwrap())
     } else {
         let mut ext2 = ext2::Ext2Fs::new(0x800);
         match ext2.mount() {
+            Ok(_) if ext2.is_read_only() => {
+                crate::serial_println!("[VFS] Ext2 mounted read-only from AHCI port 0");
+                Box::new(ext2)
+            }
             Ok(_) => {
                 crate::serial_println!("[VFS] Ext2 mounted from AHCI port 0");
                 Box::new(ext2)
@@ -75,6 +88,13 @@ pub fn init_vfs() -> Result<(), vfs::VfsError> {
     };
 
     v.mount("/", root_fs)?;
+    // The audit log is written on every audited syscall. On a read-only root
+    // it goes to memory instead of being re-buffered forever against a volume
+    // that refuses it.
+    if v.is_read_only("/var/log") {
+        v.mount("/var/log", Box::new(manifold_fs::ManifoldFS::new_ramfs()))?;
+        crate::serial_println!("[VFS] Root is read-only; /var/log is a ramfs");
+    }
     v.mount("/proc", Box::new(procfs::ProcFs::new()))?;
     v.mount("/sys", Box::new(sysfs::SysFs::new()))?;
     let mut devfs = devtmpfs::DevTmpFs::new();

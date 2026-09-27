@@ -212,6 +212,12 @@ pub fn init() {
         crate::serial_println!("[SWAP] VFS not ready, deferring swap init");
         return;
     }
+    // An existing /swap.topo on a read-only volume would pass the lookup
+    // below and then fail every swap-out; do not target that volume at all.
+    if with_vfs(|vfs| vfs.is_read_only("/swap.topo")) {
+        crate::serial_println!("[SWAP] /swap.topo would be on a read-only mount; swap disabled");
+        return;
+    }
     let handle = with_vfs(|vfs| {
         if let Ok(h) = vfs.lookup("/swap.topo") {
             Some(h)
