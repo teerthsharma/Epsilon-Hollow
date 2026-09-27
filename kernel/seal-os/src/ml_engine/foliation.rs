@@ -135,8 +135,9 @@ const DUEL_SLOTS: usize = 32;
 /// ranking flips within `PSEL_MAX + 1` verdicts against it.
 const PSEL_MAX: i32 = 8;
 
-/// One disputed eviction awaiting a verdict. Keys guard against a reclaimed
-/// leaf slot settling a duel its new block was never part of.
+/// One disputed eviction awaiting a verdict. `new_leaf` drops every duel
+/// naming a leaf slot it hands to a new block, so a reclaimed slot cannot
+/// settle a duel its new block was never part of; the keys are a second check.
 #[derive(Clone, Copy)]
 struct Duel {
     /// Leaf the active ranking evicted; `NONE` marks a free slot.
@@ -813,6 +814,14 @@ impl Foliation {
                 i
             }
         };
+        // The slot takes a new block, so a duel naming it can no longer be
+        // settled by it. Its key is a digest that collides (`COLLIDE_A`/`_B`),
+        // so the key alone cannot tell the new block from the old one.
+        for d in self.duels.iter_mut() {
+            if d.evicted == idx || d.spared == idx {
+                *d = NO_DUEL;
+            }
+        }
         let l = &mut self.leaves[idx as usize];
         *l = Leaf::blank();
         l.used = true;
@@ -3024,6 +3033,83 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Seal `tokens` as one block in its own sequence.
+    fn request_tokens(fol: &mut Foliation, tokens: &[u32; BLOCK_TOKENS]) {
+        if let Ok(id) = fol.seq_create(1, KERNEL) {
+            for &t in tokens {
+                let _ = fol.seq_append(id, KERNEL, t);
+            }
+            let _ = fol.seq_release(id, KERNEL);
+        }
+    }
+
+    /// RED: a duel named its leaves by arena slot and key, and a key is a
+    /// 64-bit digest, not an identity. `COLLIDE_B` has `COLLIDE_A`'s key off
+    /// the root, so once the evicted `COLLIDE_A` leaf was reclaimed and
+    /// `COLLIDE_B` landed in its slot, requesting `COLLIDE_B` settled the duel
+    /// for LRU: a vote by a block that was never in it. A duel naming a slot
+    /// is dropped when the slot takes a new block.
+    fn test_adaptive_colliding_block_settles_nothing() -> TestResult {
+        // As `disputed_cache(5)`, with `COLLIDE_A` as the block the foliation
+        // ranking evicts and LRU would have kept.
+        let mut fol = Foliation::new(3, 5, 4, Policy::Adaptive);
+        request_block(&mut fol, 100);
+        request_block(&mut fol, 100);
+        request_tokens(&mut fol, &COLLIDE_A);
+        request_block(&mut fol, 300);
+        request_block(&mut fol, 400);
+        test_assert_eq!(fol.stats().duels, 1);
+        let evicted = fol.duels[0].evicted;
+        test_assert!(
+            evicted != NONE && fol.leaves[evicted as usize].tokens == COLLIDE_A,
+            "the duel must be over COLLIDE_A"
+        );
+        request_tokens(&mut fol, &COLLIDE_B);
+        test_assert!(
+            fol.leaf_resident(evicted) && fol.leaves[evicted as usize].tokens == COLLIDE_B,
+            "COLLIDE_B did not land in the reclaimed slot, so the test proves nothing"
+        );
+        test_assert_eq!(fol.stats().duels_lru, 0);
+        test_assert_eq!(fol.stats().duels_foliation, 0);
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. Switching a live adaptive cache's policy drops its open duels
+    /// and its score, mid-block and with a sequence holding blocks: the block
+    /// whose duel was open before the switch settles nothing after switching
+    /// away and back, the held sequence keeps appending, and residency,
+    /// references and backing hold throughout.
+    fn test_policy_switch_drops_live_duels() -> TestResult {
+        let mut fol = disputed_cache(32);
+        test_assert_eq!(fol.stats().duels, 1);
+        let id = fol.seq_create(4, KERNEL).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        let toks = prefix_tokens(33_000, 2);
+        for &t in &toks[..BLOCK_TOKENS + 3] {
+            test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+        }
+        test_assert!(fol.set_policy(Policy::Lru));
+        test_assert!(fol.set_policy(Policy::Adaptive));
+        test_assert!(fol.duels.iter().all(|d| d.evicted == NONE));
+        request_block(&mut fol, 200);
+        test_assert_eq!(fol.stats().duels_lru + fol.stats().duels_foliation, 0);
+        test_assert!(fol.ranking() == Policy::Foliation);
+        for &t in &toks[BLOCK_TOKENS + 3..] {
+            test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+        }
+        test_assert!(fol.set_policy(Policy::Foliation));
+        test_assert_eq!(fol.seq_counts(id, KERNEL).map(|c| c.0), Some(2u16));
+        test_assert!(fol.seq_frame(id, 0).is_some() && fol.seq_frame(id, 1).is_some());
+        test_assert_eq!(fol.collapse_violations(), 0);
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        let _ = fol.seq_release(id, KERNEL);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
     /// The cache syscalls serve under LRU. The foliation ranking only wins at
     /// a capacity cliff on a synthetic trace, so it is selected explicitly by
     /// the boot proof and is not the default for real callers.
@@ -3151,6 +3237,14 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::adaptive_score_saturates",
             test_adaptive_score_saturates,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_colliding_block_settles_nothing",
+            test_adaptive_colliding_block_settles_nothing,
+        );
+        crate::testing::register_test(
+            "foliation::policy_switch_drops_live_duels",
+            test_policy_switch_drops_live_duels,
         );
     }
 }

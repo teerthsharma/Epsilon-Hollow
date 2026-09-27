@@ -1504,6 +1504,9 @@ pub fn scheduler_tick(from_user: bool) {
 
 /// Mark the currently running task as dead (called when task entry returns).
 pub fn mark_current_dead() {
+    // Before the scheduler lock: `release_task` takes the ML locks, and no
+    // path takes this lock while holding one of them.
+    crate::ml_engine::release_task(current_task_id());
     unsafe {
         let cpu = crate::cpu::this_cpu();
         let _guard = cpu.scheduler_lock.lock();
@@ -1978,13 +1981,122 @@ pub mod tests {
         TestResult::Pass
     }
 
+    use core::sync::atomic::AtomicU64;
+
+    /// Task id, KV sequence id and its second block's leaf, published by
+    /// `exit_holding_ml_state` from inside the task.
+    static EXITED_TASK: AtomicU64 = AtomicU64::new(0);
+    static EXITED_SEQ: AtomicU64 = AtomicU64::new(u64::MAX);
+    static EXITED_LEAF: AtomicU64 = AtomicU64::new(u64::MAX);
+
+    /// Body of a kernel task that opens a two-block KV sequence and a fit
+    /// stream through the syscall layer, so both are owned by its own task
+    /// id, and returns without releasing either. `kernel_task_wrapper` then
+    /// marks it dead.
+    fn exit_holding_ml_state() {
+        use crate::syscall::table::{
+            dispatch, SYS_FIT_REGISTER, SYS_KV_SEQ_APPEND, SYS_KV_SEQ_CREATE,
+        };
+        let me = super::current_task_id();
+        let seq = dispatch(SYS_KV_SEQ_CREATE, 2, 0, 0).code;
+        if seq >= 0 {
+            for j in 0..16u64 {
+                let _ = dispatch(SYS_KV_SEQ_APPEND, seq as u64, 920_000 + j, 0);
+            }
+            let leaf = crate::ml_engine::foliation::with_global(|f| f.seq_leaf(seq as usize, 1));
+            EXITED_LEAF.store(leaf.map_or(u64::MAX, u64::from), Ordering::SeqCst);
+            EXITED_SEQ.store(seq as u64, Ordering::SeqCst);
+        }
+        let _ = dispatch(SYS_FIT_REGISTER, 0, 0, 0);
+        EXITED_TASK.store(me, Ordering::SeqCst);
+    }
+
+    fn task_is_dead(id: u64) -> bool {
+        super::list_all_tasks()
+            .iter()
+            .any(|t| t.0 == id && t.2 == "dead")
+    }
+
+    /// RED: no task-exit path released the ML state a task held. A kernel
+    /// task that dies holding a KV sequence and a fit stream is run to its
+    /// death here, through `kernel_task_wrapper` and `mark_current_dead`: its
+    /// sequence must be gone, the block it held unreferenced (so evictable),
+    /// and its fit stream unregistered.
+    fn test_dead_task_releases_its_ml_state() -> TestResult {
+        use crate::ml_engine::foliation::with_global;
+        let tid = super::spawn("ml-exit", ADOPTED_THREAD_PRIORITY, exit_holding_ml_state);
+        test_assert!(tid != 0, "the task must spawn");
+        let mut dead = false;
+        for _ in 0..1000 {
+            super::yield_current();
+            if task_is_dead(tid) {
+                dead = true;
+                break;
+            }
+        }
+        test_assert!(dead, "the task never ran to its exit");
+        test_assert_eq!(EXITED_TASK.load(Ordering::SeqCst), tid);
+        let seq = EXITED_SEQ.load(Ordering::SeqCst);
+        let leaf = EXITED_LEAF.load(Ordering::SeqCst);
+        test_assert!(
+            seq != u64::MAX && leaf != u64::MAX,
+            "the task must have held a two-block sequence"
+        );
+        test_assert!(
+            with_global(|f| f.seq_counts(seq as usize, tid)).is_none(),
+            "a dead task's KV sequence survived it"
+        );
+        test_assert_eq!(with_global(|f| f.leaf_refcount(leaf as u16)), 0);
+        test_assert!(
+            crate::ml_engine::stratum::regime_of(tid).is_none(),
+            "a dead task's fit stream survived it"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: SIGKILL marked its target dead in `send_signal` and released
+    /// nothing it held. A queued task holding a KV sequence and a fit stream
+    /// under its id is killed here: both must be gone when the call returns.
+    fn test_killed_task_releases_its_ml_state() -> TestResult {
+        use crate::ml_engine::foliation::with_global;
+        let tid = super::spawn("ml-kill", 1, || {});
+        test_assert!(tid != 0, "the task must spawn");
+        let Ok(seq) = with_global(|f| f.seq_create(1, tid)) else {
+            return TestResult::Fail("the cache must open a sequence");
+        };
+        crate::ml_engine::stratum::register(tid);
+        test_assert!(crate::process::signal::send_signal(
+            tid,
+            crate::process::signal::SIGKILL
+        ));
+        test_assert!(task_is_dead(tid), "SIGKILL must mark the task dead");
+        test_assert!(
+            with_global(|f| f.seq_counts(seq, tid)).is_none(),
+            "a killed task's KV sequence survived it"
+        );
+        test_assert!(
+            crate::ml_engine::stratum::regime_of(tid).is_none(),
+            "a killed task's fit stream survived it"
+        );
+        TestResult::Pass
+    }
+
     /// Registered after every other test: adopting the boot thread gives this
     /// CPU a current task, and the identity tests in `syscall::table` assert
-    /// the state before that (no task holds identity yet).
+    /// the state before that (no task holds identity yet). The exit tests
+    /// follow it because they need a current task to yield from.
     pub fn register_bootstrap_test() {
         crate::testing::register_test(
             "kernel_foundation::init_makes_calling_thread_current",
             test_init_makes_calling_thread_current,
+        );
+        crate::testing::register_test(
+            "kernel_foundation::dead_task_releases_its_ml_state",
+            test_dead_task_releases_its_ml_state,
+        );
+        crate::testing::register_test(
+            "kernel_foundation::killed_task_releases_its_ml_state",
+            test_killed_task_releases_its_ml_state,
         );
     }
 
