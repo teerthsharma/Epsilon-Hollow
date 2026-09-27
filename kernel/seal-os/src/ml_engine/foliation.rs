@@ -470,6 +470,13 @@ impl Foliation {
         Ok(n)
     }
 
+    /// Release every sequence `owner` opened. Returns how many there were.
+    pub fn release_owner(&mut self, owner: u64) -> usize {
+        (0..self.seqs.len())
+            .filter(|&id| self.seq_release(id, owner).is_ok())
+            .count()
+    }
+
     /// Reference count of a leaf.
     pub fn leaf_refcount(&self, leaf: u16) -> u16 {
         self.leaves
@@ -1454,6 +1461,12 @@ pub fn with_global<R>(f: impl FnOnce(&mut Foliation) -> R) -> R {
         ));
     }
     f(guard.as_mut().expect("foliation initialised above"))
+}
+
+/// Release every sequence `owner` holds in the global cache, for the task-exit
+/// path. Does not build the cache for a task that never used it.
+pub fn release_task(owner: u64) -> usize {
+    GLOBAL.lock().as_mut().map_or(0, |f| f.release_owner(owner))
 }
 
 /// Map a refusal to an errno for the syscall layer.

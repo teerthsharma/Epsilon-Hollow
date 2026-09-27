@@ -143,6 +143,20 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 /// long the machine stops answering. Ten times the shell's default of 1000.
 pub const MAX_DEMO_EPOCHS: usize = 10_000;
 
+/// Drop every ML resource `task` holds: its fit stream and its KV sequences.
+///
+/// For the task-exit path, and nothing else releases them: a task that exits
+/// holding KV sequences leaves their plaques referenced, so never evictable,
+/// and their slots taken, for the rest of the boot. Task 0 is the kernel,
+/// which does not exit; the sequences it owns are its own proofs'.
+pub fn release_task(task: u64) {
+    if task == 0 {
+        return;
+    }
+    stratum::unregister(task);
+    foliation::release_task(task);
+}
+
 /// Train a simple MLP on synthetic XOR-like data.
 /// Returns (human-readable report, serialized model bytes).
 ///
@@ -767,6 +781,66 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: nothing released a task's fit stream or KV sequences when it
+    /// exited. A task that exits holding sequences leaves their plaques
+    /// referenced, so never evictable, and their slots taken, for the rest of
+    /// the boot; `ABI_MAX_SEQS` such exits deny every later
+    /// `SYS_KV_SEQ_CREATE`. `release_task` is what the task-exit path calls:
+    /// it must drop exactly that task's stream and sequences and leave every
+    /// other owner's alone. Task 0 is the kernel, which never exits, so a
+    /// call for it releases nothing.
+    fn test_release_task_frees_kv_and_fit() -> TestResult {
+        use super::foliation::with_global;
+        const DEAD: u64 = 0xDEAD_0001;
+        const ALIVE: u64 = 0xDEAD_0002;
+        let open = |owner: u64, base: u32| -> Option<usize> {
+            with_global(|f| {
+                let id = f.seq_create(2, owner).ok()?;
+                for j in 0..(2 * foliation::BLOCK_TOKENS) as u32 {
+                    f.seq_append(id, owner, base + j).ok()?;
+                }
+                Some(id)
+            })
+        };
+        let (Some(d0), Some(d1), Some(a0), Some(k0)) = (
+            open(DEAD, 810_000),
+            open(DEAD, 820_000),
+            open(ALIVE, 830_000),
+            open(0, 840_000),
+        ) else {
+            return TestResult::Fail("the global cache must open four sequences");
+        };
+        let dead_leaves = with_global(|f| [f.seq_leaf(d0, 1), f.seq_leaf(d1, 1)]);
+        stratum::register(DEAD);
+        stratum::register(ALIVE);
+
+        release_task(DEAD);
+        release_task(0);
+
+        let gone = with_global(|f| f.seq_counts(d0, DEAD).is_none() && f.seq_counts(d1, DEAD).is_none());
+        test_assert!(gone, "an exited task's sequences survived it");
+        for leaf in dead_leaves {
+            test_assert!(leaf.is_some());
+            test_assert_eq!(
+                with_global(|f| f.leaf_refcount(leaf.unwrap_or(u16::MAX))),
+                0
+            );
+        }
+        test_assert!(
+            stratum::regime_of(DEAD).is_none(),
+            "an exited task's fit stream survived it"
+        );
+        test_assert_eq!(with_global(|f| f.seq_counts(a0, ALIVE)).map(|c| c.0), Some(2u16));
+        test_assert_eq!(with_global(|f| f.seq_counts(k0, 0)).map(|c| c.0), Some(2u16));
+        test_assert!(stratum::regime_of(ALIVE).is_some());
+        test_assert!(stratum::unregister(ALIVE));
+        with_global(|f| {
+            let _ = f.seq_release(a0, ALIVE);
+            let _ = f.seq_release(k0, 0);
+        });
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "ml_engine::deserialize_truncated_buffer_rejected",
@@ -807,6 +881,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::train_refuses_unbounded_epochs",
             test_train_refuses_unbounded_epochs,
+        );
+        crate::testing::register_test(
+            "ml_engine::release_task_frees_kv_and_fit",
+            test_release_task_frees_kv_and_fit,
         );
     }
 }
