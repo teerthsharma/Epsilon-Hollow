@@ -153,6 +153,7 @@ export default function EngineRack() {
                 disabled={isRunning}
                 className="shrink-0 p-1 rounded hover:bg-gov-accent/20 disabled:opacity-50"
                 title={isDrop ? "Drop dataset to run" : "Run analysis"}
+                aria-label={`Run ${eng.name}`}
               >
                 {isRunning ? (
                   <Loader2 size={12} className="animate-spin text-gov-accent" />
