@@ -166,6 +166,13 @@ unsafe fn map_page_inner(
         return Err(MapError);
     }
     pt[pt_idx].set_addr(phys, flags);
+    // Ring 3 may use a page only if U/S is set at every level of the walk, not
+    // just the leaf; the tables above are created supervisor-only.
+    if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+        for entry in [&mut pml4[pml4_idx], &mut pdpt[pdpt_idx], &mut pd[pd_idx]] {
+            entry.set_flags(entry.flags() | PageTableFlags::USER_ACCESSIBLE);
+        }
+    }
     Ok(())
 }
 
@@ -377,6 +384,11 @@ pub fn translate(virt: VirtAddr) -> Option<PhysAddr> {
 /// Helper: allocate a new zeroed page table if `entry` is unused,
 /// then return a mutable reference to it (via identity map).
 fn get_or_create_table(entry: &mut PageTableEntry) -> Result<&'static mut PageTable, MapError> {
+    // A huge leaf maps memory, not a table: descending into it would write
+    // entries into whatever physical memory it maps.
+    if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+        return Err(MapError);
+    }
     if entry.is_unused() {
         let frame = crate::memory::phys::alloc_frame().ok_or(MapError)?;
         let table = unsafe { &mut *(frame.as_u64() as *mut PageTable) };

@@ -618,12 +618,12 @@ impl ManifoldScheduler {
             self.governor.adapt(deviation, 0.01);
 
             let next_ctx = &next_task.context as *const TaskContext;
-            // Update TSS RSP0 if switching to a userspace task
+            // A userspace task enters the kernel on its own kernel stack: this
+            // CPU's TSS RSP0 for interrupts and exceptions, and the same slot
+            // for `syscall_entry`, which loads RSP from it.
             if next_task.is_userspace {
                 let stack_top = next_task.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
-                unsafe {
-                    crate::memory::gdt::set_kernel_stack(stack_top);
-                }
+                cpu.tss.privilege_stack_table[0] = x86_64::VirtAddr::new(stack_top);
                 // Set FS base for thread-local storage.
                 if next_task.tls_base != 0 {
                     crate::memory::virt::set_fs_base(next_task.tls_base);

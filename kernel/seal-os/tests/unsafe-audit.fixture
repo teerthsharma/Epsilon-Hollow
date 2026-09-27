@@ -61,9 +61,9 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 629
+total 628
 justified 17
-unjustified 612
+unjustified 611
 files 85
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
@@ -131,7 +131,7 @@ file net/udp.rs 5 0
 file process/context_switch.rs 2 1
 file process/elf.rs 11 0
 file process/hollow_asm.rs 4 0
-file process/scheduler.rs 46 2
+file process/scheduler.rs 45 2
 file process/signal.rs 21 0
 file process/task.rs 2 2
 file process/userspace.rs 3 0

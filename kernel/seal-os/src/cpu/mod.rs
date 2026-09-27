@@ -147,6 +147,9 @@ pub unsafe fn init_bsp() {
 
     let per_cpu = &mut *ptr;
     crate::memory::gdt::init_tss_for_cpu(per_cpu);
+    // The BSP never had a TSS loaded: an interrupt taken in ring 3 had no RSP0
+    // to switch to, and the double-fault handler's IST stack did not exist.
+    crate::memory::gdt::load_tss(per_cpu.tss_selector);
 
     // Set idle stack so context switches have a valid kernel stack
     let stack_top = per_cpu.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
