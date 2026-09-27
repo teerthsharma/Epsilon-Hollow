@@ -5479,10 +5479,6 @@ with:
                 format!("Welcome to Seal OS {version_tag}"),
             ),
             (
-                repo_root.join("README.md"),
-                format!("Seal OS {version_tag}"),
-            ),
-            (
                 repo_root
                     .join("kernel")
                     .join("seal-mkimage")
@@ -7012,9 +7008,11 @@ fn panic(info: &PanicInfo) -> ! {
         }
     }
 
-    #[test]
-    fn doc_claim_contract_requires_ubuntu_and_benchmark_guards() {
-        let readme = "\
+    // The README states what Seal OS is and links docs/RESULTS.md; the
+    // benchmark and capability claims, and the guards bound to them, live in
+    // docs/RESULTS.md.
+    const DOC_README: &str = "Seal OS\nEvidence: [docs/RESULTS.md](docs/RESULTS.md)\n";
+    const DOC_RESULTS: &str = "\
 not a blanket victory claim
 Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists
 raw Ubuntu artifact pending
@@ -7039,7 +7037,7 @@ grid/value-height projection
 `seal-mkimage --check-benchmark-log
 Hardware dispatch still needs a proof artifact
 ";
-        let benchmark = "\
+    const DOC_BENCHMARK: &str = "\
 That claim is not
 global and not automatic
 Ubuntu comparison numbers are still pending, so no global Ubuntu win is claimed
@@ -7049,58 +7047,102 @@ The second gate is the claim gate
 fs_mode=mock_block
 LAAMBA app proof
 ";
-        let ci = "\
+    const DOC_CI: &str = "\
 `seal-mkimage --check-aether-runtime /tmp/seal-os.log`
 `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log`
 `seal-mkimage --check-benchmark-log /tmp/seal-os.log`
 `seal-mkimage --compare-benchmark-logs /tmp/seal-os.log ubuntu-alloc.log`
 `seal-mkimage --check-current-benchmark-proof qemu-proof/proof-manifest.txt ubuntu-alloc.log .`
 ";
-        let gpu_doc = "\
+    const DOC_GPU: &str = "\
 The current QEMU proof uses the CPU fallback
 no current proof artifact establishes real GPU execution
 hardware `[GPU-BENCH]` artifact proves otherwise
 ";
 
-        assert!(check_doc_claim_contract_text(readme, benchmark, ci, gpu_doc).is_ok());
+    fn doc_contract(readme: &str, results: &str) -> Result<(), String> {
+        check_doc_claim_contract_text(readme, results, DOC_BENCHMARK, DOC_CI, DOC_GPU)
+    }
 
-        let bad_readme = readme.replace("raw Ubuntu artifact pending", "Ubuntu artifact captured");
-        assert!(check_doc_claim_contract_text(&bad_readme, benchmark, ci, gpu_doc).is_err());
+    #[test]
+    fn doc_claim_contract_binds_guards_to_the_results_file() {
+        // Guards in the README do not stand in for guards next to the claims.
+        let guards_in_readme = format!("{DOC_README}{DOC_RESULTS}");
+        assert!(doc_contract(&guards_in_readme, "").is_err());
 
-        let any_vm_overclaim = format!("{readme}\nSeal OS runs on any VM.\n");
-        assert!(check_doc_claim_contract_text(&any_vm_overclaim, benchmark, ci, gpu_doc).is_err());
+        // The README must link the evidence.
+        assert!(doc_contract("Seal OS\n", DOC_RESULTS).is_err());
 
-        let ubuntu_variant_overclaim = format!("{readme}\nSeal OS surpasses Ubuntu.\n");
-        assert!(
-            check_doc_claim_contract_text(&ubuntu_variant_overclaim, benchmark, ci, gpu_doc)
-                .is_err()
-        );
+        // Overclaims the README may not make, the results file may not make either.
+        for overclaim in ["Seal OS beats Ubuntu.", "Seal OS runs on any VM."] {
+            let results = format!("{DOC_RESULTS}\n{overclaim}\n");
+            assert!(doc_contract(DOC_README, &results).is_err(), "{overclaim}");
+        }
+    }
 
-        let default_credential_overclaim =
-            format!("{readme}\nDefault credentials: `seal` / `seal`\n");
-        assert!(
-            check_doc_claim_contract_text(&default_credential_overclaim, benchmark, ci, gpu_doc)
-                .is_err()
-        );
+    #[test]
+    fn doc_claim_contract_keeps_benchmark_victories_out_of_the_readme() {
+        assert!(doc_contract(DOC_README, DOC_RESULTS).is_ok(), "control");
+        for claim in [
+            "Seal OS is faster than Linux.",
+            "seal os is faster than ubuntu on alloc-frame",
+            "The allocator outperforms Linux.",
+            "It Beats Ubuntu at allocation.",
+            "Seal OS is better than Linux for ML.",
+        ] {
+            let readme = format!("{DOC_README}\n{claim}\n");
+            assert!(doc_contract(&readme, DOC_RESULTS).is_err(), "{claim}");
+        }
+    }
 
-        let gpu_overclaim = readme.replace(
+    #[test]
+    fn doc_claim_contract_keeps_release_references_out_of_the_readme() {
+        assert!(doc_contract(DOC_README, DOC_RESULTS).is_ok(), "control");
+        for line in [
+            "Release: Seal OS v0.4.7.5",
+            "[![release](https://img.shields.io/github/v/release/teerthsharma/Epsilon-Hollow)](https://github.com/teerthsharma/Epsilon-Hollow/releases/latest)",
+        ] {
+            let readme = format!("{DOC_README}\n{line}\n");
+            assert!(doc_contract(&readme, DOC_RESULTS).is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn doc_claim_contract_requires_ubuntu_and_benchmark_guards() {
+        assert!(doc_contract(DOC_README, DOC_RESULTS).is_ok());
+
+        let bad_results =
+            DOC_RESULTS.replace("raw Ubuntu artifact pending", "Ubuntu artifact captured");
+        assert!(doc_contract(DOC_README, &bad_results).is_err());
+
+        for overclaim in [
+            "Seal OS runs on any VM.",
+            "Seal OS surpasses Ubuntu.",
+            "Default credentials: `seal` / `seal`",
+            "The AMD GPU compute path executes shader binaries that are stubs.",
+        ] {
+            let readme = format!("{DOC_README}\n{overclaim}\n");
+            assert!(doc_contract(&readme, DOC_RESULTS).is_err(), "{overclaim}");
+        }
+
+        let gpu_overclaim = DOC_RESULTS.replace(
             "Hardware dispatch still needs a proof artifact",
             "they execute (the GPU doesn't crash)",
         );
-        assert!(check_doc_claim_contract_text(&gpu_overclaim, benchmark, ci, gpu_doc).is_err());
+        assert!(doc_contract(DOC_README, &gpu_overclaim).is_err());
 
-        let amd_shader_overclaim = format!(
-            "{readme}\nThe AMD GPU compute path executes shader binaries that are stubs.\n"
-        );
-        assert!(
-            check_doc_claim_contract_text(&amd_shader_overclaim, benchmark, ci, gpu_doc).is_err()
-        );
-
-        let gpu_doc_overclaim = gpu_doc.replace(
+        let gpu_doc_overclaim = DOC_GPU.replace(
             "no current proof artifact establishes real GPU execution",
             "Seal OS offloads topological computations to discrete GPUs",
         );
-        assert!(check_doc_claim_contract_text(readme, benchmark, ci, &gpu_doc_overclaim).is_err());
+        assert!(check_doc_claim_contract_text(
+            DOC_README,
+            DOC_RESULTS,
+            DOC_BENCHMARK,
+            DOC_CI,
+            &gpu_doc_overclaim
+        )
+        .is_err());
     }
 
     #[test]
@@ -7841,18 +7883,21 @@ fn check_language_hygiene(root: &Path) -> Result<(), String> {
 
 fn check_doc_claim_contract(root: &Path) -> Result<(), String> {
     let readme_path = root.join("README.md");
+    let results_path = root.join("docs").join("RESULTS.md");
     let benchmark_path = root.join("docs").join("BENCHMARK_PLAN.md");
     let ci_path = root.join("docs").join("CI.md");
     let gpu_path = root.join("docs").join("GPU_ACCELERATION.md");
     let readme = fs::read_to_string(&readme_path)
         .map_err(|e| format!("read {}: {e}", readme_path.display()))?;
+    let results = fs::read_to_string(&results_path)
+        .map_err(|e| format!("read {}: {e}", results_path.display()))?;
     let benchmark = fs::read_to_string(&benchmark_path)
         .map_err(|e| format!("read {}: {e}", benchmark_path.display()))?;
     let ci =
         fs::read_to_string(&ci_path).map_err(|e| format!("read {}: {e}", ci_path.display()))?;
     let gpu =
         fs::read_to_string(&gpu_path).map_err(|e| format!("read {}: {e}", gpu_path.display()))?;
-    check_doc_claim_contract_text(&readme, &benchmark, &ci, &gpu)?;
+    check_doc_claim_contract_text(&readme, &results, &benchmark, &ci, &gpu)?;
     check_manifoldpkg_shell_contract(root)?;
     check_installer_source_contract(root)?;
     check_ide_completion_source_contract(root)?;
@@ -8065,148 +8110,155 @@ fn check_release_workflow_contract_text(workflow: &str) -> Result<(), String> {
 
 fn check_doc_claim_contract_text(
     readme: &str,
+    results: &str,
     benchmark: &str,
     ci: &str,
     gpu_doc: &str,
 ) -> Result<(), String> {
     let required = [
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "not a blanket victory claim",
-            "README must deny global Ubuntu victory until benchmark artifacts exist",
+            "RESULTS.md must deny global Ubuntu victory until benchmark artifacts exist",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "Seal OS only claims a win over Ubuntu for a row after the same-machine benchmark exists",
-            "README must bind every Ubuntu win to same-machine benchmark evidence",
+            "RESULTS.md must bind every Ubuntu win to same-machine benchmark evidence",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "raw Ubuntu artifact pending",
-            "README allocator rows must expose the missing Ubuntu artifact",
+            "RESULTS.md allocator rows must expose the missing Ubuntu artifact",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`--check-current-benchmark-proof`",
-            "README must bind Ubuntu comparison claims to a current proof manifest",
+            "RESULTS.md must bind Ubuntu comparison claims to a current proof manifest",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "persistence_bytes_per_move=0",
-            "README must expose the metadata-only same-filesystem ManifoldFS proof marker",
+            "RESULTS.md must expose the metadata-only same-filesystem ManifoldFS proof marker",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "fs_mode=mock_block",
-            "README must prove ManifoldFS teleport against the persistent mock block-store path",
+            "RESULTS.md must prove ManifoldFS teleport against the persistent mock block-store path",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "Where Seal OS must still prove superiority",
-            "README must preserve the superiority gap statement",
+            "RESULTS.md must preserve the superiority gap statement",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "Minimal TLS 1.3 PSK record path",
-            "README must scope TLS claims to the implemented PSK-only path",
+            "RESULTS.md must scope TLS claims to the implemented PSK-only path",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "no X.509/PKI/ECDHE gate yet",
-            "README must expose missing production TLS gates",
+            "RESULTS.md must expose missing production TLS gates",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`signature=ed25519_fixture`",
-            "README must expose signed ManifoldPkg boot fixture proof",
+            "RESULTS.md must expose signed ManifoldPkg boot fixture proof",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`registry_index=ed25519_fixture`",
-            "README must expose signed ManifoldPkg registry index fixture proof",
+            "RESULTS.md must expose signed ManifoldPkg registry index fixture proof",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "Public remote release channel is still pending",
-            "README must expose missing ManifoldPkg remote release proof",
+            "RESULTS.md must expose missing ManifoldPkg remote release proof",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "[SECURITY] audit proof",
-            "README must expose audit flush boot proof marker",
+            "RESULTS.md must expose audit flush boot proof marker",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "[MM] cow-proof",
-            "README must expose COW rollback/no-fallback proof marker",
+            "RESULTS.md must expose COW rollback/no-fallback proof marker",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`seal`/`seal` is rejected",
-            "README must expose the blocked default credential proof",
+            "RESULTS.md must expose the blocked default credential proof",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "/var/log/audit.log",
-            "README must expose audit log VFS readback path",
+            "RESULTS.md must expose audit log VFS readback path",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "Read/write/create/mkdir/unlink/rmdir/rename/stat/readdir source paths are now `--check-doc-claim-contract` gated for both FAT and ext2",
-            "README must expose filesystem parity source gate before mounted fixture parity is claimed",
+            "RESULTS.md must expose filesystem parity source gate before mounted fixture parity is claimed",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "TopCrypt is topological encoding/obfuscation, not cryptographic protection",
-            "README must not market TopCrypt as encryption without AEAD/KDF proof",
+            "RESULTS.md must not market TopCrypt as encryption without AEAD/KDF proof",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "grid/value-height projection",
-            "README must match the implemented tensor renderer instead of claiming SVD",
+            "RESULTS.md must match the implemented tensor renderer instead of claiming SVD",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`seal-mkimage --check-aether-runtime",
-            "README must point Aether runtime claims at the audit gate",
+            "RESULTS.md must point Aether runtime claims at the audit gate",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "[LAAMBA] app proof:",
-            "README must expose the LAAMBA kernel app proof marker",
+            "RESULTS.md must expose the LAAMBA kernel app proof marker",
         ),
         (
-            "README.md",
-            readme,
+            "docs/RESULTS.md",
+            results,
             "`seal-mkimage --check-benchmark-log",
-            "README must point benchmark claims at the audit gate",
+            "RESULTS.md must point benchmark claims at the audit gate",
+        ),
+        (
+            "docs/RESULTS.md",
+            results,
+            "Hardware dispatch still needs a proof artifact",
+            "RESULTS.md must keep GPU acceleration scoped to unproven hardware dispatch",
         ),
         (
             "README.md",
             readme,
-            "Hardware dispatch still needs a proof artifact",
-            "README must keep GPU acceleration scoped to unproven hardware dispatch",
+            "docs/RESULTS.md",
+            "README must link the file that carries the measured claims and their guards",
         ),
         (
             "docs/BENCHMARK_PLAN.md",
@@ -8309,7 +8361,8 @@ fn check_doc_claim_contract_text(
         return Err(missing.join("\n"));
     }
 
-    let banned_readme_claims = [
+    // Overclaims neither the README nor the results file may make.
+    let banned_claims = [
         (
             "Seal OS is faster than Ubuntu",
             "global speed claim needs workload and evidence",
@@ -8391,13 +8444,53 @@ fn check_doc_claim_contract_text(
             "AMD shader execution must not be claimed without hardware proof",
         ),
     ];
-    let banned_hits: Vec<String> = banned_readme_claims
+    let banned_hits: Vec<String> = [("README.md", readme), ("docs/RESULTS.md", results)]
         .iter()
-        .filter(|(needle, _)| readme.contains(needle))
-        .map(|(needle, reason)| format!("README.md: banned `{needle}` ({reason})"))
+        .flat_map(|&(file, text)| {
+            banned_claims
+                .iter()
+                .filter(move |(needle, _)| text.contains(needle))
+                .map(move |(needle, reason)| format!("{file}: banned `{needle}` ({reason})"))
+        })
         .collect();
     if !banned_hits.is_empty() {
         return Err(banned_hits.join("\n"));
+    }
+
+    // The README carries no benchmark or capability claim at all, so no
+    // comparative win in any casing; wins are made, and guarded, in
+    // docs/RESULTS.md. It carries no release reference either.
+    let readme_lower = readme.to_ascii_lowercase();
+    let victories = [
+        "faster than ubuntu",
+        "faster than linux",
+        "beats ubuntu",
+        "beats linux",
+        "outperforms ubuntu",
+        "outperforms linux",
+        "better than ubuntu",
+        "better than linux",
+        "surpasses ubuntu",
+        "surpasses linux",
+    ];
+    let releases = [
+        "release: seal os",
+        "/releases/latest",
+        "shields.io/github/v/release",
+    ];
+    let readme_hits: Vec<String> = victories
+        .iter()
+        .map(|needle| (needle, "benchmark claims belong in docs/RESULTS.md"))
+        .chain(
+            releases
+                .iter()
+                .map(|needle| (needle, "no release reference")),
+        )
+        .filter(|(needle, _)| readme_lower.contains(**needle))
+        .map(|(needle, reason)| format!("README.md: banned `{needle}`, any case ({reason})"))
+        .collect();
+    if !readme_hits.is_empty() {
+        return Err(readme_hits.join("\n"));
     }
 
     let banned_gpu_claims = [
