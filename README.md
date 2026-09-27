@@ -259,7 +259,7 @@ flowchart TD
 The surrounding workspace supplies the mathematics and the tooling: `aether-core` (certified β₀, certified top-k, trajectory shape, spherical Voronoi indices), `aether-verified` (the theorem kernels and their Lean 4 sources), Aether-Lang (a scripting language whose `no_std` runtime the kernel embeds) and `seal-mkimage` (the disk-image builder and every boot-log gate). Repository-wide line count, rewritten on each push to `main`:
 
 <!-- RUST_LINE_COUNT_START -->
-**189926 lines of Rust** across 507 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **191749 total**
+**194779 lines of Rust** across 509 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **196602 total**
 <!-- RUST_LINE_COUNT_END -->
 
 ## Where it is going
