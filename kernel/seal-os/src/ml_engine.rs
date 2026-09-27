@@ -351,9 +351,17 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         LossConfig::MSE,
     );
 
+    let mut prev_output = None;
     for _ in 0..n_layers {
         let input_size = read_u32(bytes, &mut off).ok_or("Missing input_size")? as usize;
         let output_size = read_u32(bytes, &mut off).ok_or("Missing output_size")? as usize;
+        // A layer consumes the previous layer's output. A mismatch loads and
+        // then aborts the kernel in the first `predict`, where
+        // `Tensor::matmul` asserts the inner dimensions agree.
+        if prev_output.is_some_and(|p| p != input_size) {
+            return Err(String::from("Layer input does not match previous layer output"));
+        }
+        prev_output = Some(output_size);
         let act_u8 = read_u8(bytes, &mut off).ok_or("Missing activation")?;
         let activation = activation_from_u8(act_u8).ok_or("Invalid activation")?;
 
@@ -375,8 +383,13 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
             return Err(String::from("Weight length does not match layer shape"));
         }
         let mut w_data = Vec::with_capacity(w_len);
+        // A NaN or infinite parameter makes every prediction NaN.
         for _ in 0..w_len {
-            w_data.push(read_f64(bytes, &mut off).ok_or("Missing weight")?);
+            w_data.push(
+                read_f64(bytes, &mut off)
+                    .filter(|v| v.is_finite())
+                    .ok_or("Missing or non-finite weight")?,
+            );
         }
         // Biases — same buffer-derived cap, and count must equal output_size
         // (bias tensor shape is [output_size, 1]) for the same reason.
@@ -389,7 +402,11 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         }
         let mut b_data = Vec::with_capacity(b_len);
         for _ in 0..b_len {
-            b_data.push(read_f64(bytes, &mut off).ok_or("Missing bias")?);
+            b_data.push(
+                read_f64(bytes, &mut off)
+                    .filter(|v| v.is_finite())
+                    .ok_or("Missing or non-finite bias")?,
+            );
         }
 
         let mut layer = DenseLayer::new(input_size, output_size, activation, None);
@@ -669,6 +686,58 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A `SEALML01` image of `layers`, each `(input, output, weight, bias)`
+    /// with every weight and every bias set to the given value.
+    fn model(layers: &[(u32, u32, f64, f64)]) -> Vec<u8> {
+        let mut b = b"SEALML01".to_vec();
+        b.extend_from_slice(&(layers.len() as u32).to_le_bytes());
+        for &(input, output, w, bias) in layers {
+            b.extend_from_slice(&input.to_le_bytes());
+            b.extend_from_slice(&output.to_le_bytes());
+            b.push(3); // Linear
+            let n = input as usize * output as usize;
+            b.extend_from_slice(&(n as u32).to_le_bytes());
+            for _ in 0..n {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+            b.extend_from_slice(&output.to_le_bytes());
+            for _ in 0..output {
+                b.extend_from_slice(&bias.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// RED: the loader checked each layer against its own header and never
+    /// against its neighbour, so a model whose second layer takes 3 inputs
+    /// after a first that produces 2 loaded as `Ok`, and its first `predict`
+    /// reached `Tensor::matmul`'s `assert_eq!` — an abort under
+    /// `panic = "abort"`. Non-finite weights and biases loaded as `Ok` as well.
+    /// All are refused at load; a chained, finite model still loads and runs.
+    fn test_unchained_or_nonfinite_model_rejected() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&model(&[(2, 2, 0.5, 0.0), (3, 1, 0.5, 0.0)])).is_err(),
+            "a layer whose input width is not the previous layer's output must be refused"
+        );
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            test_assert!(
+                deserialize_mlp(&model(&[(2, 2, bad, 0.0)])).is_err(),
+                "a non-finite weight must be refused"
+            );
+            test_assert!(
+                deserialize_mlp(&model(&[(2, 2, 0.5, bad)])).is_err(),
+                "a non-finite bias must be refused"
+            );
+        }
+        let Ok(mut mlp) = deserialize_mlp(&model(&[(2, 3, 0.5, 0.0), (3, 1, 0.5, 0.0)])) else {
+            return TestResult::Fail("a chained, finite model must still load");
+        };
+        let out = mlp.predict(&Tensor::new(&[1.0, 1.0], &[2, 1]));
+        test_assert_eq!(out.shape, vec![1, 1]);
+        test_assert_eq!(out.get(&[0, 0]), 1.5);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "ml_engine::deserialize_truncated_buffer_rejected",
@@ -701,6 +770,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::deserialize_valid_roundtrip_still_loads",
             test_valid_roundtrip_still_loads,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_unchained_or_nonfinite_model_rejected",
+            test_unchained_or_nonfinite_model_rejected,
         );
     }
 }
