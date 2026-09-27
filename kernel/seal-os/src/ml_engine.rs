@@ -136,6 +136,13 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     Ok(a.matmul(b))
 }
 
+/// Most epochs one `ml train` may ask for.
+///
+/// `MLP::fit` always runs the whole budget it is given, and the shell runs it
+/// on the kernel's event loop, so the number typed after `ml train` is how
+/// long the machine stops answering. Ten times the shell's default of 1000.
+pub const MAX_DEMO_EPOCHS: usize = 10_000;
+
 /// Train a simple MLP on synthetic XOR-like data.
 /// Returns (human-readable report, serialized model bytes).
 ///
@@ -147,7 +154,13 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 /// fixture uses the same `[2, 1]` / `[1, 1]` pair. Every read below indexes
 /// with both axes for the same reason — `Tensor::compute_offset` asserts that
 /// the index rank matches the shape rank.
-pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
+pub fn demo_train_mlp(epochs: usize) -> Result<(String, Vec<u8>), String> {
+    if epochs > MAX_DEMO_EPOCHS {
+        return Err(format!(
+            "{} epochs is past the {} one `ml train` may run",
+            epochs, MAX_DEMO_EPOCHS
+        ));
+    }
     let mut mlp = MLP::new(
         OptimizerConfig::Adam {
             learning_rate: 0.01,
@@ -206,7 +219,7 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
     }
 
     let bytes = serialize_mlp(&mlp);
-    (out, bytes)
+    Ok((out, bytes))
 }
 
 /// Format a tensor for display.
@@ -676,7 +689,9 @@ pub mod tests {
     /// Reaches `demo_train_mlp`, so it is also the case that the rank-1
     /// training samples aborted in `Tensor::matmul` before the fix.
     fn test_valid_roundtrip_still_loads() -> TestResult {
-        let (_, bytes) = demo_train_mlp(1);
+        let Ok((_, bytes)) = demo_train_mlp(1) else {
+            return TestResult::Fail("one epoch must train");
+        };
         let mlp = deserialize_mlp(&bytes);
         test_assert!(
             mlp.is_ok(),
@@ -738,6 +753,20 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: `ml train <n>` handed `n` straight to `MLP::fit`, which runs the
+    /// full budget on the shell's thread, so `ml train 18446744073709551615`
+    /// never returned. A count past `MAX_DEMO_EPOCHS` is refused before any
+    /// epoch runs. Zero epochs is a well-formed request and still reports.
+    fn test_train_refuses_unbounded_epochs() -> TestResult {
+        test_assert!(
+            demo_train_mlp(MAX_DEMO_EPOCHS + 1).is_err(),
+            "an epoch count past the ceiling must be refused"
+        );
+        test_assert!(demo_train_mlp(usize::MAX).is_err());
+        test_assert!(demo_train_mlp(0).is_ok(), "zero epochs must still report");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "ml_engine::deserialize_truncated_buffer_rejected",
@@ -774,6 +803,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::deserialize_unchained_or_nonfinite_model_rejected",
             test_unchained_or_nonfinite_model_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::train_refuses_unbounded_epochs",
+            test_train_refuses_unbounded_epochs,
         );
     }
 }
