@@ -12,6 +12,7 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use sha2::{Digest, Sha256};
 use spin::Mutex;
 
 use crate::fs::vfs::VfsNode;
@@ -64,7 +65,7 @@ fn t1_permission_bits(uid: u32, gid: u32, groups: &[u32], node: &VfsNode) -> u16
 /// in the last 16 recorded accesses.
 ///
 /// Despite the T2 label this is not spectral — it is a linear scan of a 16-entry
-/// ring buffer comparing an FNV-style path hash and a tick bucket. There is no
+/// ring buffer comparing a SHA-256 path hash and a tick bucket. There is no
 /// Laplacian, eigendecomposition, or contraction operator involved.
 fn t2_detect_anomaly(path: &str, _uid: u32) -> bool {
     let current_tick = crate::drivers::interrupts::ticks();
@@ -88,12 +89,15 @@ fn t2_detect_anomaly(path: &str, _uid: u32) -> bool {
     !normal
 }
 
+/// The first eight bytes of SHA-256 of `path`.
+///
+/// The multiply-add hash this replaces is a polynomial mod 2^64, which maps a
+/// 1024-byte Thue–Morse word and its complement to one value; FNV-1a does the
+/// same from 2048 bytes, since its low bits see only the inputs' low bits. A
+/// new path that collides with a recorded one reads as seen.
 fn hash_path(path: &str) -> u64 {
-    let mut h = 0x517cc1b727220a95u64;
-    for b in path.bytes() {
-        h = h.wrapping_mul(0x100000001b3).wrapping_add(b as u64);
-    }
-    h
+    let digest = Sha256::digest(path.as_bytes());
+    u64::from_le_bytes(core::array::from_fn(|i| digest[i]))
 }
 
 /// T3: Shannon entropy of the 12 mode bits.
@@ -225,4 +229,83 @@ pub fn check_access(
 pub fn trigger_anomaly() {
     let current_tick = crate::drivers::interrupts::ticks();
     ANOMALY_TICK.store(current_tick, Ordering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Tests -- run by the in-kernel harness (crate::testing), not `cargo test`.
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "test-mode"))]
+pub mod tests {
+    use super::*;
+    use crate::test_assert;
+    use crate::testing::TestResult;
+    use alloc::string::String;
+
+    /// `/` then the first `n` Thue–Morse symbols over `a`/`b`, and the same
+    /// path with every symbol complemented.
+    fn thue_morse_paths(n: usize) -> (String, String) {
+        let symbol = |i: usize, flip: u32| {
+            if (i.count_ones() + flip) % 2 == 0 {
+                'a'
+            } else {
+                'b'
+            }
+        };
+        let path = |flip| {
+            core::iter::once('/')
+                .chain((0..n).map(|i| symbol(i, flip)))
+                .collect()
+        };
+        (path(0), path(1))
+    }
+
+    /// Distinct Thue–Morse paths hash apart. A multiply-add hash mod 2^64
+    /// maps the pair to one value from 1024 symbols on, FNV-1a from 2048.
+    fn test_thue_morse_paths_hash_apart() -> TestResult {
+        for n in [1024, 2048, 4096] {
+            let (t, c) = thue_morse_paths(n);
+            crate::serial_println!(
+                "[manifold_acl] n={} hash_path {:#018x} vs {:#018x}",
+                n,
+                hash_path(&t),
+                hash_path(&c)
+            );
+            test_assert!(
+                hash_path(&t) != hash_path(&c),
+                "two distinct Thue-Morse paths share a hash"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// A new path is anomalous even when the history holds its Thue–Morse
+    /// complement. The record's tick bucket is one no tick reaches, so only a
+    /// path-hash match could make the new path read as seen.
+    fn test_new_path_is_not_read_as_seen() -> TestResult {
+        let (seen, new) = thue_morse_paths(2048);
+        let saved = core::mem::take(&mut *ACCESS_HISTORY.lock());
+        ACCESS_HISTORY.lock().push(AccessRecord {
+            path_hash: hash_path(&seen),
+            tick_bucket: u64::MAX,
+        });
+        let anomalous = t2_detect_anomaly(&new, 0);
+        *ACCESS_HISTORY.lock() = saved;
+        test_assert!(
+            anomalous,
+            "a new path matched a recorded path's hash and skipped the anomaly check"
+        );
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "security::manifold_acl::thue_morse_paths_hash_apart",
+            test_thue_morse_paths_hash_apart,
+        );
+        crate::testing::register_test(
+            "security::manifold_acl::new_path_is_not_read_as_seen",
+            test_new_path_is_not_read_as_seen,
+        );
+    }
 }

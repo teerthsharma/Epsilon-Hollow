@@ -346,13 +346,11 @@ impl<const D: usize> SparseAttentionGraph<D> {
             for j in (i + 1)..self.point_count {
                 let d = self.points[i].distance(&self.points[j]);
                 let needed_margin = 2.0 * (gamma * d + eta) * (1.0 + 4.0 * u);
-                let gap = libm::fabs(d - self.epsilon);
-                // from teerthsharma/separatrix separatrix/api.py:365: decided only where D - R > t or D + R < t
-                if gap.is_nan() || gap <= needed_margin {
+                if threshold_trit(d, needed_margin, self.epsilon) == 0 {
                     return Err(PersistenceError::UndecidedEdge {
                         i,
                         j,
-                        gap,
+                        gap: libm::fabs(d - self.epsilon),
                         needed_margin,
                     });
                 }
@@ -451,6 +449,21 @@ impl<const D: usize> SparseAttentionGraph<D> {
     /// Clear the graph
     pub fn clear(&mut self) {
         self.point_count = 0;
+    }
+}
+
+/// Which side of the threshold `t` a value `d` with rounding radius `r` lies
+/// on: `1` above, `-1` below, `0` when the radius reaches `t` or any input is
+/// NaN. Each comparison is of a rounded `d ∓ r` against the float `t`, and
+/// rounding is monotone, so a nonzero answer holds for the exact `d ∓ r` too.
+// from teerthsharma/separatrix separatrix/api.py:365: threshold trit
+pub(crate) fn threshold_trit(d: f64, r: f64, t: f64) -> i8 {
+    if d - r > t {
+        1
+    } else if d + r < t {
+        -1
+    } else {
+        0
     }
 }
 

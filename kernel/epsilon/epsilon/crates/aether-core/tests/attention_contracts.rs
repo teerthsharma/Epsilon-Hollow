@@ -16,6 +16,7 @@ use aether_core::attention::{
     select_mask, select_mask_with_report, selection_dot_cost, single_linkage_clusters,
     sparse_attention, Selector, TopKRefusal,
 };
+use aether_core::scheduled::ScheduleError;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Deterministic inputs
@@ -82,8 +83,8 @@ fn a_full_mask_reproduces_dense_attention_exactly() {
     // same order when nothing is masked out.
     for (seq, head_dim) in [(1usize, 4usize), (5, 3), (8, 8), (13, 7), (17, 6)] {
         let (q, k, v) = qkv(seq, head_dim, 42);
-        let dense = dense_attention(&q, &k, &v, seq, head_dim);
-        let sparse = sparse_attention(&q, &k, &v, seq, head_dim, &full_mask(seq));
+        let dense = dense_attention(&q, &k, &v, seq, head_dim).unwrap();
+        let sparse = sparse_attention(&q, &k, &v, seq, head_dim, &full_mask(seq)).unwrap();
 
         assert_eq!(dense.len(), seq * head_dim);
         for (i, (d, s)) in dense.iter().zip(sparse.iter()).enumerate() {
@@ -102,7 +103,7 @@ fn attention_output_is_a_convex_combination_of_values() {
     // missing normalisation and a wrong reduction axis.
     let (seq, head_dim) = (11usize, 5usize);
     let (q, k, v) = qkv(seq, head_dim, 7);
-    let out = dense_attention(&q, &k, &v, seq, head_dim);
+    let out = dense_attention(&q, &k, &v, seq, head_dim).unwrap();
 
     for d in 0..head_dim {
         let column: Vec<f64> = (0..seq).map(|t| v[t * head_dim + d]).collect();
@@ -127,7 +128,7 @@ fn a_uniform_query_averages_the_values() {
     let (_, k, v) = qkv(seq, head_dim, 3);
     let q = vec![0.0; seq * head_dim];
 
-    let out = dense_attention(&q, &k, &v, seq, head_dim);
+    let out = dense_attention(&q, &k, &v, seq, head_dim).unwrap();
     for d in 0..head_dim {
         let mean: f64 = (0..seq).map(|t| v[t * head_dim + d]).sum::<f64>() / seq as f64;
         for i in 0..seq {
@@ -156,13 +157,13 @@ fn a_masked_key_contributes_exactly_nothing() {
     let (row, blocked) = (3usize, 6usize);
     mask[row * seq + blocked] = false;
 
-    let before = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let before = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
 
     // Perturb the value row that row 3 is forbidden to see.
     for d in 0..head_dim {
         v[blocked * head_dim + d] += 100.0;
     }
-    let after = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let after = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
 
     for d in 0..head_dim {
         assert_eq!(
@@ -280,7 +281,7 @@ fn no_output_position_depends_on_a_later_position() {
     let (q, k, v) = qkv(seq, head_dim, 23);
     let mask = causal_mask(seq);
 
-    let base = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let base = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
 
     for j in 1..seq {
         let mut k2 = k.clone();
@@ -289,7 +290,7 @@ fn no_output_position_depends_on_a_later_position() {
             k2[j * head_dim + d] += 7.5;
             v2[j * head_dim + d] -= 3.25;
         }
-        let perturbed = sparse_attention(&q, &k2, &v2, seq, head_dim, &mask);
+        let perturbed = sparse_attention(&q, &k2, &v2, seq, head_dim, &mask).unwrap();
 
         for i in 0..j {
             for d in 0..head_dim {
@@ -353,7 +354,7 @@ fn an_all_masked_row_returns_zeros_rather_than_nan() {
         mask[empty_row * seq + j] = false;
     }
 
-    let out = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let out = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
 
     for d in 0..head_dim {
         let got = out[empty_row * head_dim + d];
@@ -383,7 +384,7 @@ fn large_logits_do_not_overflow_the_softmax() {
     let big_q: Vec<f64> = q.iter().map(|x| x * 400.0).collect();
     let big_k: Vec<f64> = k.iter().map(|x| x * 400.0).collect();
 
-    let out = dense_attention(&big_q, &big_k, &v, seq, head_dim);
+    let out = dense_attention(&big_q, &big_k, &v, seq, head_dim).unwrap();
     assert!(
         out.iter().all(|x| x.is_finite()),
         "large logits produced non-finite output: {out:?}"
@@ -397,6 +398,27 @@ fn large_logits_do_not_overflow_the_softmax() {
         });
         assert!(matches, "row {i} did not saturate onto a single value row");
     }
+}
+
+#[test]
+fn an_overflowed_score_is_refused_rather_than_answered_as_nan() {
+    // Finite q and k still overflow q.k: 1e200 * -1e200 is -inf and the lone
+    // key's weight is exp(-inf - -inf) = NaN; with +inf it is exp(inf - inf).
+    for (q, k) in [(1e200, -1e200), (1e200, 1e200), (f64::NAN, 1.0)] {
+        assert_eq!(
+            sparse_attention(&[q], &[k], &[3.0], 1, 1, &[true]),
+            Err(ScheduleError::NonFiniteScore { row: 0, col: 0 }),
+            "q = {q:e}, k = {k:e} was not refused"
+        );
+    }
+    // The refusal names the pair, and a masked-out overflow is not refused:
+    // q0.k1 = -inf is row 0's only non-finite score.
+    let (q, k, v) = ([1e200, 1.0], [1.0, -1e200], [3.0, 5.0]);
+    assert_eq!(
+        sparse_attention(&q, &k, &v, 2, 1, &full_mask(2)),
+        Err(ScheduleError::NonFiniteScore { row: 0, col: 1 })
+    );
+    assert!(sparse_attention(&q, &k, &v, 2, 1, &causal_mask(2)).is_ok());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -422,9 +444,9 @@ fn repeated_runs_are_bitwise_identical() {
         true,
     );
 
-    let first = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let first = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
     for run in 1..5 {
-        let again = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+        let again = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
         assert_eq!(first, again, "run {run} differed from run 0");
         let mask_again = select_mask(
             Selector::Topological {
@@ -456,7 +478,7 @@ fn shapes_around_the_block_boundary_are_handled() {
         // head_dim deliberately includes a non-power-of-two.
         for head_dim in [1usize, 3, 8, 6] {
             let (q, k, v) = qkv(seq, head_dim, 43);
-            let out = dense_attention(&q, &k, &v, seq, head_dim);
+            let out = dense_attention(&q, &k, &v, seq, head_dim).unwrap();
             assert_eq!(
                 out.len(),
                 seq * head_dim,
@@ -467,7 +489,7 @@ fn shapes_around_the_block_boundary_are_handled() {
                 "seq {seq}, head_dim {head_dim}: non-finite output"
             );
 
-            let sparse = sparse_attention(&q, &k, &v, seq, head_dim, &causal_mask(seq));
+            let sparse = sparse_attention(&q, &k, &v, seq, head_dim, &causal_mask(seq)).unwrap();
             assert_eq!(sparse.len(), seq * head_dim);
             assert!(sparse.iter().all(|x| x.is_finite()));
         }
@@ -477,7 +499,7 @@ fn shapes_around_the_block_boundary_are_handled() {
 #[test]
 fn a_single_position_attends_to_itself() {
     let (q, k, v) = qkv(1, 4, 47);
-    let out = dense_attention(&q, &k, &v, 1, 4);
+    let out = dense_attention(&q, &k, &v, 1, 4).unwrap();
     for d in 0..4 {
         assert!(
             (out[d] - v[d]).abs() < 1e-12,
@@ -784,7 +806,7 @@ fn the_routed_selector_obeys_every_contract_the_others_do() {
             "selector non-deterministic on run {run}"
         );
     }
-    let out = sparse_attention(&q, &k, &v, seq, head_dim, &mask);
+    let out = sparse_attention(&q, &k, &v, seq, head_dim, &mask).unwrap();
     assert!(out.iter().all(|x| x.is_finite()));
 
     // Global scale equivariance.

@@ -74,7 +74,7 @@ fn agrees_with_the_index_convention_on_random_pairs() {
 
 #[test]
 fn small_separations_survive_the_regime_a_separation_check_operates_in() {
-    // `verify_separation` compares against `theta_min - 1e-6`, so accuracy at
+    // `verify_separation` refuses a pair within its rounding radius, so accuracy at
     // small separations is what actually matters. The acos-of-dot-product form
     // returned 9.998224e-7 for a true 1e-6 and exactly 0.0 for a true 1e-8,
     // reporting distinct points as coincident. Haversine holds both.

@@ -376,7 +376,7 @@ fn a_dense_schedule_reproduces_full_causal_attention() {
         let schedule = dense_causal_block_schedule(num_blocks);
 
         let flash = scheduled_attention(&q, &k, &v, seq, head_dim, &schedule, block_size).unwrap();
-        let reference = sparse_attention(&q, &k, &v, seq, head_dim, &causal_mask(seq));
+        let reference = sparse_attention(&q, &k, &v, seq, head_dim, &causal_mask(seq)).unwrap();
 
         let diff = max_abs_diff(&flash, &reference);
         assert!(
@@ -686,6 +686,12 @@ fn an_overflowed_score_is_refused_rather_than_answered_as_nan() {
             out,
             Err(ScheduleError::NonFiniteScore { row: 0, col: 0 }),
             "q = {q:e}, k = {k:e} was not refused"
+        );
+        // The reference the kernel is checked against refuses the same score.
+        assert_eq!(
+            dense_masked_attention(&[q], &[k], &[3.0], 1, 1, &schedule, 1),
+            Err(ScheduleError::NonFiniteScore { row: 0, col: 0 }),
+            "q = {q:e}, k = {k:e} was not refused by the reference"
         );
     }
 }
