@@ -550,7 +550,31 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Guard. `f32::from_str` accepts `nan`, `inf` and literals past
+    /// `f32::MAX`, so a CSV can hand the viewer non-finite cells. They stay
+    /// data: the tensor is still rectangular, each such cell's point comes out
+    /// NaN, the value the renderer skips, and the grid mesh still builds.
+    fn test_nonfinite_csv_cells_stay_drawable() -> TestResult {
+        let t = parse_csv("nan,1\ninf,-inf\n1e39,-2\n");
+        test_assert!(t.is_rectangular());
+        test_assert_eq!(t.shape, vec![3, 2]);
+        let points = tensor_to_point_cloud(&t);
+        test_assert_eq!(points.len(), 6);
+        test_assert!(
+            points.iter().all(|p| p.iter().all(|c| !c.is_infinite())),
+            "a non-finite cell produced an infinite coordinate"
+        );
+        let mesh = point_cloud_to_mesh_grid(&points, &t.data, 3, 2);
+        test_assert_eq!(mesh.mesh.vertices.len(), 6);
+        test_assert_eq!(mesh.mesh.triangles.len(), 4);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "tensor_viz::nonfinite_csv_cells_stay_drawable",
+            test_nonfinite_csv_cells_stay_drawable,
+        );
         crate::testing::register_test("tensor_viz::ragged_csv_refused", test_ragged_csv_refused);
         crate::testing::register_test(
             "tensor_viz::non_numeric_field_refused",

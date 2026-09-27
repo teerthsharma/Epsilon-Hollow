@@ -771,6 +771,18 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Guard. A layer may declare a width no weight backs when its other
+    /// dimension is zero: `u32::MAX × 0` is zero weights. Nothing may be
+    /// sized from the declared width alone, so the load returns at once
+    /// instead of attempting a 32 GiB allocation.
+    fn test_zero_area_layer_allocates_nothing() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&model(&[(u32::MAX, 0, 0.0, 0.0)])).is_ok(),
+            "a zero-area layer is well formed"
+        );
+        TestResult::Pass
+    }
+
     /// RED: `ml train <n>` handed `n` straight to `MLP::fit`, which runs the
     /// full budget on the shell's thread, so `ml train 18446744073709551615`
     /// never returned. A count past `MAX_DEMO_EPOCHS` is refused before any
@@ -900,6 +912,10 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::deserialize_unchained_or_nonfinite_model_rejected",
             test_unchained_or_nonfinite_model_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_zero_area_layer_allocates_nothing",
+            test_zero_area_layer_allocates_nothing,
         );
         crate::testing::register_test(
             "ml_engine::train_refuses_unbounded_epochs",

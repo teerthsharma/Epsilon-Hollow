@@ -1129,6 +1129,121 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Guard. A NaN or infinite loss is counted and latched, and it never
+    /// enters the window: every measured signal must equal the signal of a
+    /// twin stream that was never sent it, including a rejection during the
+    /// delay-embedding warm-up. Re-registering the handle clears the latch.
+    fn test_nonfinite_input_leaves_window_clean() -> TestResult {
+        let mut dirty = FitStream::new(DEFAULT_CALIBRATION);
+        let mut clean = FitStream::new(DEFAULT_CALIBRATION);
+        for t in 0..PROOF_STEPS {
+            match t {
+                1 => dirty.observe(f64::NAN, 0.5),
+                40 => dirty.observe(0.5, f64::INFINITY),
+                90 => dirty.observe(f64::NEG_INFINITY, f64::NAN),
+                _ => {}
+            }
+            let (a, b) = ProofCase::Overfit.sample(t);
+            dirty.observe(a, b);
+            clean.observe(a, b);
+        }
+        let (d, c) = (dirty.signals(), clean.signals());
+        test_assert_eq!(d.nonfinite, 3);
+        test_assert_eq!(d.samples, c.samples);
+        test_assert_eq!(d.points, c.points);
+        test_assert!(
+            d.loop_score == c.loop_score
+                && d.h0_death == c.h0_death
+                && d.shatter == c.shatter
+                && d.spread == c.spread
+                && d.resid_drift == c.resid_drift
+                && d.train_drift == c.train_drift,
+            "a rejected non-finite loss changed the window"
+        );
+        test_assert_eq!(dirty.regime(), Regime::Collapsing);
+        test_assert_eq!(clean.regime(), Regime::Overfit);
+
+        let handle = 0xF17_0004;
+        register(handle);
+        observe(handle, f64::NAN, f64::NAN);
+        test_assert!(
+            matches!(regime_of(handle), Some((Regime::Collapsing, _, _))),
+            "the registry must latch a non-finite loss"
+        );
+        register(handle);
+        for t in 0..PROOF_STEPS {
+            let (a, b) = ProofCase::Overfit.sample(t);
+            observe(handle, a, b);
+        }
+        test_assert!(
+            matches!(regime_of(handle), Some((Regime::Overfit, _, _))),
+            "re-registering must clear the latch"
+        );
+        test_assert!(unregister(handle));
+        TestResult::Pass
+    }
+
+    /// Guard. Finite losses whose differences overflow (`1e308 − (−1e308)` is
+    /// `inf`) fail closed as `Collapsing` while they are in the window, and do
+    /// not latch: once `STRATUM_WINDOW` healthy steps have pushed them out, the
+    /// verdict is the healthy one again.
+    fn test_overflowed_window_recovers() -> TestResult {
+        let mut s = FitStream::new(DEFAULT_CALIBRATION);
+        for i in 0..32u32 {
+            let v = if i % 2 == 0 { f64::MAX } else { -f64::MAX };
+            s.observe(-v, v);
+        }
+        test_assert_eq!(s.signals().nonfinite, 0);
+        test_assert_eq!(s.regime(), Regime::Collapsing);
+        for t in 0..PROOF_STEPS {
+            let (a, b) = ProofCase::WellFit.sample(t);
+            s.observe(a, b);
+        }
+        test_assert!(s.signals().measurable(), "the overflow outlived the window");
+        test_assert_eq!(s.regime(), Regime::WellFit);
+        TestResult::Pass
+    }
+
+    /// Guard. A strictly falling loss held entirely in the subnormal range is
+    /// finite, so it is measured, not rejected: every signal comes back a real
+    /// number, the monotone certificate still zeroes the fold, and the
+    /// verdict is the monotone controls' `Underfit`, not a fail-closed one.
+    fn test_subnormal_window_is_measured() -> TestResult {
+        let mut s = FitStream::new(DEFAULT_CALIBRATION);
+        let step = f64::MIN_POSITIVE / 1024.0;
+        test_assert!(step > 0.0 && step < f64::MIN_POSITIVE);
+        for t in 0..PROOF_STEPS {
+            let v = (PROOF_STEPS - t) as f64 * step;
+            s.observe(v, v);
+        }
+        let sig = s.signals();
+        test_assert!(sig.measurable(), "a subnormal window must be measured");
+        test_assert!(sig.loop_score == 0.0, "a monotone window has no fold");
+        test_assert_eq!(s.regime(), Regime::Underfit);
+        TestResult::Pass
+    }
+
+    /// Guard. An unregistered or already-unregistered handle is refused by
+    /// every entry point, and a second unregister neither succeeds nor clears
+    /// a threshold published since.
+    fn test_stale_handle_refused() -> TestResult {
+        let handle = 0xF17_0005;
+        register(handle);
+        test_assert!(unregister(handle));
+        test_assert!(!unregister(handle), "a double unregister must fail");
+        test_assert!(observe(handle, 0.5, 0.5).is_none());
+        test_assert!(regime_of(handle).is_none());
+        test_assert!(!calibrate(handle, 0, 0.5));
+        test_assert!(report(handle).is_none());
+        apply_action(&plan_action(Regime::Overfit));
+        test_assert!(!unregister(handle));
+        test_assert_eq!(training_prefetch_epsilon(), Some(0.6));
+        // Leave the global as this test found it.
+        register(handle);
+        unregister(handle);
+        TestResult::Pass
+    }
+
     fn test_proof_line_passes() -> TestResult {
         let line = stratum_proof_line();
         test_assert!(line.starts_with("[MLFIT] proof version=1"), "proof prefix");
@@ -1215,5 +1330,18 @@ pub mod tests {
         );
         crate::testing::register_test("stratum::proof_line_passes", test_proof_line_passes);
         crate::testing::register_test("stratum::registry_roundtrip", test_registry_roundtrip);
+        crate::testing::register_test(
+            "stratum::nonfinite_input_leaves_window_clean",
+            test_nonfinite_input_leaves_window_clean,
+        );
+        crate::testing::register_test(
+            "stratum::overflowed_window_recovers",
+            test_overflowed_window_recovers,
+        );
+        crate::testing::register_test(
+            "stratum::subnormal_window_is_measured",
+            test_subnormal_window_is_measured,
+        );
+        crate::testing::register_test("stratum::stale_handle_refused", test_stale_handle_refused);
     }
 }
