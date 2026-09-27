@@ -159,8 +159,9 @@ impl Ext2Fs {
     /// Write a block through the buffer cache.
     fn write_disk_block(&self, block: u32, buf: &[u8]) -> Result<(), VfsError> {
         let mut cache = self.buffer_cache.lock();
-        cache.write_block(self.dev_num, block as u64, buf);
-        Ok(())
+        cache
+            .write_block(self.dev_num, block as u64, buf)
+            .map_err(|_| VfsError::IoError)
     }
 
     /// Zero a newly allocated block in the cache.
