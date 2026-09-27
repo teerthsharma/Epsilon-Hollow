@@ -529,6 +529,17 @@ impl<const D: usize> AgglomerativeClustering<D> {
 
         let mut next_cluster_id = n;
 
+        // Cluster distances by slot, row-major n x n. On the heap: at
+        // MAX_POINTS the matrix is 512 KiB, too large for a kernel stack.
+        let mut dist = alloc::vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let d = distance(&data[i], &data[j]);
+                dist[i * n + j] = d;
+                dist[j * n + i] = d;
+            }
+        }
+
         for merge_idx in 0..(n - 1) {
             // Find closest pair of active clusters
             let mut min_dist = f64::MAX;
@@ -544,14 +555,8 @@ impl<const D: usize> AgglomerativeClustering<D> {
                         continue;
                     }
 
-                    let dist = match self.linkage {
-                        Linkage::Single => distance(&data[i], &data[j]),
-                        Linkage::Complete => distance(&data[i], &data[j]),
-                        Linkage::Average => distance(&data[i], &data[j]),
-                    };
-
-                    if dist < min_dist {
-                        min_dist = dist;
+                    if dist[i * n + j] < min_dist {
+                        min_dist = dist[i * n + j];
                         best_i = i;
                         best_j = j;
                     }
@@ -566,6 +571,24 @@ impl<const D: usize> AgglomerativeClustering<D> {
                 cluster_sizes[best_i] + cluster_sizes[best_j],
             );
             result.n_merges = merge_idx + 1;
+
+            // Lance-Williams: distance from the merged cluster to each other
+            // active cluster k, from its two parts' distances to k.
+            let ni = cluster_sizes[best_i] as f64;
+            let nj = cluster_sizes[best_j] as f64;
+            for k in 0..n {
+                if !active[k] || k == best_i || k == best_j {
+                    continue;
+                }
+                let (dik, djk) = (dist[best_i * n + k], dist[best_j * n + k]);
+                let d = match self.linkage {
+                    Linkage::Single => dik.min(djk),
+                    Linkage::Complete => dik.max(djk),
+                    Linkage::Average => (ni * dik + nj * djk) / (ni + nj),
+                };
+                dist[best_i * n + k] = d;
+                dist[k * n + best_i] = d;
+            }
 
             // Update: best_i becomes the merged cluster, best_j becomes inactive
             cluster_ids[best_i] = next_cluster_id;
@@ -743,5 +766,69 @@ mod tests {
 
         let k = auto_k_selection(&data, 4, 1.0);
         assert_eq!(k, 2); // Should find 2 clusters
+    }
+
+    /// A merge height is the linkage distance between the two clusters, not
+    /// the distance between the points that happen to sit in their slots.
+    #[test]
+    fn linkage_heights_are_cluster_distances() {
+        // (0, 1) merge at 1.0 into cluster 3; point 2 is 1.05 from point 1
+        // and 2.05 from point 0.
+        let data = [[0.0], [1.0], [2.05]];
+        for (linkage, want) in [
+            (Linkage::Single, 1.05),
+            (Linkage::Complete, 2.05),
+            (Linkage::Average, 1.55),
+        ] {
+            let r = AgglomerativeClustering::<1>::new(linkage).fit(&data, 3);
+            assert_eq!(r.n_merges, 2);
+            assert_eq!(r.merges[0], (0, 1, 1.0, 2));
+            let (a, b, h, size) = r.merges[1];
+            assert_eq!((a, b, size), (3, 2, 3));
+            assert!(
+                (h - want).abs() < 1e-12,
+                "{linkage:?}: height {h}, want {want}"
+            );
+        }
+
+        // Unequal sizes: {0, 1, 2} meets point 3 at the mean of its three
+        // distances, (10 + 9 + 7.95) / 3, not the size-blind (9.5 + 7.95) / 2.
+        let data = [[0.0], [1.0], [2.05], [10.0]];
+        let r = AgglomerativeClustering::<1>::new(Linkage::Average).fit(&data, 4);
+        let (a, b, h, size) = r.merges[2];
+        assert_eq!((a, b, size), (5, 3, 4));
+        assert!((h - 26.95 / 3.0).abs() < 1e-12, "height {h}");
+    }
+
+    /// Single-linkage heights are the H0 elder-rule deaths of the Rips
+    /// filtration: the Euclidean MST edge weights in ascending order.
+    #[test]
+    fn single_linkage_heights_are_sorted_mst_weights() {
+        let mut rng = Lcg::new(7);
+        let pts: Vec<[f64; 2]> = (0..40).map(|_| [rng.next_f64(), rng.next_f64()]).collect();
+        let n = pts.len();
+
+        // Prim on the complete graph; the root enters at weight 0.
+        let mut in_tree = vec![false; n];
+        let mut best = vec![f64::INFINITY; n];
+        best[0] = 0.0;
+        let mut mst = Vec::new();
+        for _ in 0..n {
+            let u = (0..n)
+                .filter(|&v| !in_tree[v])
+                .min_by(|&a, &b| best[a].total_cmp(&best[b]))
+                .unwrap();
+            in_tree[u] = true;
+            mst.push(best[u]);
+            for v in 0..n {
+                best[v] = best[v].min(distance(&pts[u], &pts[v]));
+            }
+        }
+        mst.remove(0);
+        mst.sort_by(f64::total_cmp);
+
+        let r = AgglomerativeClustering::<2>::new(Linkage::Single).fit(&pts, n);
+        let heights: Vec<f64> = r.merges[..r.n_merges].iter().map(|m| m.2).collect();
+        assert_eq!(heights, mst);
     }
 }

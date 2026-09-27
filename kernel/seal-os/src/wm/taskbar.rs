@@ -8,7 +8,8 @@ use core::sync::atomic::Ordering;
 
 use crate::graphics::font;
 use crate::graphics::framebuffer::Framebuffer;
-use crate::{GOVERNOR_EPSILON, THEOREM_COUNT, THEOREM_STATES};
+use crate::theorems::Status;
+use crate::{GOVERNOR_EPSILON, THEOREM_COUNT};
 
 const TASKBAR_HEIGHT: u32 = 28;
 
@@ -60,11 +61,15 @@ pub fn draw_taskbar(fb: &Framebuffer) {
         );
     }
 
-    // Theorem indicators (small colored squares)
+    // Theorem indicators: one square per theorem, a distinct visible colour
+    // per verdict, so the strip renders the same whatever the verdicts are.
     for i in 0..THEOREM_COUNT {
-        let active = THEOREM_STATES[i].load(Ordering::Relaxed);
         let x = 90 + i as u32 * 18;
-        let color = if active { theme.accent } else { 0x00404040 };
+        let color = match crate::theorems::status(i) {
+            Status::Certified => theme.accent,
+            Status::NotCertified => 0x00D08020,
+            Status::NotChecked => 0x00808080,
+        };
         fb.fill_rect(x, y + 8, 10, 10, color);
     }
 

@@ -267,6 +267,32 @@ pub fn write_gpt(
     Ok(layout)
 }
 
+/// True when `dev_num`'s primary GPT lists a partition whose unique GUID is
+/// `guid`. A disk with no GPT signature at LBA 1 lists none. CRCs are not
+/// checked: a damaged table that still names the partition counts as naming
+/// it, and a header too malformed to scan is an error, not a "no".
+pub fn holds_partition(dev_num: u32, guid: &[u8; 16]) -> Result<bool, BlockError> {
+    let mut hdr = [0u8; SECTOR];
+    read_block(dev_num, 1, &mut hdr)?;
+    if &hdr[0..8] != SIGNATURE {
+        return Ok(false);
+    }
+    let entry_lba = get_u64(&hdr, 72);
+    let entry_count = get_u32(&hdr, 80) as usize;
+    let entry_size = get_u32(&hdr, 84) as usize;
+    if entry_size < 128 || entry_size % 8 != 0 || entry_count > 4096 {
+        return Err(BlockError::IoError);
+    }
+    let mut entries = vec![0u8; (entry_count * entry_size).div_ceil(SECTOR) * SECTOR];
+    if !entries.is_empty() {
+        read_block(dev_num, entry_lba, &mut entries)?;
+    }
+    Ok(entries
+        .chunks_exact(entry_size)
+        .take(entry_count)
+        .any(|entry| entry[16..32] == guid[..]))
+}
+
 /// Read a GPT back off the disk and measure every self-consistency claim.
 pub fn verify_gpt(dev_num: u32) -> Result<GptVerify, BlockError> {
     let mut mbr = [0u8; SECTOR];

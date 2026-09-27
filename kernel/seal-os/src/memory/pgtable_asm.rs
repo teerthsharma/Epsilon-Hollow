@@ -134,7 +134,10 @@ kpti_swap_cr3:
 "#
 );
 
-extern "C" {
+// The routines above take their arguments in rdi/rsi. `extern "C"` is the
+// Microsoft x64 convention on x86_64-unknown-uefi (rcx/rdx), under which
+// `kpti_swap_cr3` loaded whatever rdi held into CR3.
+extern "sysv64" {
     fn setup_recursive_mapping(pml4_phys: u64);
     fn walk_page_table(pml4_phys: u64, vaddr: u64) -> u64;
     fn switch_cr3_pcid(pml4_phys: u64, pcid: u16);

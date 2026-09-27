@@ -107,7 +107,7 @@ Aether-Lang Runtime (this repo)
 **Major Subsystems:**
 - **ManifoldFS**: Files encoded as 64-point clouds on S². O(1) teleport via topological surgery. Content-addressable via Voronoi cells.
 - **ManifoldScheduler**: Voronoi task groups, T4 adaptive timeslice, T2 prediction
-- **TopCrypt**: Topological file encryption — files stored as point clouds, indistinguishable from random noise without Seal OS decoder
+- **TopCrypt**: Topological encoding/obfuscation, not cryptographic protection — files stored as point clouds under a repeating LCG pad plus a block permutation, with no AEAD and no KDF
 - **Lypnos Guard**: `Ctrl+L` — file dissolves into topological sleep (shuffle + XOR mask)
 - **3D Tensor Renderer**: CSV/trading data → SVD → 3D point clouds rendered as hyperbolic manifolds
 - **Aether-Lang Integration**: Full lexer, parser, AST, interpreter, VM wired into kernel runtime

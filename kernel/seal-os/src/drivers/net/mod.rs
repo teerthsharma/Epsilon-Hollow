@@ -34,6 +34,7 @@ pub fn init() {
                 dev.function,
                 dev.bar0
             );
+            dev.enable_bus_mastering();
             let bar0 = (dev.bar0 & 0xFFFFFFF0) as usize;
             unsafe {
                 if let Some(mut nic) = e1000::E1000::new(bar0) {
@@ -110,5 +111,55 @@ pub fn get_mac_address() -> [u8; 6] {
         nic.mac_address()
     } else {
         [0; 6]
+    }
+}
+
+#[cfg(feature = "test-mode")]
+pub mod tests {
+    use crate::drivers::pci::{pci_read32, pci_write32};
+    use crate::test_assert;
+    use crate::testing::TestResult;
+
+    const MEMORY_SPACE: u32 = 1 << 1;
+    const BUS_MASTER: u32 = 1 << 2;
+
+    /// The e1000 reads its descriptor rings and frames by DMA, so its PCI
+    /// command register needs Memory Space and Bus Master set before `init`
+    /// can use it. Firmware leaves those bits in whatever state its own
+    /// drivers wanted; this clears both first, as a firmware that never bound
+    /// the NIC would, and requires `init` to set them itself. Passes without
+    /// checking when no e1000 is attached (QEMU `-nic user,model=e1000` adds one).
+    fn test_e1000_init_enables_memory_space_and_bus_mastering() -> TestResult {
+        crate::drivers::pci::init();
+        let Some(dev) = crate::drivers::pci::get_devices()
+            .into_iter()
+            .find(|d| d.vendor_id == 0x8086 && (d.device_id == 0x100E || d.device_id == 0x100F))
+        else {
+            return TestResult::Pass;
+        };
+        let (b, s, f) = (dev.bus, dev.device, dev.function);
+        let firmware = pci_read32(b, s, f, 0x04);
+        crate::serial_println!(
+            "[e1000-test] command register left by firmware: {:#06x}",
+            firmware & 0xFFFF
+        );
+        pci_write32(b, s, f, 0x04, firmware & !(MEMORY_SPACE | BUS_MASTER));
+
+        super::init();
+
+        let cmd = pci_read32(b, s, f, 0x04);
+        test_assert!(
+            cmd & (MEMORY_SPACE | BUS_MASTER) == MEMORY_SPACE | BUS_MASTER,
+            "e1000 init left Memory Space or Bus Master clear"
+        );
+        test_assert!(super::has_nic(), "e1000 init did not bind the NIC");
+        TestResult::Pass
+    }
+
+    pub fn register_all() {
+        crate::testing::register_test(
+            "net::e1000_init_enables_memory_space_and_bus_mastering",
+            test_e1000_init_enables_memory_space_and_bus_mastering,
+        );
     }
 }

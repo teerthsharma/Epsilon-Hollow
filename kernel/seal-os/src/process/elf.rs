@@ -143,10 +143,14 @@ pub fn load(
     let pml4 = unsafe { &mut *(pml4_frame.as_u64() as *mut PageTable) };
     pml4.zero();
 
+    // The whole kernel address space, lower half included: the kernel runs
+    // from the identity map of physical memory and keeps running on this CR3
+    // through every syscall and every interrupt taken in ring 3. User pages
+    // are carved out of it one at a time by `map_user_page`.
     unsafe {
         let kernel_pml4_virt = crate::memory::virt::current_pml4_virt();
         let kernel_pml4 = &*(kernel_pml4_virt.as_u64() as *const PageTable);
-        for i in 256..512 {
+        for i in 0..512 {
             pml4[i] = kernel_pml4[i].clone();
         }
     }
@@ -169,13 +173,14 @@ pub fn load(
         }
         let virt = VirtAddr::new(USER_STACK_TOP - ((USER_STACK_PAGES - i) as u64) * 4096);
         unsafe {
-            if crate::memory::virt::map_page_to_pml4(
+            if map_user_page(
+                pml4,
                 virt,
                 frame,
                 PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE,
-                pml4,
+                &mut rollback,
             )
             .is_err()
             {
@@ -573,7 +578,7 @@ fn map_load_segments(
             }
 
             unsafe {
-                if crate::memory::virt::map_page_to_pml4(page_virt, frame, flags, pml4).is_err() {
+                if map_user_page(pml4, page_virt, frame, flags, rollback).is_err() {
                     // `frame` stays tracked in `rollback` — freed when the
                     // caller's rollback drops on this early return.
                     return Err(ElfError::LoadFailed);
@@ -582,6 +587,111 @@ fn map_load_segments(
         }
     }
     Ok(())
+}
+
+/// UEFI memory type of the firmware memory-map descriptor covering `frame`.
+fn firmware_memory_type(frame: PhysAddr) -> Option<u32> {
+    let info = crate::BOOT_INFO.get()?;
+    let addr = frame.as_u64();
+    info.memory_map[..info.memory_map_len]
+        .iter()
+        .find(|d| addr >= d.phys_start && addr - d.phys_start < d.page_count * 4096)
+        .map(|d| d.ty)
+}
+
+/// Map one user page into `pml4`, a process page table whose lower half starts
+/// as a copy of the kernel's (see `load`).
+///
+/// A user page that lands inside the kernel's identity map replaces exactly
+/// 4 KiB of it: page tables on the path to `virt` that are still the kernel's
+/// are copied, a 2 MiB kernel leaf is split into 4 KiB leaves, and the one
+/// kernel leaf at `virt` leaves this address space. The kernel keeps running on
+/// this CR3 inside syscalls and interrupts, so the physical frame that leaf
+/// mapped must be one the kernel never touches: a free frame is taken out of
+/// the allocator for good; conventional memory in `phys::USER_ALIAS_WINDOW`
+/// and boot-services memory (UEFI types 3 and 4, dead after
+/// `ExitBootServices`) are never handed out by `memory::phys`; any other frame
+/// refuses the load.
+///
+/// ponytail: user pages alias the kernel's identity map, and each costs the
+/// allocator the frame it hides (never returned: processes are not torn down).
+/// Upgrade path: move the kernel and its map of physical memory to the upper
+/// half, then give each process the lower half whole.
+unsafe fn map_user_page(
+    pml4: &mut PageTable,
+    virt: VirtAddr,
+    frame: PhysAddr,
+    flags: PageTableFlags,
+    rollback: &mut LoadRollback,
+) -> Result<(), ElfError> {
+    let kernel = crate::memory::virt::current_pml4_virt().as_u64() as *const PageTable;
+    let indices = [virt.p4_index(), virt.p3_index(), virt.p2_index()];
+    let mut table: *mut PageTable = pml4;
+    let mut kernel_table = Some(kernel);
+    for (level, index) in indices.into_iter().enumerate() {
+        let entry = &mut (&mut *table)[index];
+        if entry.is_unused() {
+            // Nothing of the kernel's below here; `map_page_to_pml4` builds it.
+            break;
+        }
+        let kernel_entry = kernel_table
+            .map(|t| &(&*t)[index])
+            .filter(|e| !e.is_unused());
+        if entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            // `virt::init` builds the identity map from 2 MiB leaves only.
+            if level != 2 {
+                return Err(ElfError::LoadFailed);
+            }
+            let split = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
+            rollback.track(split);
+            let leaves = &mut *(split.as_u64() as *mut PageTable);
+            let leaf_flags = entry.flags() - PageTableFlags::HUGE_PAGE;
+            for (i, leaf) in leaves.iter_mut().enumerate() {
+                leaf.set_addr(entry.addr() + i as u64 * 4096, leaf_flags);
+            }
+            entry.set_addr(split, PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+            kernel_table = None;
+        } else if kernel_entry.map(|k| k.addr()) == Some(entry.addr()) {
+            // Still the kernel's own table: this address space gets a copy.
+            let copy = crate::memory::phys::alloc_frame().ok_or(ElfError::LoadFailed)?;
+            rollback.track(copy);
+            core::ptr::copy_nonoverlapping(
+                entry.addr().as_u64() as *const u8,
+                copy.as_u64() as *mut u8,
+                4096,
+            );
+            entry.set_addr(copy, entry.flags());
+            kernel_table = kernel_entry.map(|k| k.addr().as_u64() as *const PageTable);
+        } else {
+            kernel_table = kernel_entry
+                .filter(|k| !k.flags().contains(PageTableFlags::HUGE_PAGE))
+                .map(|k| k.addr().as_u64() as *const PageTable);
+        }
+        table = entry.addr().as_u64() as *mut PageTable;
+        if level == 2 {
+            let leaf = &mut (&mut *table)[virt.p1_index()];
+            if !leaf.is_unused() && !leaf.flags().contains(PageTableFlags::USER_ACCESSIBLE) {
+                let hidden = leaf.addr();
+                let ty = firmware_memory_type(hidden);
+                let in_alias_window =
+                    crate::memory::phys::USER_ALIAS_WINDOW.contains(&hidden.as_u64());
+                if crate::memory::phys::mark_used(hidden) {
+                    // Was free: now reserved, and freed again if the load fails.
+                    rollback.track(hidden);
+                } else if !(matches!(ty, Some(3 | 4)) || (in_alias_window && ty == Some(7))) {
+                    crate::serial_println!(
+                        "[execve] user page {:#x} would hide frame {:#x} (UEFI memory type {:?}), which the kernel may use; refusing",
+                        virt.as_u64(),
+                        hidden.as_u64(),
+                        ty
+                    );
+                    return Err(ElfError::LoadFailed);
+                }
+                leaf.set_unused();
+            }
+        }
+    }
+    crate::memory::virt::map_page_to_pml4(virt, frame, flags, pml4).map_err(|_| ElfError::LoadFailed)
 }
 
 fn parse_dynamic_link_info(

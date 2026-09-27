@@ -2167,10 +2167,12 @@ pub mod tests {
         msg
     }
 
-    /// Registers the whole TLS stack: X.509, ECDHE, and the session itself.
+    /// Registers the whole TLS stack: X.509, ECDHE, and the session itself,
+    /// plus the NIC driver tests in `drivers::net`, which have no runner entry.
     pub fn register_all() {
         super::x509::tests::register_all();
         super::ecdhe::tests::register_all();
+        crate::drivers::net::tests::register_all();
         crate::testing::register_test("tls::hmac_sha256_rfc4231", test_hmac_sha256_rfc4231);
         crate::testing::register_test("tls::hkdf_rfc5869_vector", test_hkdf_rfc5869_vector);
         crate::testing::register_test(

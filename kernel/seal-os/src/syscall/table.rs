@@ -365,11 +365,11 @@ pub mod tests {
     /// Every other arm that changes system-wide state with no per-object check
     /// is behind the same gate. Arguments are chosen so a reached arm is
     /// harmless and answers something other than a bare EPERM: REBOOT 99 and
-    /// SLEEP 0 are EINVAL; null path pointers read as "", which PKG_INSTALL
-    /// and the chart arms answer with EINVAL; SETTING_SET stores "" and answers
-    /// 0; TELEPORT answers ENODEV before the syscall ManifoldFS exists (the
-    /// harness runs before it does) and a ManifoldFS errno or 0 after; the
-    /// Wi-Fi/Bluetooth stubs answer 0 with data.
+    /// SLEEP 0 are EINVAL; null path pointers read as "", which PKG_INSTALL,
+    /// the chart arms and SETTING_SET answer with EINVAL; TELEPORT answers
+    /// ENODEV before the syscall ManifoldFS exists (the harness runs before it
+    /// does) and a ManifoldFS errno or 0 after; the Wi-Fi/Bluetooth stubs
+    /// answer 0 with data.
     fn test_unprivileged_caller_gets_eperm_from_every_root_only_arm() -> TestResult {
         for (num, arg0) in [
             (SYS_REBOOT, 99),
@@ -431,7 +431,99 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: SYS_FIT_CALIBRATE narrowed its field id with `arg1 as u32`, so
+    /// field `1 << 32` calibrated field 0 and answered 0. A field id past `u32`
+    /// is EINVAL, and field 0 itself still applies.
+    fn test_fit_calibrate_refuses_a_field_past_u32() -> TestResult {
+        let own = crate::process::scheduler::current_task_id();
+        test_assert_eq!(dispatch(SYS_FIT_REGISTER, 0, 0, 0).code, own as i64);
+        let half = 0.5f64.to_bits();
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, 1 << 32, half).code, -22);
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, u64::MAX, half).code, -22);
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, 0, half).code, 0);
+        test_assert_eq!(dispatch(SYS_FIT_UNREGISTER, own, 0, 0).code, 0);
+        TestResult::Pass
+    }
+
+    /// RED: SYS_KV_SEQ_APPEND narrowed its token with `arg1 as u32`, so token
+    /// `(1 << 32) | t` was appended as `t`: eight of them sealed a block, and
+    /// that block shared the plaque of any sequence that wrote `t`. A token
+    /// past `u32` is EINVAL and is not absorbed: the same eight tokens in range
+    /// afterwards seal exactly one block, on the eighth.
+    fn test_kv_append_refuses_a_token_past_u32() -> TestResult {
+        let id = dispatch(SYS_KV_SEQ_CREATE, 1, 0, 0).code;
+        test_assert!(id >= 0, "the cache must open a sequence");
+        let id = id as u64;
+        for j in 0..8u64 {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, (1 << 32) | (910_000 + j), 0).code,
+                -22
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, u64::MAX, 0).code, -22);
+        for j in 0..8u64 {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, 910_000 + j, 0).code,
+                ((j + 1) / 8) as i64
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code, 1);
+        TestResult::Pass
+    }
+
+    /// RED: SYS_SETTING_SET read an unreadable key pointer as "" and stored a
+    /// setting under the empty key, answering 0. An empty key is EINVAL, as
+    /// SYS_CHART_PRUNE answers an empty name, and nothing is stored.
+    fn test_setting_set_refuses_an_empty_key() -> TestResult {
+        test_assert_eq!(dispatch_as(0, SYS_SETTING_SET, 0, 0, 0).code, -22);
+        test_assert!(
+            crate::apps::settings::GLOBAL_SETTINGS
+                .lock()
+                .get("")
+                .is_none(),
+            "a refused setting was stored"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: no arm reached `foliation::set_global_policy`. SYS_KV_POLICY_SET
+    /// changes the eviction policy of the one KV cache every task shares, so
+    /// it is root-only: an unprivileged caller gets the gate's EPERM and the
+    /// policy stays LRU; root selects the adaptive policy with code 3; codes
+    /// 4 and 5 (the Belady oracle and the random null) and anything past them
+    /// are EINVAL.
+    fn test_kv_policy_set_is_root_only() -> TestResult {
+        use crate::ml_engine::foliation::{with_global, Policy};
+        test_assert!(is_gate_eperm(&dispatch_as(USER, SYS_KV_POLICY_SET, 3, 0, 0)));
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        for bad in [4, 5, u64::MAX] {
+            test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, bad, 0, 0).code, -22);
+        }
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, 3, 0, 0).code, 0);
+        let adaptive = with_global(|f| f.policy()) == Policy::Adaptive;
+        test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, 0, 0, 0).code, 0);
+        test_assert!(adaptive, "root could not select the adaptive policy");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "syscall::kv_policy_set_is_root_only",
+            test_kv_policy_set_is_root_only,
+        );
+        crate::testing::register_test(
+            "syscall::fit_calibrate_refuses_a_field_past_u32",
+            test_fit_calibrate_refuses_a_field_past_u32,
+        );
+        crate::testing::register_test(
+            "syscall::kv_append_refuses_a_token_past_u32",
+            test_kv_append_refuses_a_token_past_u32,
+        );
+        crate::testing::register_test(
+            "syscall::setting_set_refuses_an_empty_key",
+            test_setting_set_refuses_an_empty_key,
+        );
         crate::testing::register_test(
             "syscall::unprivileged_pkg_remove_is_eperm",
             test_unprivileged_pkg_remove_is_eperm,
@@ -539,6 +631,9 @@ pub const SYS_KV_SEQ_APPEND: u64 = 131;
 pub const SYS_KV_SEQ_RELEASE: u64 = 132;
 pub const SYS_KV_SEQ_STATS: u64 = 133;
 pub const SYS_KV_POLICY_STATS: u64 = 134;
+/// arg0 = policy code: 0 LRU, 1 foliation, 2 locality, 3 adaptive. Root only:
+/// the KV cache, and so its eviction policy, is shared by every task.
+pub const SYS_KV_POLICY_SET: u64 = 135;
 
 #[derive(Debug)]
 pub struct SyscallResult {
@@ -804,6 +899,8 @@ fn identity_write_outcome() -> SyscallResult {
 /// (CAP_NET_ADMIN): `SYS_WIFI_CONNECT`, `SYS_BT_PAIR`, stubs today, gated so
 /// their implementation lands behind the check. `SYS_TELEPORT` moves files in
 /// the syscall ManifoldFS, which consults no file permission at all.
+/// `SYS_KV_POLICY_SET` sets the eviction policy of the KV cache every task
+/// shares.
 fn requires_root(num: u64) -> bool {
     matches!(
         num,
@@ -817,6 +914,7 @@ fn requires_root(num: u64) -> bool {
             | SYS_SETTING_SET
             | SYS_CHART_GRAFT
             | SYS_CHART_PRUNE
+            | SYS_KV_POLICY_SET
     )
 }
 
@@ -861,6 +959,12 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
 
     let result = match num {
         SYS_EXIT => {
+            crate::serial_println!(
+                "[userspace] task {} exited with status {} (context_switches={})",
+                task_id,
+                arg0 as i64,
+                crate::process::scheduler::context_switches()
+            );
             crate::process::scheduler::mark_current_dead();
             crate::process::scheduler::yield_current();
             SyscallResult::ok(0)
@@ -1420,6 +1524,9 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
             let key_ptr = arg0 as *const u8;
             let val_ptr = arg1 as *const u8;
             let key = unsafe { copy_path_from_user(key_ptr).unwrap_or_default() };
+            if key.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             let val = unsafe { copy_path_from_user(val_ptr).unwrap_or_default() };
             let mut settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
             settings.set(&key, &val);
@@ -1439,7 +1546,9 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
         // arg0 = sequence id, arg1 = token. Returns blocks sealed so far.
         SYS_KV_SEQ_APPEND => {
             let id = arg0 as usize;
-            let token = arg1 as u32;
+            let Ok(token) = u32::try_from(arg1) else {
+                return SyscallResult::err(22); // EINVAL: tokens are u32
+            };
             match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, task_id, token)) {
                 Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
                 Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
@@ -1462,6 +1571,13 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
         }
         SYS_KV_POLICY_STATS => {
             SyscallResult::with_data(0, crate::ml_engine::foliation::global_stats_line())
+        }
+        SYS_KV_POLICY_SET => {
+            if crate::ml_engine::foliation::set_global_policy(arg0) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(22) // EINVAL
+            }
         }
 
         SYS_SETUID => {
@@ -1828,10 +1944,11 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
 
         SYS_FIT_CALIBRATE => {
             let value = f64::from_bits(arg2);
-            if crate::ml_engine::stratum::calibrate(arg0, arg1 as u32, value) {
-                SyscallResult::ok(0)
-            } else {
-                SyscallResult::err(22) // EINVAL
+            match u32::try_from(arg1) {
+                Ok(field) if crate::ml_engine::stratum::calibrate(arg0, field, value) => {
+                    SyscallResult::ok(0)
+                }
+                _ => SyscallResult::err(22), // EINVAL
             }
         }
 

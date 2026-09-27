@@ -391,14 +391,18 @@ pub fn poll_event() -> Option<crate::wm::event::InputEvent> {
 pub fn push_event(_event: crate::wm::event::InputEvent) {}
 
 #[cfg(not(test))]
-extern "x86-interrupt" fn timer_handler_apic(_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn timer_handler_apic(frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
-    crate::process::scheduler::scheduler_tick();
     crate::drivers::acpi::topological_power::thermal_governor_step();
     crate::drivers::watchdog::check();
     unsafe {
         crate::drivers::apic::LOCAL_APIC.eoi();
     }
+    // Last, after the EOI: a tick that switches tasks returns here only when
+    // this task is next scheduled, and until the EOI the local APIC holds back
+    // every further tick and every lower-priority interrupt.
+    let from_user = frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3;
+    crate::process::scheduler::scheduler_tick(from_user);
 }
 
 #[cfg(not(test))]

@@ -229,7 +229,7 @@ fn floor_log2(value: usize) -> usize {
 }
 
 #[inline]
-fn spherical_to_unit_vector(theta: f64, phi: f64) -> [f64; 3] {
+pub(crate) fn spherical_to_unit_vector(theta: f64, phi: f64) -> [f64; 3] {
     [
         libm::sin(theta) * libm::cos(phi),
         libm::sin(theta) * libm::sin(phi),
@@ -549,7 +549,7 @@ impl<const K: usize> SphericalGridHashIndex<K> {
 /// Map `(theta, phi)` to the same point with `theta` in `[0, pi]` and `phi`
 /// in `[0, 2pi)`.
 #[inline]
-fn canonical(theta: f64, phi: f64) -> (f64, f64) {
+pub(crate) fn canonical(theta: f64, phi: f64) -> (f64, f64) {
     use core::f64::consts::{PI, TAU};
     let wrap = |x: f64| {
         let r = libm::fmod(x, TAU);

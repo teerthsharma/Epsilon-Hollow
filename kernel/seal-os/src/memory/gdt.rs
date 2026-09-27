@@ -25,13 +25,6 @@ unsafe impl Sync for GdtArray {}
 
 static GDT: GdtArray = GdtArray(UnsafeCell::new([0; 128]));
 
-// SAFETY: TSS is written only via `set_kernel_stack()` which is called during
-// context switches after the TSS has been initialized.
-struct TssCell(UnsafeCell<TaskStateSegment>);
-unsafe impl Sync for TssCell {}
-
-static TSS: TssCell = TssCell(UnsafeCell::new(TaskStateSegment::new()));
-
 pub static KERNEL_CODE_SELECTOR: AtomicU16 = AtomicU16::new(0);
 pub static KERNEL_DATA_SELECTOR: AtomicU16 = AtomicU16::new(0);
 pub static USER_CODE32_SELECTOR: AtomicU16 = AtomicU16::new(0);
@@ -54,10 +47,11 @@ pub fn init_gdt() {
         (*gdt)[1] = 0x00209A0000000000;
         // Kernel data (ring 0)
         (*gdt)[2] = 0x0000920000000000;
-        // User code 32-bit compat (ring 3)
-        (*gdt)[3] = 0x00CF9A0000000000;
-        // User data (ring 3)
-        (*gdt)[4] = 0x00CF920000000000;
+        // User code 32-bit compat (ring 3): access byte 0xFA, DPL 3
+        (*gdt)[3] = 0x00CFFA0000000000;
+        // User data (ring 3): access byte 0xF2, DPL 3. With DPL 0 (0x92) every
+        // `iretq` to ring 3 faulted with #GP(0x20) on SS = 0x23.
+        (*gdt)[4] = 0x00CFF20000000000;
         // User code 64-bit (ring 3)
         (*gdt)[5] = 0x0020FA0000000000;
 
@@ -77,21 +71,6 @@ pub fn init_gdt() {
         CS::set_reg(SegmentSelector(KERNEL_CODE_SELECTOR.load(Ordering::SeqCst)));
         load_data_segments(SegmentSelector(KERNEL_DATA_SELECTOR.load(Ordering::SeqCst)));
     }
-}
-
-/// Set the kernel stack pointer used when entering ring 0 from ring 3.
-///
-/// # Safety
-/// `stack_top` must be the exclusive upper bound of a mapped, 16-byte-aligned
-/// kernel stack that stays valid and unused by anything else until the next
-/// call replaces it — the CPU loads it into RSP on the next ring 3 to ring 0
-/// transition, so a stale or too-small stack corrupts whatever lies below it.
-/// This writes the single global `TSS` through an `UnsafeCell` with no
-/// synchronisation, so it must only be called by the CPU that loaded that TSS,
-/// only from ring 0, and never concurrently from another CPU. It has no effect
-/// on CPUs running a per-CPU TSS installed by `init_tss_for_cpu`.
-pub unsafe fn set_kernel_stack(stack_top: u64) {
-    (*TSS.0.get()).privilege_stack_table[0] = VirtAddr::new(stack_top);
 }
 
 /// Initialise the TSS for a CPU and allocate a GDT descriptor for it.

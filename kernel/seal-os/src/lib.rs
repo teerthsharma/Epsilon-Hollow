@@ -49,6 +49,7 @@ pub mod sandbox;
 pub mod security;
 pub mod sync;
 pub mod syscall;
+pub mod theorems;
 pub mod tuner;
 #[cfg(not(test))]
 pub mod wm;
@@ -451,18 +452,16 @@ fn boot_graphical(fb: &'static Framebuffer) {
         x86_64::instructions::hlt();
     }
 
-    // This runs before `init_scheduler()` below, but moving it after would
-    // change nothing. `set_current_user` writes the uid into the scheduler's
-    // current task, and there is never one: `ManifoldScheduler::current` is
-    // assigned only inside `schedule()`, which both `yield_current()` and
-    // `scheduler_tick()` refuse to enter while `PerCpu::current_task` is null —
-    // and that field is cleared by nothing and set only by that same
-    // assignment. So the write is dropped here and would still be dropped after
-    // `init_scheduler()`, after the first yield, and after every timer tick.
-    // The identity survives only in `passwd::BOOT_USER`, which
-    // `passwd::get_current_user()` reads and `scheduler::current_uid()` does
-    // not — see `current_uid`'s note for why it must not until
-    // `ManifoldFS::stat` reports real per-node ownership.
+    // This runs before `init_scheduler()` below, which is what makes the boot
+    // thread a task. `set_current_user` writes the uid into the scheduler's
+    // current task and there is none yet, so the write is dropped and the boot
+    // thread's task starts, and stays, at uid 0. Moving this after
+    // `init_scheduler()` would land the login uid on the boot thread and turn
+    // on `manifold_acl` denials for every root-owned node it reads — see
+    // `current_uid`'s note for why it must not until `ManifoldFS::stat`
+    // reports real per-node ownership. The identity survives in
+    // `passwd::BOOT_USER`, which `passwd::get_current_user()` reads and user
+    // processes are spawned with.
     if let Some(user) = login.authenticated_user() {
         crate::security::passwd::set_current_user(user.clone());
         serial_println!(
@@ -549,7 +548,10 @@ fn boot_graphical(fb: &'static Framebuffer) {
     // When they yield, we resume here and continue desktop initialisation.
     serial_println!("[BOOT] Scheduler first yield start");
     process::scheduler::yield_current();
-    serial_println!("[BOOT] Scheduler first yield returned");
+    serial_println!(
+        "[BOOT] Scheduler first yield returned (context_switches={})",
+        process::scheduler::context_switches()
+    );
 
     // Layer 1.1b: application processors. This is the correct call site — it is
     // the earliest point where every precondition holds: ACPI has parsed the
@@ -2042,7 +2044,10 @@ fn topcrypt_export_selected(app_state: &mut wm::app_state::AppState) -> String {
         },
         Err(_) => return format!("[TopCrypt] '{}' not found", name),
     };
-    let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
+    let topo = match fs::topcrypt::import_from_bytes(&data, 0) {
+        Some(t) => t,
+        None => return alloc::format!("[TopCrypt] '{}' is not a .topo file", name),
+    };
     let flat = fs::topcrypt::decode_bytes(&topo);
     let out_name = alloc::format!("{}.flat", name);
     match app_state.fs.store(&out_name, &flat, 0) {
@@ -2074,7 +2079,7 @@ fn topcrypt_import_selected(app_state: &mut wm::app_state::AppState) -> String {
     let topo = fs::topcrypt::encode_bytes(&data, 0x5EA1);
     let blocks = topo.block_count as usize;
     let topo_name = alloc::format!("{}.topo", name);
-    let serialized = fs::topcrypt::decode_bytes(&topo);
+    let serialized = fs::topcrypt::export_to_bytes(&topo);
     match app_state
         .fs
         .store(&topo_name, &serialized, app_state.file_manager.cwd())
@@ -2120,140 +2125,18 @@ fn boot_serial() {
 
 #[cfg(not(test))]
 fn init_theorems() {
-    use aether_core::governor::GeometricGovernor;
-    use aether_core::tss::SphericalVoronoiIndex;
-
-    const T4: usize = 3;
-    let theorem_ok = verify_topology_theorems();
-    for (idx, ok) in theorem_ok.iter().enumerate() {
-        THEOREM_STATES[idx].store(*ok, Ordering::Relaxed);
-    }
-    // T4 is refused, not failed, when its gain margin does not hold at the
-    // runtime governor step; the governor itself still runs.
-    let t4_margin = GOVERNOR_ALPHA + GOVERNOR_BETA / GOVERNOR_DT;
-    let t4_refused = !theorem_ok[T4] && t4_margin >= 1.0;
-
-    let governor = GeometricGovernor::new();
-    let epsilon = governor.epsilon();
-    GOVERNOR_EPSILON.store(epsilon.to_bits(), Ordering::Relaxed);
-    serial_println!(
-        "[T4/AGCR] Governor online: epsilon = {:.4} alpha={} beta={} dt={}",
-        epsilon,
-        GOVERNOR_ALPHA,
-        GOVERNOR_BETA,
-        GOVERNOR_DT
-    );
-
-    let centroids = tss_boot_centroids();
-    let voronoi = SphericalVoronoiIndex::<TSS_BOOT_CELL_COUNT>::new(centroids);
-    let cell = voronoi.locate((0.5, 0.5));
-    serial_println!(
-        "[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell {}",
-        cell
-    );
-
-    for (idx, (name, ok)) in THEOREM_NAMES.iter().zip(theorem_ok.iter()).enumerate() {
-        if idx == T4 && t4_refused {
-            serial_println!(
-                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
-                t4_margin,
-                GOVERNOR_DT
-            );
-        } else {
-            serial_println!(
-                "[THEOREM] {} {}",
-                name,
-                if *ok { "VERIFIED" } else { "FAILED" }
-            );
-        }
-    }
-
-    let failed = theorem_ok
-        .iter()
-        .enumerate()
-        .any(|(idx, ok)| !ok && !(idx == T4 && t4_refused));
-    if failed {
-        panic!("Seal OS theorem core failed boot verification");
-    }
-
-    let verified = theorem_ok.iter().filter(|ok| **ok).count();
-    if t4_refused {
-        serial_println!(
-            "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
-            verified,
-            THEOREM_COUNT
-        );
-    } else {
-        serial_println!(
-            "[BOOT] {} of {} theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
-            verified,
-            THEOREM_COUNT
-        );
-    }
-}
-
-fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
-    use aether_verified::{
-        aether_agcr, aether_gmc, aether_hcs, aether_scm, aether_tss, aether_world,
-    };
-
-    let centroids = tss_boot_centroids();
-    let theta = aether_tss::theta_min_from_epsilon(0.5);
-    let t1 = aether_tss::verify_packing_bound(centroids.len(), theta)
-        && aether_tss::verify_separation(&centroids, theta);
-
-    let alpha = 0.1;
-    let s1 = 5.0;
-    let s2 = 3.0;
-    let pred = 4.0;
-    let t_s1 = aether_scm::apply_operator(s1, pred, alpha);
-    let t_s2 = aether_scm::apply_operator(s2, pred, alpha);
-    let t2 = aether_scm::lipschitz_constant(alpha) < 1.0
-        && aether_scm::verify_contraction(f64::abs(s1 - s2), f64::abs(t_s1 - t_s2), alpha);
-
-    let t3 =
-        aether_gmc::verify_entropy_nonincreasing(100, 50, 1000) && aether_gmc::max_merges(8) == 7;
-
-    // T4 is judged at the gains and step every runtime governor uses. At
-    // GOVERNOR_DT = 0.01 the margin alpha + beta/dt is 5.01, so T4 is refused.
-    let rho = aether_agcr::contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
-    let t4 = rho > 0.0
-        && rho < 1.0
-        && aether_agcr::half_life(rho).is_finite()
-        && aether_agcr::gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
-
-    let t5 =
-        aether_hcs::verify_hcs(1.0, 4, 128, 10) && aether_hcs::separation_ratio(1.0, 4, 10) > 60.0;
-
-    let t6_bound = aether_world::tangent_deviation_bound(0.01, 1.0, 128);
-    let t6 = t6_bound > 0.0
-        && t6_bound < 0.01
-        && aether_world::sync_frequency(0.01, 128, 0.001, 1.0, 1.0) > 0.0;
-
-    let base_latency = aether_world::betti_latency(800, 150, 50);
-    let sparse_latency = aether_world::sparse_latency(base_latency, 0.7);
-    let t7 = sparse_latency < base_latency && base_latency < 5000.0;
-
-    let landauer = aether_world::landauer_energy_per_bit(300.0);
-    let t8 = landauer > 2.8e-21 && landauer < 2.9e-21;
-
-    let align = aether_world::alignment_error_bound(0.5, 1.0);
-    let curve = aether_world::procrustes_curvature_error(1.0, 0.5, 128, 128);
-    let t9 = align > 0.86 && align < 0.87 && curve > 0.0 && curve < 0.001;
-
-    let h_info = aether_world::predictive_horizon(1000, 128, 1e-4, 10.0);
-    let h_stability = aether_world::paper_horizon_estimate();
-    let t10 = h_info > 1e5 && h_stability > 1e6;
-
-    [t1, t2, t3, t4, t5, t6, t7, t8, t9, t10]
+    theorems::init();
 }
 
 #[cfg(not(test))]
 fn init_scheduler() {
     process::scheduler::init();
-    process::scheduler::spawn("kernel", 10, kernel_task_main);
-    process::scheduler::spawn("compositor", 8, compositor_task_main);
-    process::scheduler::spawn("shell", 5, shell_task_main);
+    // Placeholder loops that only yield: one priority, below the boot thread
+    // and user processes (ADOPTED_THREAD_PRIORITY), so they take turns and
+    // only run when nothing real is ready.
+    process::scheduler::spawn("kernel", 1, kernel_task_main);
+    process::scheduler::spawn("compositor", 1, compositor_task_main);
+    process::scheduler::spawn("shell", 1, shell_task_main);
 
     serial_println!(
         "[Scheduler] {} tasks, running '{}', epsilon={:.4}",

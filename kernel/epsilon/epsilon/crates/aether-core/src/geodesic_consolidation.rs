@@ -7,7 +7,9 @@
 //! theorem slice. It provides bounded cluster-entropy accounting and a
 //! fixed-capacity S2 centroid merge loop suitable for Rust/Aether runtime gates.
 
-use libm::{asin, log, sin, sqrt};
+use libm::{asin, atan2, log, sin, sqrt};
+
+use crate::tss::{canonical, spherical_to_unit_vector};
 
 const LOG2: f64 = core::f64::consts::LN_2;
 const ENTROPY_EPS: f64 = 1e-10;
@@ -223,6 +225,17 @@ fn entropy_term(size: u32, total: u32) -> f64 {
     -p * (log(p) / LOG2)
 }
 
+/// Resultant length, as a fraction of the merged size, below which a merge has
+/// no mean direction: the pair is antipodal and the sizes are equal, or equal
+/// to within rounding.
+const ANTIPODAL_EPS: f64 = 1e-9;
+
+/// Merge cluster `j` into slot `i` at the size-weighted mean of the two unit
+/// vectors, renormalized onto S2.
+///
+/// Averaging `(theta, phi)` directly is wrong across the `phi` seam and across
+/// a pole. An antipodal pair has no mean; the merged cluster keeps the heavier
+/// centroid, and on a tie slot `i` keeps its own.
 fn merge_pair<const N: usize>(
     centroids: &mut [(f64, f64); N],
     sizes: &mut [u32; N],
@@ -232,15 +245,17 @@ fn merge_pair<const N: usize>(
 ) {
     let size_i = sizes[i];
     let size_j = sizes[j];
-    let merged = size_i + size_j;
-    if merged > 0 {
-        let merged_f = f64::from(merged);
-        centroids[i] = (
-            (f64::from(size_i) * centroids[i].0 + f64::from(size_j) * centroids[j].0) / merged_f,
-            (f64::from(size_i) * centroids[i].1 + f64::from(size_j) * centroids[j].1) / merged_f,
-        );
+    let (w_i, w_j) = (f64::from(size_i), f64::from(size_j));
+    let u_i = spherical_to_unit_vector(centroids[i].0, centroids[i].1);
+    let u_j = spherical_to_unit_vector(centroids[j].0, centroids[j].1);
+    let s: [f64; 3] = core::array::from_fn(|k| w_i * u_i[k] + w_j * u_j[k]);
+    let rho = sqrt(s[0] * s[0] + s[1] * s[1]);
+    if sqrt(rho * rho + s[2] * s[2]) > ANTIPODAL_EPS * (w_i + w_j) {
+        centroids[i] = canonical(atan2(rho, s[2]), atan2(s[1], s[0]));
+    } else if size_j > size_i {
+        centroids[i] = centroids[j];
     }
-    sizes[i] = merged;
+    sizes[i] = size_i + size_j;
 
     for idx in j..active.saturating_sub(1) {
         centroids[idx] = centroids[idx + 1];
@@ -249,5 +264,106 @@ fn merge_pair<const N: usize>(
     if active > 0 {
         centroids[active - 1] = (0.0, 0.0);
         sizes[active - 1] = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::f64::consts::{FRAC_PI_2, PI, TAU};
+    use libm::{atan2, cos, fabs};
+
+    fn merged(a: (f64, f64), b: (f64, f64), sizes: [u32; 2], delta: f64) -> (f64, f64) {
+        let r = GeodesicConsolidator::new(delta).consolidate(&[a, b], &sizes);
+        assert_eq!(r.merges_performed, 1);
+        r.new_centroids[0]
+    }
+
+    /// The probe: 0.1032 rad apart across the phi seam. Averaging phi put the
+    /// merged centroid at phi = 3.14, 3.09 rad from both.
+    #[test]
+    fn merge_across_the_phi_seam_lands_between_the_pair() {
+        let (a, b) = ((FRAC_PI_2, 0.05), (FRAC_PI_2, 6.23));
+        let d = great_circle_distance(a, b);
+        assert!(fabs(d - 0.1032) < 1e-4);
+        let m = merged(a, b, [1, 1], 0.2);
+        let (da, db) = (great_circle_distance(m, a), great_circle_distance(m, b));
+        assert!(
+            fabs(da - d / 2.0) < 1e-12 && fabs(db - d / 2.0) < 1e-12,
+            "{m:?} {da} {db}"
+        );
+        assert!((0.0..TAU).contains(&m.1), "phi leaves [0, 2pi): {m:?}");
+    }
+
+    /// Sizes 3:1 put the centroid on the minor arc at the extrinsic mean,
+    /// `atan2(w_b sin d, w_a + w_b cos d)` from `a`.
+    #[test]
+    fn weighted_merge_across_the_seam_sits_nearer_the_heavier_cluster() {
+        let (a, b) = ((FRAC_PI_2, 0.05), (FRAC_PI_2, 6.23));
+        let d = great_circle_distance(a, b);
+        let want = atan2(sin(d), 3.0 + cos(d));
+        let m = merged(a, b, [3, 1], 0.2);
+        let (da, db) = (great_circle_distance(m, a), great_circle_distance(m, b));
+        assert!(
+            fabs(da - want) < 1e-12 && fabs(db - (d - want)) < 1e-12,
+            "{m:?} {da} {db}"
+        );
+    }
+
+    /// Across the pole the mean is the pole. Averaging (theta, phi), with or
+    /// without a minimum-image lift in phi, keeps theta at 0.05.
+    #[test]
+    fn merge_across_the_pole_lands_on_the_pole() {
+        let m = merged((0.05, 0.0), (0.05, PI), [1, 1], 0.2);
+        assert!(fabs(m.0) < 1e-12, "{m:?}");
+    }
+
+    /// An antipodal pair has no mean: the merged cluster keeps the heavier
+    /// centroid, and on a tie the survivor slot keeps its own.
+    #[test]
+    fn antipodal_merge_keeps_the_heavier_centroid() {
+        let (a, b) = ((FRAC_PI_2, 0.0), (FRAC_PI_2, PI));
+        assert_eq!(merged(a, b, [1, 1], 4.0), a);
+        assert!(great_circle_distance(merged(a, b, [1, 2], 4.0), b) < 1e-12);
+        assert!(great_circle_distance(merged(a, b, [2, 1], 4.0), a) < 1e-12);
+        // One apart in 4e9: the resultant falls under the guard, heavier still wins.
+        assert_eq!(merged(a, b, [2_000_000_000, 2_000_000_001], 4.0), b);
+    }
+
+    /// Anywhere on the sphere, a merge lands on the minor arc between the pair,
+    /// no farther from the heavier centroid than from the lighter one. A
+    /// minimum-image lift in phi meets this only on the equator and meridians:
+    /// elsewhere a line of linearly interpolated (theta, phi) leaves the arc.
+    #[test]
+    fn merge_lands_on_the_minor_arc_for_any_pair() {
+        let mut s = 0x5EA1_u64;
+        let mut next = || {
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut checked = 0;
+        while checked < 2000 {
+            let a = (next() * PI, next() * TAU);
+            let b = (next() * PI, next() * TAU);
+            let d = great_circle_distance(a, b);
+            if !(1e-3..3.0).contains(&d) {
+                continue;
+            }
+            let (wa, wb) = (1 + (next() * 5.0) as u32, 1 + (next() * 5.0) as u32);
+            let m = merged(a, b, [wa, wb], 3.0);
+            let (da, db) = (great_circle_distance(m, a), great_circle_distance(m, b));
+            assert!(
+                fabs(da + db - d) < 1e-9,
+                "off the arc: {a:?} {b:?} -> {m:?}"
+            );
+            if wa > wb {
+                assert!(da <= db + 1e-12, "{a:?}x{wa} {b:?}x{wb} -> {m:?}");
+            } else if wb > wa {
+                assert!(db <= da + 1e-12, "{a:?}x{wa} {b:?}x{wb} -> {m:?}");
+            }
+            checked += 1;
+        }
     }
 }

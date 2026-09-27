@@ -69,9 +69,10 @@ pub const BLOCK_TOKENS: usize = 8;
 /// Maximum fan-out of a foliation leaf.
 ///
 /// ponytail: fixed fan-out with a linear child scan. Ceiling is 32 distinct
-/// continuations per prefix; past that `descend` refuses to share and reports
-/// `children_full`. Upgrade path is an open-addressed key->child map per leaf,
-/// which trades 3x metadata for unbounded fan-out.
+/// live continuations per prefix: a full prefix first reclaims a continuation
+/// no live sequence uses, and only when all 32 are live does `descend` refuse
+/// and report `children_full`. Upgrade path is an open-addressed key->child
+/// map per leaf, which trades 3x metadata for unbounded fan-out.
 pub const MAX_CHILDREN: usize = 32;
 /// Maximum blocks in one sequence's block table.
 pub const MAX_SEQ_BLOCKS: usize = 16;
@@ -101,7 +102,61 @@ pub enum Policy {
     /// shared prompts sit, outlive deep ones; within a depth, recent outlives
     /// old.
     Locality,
+    /// The LRU or the foliation ranking, whichever has been choosing the
+    /// better victims on this workload.
+    ///
+    /// Every eviction where the two rankings pick different victims opens a
+    /// duel. The duel is settled by whichever of the two leaves is requested
+    /// again first: that one was the worse victim, which is Belady's criterion
+    /// applied to the two candidates. A saturating score of settled duels picks
+    /// the ranking for the next eviction.
+    ///
+    /// It starts under the foliation ranking, and ties go to it, because that
+    /// is the side whose mistakes surface fastest. The foliation ranking errs
+    /// by evicting a recent block LRU would have kept, and that duel settles
+    /// as soon as the block returns — within about one pool of reuse, or LRU
+    /// would not have been right. LRU errs by evicting an old block the
+    /// foliation ranking would have kept, and that duel settles only after a
+    /// reuse distance longer than the pool. Started under LRU instead, the
+    /// boot trace loses its hot prefix's first return while the evidence is
+    /// in flight: 761 bp against 952 at the headline pool size.
+    Adaptive,
 }
+
+/// Open duels an adaptive cache remembers. A duel still open when its slot is
+/// reused expires without a verdict.
+///
+/// ponytail: fixed ring, scanned linearly on every descent. Ceiling is a
+/// reuse distance of about `DUEL_SLOTS` disputed evictions — a block that
+/// returns later than that can no longer vote. Upgrade path is a per-leaf open-
+/// duel mark, which makes the common descent O(1).
+const DUEL_SLOTS: usize = 32;
+/// Saturation of the duel score, in settled duels. After a phase change the
+/// ranking flips within `PSEL_MAX + 1` verdicts against it.
+const PSEL_MAX: i32 = 8;
+
+/// One disputed eviction awaiting a verdict. `new_leaf` drops every duel
+/// naming a leaf slot it hands to a new block, so a reclaimed slot cannot
+/// settle a duel its new block was never part of; the keys are a second check.
+#[derive(Clone, Copy)]
+struct Duel {
+    /// Leaf the active ranking evicted; `NONE` marks a free slot.
+    evicted: u16,
+    evicted_key: u64,
+    /// Leaf the other ranking would have evicted instead.
+    spared: u16,
+    spared_key: u64,
+    /// The LRU ranking chose the eviction.
+    by_lru: bool,
+}
+
+const NO_DUEL: Duel = Duel {
+    evicted: NONE,
+    evicted_key: 0,
+    spared: NONE,
+    spared_key: 0,
+    by_lru: false,
+};
 
 /// Why a KV-cache operation was refused.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -162,6 +217,18 @@ impl Leaf {
             entrants: 0,
             last_use: 0,
         }
+    }
+}
+
+/// Victim rank of `l` under a stateless ranking; the lowest rank is evicted.
+/// `Policy::Belady` needs the oracle and is ranked in `pick_victim`.
+fn rank_of(policy: Policy, l: &Leaf) -> [u64; 3] {
+    match policy {
+        Policy::Foliation => [l.entrants as u64, u64::MAX - l.depth as u64, l.last_use],
+        Policy::Lru => [l.last_use, 0, 0],
+        // from https://github.com/triton-lang/kernels/pull/22: sink + local window, as a null
+        Policy::Locality => [u64::MAX - l.depth as u64, l.last_use, 0],
+        Policy::Random | Policy::Belady | Policy::Adaptive => [0, 0, 0],
     }
 }
 
@@ -242,6 +309,26 @@ pub struct FoliationStats {
     pub refused_referenced_free: u64,
     /// Descents that could not share because fan-out was saturated.
     pub children_full: u64,
+    /// TSC cycles spent choosing eviction victims: the O(pool_blocks) frontier
+    /// scan, measured around every call, whatever the policy.
+    pub scan_cycles: u64,
+    /// `Policy::Adaptive`: evictions the two rankings disputed.
+    pub duels: u64,
+    /// `Policy::Adaptive`: duels settled for the LRU ranking.
+    pub duels_lru: u64,
+    /// `Policy::Adaptive`: duels settled for the foliation ranking.
+    pub duels_foliation: u64,
+    /// `Policy::Adaptive`: TSC cycles spent settling duels, measured around
+    /// every descent.
+    pub duel_cycles: u64,
+}
+
+/// Time-stamp counter. A cost measure for the proof and the stats line, never
+/// an input to any decision.
+fn tsc() -> u64 {
+    // SAFETY: RDTSC reads a counter and has no memory effects; every x86_64
+    // CPU implements it.
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 /// Kernel-side paged KV cache over a prefix foliation.
@@ -255,6 +342,11 @@ pub struct Foliation {
     rng: u64,
     /// Future key trace, `Policy::Belady` only.
     oracle: Vec<u64>,
+    /// `Policy::Adaptive` only: open duels, the next slot to reuse, and the
+    /// duel score (positive favours LRU).
+    duels: [Duel; DUEL_SLOTS],
+    duel_next: usize,
+    psel: i32,
     stats: FoliationStats,
 }
 
@@ -331,8 +423,38 @@ impl Foliation {
             tick: 0,
             rng: null_seed(0),
             oracle: Vec::new(),
+            duels: [NO_DUEL; DUEL_SLOTS],
+            duel_next: 0,
+            psel: 0,
             stats: FoliationStats::default(),
         }
+    }
+
+    /// The ranking the next eviction applies: the configured policy, or for
+    /// `Policy::Adaptive` LRU once it leads on duels and the foliation ranking
+    /// otherwise.
+    pub fn ranking(&self) -> Policy {
+        match self.policy {
+            Policy::Adaptive if self.psel > 0 => Policy::Lru,
+            Policy::Adaptive => Policy::Foliation,
+            p => p,
+        }
+    }
+
+    /// Switch the eviction policy of a live cache. Only victim choice changes:
+    /// every policy works on the same candidate set, so residency, references
+    /// and backing are untouched. Duel history is dropped. `Policy::Belady` is
+    /// refused, since it needs a future trace no live cache has, and
+    /// `Policy::Random`, which is a null model and not a policy to serve under.
+    pub fn set_policy(&mut self, policy: Policy) -> bool {
+        if matches!(policy, Policy::Belady | Policy::Random) {
+            return false;
+        }
+        self.policy = policy;
+        self.duels = [NO_DUEL; DUEL_SLOTS];
+        self.duel_next = 0;
+        self.psel = 0;
+        true
     }
 
     /// Install the future key trace consumed by `Policy::Belady`.
@@ -469,6 +591,13 @@ impl Foliation {
         Ok(n)
     }
 
+    /// Release every sequence `owner` opened. Returns how many there were.
+    pub fn release_owner(&mut self, owner: u64) -> usize {
+        (0..self.seqs.len())
+            .filter(|&id| self.seq_release(id, owner).is_ok())
+            .count()
+    }
+
     /// Reference count of a leaf.
     pub fn leaf_refcount(&self, leaf: u16) -> u16 {
         self.leaves
@@ -597,6 +726,11 @@ impl Foliation {
             self.seqs[id].hits += 1;
             self.stats.shared += 1;
         }
+        if self.policy == Policy::Adaptive {
+            let t0 = tsc();
+            self.settle_duels(leaf);
+            self.stats.duel_cycles += tsc().wrapping_sub(t0);
+        }
 
         {
             let tick = self.tick;
@@ -665,7 +799,9 @@ impl Foliation {
         key: u64,
         tokens: [u32; BLOCK_TOKENS],
     ) -> Result<u16, FoliationError> {
-        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN {
+        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN
+            && !self.reclaim_dead_child(parent)
+        {
             self.stats.children_full += 1;
             return Err(FoliationError::ChildrenFull);
         }
@@ -678,6 +814,14 @@ impl Foliation {
                 i
             }
         };
+        // The slot takes a new block, so a duel naming it can no longer be
+        // settled by it. Its key is a digest that collides (`COLLIDE_A`/`_B`),
+        // so the key alone cannot tell the new block from the old one.
+        for d in self.duels.iter_mut() {
+            if d.evicted == idx || d.spared == idx {
+                *d = NO_DUEL;
+            }
+        }
         let l = &mut self.leaves[idx as usize];
         *l = Leaf::blank();
         l.used = true;
@@ -686,6 +830,45 @@ impl Foliation {
         l.tokens = tokens;
         l.depth = depth;
         Ok(idx)
+    }
+
+    /// Free one of `parent`'s child slots held by a continuation no live
+    /// sequence uses. Returns false when every child is live.
+    ///
+    /// A sequence's block table is a path from the root, so a child with no
+    /// references heads a subtree with none: the whole subtree is collapsed
+    /// and its leaves blanked. Without this a prefix that ever had
+    /// `MAX_CHILDREN` continuations refused every new one for the rest of the
+    /// boot, because the leaf GC runs only on a full arena and never takes a
+    /// resident leaf. Prefers a child already out of the pool, then the least
+    /// recently used.
+    fn reclaim_dead_child(&mut self, parent: u16) -> bool {
+        let p = &self.leaves[parent as usize];
+        let Some(top) = p.child[..p.nchild as usize]
+            .iter()
+            .copied()
+            .filter(|&c| self.leaves[c as usize].refcount == 0)
+            .min_by_key(|&c| {
+                let l = &self.leaves[c as usize];
+                (l.slot != NONE, l.last_use)
+            })
+        else {
+            return false;
+        };
+        self.unlink_child(parent, top);
+        let mut stack = Vec::new();
+        stack.push(top);
+        while let Some(x) = stack.pop() {
+            let l = &self.leaves[x as usize];
+            stack.extend_from_slice(&l.child[..l.nchild as usize]);
+            if l.slot != NONE {
+                self.collapse(x);
+                self.stats.evictions += 1;
+            }
+            self.leaves[x as usize] = Leaf::blank();
+            self.stats.leaf_gc += 1;
+        }
+        true
     }
 
     fn free_leaf(&self) -> Option<u16> {
@@ -729,7 +912,10 @@ impl Foliation {
     /// disagreeing.
     fn admit(&mut self, leaf: u16) -> Result<(), FoliationError> {
         if self.free_slots.is_empty() {
-            let victim = match self.pick_victim() {
+            let t0 = tsc();
+            let picked = self.pick_victim();
+            self.stats.scan_cycles += tsc().wrapping_sub(t0);
+            let victim = match picked {
                 Some(v) => v,
                 None => {
                     self.stats.refused_exhaustion += 1;
@@ -807,7 +993,16 @@ impl Foliation {
     /// keyed on (entrants, depth) — both are small integers — giving O(1) pop
     /// at the cost of maintaining bucket membership on every refcount change.
     fn pick_victim(&mut self) -> Option<u16> {
+        let ranking = self.ranking();
+        // `Policy::Adaptive` also ranks every candidate under the ranking it
+        // is not applying, so a disagreement can be recorded as a duel.
+        let rival = match (self.policy, ranking) {
+            (Policy::Adaptive, Policy::Lru) => Some(Policy::Foliation),
+            (Policy::Adaptive, _) => Some(Policy::Lru),
+            _ => None,
+        };
         let mut best: Option<(u16, [u64; 3])> = None;
+        let mut rival_best: Option<(u16, [u64; 3])> = None;
         let mut candidates = 0u64;
         let mut reservoir = NONE;
         for p in &self.plaques {
@@ -819,14 +1014,16 @@ impl Foliation {
                 continue;
             }
             candidates += 1;
-            let rank = match self.policy {
-                Policy::Foliation => [l.entrants as u64, u64::MAX - l.depth as u64, l.last_use],
-                Policy::Lru => [l.last_use, 0, 0],
-                Policy::Random => [0, 0, 0],
+            let rank = match ranking {
                 Policy::Belady => [u64::MAX - self.next_use(l.key), l.last_use, 0],
-                // from https://github.com/triton-lang/kernels/pull/22: sink + local window, as a null
-                Policy::Locality => [u64::MAX - l.depth as u64, l.last_use, 0],
+                r => rank_of(r, l),
             };
+            if let Some(r) = rival {
+                let other = rank_of(r, l);
+                if rival_best.map(|(_, b)| other < b).unwrap_or(true) {
+                    rival_best = Some((p.leaf, other));
+                }
+            }
             if self.policy == Policy::Random {
                 // Reservoir sample so the null model is uniform over the same
                 // candidate set, not biased by scan order.
@@ -850,7 +1047,49 @@ impl Foliation {
                 Some(reservoir)
             };
         }
+        if let (Some((victim, _)), Some((spared, _))) = (best, rival_best) {
+            if victim != spared {
+                self.duels[self.duel_next] = Duel {
+                    evicted: victim,
+                    evicted_key: self.leaves[victim as usize].key,
+                    spared,
+                    spared_key: self.leaves[spared as usize].key,
+                    by_lru: ranking == Policy::Lru,
+                };
+                self.duel_next = (self.duel_next + 1) % DUEL_SLOTS;
+                self.stats.duels += 1;
+            }
+        }
         best.map(|(leaf, _)| leaf)
+    }
+
+    /// `leaf` is being requested: settle every open duel it was part of.
+    ///
+    /// Of the two leaves in a duel, the one requested first was the worse
+    /// victim. If it is the evicted one, the ranking that evicted it lost; if
+    /// it is the spared one, that ranking won.
+    fn settle_duels(&mut self, leaf: u16) {
+        let key = self.leaves[leaf as usize].key;
+        for i in 0..DUEL_SLOTS {
+            let d = self.duels[i];
+            let lru_won = if d.evicted == NONE {
+                continue;
+            } else if d.evicted == leaf && d.evicted_key == key {
+                !d.by_lru
+            } else if d.spared == leaf && d.spared_key == key {
+                d.by_lru
+            } else {
+                continue;
+            };
+            self.duels[i] = NO_DUEL;
+            if lru_won {
+                self.psel = (self.psel + 1).min(PSEL_MAX);
+                self.stats.duels_lru += 1;
+            } else {
+                self.psel = (self.psel - 1).max(-PSEL_MAX);
+                self.stats.duels_foliation += 1;
+            }
+        }
     }
 
     /// Index of the next descent that uses `key`, or `u64::MAX` if never.
@@ -890,8 +1129,38 @@ const _: () =
 
 const CHAT_CONVERSATIONS: u32 = 16;
 const CHAT_LIVE: u32 = 4;
+/// Every conversation live at once: reuse distance then exceeds the pool and
+/// the chat result reverses.
+const CHAT_LIVE_WIDE: u32 = 16;
 const CHAT_TURNS: u32 = 6;
 const CHAT_SYSTEM_BLOCKS: usize = 2;
+
+/// Pool sizes the proof replays every trace at, bracketing
+/// `BENCH_POOL_BLOCKS`. The smallest holds the longest request, so no
+/// admission is refused for capacity and every point measures victim choice
+/// alone.
+const SWEEP_POOLS: [usize; 6] = [8, 12, 16, 24, 32, 48];
+/// Index of `BENCH_POOL_BLOCKS` in `SWEEP_POOLS`: the headline column.
+const HEADLINE_AT: usize = 3;
+const _: () = assert!(SWEEP_POOLS[HEADLINE_AT] == BENCH_POOL_BLOCKS);
+/// Policies the sweep replays. Belady is last and bounds every row before it.
+const SWEPT: [Policy; 5] = [
+    Policy::Foliation,
+    Policy::Lru,
+    Policy::Locality,
+    Policy::Adaptive,
+    Policy::Belady,
+];
+const SW_FOL: usize = 0;
+const SW_LRU: usize = 1;
+const SW_LOC: usize = 2;
+const SW_ADAPTIVE: usize = 3;
+const SW_BELADY: usize = SWEPT.len() - 1;
+const _: () = assert!(
+    HOT_PREFIX_BLOCKS + TAIL_BLOCKS <= SWEEP_POOLS[0]
+        && COLD_PREFIX_BLOCKS + TAIL_BLOCKS <= SWEEP_POOLS[0]
+        && CHAT_SYSTEM_BLOCKS + CHAT_TURNS as usize <= SWEEP_POOLS[0]
+);
 
 /// One request: the token stream a sequence will append.
 fn build_trace() -> Vec<Vec<u32>> {
@@ -926,18 +1195,18 @@ fn build_trace() -> Vec<Vec<u32>> {
     trace
 }
 
-/// Multi-turn chat: `CHAT_LIVE` conversations served round robin, each turn
+/// Multi-turn chat: `live` conversations served round robin, each turn
 /// resending a shared system prompt and the conversation so far plus one new
 /// block. A conversation ends after `CHAT_TURNS` turns and the next takes its
 /// slot. Reuse follows recency — the block a conversation wrote last is the
 /// first one its next turn re-reads past the prompt — so this is the request
 /// shape the boot trace is not.
 // from https://github.com/NVIDIA/NeMo-Relay/pull/481: a stable scaffold under varying turns
-fn build_chat_trace() -> Vec<Vec<u32>> {
+fn build_chat_trace(live: u32) -> Vec<Vec<u32>> {
     let mut trace = Vec::new();
+    let mut started = live;
     // (conversation, turns already served)
-    let mut live: Vec<(u32, u32)> = (0..CHAT_LIVE).map(|c| (c, 0)).collect();
-    let mut started = CHAT_LIVE;
+    let mut live: Vec<(u32, u32)> = (0..live).map(|c| (c, 0)).collect();
     while !live.is_empty() {
         let mut next = Vec::new();
         for (conv, done) in live {
@@ -1000,11 +1269,24 @@ struct Replay {
     frames_backed: u64,
     frames_freed: u64,
     frames_failed: u64,
+    refused_exhaustion: u64,
+    /// Cycles in the victim scan.
+    scan_cycles: u64,
+    /// `Policy::Adaptive`: cycles settling duels, duels opened, and duels
+    /// settled for LRU and for the foliation ranking.
+    duel_cycles: u64,
+    duels: [u64; 3],
 }
 
-/// Replay `trace` under `policy`. `seed` drives `Policy::Random` only.
+/// Replay `trace` under `policy` at the headline pool size.
 fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay {
-    let mut fol = Foliation::new(BENCH_POOL_BLOCKS, BENCH_LEAF_ARENA, BENCH_MAX_SEQS, policy);
+    replay_at(BENCH_POOL_BLOCKS, policy, trace, keys, seed)
+}
+
+/// Replay `trace` under `policy` with `pool` plaques. `seed` drives
+/// `Policy::Random` only.
+fn replay_at(pool: usize, policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay {
+    let mut fol = Foliation::new(pool, BENCH_LEAF_ARENA, BENCH_MAX_SEQS, policy);
     fol.rng = seed;
     if policy == Policy::Belady {
         fol.set_oracle(keys.to_vec());
@@ -1038,7 +1320,55 @@ fn replay(policy: Policy, trace: &[Vec<u32>], keys: &[u64], seed: u64) -> Replay
         frames_backed: s.frames_backed,
         frames_freed: after.frames_freed,
         frames_failed: s.frames_failed,
+        refused_exhaustion: s.refused_exhaustion,
+        scan_cycles: s.scan_cycles,
+        duel_cycles: s.duel_cycles,
+        duels: [s.duels, s.duels_lru, s.duels_foliation],
     }
+}
+
+/// Hit rate of `policy` on one trace at every `SWEEP_POOLS` size, and whether
+/// every one of those replays held the cache invariants with no admission
+/// refused.
+fn sweep(policy: Policy, trace: &[Vec<u32>], keys: &[u64]) -> ([u64; SWEEP_POOLS.len()], bool) {
+    let mut hits = [0u64; SWEEP_POOLS.len()];
+    let mut ok = true;
+    for (i, &pool) in SWEEP_POOLS.iter().enumerate() {
+        let r = replay_at(pool, policy, trace, keys, null_seed(0));
+        hits[i] = r.hit_bp;
+        ok &= r.descents as usize == keys.len()
+            && r.refused_exhaustion == 0
+            && r.frames_failed == 0
+            && r.frames_freed == r.frames_backed
+            && r.referenced_evictions == 0
+            && r.collapse_violations == 0;
+    }
+    (hits, ok)
+}
+
+/// `a,b,c` — the proof's list encoding.
+fn csv(values: &[u64]) -> String {
+    values
+        .iter()
+        .map(|v| format!("{}", v))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A cycle cost of `policy` on `trace`, the lower of two identical replays.
+/// Hit counts are deterministic and cycle counts are not: under QEMU the first
+/// replay also pays translation, and a host that deschedules the vCPU
+/// stretches whichever replay it lands in.
+fn cycle_cost(policy: Policy, trace: &[Vec<u32>], keys: &[u64], cost: fn(&Replay) -> u64) -> u64 {
+    (0..2)
+        .map(|_| cost(&replay(policy, trace, keys, null_seed(0))))
+        .min()
+        .unwrap_or(0)
+}
+
+/// Victim-scan cycles per eviction.
+fn per_eviction(r: &Replay) -> u64 {
+    r.scan_cycles.checked_div(r.evictions).unwrap_or(0)
 }
 
 /// Two sequences with an identical prefix must land on identical plaques, and
@@ -1226,7 +1556,7 @@ pub fn foliation_proof_line() -> String {
     // A second request shape, whose reuse follows recency. Its margins are
     // recorded, not gated; every replay of it must hold the same invariants
     // the boot trace does.
-    let chat = build_chat_trace();
+    let chat = build_chat_trace(CHAT_LIVE);
     let chat_keys = trace_keys(&chat);
     let chat_fo = replay(Policy::Foliation, &chat, &chat_keys, null_seed(0));
     let chat_lru = replay(Policy::Lru, &chat, &chat_keys, null_seed(0));
@@ -1258,6 +1588,80 @@ pub fn foliation_proof_line() -> String {
         chat_referenced += r.referenced_evictions;
         chat_violations += r.collapse_violations;
     }
+
+    // Pool-size sweep: every trace, every realizable policy and the oracle, at
+    // every `SWEEP_POOLS` size. Which policy wins follows whether reuse
+    // distance exceeds the pool, so one pool size cannot carry a policy claim.
+    // Recorded, not gated, except that the oracle bounds every point and the
+    // headline replays above must be the sweep's own column at
+    // `BENCH_POOL_BLOCKS`.
+    let wide = build_chat_trace(CHAT_LIVE_WIDE);
+    let wide_keys = trace_keys(&wide);
+    let traces = [
+        ("boot", &trace, &keys),
+        ("chat", &chat, &chat_keys),
+        ("chat16", &wide, &wide_keys),
+    ];
+    let mut table = [[[0u64; SWEEP_POOLS.len()]; SWEPT.len()]; 3];
+    let mut sweep_ok = true;
+    let mut sweep_fields = String::new();
+    for ((name, tr, ks), rows) in traces.iter().zip(table.iter_mut()) {
+        for (row, &policy) in rows.iter_mut().zip(&SWEPT) {
+            let (hits, ok) = sweep(policy, tr, ks);
+            *row = hits;
+            sweep_ok &= ok;
+            sweep_fields.push_str(&format!(
+                " sweep_{}_{}={}",
+                name,
+                policy_tag(policy),
+                csv(row)
+            ));
+        }
+        let belady = rows[SW_BELADY];
+        sweep_ok &= rows
+            .iter()
+            .all(|row| row.iter().zip(&belady).all(|(h, b)| h <= b));
+    }
+    let col = |trace: usize, row: usize| table[trace][row][HEADLINE_AT];
+    sweep_ok &= [fo.hit_bp, lru.hit_bp, loc.hit_bp, opt.hit_bp]
+        == [
+            col(0, SW_FOL),
+            col(0, SW_LRU),
+            col(0, SW_LOC),
+            col(0, SW_BELADY),
+        ]
+        && [
+            chat_fo.hit_bp,
+            chat_lru.hit_bp,
+            chat_loc.hit_bp,
+            chat_opt.hit_bp,
+        ] == [
+            col(1, SW_FOL),
+            col(1, SW_LRU),
+            col(1, SW_LOC),
+            col(1, SW_BELADY),
+        ];
+    let scan_fo = cycle_cost(Policy::Foliation, &trace, &keys, per_eviction);
+    let scan_lru = cycle_cost(Policy::Lru, &trace, &keys, per_eviction);
+
+    // The adaptive policy against the random null, per seed: wherever the
+    // LRU or the foliation ranking beats a seed at the headline pool size,
+    // the adaptive policy has to beat it too.
+    let mut adaptive_beaten = [0u64; 3];
+    let mut adaptive_regressions = 0u64;
+    for (t, (_, tr, ks)) in traces.iter().enumerate() {
+        let (fo_t, lru_t, ad_t) = (col(t, SW_FOL), col(t, SW_LRU), col(t, SW_ADAPTIVE));
+        for i in 0..NULL_SEEDS {
+            let r = replay(Policy::Random, tr, ks, null_seed(i)).hit_bp;
+            adaptive_beaten[t] += u64::from(ad_t > r);
+            adaptive_regressions += u64::from((fo_t > r || lru_t > r) && ad_t <= r);
+        }
+    }
+    let ad = replay(Policy::Adaptive, &trace, &keys, null_seed(0));
+    let scan_ad = cycle_cost(Policy::Adaptive, &trace, &keys, per_eviction);
+    let duel_ad = cycle_cost(Policy::Adaptive, &trace, &keys, |r| {
+        r.duel_cycles.checked_div(r.descents).unwrap_or(0)
+    });
 
     // Fraction of the LRU -> Belady headroom the foliation policy closed, in
     // basis points. Negative means the policy lost to LRU.
@@ -1301,6 +1705,7 @@ pub fn foliation_proof_line() -> String {
         && refusals_ok
         && oracle_sane
         && trace_ok
+        && sweep_ok
     {
         "pass"
     } else {
@@ -1319,6 +1724,11 @@ random_seeds={} hit_bp_random_min={} hit_bp_random_max={} random_distinct_outcom
 foliation_beats_random={}/{} \
 chat_requests={} chat_descents={} chat_hit_bp_foliation={} chat_hit_bp_lru={} chat_hit_bp_locality={} \
 chat_hit_bp_belady={} chat_foliation_beats_random={}/{} \
+sweep_pools={}{} \
+scan_cycles_per_eviction_foliation={} scan_cycles_per_eviction_lru={} \
+adaptive_beats_random={}/{} chat_adaptive_beats_random={}/{} chat16_adaptive_beats_random={}/{} \
+adaptive_null_regressions={} evictions_adaptive={} scan_cycles_per_eviction_adaptive={} \
+duel_cycles_per_descent_adaptive={} adaptive_duels={} adaptive_duels_lru={} adaptive_duels_foliation={} \
 referenced_evictions={} collapse_violations={} \
 refused_budget={} refused_exhaustion={} refused_referenced_free={} \
 complexity=descend<={}_children,evict<={}_plaques,lookup=O(1)_indexed \
@@ -1363,6 +1773,23 @@ result={}",
         chat_opt.hit_bp,
         chat_beaten,
         NULL_SEEDS,
+        csv(&SWEEP_POOLS.map(|p| p as u64)),
+        sweep_fields,
+        scan_fo,
+        scan_lru,
+        adaptive_beaten[0],
+        NULL_SEEDS,
+        adaptive_beaten[1],
+        NULL_SEEDS,
+        adaptive_beaten[2],
+        NULL_SEEDS,
+        adaptive_regressions,
+        ad.evictions,
+        scan_ad,
+        duel_ad,
+        ad.duels[0],
+        ad.duels[1],
+        ad.duels[2],
         fo.referenced_evictions
             + lru.referenced_evictions
             + rnd.referenced_evictions
@@ -1414,6 +1841,39 @@ pub fn with_global<R>(f: impl FnOnce(&mut Foliation) -> R) -> R {
     f(guard.as_mut().expect("foliation initialised above"))
 }
 
+/// Release every sequence `owner` holds in the global cache, for the task-exit
+/// path. Does not build the cache for a task that never used it.
+pub fn release_task(owner: u64) -> usize {
+    GLOBAL.lock().as_mut().map_or(0, |f| f.release_owner(owner))
+}
+
+/// Opt the ABI cache into another eviction policy: 0 LRU (the default),
+/// 1 foliation, 2 locality, 3 adaptive. Any other code is refused, which
+/// covers the Belady oracle and the random null. Nothing in the kernel calls
+/// this; a caller has to ask.
+pub fn set_global_policy(code: u64) -> bool {
+    let policy = match code {
+        0 => Policy::Lru,
+        1 => Policy::Foliation,
+        2 => Policy::Locality,
+        3 => Policy::Adaptive,
+        _ => return false,
+    };
+    with_global(|f| f.set_policy(policy))
+}
+
+/// Proof tag of a policy.
+fn policy_tag(p: Policy) -> &'static str {
+    match p {
+        Policy::Foliation => "foliation",
+        Policy::Lru => "lru",
+        Policy::Random => "random",
+        Policy::Belady => "belady",
+        Policy::Locality => "locality",
+        Policy::Adaptive => "adaptive",
+    }
+}
+
 /// Map a refusal to an errno for the syscall layer.
 pub fn errno(e: FoliationError) -> i64 {
     match e {
@@ -1432,16 +1892,12 @@ pub fn global_stats_line() -> String {
     with_global(|f| {
         let s = f.stats();
         format!(
-            "policy={} pool_blocks={} resident={} descents={} shared={} admits={} \
+            "policy={} ranking={} pool_blocks={} resident={} descents={} shared={} admits={} \
 evictions={} frames_backed={} frames_freed={} leaf_gc={} children_full={} \
-refused_budget={} refused_exhaustion={} refused_referenced_free={}",
-            match f.policy() {
-                Policy::Foliation => "foliation",
-                Policy::Lru => "lru",
-                Policy::Random => "random",
-                Policy::Belady => "belady",
-                Policy::Locality => "locality",
-            },
+refused_budget={} refused_exhaustion={} refused_referenced_free={} scan_cycles={} \
+duels={} duels_lru={} duels_foliation={}",
+            policy_tag(f.policy()),
+            policy_tag(f.ranking()),
             ABI_POOL_BLOCKS,
             f.resident(),
             s.descents,
@@ -1455,6 +1911,10 @@ refused_budget={} refused_exhaustion={} refused_referenced_free={}",
             s.refused_budget,
             s.refused_exhaustion,
             s.refused_referenced_free,
+            s.scan_cycles,
+            s.duels,
+            s.duels_lru,
+            s.duels_foliation,
         )
     })
 }
@@ -1670,22 +2130,26 @@ pub mod tests {
         let _ = fol.seq_release(id, KERNEL);
         fol.teardown();
 
-        // Fan-out: saturate the root leaf's children at the shipped ABI
-        // geometry, where neither the pool nor the leaf arena is the binding
-        // constraint, then seal one more distinct block off the root.
+        // Fan-out: saturate the root leaf's children with live sequences at
+        // the shipped ABI pool and arena, where neither is the binding
+        // constraint, then seal one more distinct block off the root. The
+        // ceiling binds live continuations only — a released one is reclaimed
+        // (`dead_children_do_not_saturate_fanout`) — so the saturating
+        // sequences stay open, which takes one slot more than the ABI table.
         let mut fol = Foliation::new(
             ABI_POOL_BLOCKS,
             ABI_LEAF_ARENA,
-            ABI_MAX_SEQS,
+            ABI_MAX_SEQS + 1,
             Policy::Foliation,
         );
+        let mut live = Vec::new();
         for round in 0..MAX_CHILDREN as u32 {
             let sid = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
             test_assert!(sid != usize::MAX);
             for j in 0..BLOCK_TOKENS {
                 let _ = fol.seq_append(sid, KERNEL, 60_000 + round * 100 + j as u32);
             }
-            let _ = fol.seq_release(sid, KERNEL);
+            live.push(sid);
         }
         test_assert_eq!(fol.stats().children_full, 0);
         test_assert_eq!(fol.stats().descents, MAX_CHILDREN as u64);
@@ -1706,6 +2170,9 @@ pub mod tests {
         test_assert_eq!(fol.stats().children_full, refusals);
         test_assert_eq!(fol.seq_counts(sid, KERNEL).map(|c| c.0), Some(0u16));
         let _ = fol.seq_release(sid, KERNEL);
+        for sid in live {
+            let _ = fol.seq_release(sid, KERNEL);
+        }
         fol.teardown();
         TestResult::Pass
     }
@@ -1921,6 +2388,246 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A prefix's `MAX_CHILDREN` slots bound its *live* continuations. A
+    /// sequence's block table is a path from the root, so a child no live
+    /// sequence references heads a subtree no live sequence references. One
+    /// task writing and releasing two-block sequences with distinct first
+    /// blocks used to fill the root's fan-out with dead continuations for the
+    /// rest of the boot — the leaf GC runs only on a full arena and never
+    /// takes a resident leaf — so every later prompt with a new first block
+    /// was refused with ENOSPC. The dead subtree must be reclaimed whole, its
+    /// frames returned, and nothing a live sequence holds touched.
+    fn test_dead_children_do_not_saturate_fanout() -> TestResult {
+        const DEAD: u64 = 7;
+        const LIVE: u64 = 8;
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        // A live bystander, opened first so it is the least recently used child.
+        let keep = fol.seq_create(2, LIVE).unwrap_or(usize::MAX);
+        test_assert!(keep != usize::MAX);
+        for &t in &prefix_tokens(80_000, 2) {
+            test_assert!(fol.seq_append(keep, LIVE, t).is_ok());
+        }
+        let held = [fol.seq_frame(keep, 0), fol.seq_frame(keep, 1)];
+        test_assert!(held[0].is_some() && held[1].is_some());
+        for round in 0..(MAX_CHILDREN as u32 - 1) {
+            let sid = fol.seq_create(2, DEAD).unwrap_or(usize::MAX);
+            test_assert!(sid != usize::MAX);
+            for &t in &prefix_tokens(100_000 + round * 100, 2) {
+                test_assert!(fol.seq_append(sid, DEAD, t).is_ok());
+            }
+            test_assert_eq!(fol.seq_release(sid, DEAD), Ok(2u16));
+        }
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS);
+
+        let sid = fol.seq_create(1, LIVE).unwrap_or(usize::MAX);
+        test_assert!(sid != usize::MAX);
+        for &t in &prefix_tokens(200_000, 1) {
+            test_assert!(
+                fol.seq_append(sid, LIVE, t).is_ok(),
+                "a new first block was refused while every other continuation was dead"
+            );
+        }
+        test_assert_eq!(fol.seq_counts(sid, LIVE).map(|c| c.0), Some(1u16));
+        test_assert!(fol.seq_frame(sid, 0).is_some());
+        test_assert_eq!(fol.stats().children_full, 0);
+        // Exactly one dead two-block subtree went: its two plaques and leaves.
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS - 1);
+        test_assert_eq!(fol.stats().leaf_gc, 2);
+        test_assert!(
+            fol.seq_frame(keep, 0) == held[0] && fol.seq_frame(keep, 1) == held[1],
+            "reclaiming a dead continuation moved a live one"
+        );
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        let _ = fol.seq_release(sid, LIVE);
+        let _ = fol.seq_release(keep, LIVE);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(
+            s.frames_freed == s.frames_backed,
+            "a reclaimed plaque's frame was not returned"
+        );
+        TestResult::Pass
+    }
+
+    /// Guard. The ABI clamps a budget past `u16` to the per-sequence ceiling
+    /// instead of wrapping it, seals exactly on every `BLOCK_TOKENS` boundary,
+    /// refuses the first token past the block table with EFBIG without
+    /// absorbing it, and answers ENOENT to a double release, to every later use
+    /// of the released id, and to ids outside the table.
+    fn test_abi_budget_clamp_and_block_boundaries() -> TestResult {
+        use crate::syscall::table::{
+            dispatch, SYS_KV_SEQ_APPEND, SYS_KV_SEQ_CREATE, SYS_KV_SEQ_RELEASE, SYS_KV_SEQ_STATS,
+        };
+        let id = dispatch(SYS_KV_SEQ_CREATE, u64::MAX, 0, 0).code;
+        test_assert!(id >= 0, "an oversized budget must be clamped, not refused");
+        let id = id as u64;
+        for j in 0..MAX_SEQ_BLOCKS * BLOCK_TOKENS {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, 300_000 + j as u64, 0).code,
+                ((j + 1) / BLOCK_TOKENS) as i64
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -27);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -27);
+        test_assert_eq!(
+            dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code,
+            MAX_SEQ_BLOCKS as i64
+        );
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code, -2);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -2);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_STATS, id, 0, 0).code, -2);
+
+        let zero = dispatch(SYS_KV_SEQ_CREATE, 0, 0, 0).code;
+        test_assert!(zero >= 0);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, zero as u64, 1, 0).code, -27);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, zero as u64, 0, 0).code, 0);
+
+        for bad in [ABI_MAX_SEQS as u64, u64::MAX] {
+            test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, bad, 1, 0).code, -2);
+            test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, bad, 0, 0).code, -2);
+            test_assert_eq!(dispatch(SYS_KV_SEQ_STATS, bad, 0, 0).code, -2);
+        }
+        TestResult::Pass
+    }
+
+    /// Guard. A released id is handed to the next opener; the old owner's
+    /// stale copy of it must then be refused as missing, and must neither
+    /// append to, release, nor read the new owner's sequence.
+    fn test_stale_handle_after_reuse_refused() -> TestResult {
+        const OLD: u64 = 7;
+        const NEW: u64 = 8;
+        let mut fol = Foliation::new(8, 64, 2, Policy::Lru);
+        let id = fol.seq_create(4, OLD).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(22_000, 1) {
+            test_assert!(fol.seq_append(id, OLD, t).is_ok());
+        }
+        test_assert_eq!(fol.seq_release(id, OLD), Ok(1u16));
+        test_assert_eq!(fol.seq_create(4, NEW), Ok(id));
+        for &t in &prefix_tokens(23_000, 1) {
+            test_assert!(fol.seq_append(id, NEW, t).is_ok());
+        }
+        test_assert!(fol.seq_append(id, OLD, 1) == Err(FoliationError::NoSuchSeq));
+        test_assert!(fol.seq_release(id, OLD) == Err(FoliationError::NoSuchSeq));
+        test_assert!(fol.seq_counts(id, OLD).is_none());
+        test_assert_eq!(fol.seq_counts(id, NEW), Some((1u16, 0u32, 1u32)));
+        test_assert_eq!(fol.seq_release(id, NEW), Ok(1u16));
+        test_assert!(fol.seq_release(id, NEW) == Err(FoliationError::NoSuchSeq));
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. At the ABI geometry the sequence table refuses the opener past
+    /// `ABI_MAX_SEQS` with `TooManySeqs`, and a released slot is reusable.
+    fn test_seq_table_full_refused() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        for i in 0..ABI_MAX_SEQS {
+            test_assert_eq!(fol.seq_create(1, KERNEL), Ok(i));
+        }
+        test_assert!(fol.seq_create(1, KERNEL) == Err(FoliationError::TooManySeqs));
+        test_assert_eq!(fol.seq_release(5, KERNEL), Ok(0u16));
+        test_assert_eq!(fol.seq_create(1, KERNEL), Ok(5));
+        for i in 0..ABI_MAX_SEQS {
+            test_assert_eq!(fol.seq_release(i, KERNEL), Ok(0u16));
+        }
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. At the ABI geometry, with every plaque held by a live sequence,
+    /// one more block is refused with `Exhausted`: no frame is requested, no
+    /// held block moves, and the refused token is not absorbed. Once a holder
+    /// releases, the same append goes through by collapsing a free face, and
+    /// teardown returns every frame.
+    fn test_pool_exhaustion_at_abi_geometry_refused() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        let mut holders = Vec::new();
+        for k in 0..(ABI_POOL_BLOCKS / MAX_SEQ_BLOCKS) as u32 {
+            let id = fol
+                .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+                .unwrap_or(usize::MAX);
+            test_assert!(id != usize::MAX);
+            for &t in &prefix_tokens(400_000 + k * 1000, MAX_SEQ_BLOCKS) {
+                test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+            }
+            holders.push(id);
+        }
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS);
+        let before: Vec<Option<PhysAddr>> = (0..MAX_SEQ_BLOCKS)
+            .map(|i| fol.seq_frame(holders[0], i))
+            .collect();
+        let backed = fol.stats().frames_backed;
+
+        let extra = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
+        test_assert!(extra != usize::MAX);
+        let toks = prefix_tokens(500_000, 1);
+        for &t in &toks[..BLOCK_TOKENS - 1] {
+            test_assert_eq!(fol.seq_append(extra, KERNEL, t), Ok(0u16));
+        }
+        let last = toks[BLOCK_TOKENS - 1];
+        test_assert!(fol.seq_append(extra, KERNEL, last) == Err(FoliationError::Exhausted));
+        test_assert!(fol.seq_append(extra, KERNEL, last) == Err(FoliationError::Exhausted));
+        let s = fol.stats();
+        test_assert_eq!(s.frames_backed, backed);
+        test_assert_eq!(s.frames_failed, 0);
+        test_assert_eq!(s.referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        for (i, f) in before.iter().enumerate() {
+            test_assert!(fol.seq_frame(holders[0], i) == *f, "a held block moved");
+        }
+
+        test_assert_eq!(fol.seq_release(holders[0], KERNEL), Ok(MAX_SEQ_BLOCKS as u16));
+        test_assert_eq!(fol.seq_append(extra, KERNEL, last), Ok(1u16));
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        for id in holders.into_iter().skip(1).chain([extra]) {
+            test_assert!(fol.seq_release(id, KERNEL).is_ok());
+        }
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
+    /// Guard. More distinct blocks than the ABI leaf arena holds, written and
+    /// released under a fan-out that never saturates, must all be accepted:
+    /// the pool is smaller than the arena, so a non-resident, childless, dead
+    /// leaf always exists for the GC to take once eviction has run.
+    fn test_leaf_arena_recycles_at_abi_geometry() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        let seqs = 40u32;
+        let groups = 8u32;
+        for k in 0..seqs {
+            let id = fol
+                .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+                .unwrap_or(usize::MAX);
+            test_assert!(id != usize::MAX);
+            // First block shared per group, the rest distinct per sequence.
+            let mut toks = prefix_tokens(600_000 + (k % groups) * 10, 1);
+            toks.extend(prefix_tokens(700_000 + k * 1000, MAX_SEQ_BLOCKS - 1));
+            for &t in &toks {
+                test_assert!(
+                    fol.seq_append(id, KERNEL, t).is_ok(),
+                    "an append was refused while the arena held reclaimable leaves"
+                );
+            }
+            test_assert_eq!(fol.seq_release(id, KERNEL), Ok(MAX_SEQ_BLOCKS as u16));
+        }
+        let s = fol.stats();
+        test_assert!(
+            (groups + seqs * (MAX_SEQ_BLOCKS as u32 - 1)) as usize > ABI_LEAF_ARENA,
+            "the workload must overrun the arena, or it proves nothing"
+        );
+        test_assert!(s.leaf_gc > 0, "the arena was never recycled");
+        test_assert_eq!(s.children_full, 0);
+        test_assert_eq!(s.referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
     /// The proof must actually run and report `result=pass`.
     fn test_proof_line_passes() -> TestResult {
         let line = foliation_proof_line();
@@ -2024,6 +2731,385 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// Comma-separated list value of `key` in the proof line.
+    fn proof_list(line: &str, key: &str) -> Option<Vec<u64>> {
+        let v = line.split_whitespace().find_map(|t| t.strip_prefix(key))?;
+        v.split(',').map(|x| x.parse().ok()).collect()
+    }
+
+    /// One pool size is one point, and which policy wins flips with it. The
+    /// proof must replay every trace — the LRU-adversarial boot trace, the
+    /// 4-live chat trace and the 16-live chat trace — at pool sizes on both
+    /// sides of the headline geometry, under every realizable policy, with the
+    /// offline optimum bounding every point. The headline figures must be the
+    /// sweep's own measurement at `BENCH_POOL_BLOCKS`, not a separate run that
+    /// could disagree with it.
+    fn test_proof_sweeps_pool_sizes() -> TestResult {
+        let line = foliation_proof_line();
+        let pools = proof_list(&line, "sweep_pools=");
+        test_assert!(pools.is_some(), "the proof does not sweep the pool size");
+        let pools = pools.unwrap_or_default();
+        test_assert!(pools.len() >= 4, "a pool sweep needs at least four sizes");
+        test_assert!(
+            pools.iter().any(|&p| p < BENCH_POOL_BLOCKS as u64)
+                && pools.iter().any(|&p| p > BENCH_POOL_BLOCKS as u64),
+            "the sweep does not bracket the headline pool size"
+        );
+        let at = pools.iter().position(|&p| p == BENCH_POOL_BLOCKS as u64);
+        test_assert!(at.is_some(), "the sweep skips the headline pool size");
+        let at = at.unwrap_or(0);
+        for trace in ["boot", "chat", "chat16"] {
+            let belady = proof_list(&line, &format!("sweep_{trace}_belady="));
+            test_assert!(belady.is_some(), "a trace is not swept under Belady");
+            let belady = belady.unwrap_or_default();
+            test_assert_eq!(belady.len(), pools.len());
+            test_assert!(
+                belady.last() > belady.first(),
+                "the optimum gains nothing from the largest pool, so the sweep did not change capacity"
+            );
+            for policy in ["foliation", "lru", "locality"] {
+                let hits = proof_list(&line, &format!("sweep_{trace}_{policy}="));
+                test_assert!(hits.is_some(), "a trace is not swept under a policy");
+                let hits = hits.unwrap_or_default();
+                test_assert_eq!(hits.len(), pools.len());
+                test_assert!(
+                    hits.iter().zip(&belady).all(|(h, b)| h <= b),
+                    "a policy beats the offline optimum at some pool size"
+                );
+            }
+        }
+        for (sweep, headline) in [
+            ("sweep_boot_foliation=", "hit_bp_foliation="),
+            ("sweep_boot_lru=", "hit_bp_lru="),
+            ("sweep_boot_locality=", "hit_bp_locality="),
+            ("sweep_boot_belady=", "hit_bp_belady="),
+            ("sweep_chat_foliation=", "chat_hit_bp_foliation="),
+            ("sweep_chat_lru=", "chat_hit_bp_lru="),
+            ("sweep_chat_locality=", "chat_hit_bp_locality="),
+            ("sweep_chat_belady=", "chat_hit_bp_belady="),
+        ] {
+            let col = proof_list(&line, sweep).and_then(|v| v.get(at).copied());
+            test_assert!(
+                col.is_some() && col == proof_metric(&line, headline),
+                "the headline disagrees with the sweep at the headline pool size"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// The victim scan is the one O(pool) step on the admission path. Its cost
+    /// must be measured, not read off the complexity table: every replay that
+    /// evicts must report the cycles it spent choosing victims per eviction,
+    /// and the ABI stats line must carry the same counter for the live cache.
+    fn test_eviction_scan_is_measured() -> TestResult {
+        let line = foliation_proof_line();
+        for policy in ["foliation", "lru"] {
+            let per = proof_metric(&line, &format!("scan_cycles_per_eviction_{policy}="));
+            test_assert!(per.is_some(), "the eviction scan cost is not reported");
+            test_assert!(
+                per.unwrap_or(0) > 0,
+                "a replay that evicted reports a free eviction scan"
+            );
+        }
+        test_assert!(
+            global_stats_line().contains(" scan_cycles="),
+            "the ABI stats line does not report the eviction scan cost"
+        );
+        TestResult::Pass
+    }
+
+    /// The adaptive policy must be the better of the LRU and foliation
+    /// rankings wherever either one wins: at every sweep point of every trace
+    /// it may trail the better base policy by at most `MARGIN_BP`, and it may
+    /// never beat the offline optimum.
+    ///
+    /// The margin is fixed here, by the test, and was fixed before the policy
+    /// existed. It is a cost of learning rather than slack for a benchmark: no
+    /// evidence that one ranking chose a worse victim than the other can
+    /// arrive before a disputed block is requested again, so an online
+    /// selector pays for the reuses in flight. For a selector starting under
+    /// LRU on the boot trace that is the hot prefix's first return, 4 of 210
+    /// descents or 190 bp; 250 bp is that floor rounded up to a quarter
+    /// point. The policy as built starts under the foliation ranking (see
+    /// `Policy::Adaptive`), which moves its learning cost onto the chat trace.
+    fn test_adaptive_tracks_the_better_policy() -> TestResult {
+        const MARGIN_BP: u64 = 250;
+        let line = foliation_proof_line();
+        for trace in ["boot", "chat", "chat16"] {
+            let ad = proof_list(&line, &format!("sweep_{trace}_adaptive="));
+            test_assert!(ad.is_some(), "the proof does not sweep the adaptive policy");
+            let ad = ad.unwrap_or_default();
+            let fo = proof_list(&line, &format!("sweep_{trace}_foliation=")).unwrap_or_default();
+            let lru = proof_list(&line, &format!("sweep_{trace}_lru=")).unwrap_or_default();
+            let opt = proof_list(&line, &format!("sweep_{trace}_belady=")).unwrap_or_default();
+            test_assert!(
+                !ad.is_empty()
+                    && ad.len() == fo.len()
+                    && ad.len() == lru.len()
+                    && ad.len() == opt.len(),
+                "the adaptive sweep does not line up with the base policies"
+            );
+            for i in 0..ad.len() {
+                test_assert!(
+                    ad[i] + MARGIN_BP >= fo[i].max(lru[i]),
+                    "the adaptive policy trails the better base policy by more than the margin"
+                );
+                test_assert!(
+                    ad[i] <= opt[i],
+                    "the adaptive policy beats the offline optimum"
+                );
+            }
+        }
+        TestResult::Pass
+    }
+
+    /// Selecting between two rankings may not throw away a win either of them
+    /// had over chance: on every trace, every random-null seed that the LRU or
+    /// the foliation ranking beats, the adaptive policy must beat too.
+    fn test_adaptive_keeps_every_win_over_random() -> TestResult {
+        let line = foliation_proof_line();
+        for key in [
+            "adaptive_beats_random=",
+            "chat_adaptive_beats_random=",
+            "chat16_adaptive_beats_random=",
+        ] {
+            test_assert!(
+                proof_metric(&line, key).is_some(),
+                "the adaptive policy is not replayed against the random null"
+            );
+        }
+        test_assert!(
+            proof_metric(&line, "adaptive_null_regressions=") == Some(0),
+            "the adaptive policy lost to a random seed that a base policy beat"
+        );
+        TestResult::Pass
+    }
+
+    /// Three resident single-block leaves in a 3-plaque adaptive cache: `H`
+    /// entered twice and oldest, `N1` and `N2` entered once. Sealing a fourth
+    /// block forces an eviction the two rankings dispute — the foliation
+    /// ranking evicts `N1` (fewest entrants), LRU would evict `H` (oldest).
+    fn disputed_cache(leaf_arena: usize) -> Foliation {
+        let mut fol = Foliation::new(3, leaf_arena, 4, Policy::Adaptive);
+        for base in [100u32, 100, 200, 300, 400] {
+            request_block(&mut fol, base);
+        }
+        fol
+    }
+
+    /// Seal one block of `base..base + BLOCK_TOKENS` in its own sequence.
+    fn request_block(fol: &mut Foliation, base: u32) {
+        if let Ok(id) = fol.seq_create(1, KERNEL) {
+            for j in 0..BLOCK_TOKENS as u32 {
+                let _ = fol.seq_append(id, KERNEL, base + j);
+            }
+            let _ = fol.seq_release(id, KERNEL);
+        }
+    }
+
+    /// A duel goes to the ranking whose victim was needed later. When the
+    /// block the foliation ranking evicted comes back before the one LRU
+    /// would have evicted, LRU wins the duel and the adaptive cache switches
+    /// to it; when the spared block comes back first, the foliation ranking
+    /// wins and the cache stays.
+    fn test_adaptive_duel_goes_to_the_later_victim() -> TestResult {
+        let mut fol = disputed_cache(32);
+        test_assert_eq!(fol.stats().evictions, 1);
+        test_assert_eq!(fol.stats().duels, 1);
+        test_assert!(
+            fol.ranking() == Policy::Foliation,
+            "an adaptive cache with no settled duel is not under the foliation ranking"
+        );
+        // The evicted block returns first: the foliation ranking chose worse.
+        request_block(&mut fol, 200);
+        test_assert_eq!(fol.stats().duels_lru, 1);
+        test_assert_eq!(fol.stats().duels_foliation, 0);
+        test_assert!(
+            fol.ranking() == Policy::Lru,
+            "losing a duel did not move the adaptive cache to the other ranking"
+        );
+        test_assert_eq!(fol.collapse_violations(), 0);
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        fol.teardown();
+
+        let mut fol = disputed_cache(32);
+        // The spared block returns first: the foliation ranking chose better.
+        request_block(&mut fol, 100);
+        test_assert_eq!(fol.stats().duels_foliation, 1);
+        test_assert_eq!(fol.stats().duels_lru, 0);
+        test_assert!(
+            fol.ranking() == Policy::Foliation,
+            "winning a duel moved the adaptive cache off its ranking"
+        );
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// A duel names leaves by arena slot, and a slot outlives its block: once
+    /// the evicted leaf is reclaimed, the next new block can land in the same
+    /// slot. That block never took part in the duel, so requesting it must
+    /// settle nothing. The arena here holds exactly the root and the four
+    /// disputed blocks, so the fifth block reclaims the evicted `N1`.
+    fn test_adaptive_reused_slot_settles_nothing() -> TestResult {
+        let mut fol = disputed_cache(5);
+        let evicted = fol.duels[0].evicted;
+        test_assert_eq!(fol.stats().duels, 1);
+        request_block(&mut fol, 500);
+        test_assert_eq!(fol.stats().leaf_gc, 1);
+        test_assert!(
+            fol.leaf_resident(evicted),
+            "the new block did not land in the reclaimed slot, so the test proves nothing"
+        );
+        test_assert_eq!(fol.stats().duels_lru, 0);
+        test_assert_eq!(fol.stats().duels_foliation, 0);
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// The duel score saturates at `PSEL_MAX`, so however long LRU has been
+    /// winning, `PSEL_MAX` verdicts against it hand the cache back to the
+    /// foliation ranking (the other way takes one more, since ties go to the
+    /// foliation ranking). Drives `settle_duels` directly with synthetic duels
+    /// on one leaf.
+    fn test_adaptive_score_saturates() -> TestResult {
+        let mut fol = Foliation::new(4, 16, 2, Policy::Adaptive);
+        fol.leaves[1].used = true;
+        fol.leaves[1].key = 0xD0E1;
+        let verdicts = |fol: &mut Foliation, n: usize, lru_right: bool| {
+            for d in fol.duels.iter_mut().take(n) {
+                *d = Duel {
+                    evicted: 2,
+                    evicted_key: 0,
+                    spared: 1,
+                    spared_key: 0xD0E1,
+                    by_lru: lru_right,
+                };
+            }
+            fol.settle_duels(1);
+        };
+        verdicts(&mut fol, 3 * PSEL_MAX as usize, true);
+        test_assert_eq!(fol.stats().duels_lru, 3 * PSEL_MAX as u64);
+        test_assert!(fol.ranking() == Policy::Lru);
+        verdicts(&mut fol, PSEL_MAX as usize, false);
+        test_assert!(
+            fol.ranking() == Policy::Foliation,
+            "a long winning streak kept the ranking past PSEL_MAX verdicts against it"
+        );
+        TestResult::Pass
+    }
+
+    /// The adaptive policy is opt-in: the ABI cache stays LRU until a caller
+    /// selects another policy, only serving policies can be selected, and the
+    /// stats line reports both the policy and the ranking in force.
+    fn test_adaptive_is_opt_in() -> TestResult {
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        for code in [4u64, 5, u64::MAX] {
+            test_assert!(
+                !set_global_policy(code),
+                "an unknown policy code was accepted"
+            );
+        }
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        let mut fol = Foliation::new(4, 16, 2, Policy::Lru);
+        test_assert!(
+            !fol.set_policy(Policy::Belady),
+            "a live cache accepted the oracle"
+        );
+        test_assert!(
+            !fol.set_policy(Policy::Random),
+            "a live cache accepted the null"
+        );
+        test_assert!(fol.policy() == Policy::Lru);
+        test_assert!(
+            set_global_policy(3),
+            "the adaptive policy could not be selected"
+        );
+        test_assert!(
+            global_stats_line().starts_with("policy=adaptive ranking=foliation "),
+            "the stats line does not report the adaptive policy and its ranking"
+        );
+        test_assert!(set_global_policy(0));
+        test_assert!(global_stats_line().starts_with("policy=lru ranking=lru "));
+        TestResult::Pass
+    }
+
+    /// Seal `tokens` as one block in its own sequence.
+    fn request_tokens(fol: &mut Foliation, tokens: &[u32; BLOCK_TOKENS]) {
+        if let Ok(id) = fol.seq_create(1, KERNEL) {
+            for &t in tokens {
+                let _ = fol.seq_append(id, KERNEL, t);
+            }
+            let _ = fol.seq_release(id, KERNEL);
+        }
+    }
+
+    /// RED: a duel named its leaves by arena slot and key, and a key is a
+    /// 64-bit digest, not an identity. `COLLIDE_B` has `COLLIDE_A`'s key off
+    /// the root, so once the evicted `COLLIDE_A` leaf was reclaimed and
+    /// `COLLIDE_B` landed in its slot, requesting `COLLIDE_B` settled the duel
+    /// for LRU: a vote by a block that was never in it. A duel naming a slot
+    /// is dropped when the slot takes a new block.
+    fn test_adaptive_colliding_block_settles_nothing() -> TestResult {
+        // As `disputed_cache(5)`, with `COLLIDE_A` as the block the foliation
+        // ranking evicts and LRU would have kept.
+        let mut fol = Foliation::new(3, 5, 4, Policy::Adaptive);
+        request_block(&mut fol, 100);
+        request_block(&mut fol, 100);
+        request_tokens(&mut fol, &COLLIDE_A);
+        request_block(&mut fol, 300);
+        request_block(&mut fol, 400);
+        test_assert_eq!(fol.stats().duels, 1);
+        let evicted = fol.duels[0].evicted;
+        test_assert!(
+            evicted != NONE && fol.leaves[evicted as usize].tokens == COLLIDE_A,
+            "the duel must be over COLLIDE_A"
+        );
+        request_tokens(&mut fol, &COLLIDE_B);
+        test_assert!(
+            fol.leaf_resident(evicted) && fol.leaves[evicted as usize].tokens == COLLIDE_B,
+            "COLLIDE_B did not land in the reclaimed slot, so the test proves nothing"
+        );
+        test_assert_eq!(fol.stats().duels_lru, 0);
+        test_assert_eq!(fol.stats().duels_foliation, 0);
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. Switching a live adaptive cache's policy drops its open duels
+    /// and its score, mid-block and with a sequence holding blocks: the block
+    /// whose duel was open before the switch settles nothing after switching
+    /// away and back, the held sequence keeps appending, and residency,
+    /// references and backing hold throughout.
+    fn test_policy_switch_drops_live_duels() -> TestResult {
+        let mut fol = disputed_cache(32);
+        test_assert_eq!(fol.stats().duels, 1);
+        let id = fol.seq_create(4, KERNEL).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        let toks = prefix_tokens(33_000, 2);
+        for &t in &toks[..BLOCK_TOKENS + 3] {
+            test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+        }
+        test_assert!(fol.set_policy(Policy::Lru));
+        test_assert!(fol.set_policy(Policy::Adaptive));
+        test_assert!(fol.duels.iter().all(|d| d.evicted == NONE));
+        request_block(&mut fol, 200);
+        test_assert_eq!(fol.stats().duels_lru + fol.stats().duels_foliation, 0);
+        test_assert!(fol.ranking() == Policy::Foliation);
+        for &t in &toks[BLOCK_TOKENS + 3..] {
+            test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+        }
+        test_assert!(fol.set_policy(Policy::Foliation));
+        test_assert_eq!(fol.seq_counts(id, KERNEL).map(|c| c.0), Some(2u16));
+        test_assert!(fol.seq_frame(id, 0).is_some() && fol.seq_frame(id, 1).is_some());
+        test_assert_eq!(fol.collapse_violations(), 0);
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        let _ = fol.seq_release(id, KERNEL);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
     /// The cache syscalls serve under LRU. The foliation ranking only wins at
     /// a capacity cliff on a synthetic trace, so it is selected explicitly by
     /// the boot proof and is not the default for real callers.
@@ -2098,6 +3184,67 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::proof_replays_a_recency_trace",
             test_proof_replays_a_recency_trace,
+        );
+        crate::testing::register_test(
+            "foliation::dead_children_do_not_saturate_fanout",
+            test_dead_children_do_not_saturate_fanout,
+        );
+        crate::testing::register_test(
+            "foliation::abi_budget_clamp_and_block_boundaries",
+            test_abi_budget_clamp_and_block_boundaries,
+        );
+        crate::testing::register_test(
+            "foliation::stale_handle_after_reuse_refused",
+            test_stale_handle_after_reuse_refused,
+        );
+        crate::testing::register_test(
+            "foliation::seq_table_full_refused",
+            test_seq_table_full_refused,
+        );
+        crate::testing::register_test(
+            "foliation::pool_exhaustion_at_abi_geometry_refused",
+            test_pool_exhaustion_at_abi_geometry_refused,
+        );
+        crate::testing::register_test(
+            "foliation::leaf_arena_recycles_at_abi_geometry",
+            test_leaf_arena_recycles_at_abi_geometry,
+        );
+        crate::testing::register_test(
+            "foliation::proof_sweeps_pool_sizes",
+            test_proof_sweeps_pool_sizes,
+        );
+        crate::testing::register_test(
+            "foliation::eviction_scan_is_measured",
+            test_eviction_scan_is_measured,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_tracks_the_better_policy",
+            test_adaptive_tracks_the_better_policy,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_keeps_every_win_over_random",
+            test_adaptive_keeps_every_win_over_random,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_duel_goes_to_the_later_victim",
+            test_adaptive_duel_goes_to_the_later_victim,
+        );
+        crate::testing::register_test("foliation::adaptive_is_opt_in", test_adaptive_is_opt_in);
+        crate::testing::register_test(
+            "foliation::adaptive_reused_slot_settles_nothing",
+            test_adaptive_reused_slot_settles_nothing,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_score_saturates",
+            test_adaptive_score_saturates,
+        );
+        crate::testing::register_test(
+            "foliation::adaptive_colliding_block_settles_nothing",
+            test_adaptive_colliding_block_settles_nothing,
+        );
+        crate::testing::register_test(
+            "foliation::policy_switch_drops_live_duels",
+            test_policy_switch_drops_live_duels,
         );
     }
 }

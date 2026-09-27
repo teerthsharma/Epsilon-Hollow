@@ -1,0 +1,7 @@
+[package]
+name = "math-mutation-gate"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Mutation gate for the mathematics in aether-core, epsilon and aether-verified"
+publish = false

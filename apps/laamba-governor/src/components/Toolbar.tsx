@@ -1,6 +1,6 @@
 import { Play, Square, BarChart3, Loader2, Search, TrendingUp, Tag, Wrench, Code } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore } from "../store";
+import { usePick } from "../store";
 import { useState } from "react";
 import FormulaEditor from "../panels/FormulaEditor";
 
@@ -17,7 +17,7 @@ export default function Toolbar() {
     setClassifyResult,
     addExperiment,
     updateExperiment,
-  } = useStore();
+  } = usePick("selectedDataset", "isRunning", "setRunning", "addLog", "setBattleResult", "setAnalysisResult", "setRankResult", "setRegressResult", "setClassifyResult", "addExperiment", "updateExperiment");
 
   const [showFormula, setShowFormula] = useState(false);
 

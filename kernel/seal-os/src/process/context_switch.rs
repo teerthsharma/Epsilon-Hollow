@@ -6,7 +6,7 @@
 //! `switch_context` saves the current CPU state into `old` and restores from `new`.
 //! This is the core primitive that makes preemptive multitasking possible.
 
-use core::arch::asm;
+use core::arch::naked_asm;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Legacy FXSAVE area size (512 bytes for x87/MMX/SSE).
@@ -146,7 +146,12 @@ pub unsafe fn switch_context(old: *mut TaskContext, new: *const TaskContext) {
     sanitize_xsave_ptr(old, 0);
     sanitize_xsave_ptr(new as *mut TaskContext, 1);
     if XSAVE_SUPPORTED.load(Ordering::Relaxed) {
-        switch_context_xsave(old, new);
+        switch_context_xsave(
+            old,
+            new,
+            XSAVE_MASK_EAX.load(Ordering::Relaxed) as u32,
+            XSAVE_MASK_EDX.load(Ordering::Relaxed) as u32,
+        );
     } else {
         switch_context_fxsave(old, new);
     }
@@ -172,192 +177,131 @@ unsafe fn sanitize_xsave_ptr(ctx: *mut TaskContext, slot: usize) {
     );
 }
 
-unsafe fn switch_context_xsave(old: *mut TaskContext, new: *const TaskContext) {
-    let mask_low = XSAVE_MASK_EAX.load(Ordering::Relaxed) as u32;
-    let mask_high = XSAVE_MASK_EDX.load(Ordering::Relaxed) as u32;
-    asm!(
-        // Save current GPRs into `old`
-        "mov [{old} + 0x00], r15",
-        "mov [{old} + 0x08], r14",
-        "mov [{old} + 0x10], r13",
-        "mov [{old} + 0x18], r12",
-        "mov [{old} + 0x20], r11",
-        "mov [{old} + 0x28], r10",
-        "mov [{old} + 0x30], r9",
-        "mov [{old} + 0x38], r8",
-        "mov [{old} + 0x40], rbp",
-        // Save rdi into a scratch register first, then store
-        "mov r15, rdi",
-        "mov [{old} + 0x48], r15",
-        "mov r15, rsi",
-        "mov [{old} + 0x50], r15",
-        "mov r15, rdx",
-        "mov [{old} + 0x58], r15",
-        "mov r15, rcx",
-        "mov [{old} + 0x60], r15",
-        "mov r15, rbx",
-        "mov [{old} + 0x68], r15",
-        "mov r15, rax",
-        "mov [{old} + 0x70], r15",
+// The switch primitives are naked `sysv64` functions so that on entry `[rsp]`
+// is exactly their own return address: the saved `rip`/`rsp` pair resumes
+// `old` as if this call had returned. Written as inline `asm!` inside ordinary
+// functions they were inlined into `schedule()`, where `[rsp]` is a slot of
+// `schedule()`'s own frame, so a switched-out task could never resume.
+// `sysv64` is spelled out because `extern "C"` is the Microsoft x64
+// convention on x86_64-unknown-uefi.
+//
+// Only the SysV callee-saved registers (rbx, rbp, r12-r15) carry meaning across
+// a switch, so only they are saved. Every register is restored from `new`,
+// because a task that has never run takes its first arguments in rdi/rsi/rdx.
 
-        // Save RIP (return address is on stack)
-        "mov r15, [rsp]",
-        "mov [{old} + 0x78], r15",
-
-        // Save RSP (stack pointer after return address)
-        "lea r15, [rsp + 8]",
-        "mov [{old} + 0x80], r15",
-
-        // Save RFLAGS
+#[unsafe(naked)]
+unsafe extern "sysv64" fn switch_context_xsave(
+    old: *mut TaskContext,
+    new: *const TaskContext,
+    mask_low: u32,
+    mask_high: u32,
+) {
+    naked_asm!(
+        "mov [rdi + 0x00], r15",
+        "mov [rdi + 0x08], r14",
+        "mov [rdi + 0x10], r13",
+        "mov [rdi + 0x18], r12",
+        "mov [rdi + 0x40], rbp",
+        "mov [rdi + 0x68], rbx",
+        "mov rax, [rsp]",
+        "mov [rdi + 0x78], rax",
+        "lea rax, [rsp + 8]",
+        "mov [rdi + 0x80], rax",
         "pushfq",
-        "pop r15",
-        "mov [{old} + 0x88], r15",
-
-        // Save extended state via XSAVE
-        "mov r15, [{old} + 0x90]",
-        "xsave [r15]",
-
-        // Restore extended state via XRSTOR
-        "mov r15, [{new} + 0x90]",
-        "xrstor [r15]",
-
-        // Restore GPRs from `new`
-        "mov r15, [{new} + 0x00]",
-        "mov r14, [{new} + 0x08]",
-        "mov r13, [{new} + 0x10]",
-        "mov r12, [{new} + 0x18]",
-        "mov r11, [{new} + 0x20]",
-        "mov r10, [{new} + 0x28]",
-        "mov r9,  [{new} + 0x30]",
-        "mov r8,  [{new} + 0x38]",
-        "mov rbp, [{new} + 0x40]",
-        "mov rdx, [{new} + 0x58]",
-        "mov rcx, [{new} + 0x60]",
-        "mov rbx, [{new} + 0x68]",
-        "mov rax, [{new} + 0x70]",
-
-        // Restore RFLAGS
-        "mov r11, [{new} + 0x88]",
-        "push r11",
-        "popfq",
-
-        // Set up new stack
-        "mov rsp, [{new} + 0x80]",
-        // Push return address (rip) onto new stack
-        "push qword ptr [{new} + 0x78]",
-
-        // Restore rsi and rdi last
-        "mov rsi, [{new} + 0x50]",
-        "mov rdi, [{new} + 0x48]",
-
-        // Return into new task
-        "ret",
-        old = in(reg) old,
-        new = in(reg) new,
-        in("eax") mask_low,
-        in("edx") mask_high,
-        out("r11") _,
-        out("r15") _,
-        clobber_abi("system"),
+        "pop qword ptr [rdi + 0x88]",
+        // XSAVE/XRSTOR take the state-component mask in edx:eax.
+        "mov eax, edx",
+        "mov edx, ecx",
+        "mov r8, [rdi + 0x90]",
+        "xsave [r8]",
+        "mov r8, [rsi + 0x90]",
+        "xrstor [r8]",
+        "jmp {restore}",
+        restore = sym restore_context,
     );
 }
 
-unsafe fn switch_context_fxsave(old: *mut TaskContext, new: *const TaskContext) {
-    asm!(
-        // Save current GPRs into `old`
-        "mov [{old} + 0x00], r15",
-        "mov [{old} + 0x08], r14",
-        "mov [{old} + 0x10], r13",
-        "mov [{old} + 0x18], r12",
-        "mov [{old} + 0x20], r11",
-        "mov [{old} + 0x28], r10",
-        "mov [{old} + 0x30], r9",
-        "mov [{old} + 0x38], r8",
-        "mov [{old} + 0x40], rbp",
-        // Save rdi into a scratch register first, then store
-        "mov r15, rdi",
-        "mov [{old} + 0x48], r15",
-        "mov r15, rsi",
-        "mov [{old} + 0x50], r15",
-        "mov r15, rdx",
-        "mov [{old} + 0x58], r15",
-        "mov r15, rcx",
-        "mov [{old} + 0x60], r15",
-        "mov r15, rbx",
-        "mov [{old} + 0x68], r15",
-        "mov r15, rax",
-        "mov [{old} + 0x70], r15",
-
-        // Save RIP (return address is on stack)
-        "mov r15, [rsp]",
-        "mov [{old} + 0x78], r15",
-
-        // Save RSP (stack pointer after return address)
-        "lea r15, [rsp + 8]",
-        "mov [{old} + 0x80], r15",
-
-        // Save RFLAGS
+#[unsafe(naked)]
+unsafe extern "sysv64" fn switch_context_fxsave(old: *mut TaskContext, new: *const TaskContext) {
+    naked_asm!(
+        "mov [rdi + 0x00], r15",
+        "mov [rdi + 0x08], r14",
+        "mov [rdi + 0x10], r13",
+        "mov [rdi + 0x18], r12",
+        "mov [rdi + 0x40], rbp",
+        "mov [rdi + 0x68], rbx",
+        "mov rax, [rsp]",
+        "mov [rdi + 0x78], rax",
+        "lea rax, [rsp + 8]",
+        "mov [rdi + 0x80], rax",
         "pushfq",
-        "pop r15",
-        "mov [{old} + 0x88], r15",
-
-        // Save FPU state via FXSAVE
-        "mov r15, [{old} + 0x90]",
-        "fxsave [r15]",
-
-        // Restore FPU state via FXRSTOR
-        "mov r15, [{new} + 0x90]",
-        "fxrstor [r15]",
-
-        // Restore GPRs from `new`
-        "mov r15, [{new} + 0x00]",
-        "mov r14, [{new} + 0x08]",
-        "mov r13, [{new} + 0x10]",
-        "mov r12, [{new} + 0x18]",
-        "mov r11, [{new} + 0x20]",
-        "mov r10, [{new} + 0x28]",
-        "mov r9,  [{new} + 0x30]",
-        "mov r8,  [{new} + 0x38]",
-        "mov rbp, [{new} + 0x40]",
-        "mov rdx, [{new} + 0x58]",
-        "mov rcx, [{new} + 0x60]",
-        "mov rbx, [{new} + 0x68]",
-        "mov rax, [{new} + 0x70]",
-
-        // Restore RFLAGS
-        "mov r11, [{new} + 0x88]",
-        "push r11",
-        "popfq",
-
-        // Set up new stack
-        "mov rsp, [{new} + 0x80]",
-        // Push return address (rip) onto new stack
-        "push qword ptr [{new} + 0x78]",
-
-        // Restore rsi and rdi last
-        "mov rsi, [{new} + 0x50]",
-        "mov rdi, [{new} + 0x48]",
-
-        // Return into new task
-        "ret",
-        old = in(reg) old,
-        new = in(reg) new,
-        out("r11") _,
-        out("r15") _,
-        clobber_abi("system"),
+        "pop qword ptr [rdi + 0x88]",
+        "mov r8, [rdi + 0x90]",
+        "fxsave [r8]",
+        "mov r8, [rsi + 0x90]",
+        "fxrstor [r8]",
+        "jmp {restore}",
+        restore = sym restore_context,
     );
 }
 
-/// Wrapper function called when a newly created task is first scheduled.
+/// Shared tail of both switch primitives: load `new` (in rsi) and resume it.
+/// RFLAGS is restored last, once RSP already points at `new`'s stack, so an
+/// IF=1 in `new` cannot open an interrupt window on `old`'s stack.
+#[unsafe(naked)]
+unsafe extern "sysv64" fn restore_context() {
+    naked_asm!(
+        "mov r15, [rsi + 0x00]",
+        "mov r14, [rsi + 0x08]",
+        "mov r13, [rsi + 0x10]",
+        "mov r12, [rsi + 0x18]",
+        "mov r11, [rsi + 0x20]",
+        "mov r10, [rsi + 0x28]",
+        "mov r9,  [rsi + 0x30]",
+        "mov r8,  [rsi + 0x38]",
+        "mov rbp, [rsi + 0x40]",
+        "mov rdx, [rsi + 0x58]",
+        "mov rcx, [rsi + 0x60]",
+        "mov rbx, [rsi + 0x68]",
+        "mov rax, [rsi + 0x70]",
+        "mov rsp, [rsi + 0x80]",
+        "push qword ptr [rsi + 0x78]",
+        "push qword ptr [rsi + 0x88]",
+        "mov rdi, [rsi + 0x48]",
+        "mov rsi, [rsi + 0x50]",
+        "popfq",
+        "ret",
+    );
+}
+
+/// Give a fresh XSAVE/FXSAVE area the power-on FPU control state: x87 FCW
+/// 0x037F and MXCSR 0x1F80, every exception masked. The first switch into a
+/// task restores its area before anything was ever saved there, and an
+/// all-zero image unmasks every SSE exception.
 ///
-/// The task's `rip` is set to this function, and its `rdi` contains the
-/// user entry function pointer.
+/// # Safety
+/// `area` must be the 64-byte-aligned start of a writable XSAVE/FXSAVE area
+/// at least `FXSAVE_SIZE` bytes long (FCW is bytes 0..2, MXCSR bytes 24..28).
+pub unsafe fn init_fpu_area(area: *mut u8) {
+    // SAFETY: the caller guarantees `area` as stated under # Safety.
+    unsafe {
+        area.cast::<u16>().write(0x037F);
+        area.add(24).cast::<u32>().write(0x1F80);
+    }
+}
+
+/// First code a new kernel task runs; `switch_context` enters it with
+/// `entry` in rdi.
 #[allow(improper_ctypes_definitions)] // REASON: kernel_task_wrapper is an internal kernel ABI boundary, not user FFI
-extern "C" fn kernel_task_wrapper(entry: fn()) {
+extern "sysv64" fn kernel_task_wrapper(entry: fn()) -> ! {
     entry();
-    // When entry returns, mark task as dead and yield
+    // A dead task is never requeued, so the yield below returns only while no
+    // other task is ready; keep yielding until one is.
     super::scheduler::mark_current_dead();
-    super::scheduler::yield_current();
+    loop {
+        super::scheduler::yield_current();
+        x86_64::instructions::hlt();
+    }
 }
 
 /// Prepare the initial context for a kernel task.
@@ -373,7 +317,9 @@ pub fn init_task_context(stack: &mut [u8], entry: fn(), xsave_ptr: *mut u8) -> T
     let mut ctx = TaskContext::zero();
     ctx.rip = kernel_task_wrapper as *const () as u64;
     ctx.rdi = entry as *const () as u64;
-    ctx.rsp = stack_top;
+    // `switch_context` enters through `ret`, so the entry must see the RSP a
+    // `call` would have left: 8 below a 16-byte boundary.
+    ctx.rsp = stack_top - 8;
     ctx.rflags = 0x202; // Interrupt enable (IF) bit set
     ctx.xsave_ptr = xsave_ptr;
 

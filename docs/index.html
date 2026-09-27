@@ -662,7 +662,7 @@
   <div class="wrap">
     <p class="hero__kicker" data-reveal>Imported &middot; 2026-09-27</p>
     <h2 class="sec__h2" id="imported-h" data-reveal>Eleven fixes ported from related work.</h2>
-    <p class="sec__lede" data-reveal>Each port started from a test that failed for the reason in the "before" column and passes after it. The numbers are quoted from the commit that landed each one; all eleven are in the README's table with their test counts.</p>
+    <p class="sec__lede" data-reveal>Each port started from a test that failed for the reason in the "before" column and passes after it. The numbers are quoted from the commit that landed each one; all eleven are in the table in <a href="https://github.com/teerthsharma/Epsilon-Hollow/blob/main/docs/RESULTS.md#results-imported-from-related-work">docs/RESULTS.md</a> with their test counts.</p>
     <div class="scroll sec__body" data-reveal>
       <table>
         <thead>
@@ -733,7 +733,7 @@
       </li>
       <li data-reveal>
         <h3>Elsewhere in the kernel</h3>
-        <p>From the README's Limits: TLS accepts Ed25519 certificates only; AMD GPU dispatch has never executed; WiFi and Bluetooth are PCI probes only; KASLR moves mappings, not the image base; 611 of the kernel's 627 <code>unsafe</code> blocks carry no safety comment. Kernel W^X is now enforced, with 0 of 24,004 scanned pages writable and executable (b3cf934).</p>
+        <p>From the Limits in docs/RESULTS.md: TLS accepts Ed25519 certificates only; AMD GPU dispatch has never executed; WiFi and Bluetooth are PCI probes only; KASLR moves mappings, not the image base; 611 of the kernel's 627 <code>unsafe</code> blocks carry no safety comment. Kernel W^X is now enforced, with 0 of 24,004 scanned pages writable and executable (b3cf934).</p>
       </li>
       <li data-reveal>
         <h3>Where the numbers come from</h3>
@@ -819,7 +819,7 @@ cargo +stable run --manifest-path kernel/seal-mkimage/Cargo.toml --release -- --
       <a class="card" data-reveal href="https://github.com/teerthsharma/Epsilon-Hollow#readme">
         <p class="card__repo">README.md</p>
         <h3 class="card__title">The whole kernel</h3>
-        <p class="card__body">Architecture, measured results, the theorem table, the Linux-replacement direction and one Limits list.</p>
+        <p class="card__body">What Seal OS is, its four pillars, how to build and boot it, and how much of Linux works today. Every measured result is in docs/RESULTS.md.</p>
         <span class="card__link">Read the README <span aria-hidden="true">&#8250;</span></span>
       </a>
       <a class="card" data-reveal href="https://teerthsharma.github.io/work.html#p-epsilon-hollow">

@@ -35,6 +35,18 @@ pub struct PerCpu {
     pub double_fault_stack: [u8; 4096],
     pub tss: TaskStateSegment,
     pub scheduler: ManifoldScheduler,
+    /// Guards `scheduler`. It is a leaf lock: the innermost lock anywhere it
+    /// is taken, and nothing outside the scheduler is called while it is held.
+    ///
+    /// Lock order, outer to inner: VFS, `FILE_TABLE`, `manifold_acl`, passwd
+    /// and group lookups, then `scheduler_lock`. Those callers take it
+    /// themselves (`current_uid`/`current_gid`/`current_groups`/`current_task_id`
+    /// on every VFS lookup, `governor_epsilon` from `manifold_acl::check_access`),
+    /// so any work that can reach them — ELF loading, `groups_for_uid` reading
+    /// /etc/passwd — happens before this lock is taken (see
+    /// `scheduler::spawn_user`). `spin::Mutex` is not reentrant: taking it again
+    /// on the same CPU spins forever. `schedule()` only `try_lock`s it with
+    /// interrupts disabled, since the interrupted code may hold it.
     pub scheduler_lock: spin::Mutex<()>,
     pub ticks: u64,
     pub is_idle: bool,
@@ -42,6 +54,9 @@ pub struct PerCpu {
     pub pending_reschedule: bool,
     pub ap_ready: bool,
     pub tss_selector: SegmentSelector,
+    /// Where `syscall_entry` parks the user RSP between `swapgs` and loading
+    /// the kernel stack; read back into the syscall frame immediately after.
+    pub syscall_user_rsp: u64,
 }
 
 // PerCpu contains Vecs (inside ManifoldScheduler) so it is not Copy.
@@ -131,10 +146,14 @@ pub unsafe fn init_bsp() {
         pending_reschedule: false,
         ap_ready: true,
         tss_selector: SegmentSelector(0),
+        syscall_user_rsp: 0,
     });
 
     let per_cpu = &mut *ptr;
     crate::memory::gdt::init_tss_for_cpu(per_cpu);
+    // The BSP never had a TSS loaded: an interrupt taken in ring 3 had no RSP0
+    // to switch to, and the double-fault handler's IST stack did not exist.
+    crate::memory::gdt::load_tss(per_cpu.tss_selector);
 
     // Set idle stack so context switches have a valid kernel stack
     let stack_top = per_cpu.kernel_stack.as_ptr() as u64 + KERNEL_STACK_SIZE as u64;
@@ -188,6 +207,7 @@ pub fn alloc_ap_cpu(apic_id: u32, cpu_num: u32) -> &'static mut PerCpu {
             pending_reschedule: false,
             ap_ready: false,
             tss_selector: SegmentSelector(0),
+            syscall_user_rsp: 0,
         });
 
         let per_cpu = &mut *ptr;

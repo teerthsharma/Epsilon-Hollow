@@ -26,6 +26,9 @@ use super::voronoi_cap::VoronoiCap;
 use crate::drivers::interrupts;
 
 const VORONOI_CELLS: usize = 8;
+/// Gain of the prefetch predictor every ManifoldFS instance builds; `theorems`
+/// certifies T2 on it.
+pub const SCM_ALPHA: f64 = 0.7;
 const ENTROPY_MERGE_THRESHOLD: f64 = 2.0;
 const TELEPORT_METADATA_OPS: u64 = 7;
 
@@ -114,7 +117,7 @@ pub enum ManifoldError {
 impl core::fmt::Display for ManifoldError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NoDisk => write!(f, "No AHCI disk detected"),
+            Self::NoDisk => write!(f, "No disk detected"),
             Self::NoSuperblock => write!(f, "Disk present but no ManifoldFS superblock found"),
         }
     }
@@ -122,7 +125,7 @@ impl core::fmt::Display for ManifoldError {
 
 impl ManifoldFS {
     pub fn new() -> Self {
-        match BlockStore::mount_ahci() {
+        match BlockStore::mount_dev(crate::drivers::block::ahci::AHCI_DEV_NUM) {
             Ok(store) => Self::init_with_store(store),
             Err(_) => Self::fresh(),
         }
@@ -132,10 +135,9 @@ impl ManifoldFS {
         Self::fresh()
     }
 
-    pub fn try_mount_disk() -> Result<Self, ManifoldError> {
-        crate::drivers::disk::ahci::first_disk().map_err(|_| ManifoldError::NoDisk)?;
-
-        let store = BlockStore::try_mount_ahci().map_err(|e| match e {
+    /// Mount the ManifoldFS partition of block device `dev`.
+    pub fn try_mount_disk(dev: u32) -> Result<Self, ManifoldError> {
+        let store = BlockStore::try_mount_dev(dev).map_err(|e| match e {
             MountError::NoDevice => ManifoldError::NoDisk,
             MountError::NoSuperblock => ManifoldError::NoSuperblock,
         })?;
@@ -274,7 +276,7 @@ impl ManifoldFS {
             store,
             voronoi,
             root_id,
-            scm: SpectralContractionOperator::new(0.7),
+            scm: SpectralContractionOperator::new(SCM_ALPHA),
             access_state: [0.0; 3],
             last_prefetch_prediction: None,
             prefetch_hits: 0,
@@ -323,7 +325,11 @@ impl ManifoldFS {
             sibling_prev: None,
             dir_first_child: None,
         };
-        let root_id = inodes.alloc(root);
+        // Id 0 (slot 0, generation 0): the root's own `parent: 0` above, the
+        // block store's empty-record test and every caller that starts in
+        // directory 0 all name the root that way. `alloc` would hand out
+        // generation 1, id 0x1_0000_0000.
+        let root_id = inodes.insert_at(0, root).unwrap_or(0);
         dirs.insert(root_id, ".", root_id);
         dirs.insert(root_id, "..", root_id);
 
@@ -339,7 +345,7 @@ impl ManifoldFS {
             store: BlockStore::new(),
             voronoi: VoronoiCap::new(),
             root_id,
-            scm: SpectralContractionOperator::new(0.7),
+            scm: SpectralContractionOperator::new(SCM_ALPHA),
             access_state: [0.0; 3],
             last_prefetch_prediction: None,
             prefetch_hits: 0,
@@ -1486,16 +1492,7 @@ fn payload_similarity_full(a: &ManifoldPayload, b: &ManifoldPayload) -> f64 {
 }
 
 fn theorem_status_text(idx: usize) -> &'static str {
-    let ok = crate::THEOREM_STATES[idx].load(core::sync::atomic::Ordering::Relaxed);
-    if ok {
-        if idx < 5 {
-            "ACTIVE"
-        } else {
-            "VERIFIED"
-        }
-    } else {
-        "FAILED"
-    }
+    crate::theorems::status_text(idx)
 }
 
 fn now_ms() -> u64 {
@@ -1592,6 +1589,17 @@ pub mod tests {
         let entries = fs.ls(root).unwrap();
         test_assert_eq!(entries.len(), 1);
         test_assert_eq!(entries[0].name, "hello.txt");
+        TestResult::Pass
+    }
+
+    /// `Shell::new`, `FileManager::new` and `AppState::new` all start in
+    /// directory 0, and `ml_engine`'s fixtures store under 0: the root of a
+    /// fresh filesystem must answer to that id.
+    fn test_fresh_root_answers_to_id_zero() -> TestResult {
+        let mut fs = ManifoldFS::new_ramfs();
+        test_assert!(fs.ls(0).is_ok(), "ls(0) refused on a fresh filesystem");
+        test_assert!(fs.store_text("a.txt", "x", 0).is_ok(), "store under 0 refused");
+        test_assert!(fs.mkdir("d", 0).is_ok(), "mkdir under 0 refused");
         TestResult::Pass
     }
 
@@ -1876,6 +1884,10 @@ pub mod tests {
 
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
+        crate::testing::register_test(
+            "filesystem::fresh_root_answers_to_id_zero",
+            test_fresh_root_answers_to_id_zero,
+        );
         crate::testing::register_test(
             "filesystem::mkdir_and_resolve_path",
             test_mkdir_and_resolve_path,

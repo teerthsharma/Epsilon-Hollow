@@ -89,13 +89,17 @@ pub fn send_signal(target_id: u64, sig: u8) -> bool {
                 let _guard = per_cpu.scheduler_lock.lock();
                 if let Some(idx) = per_cpu.scheduler.find_task_by_id(target_id) {
                     if let Some(task) = per_cpu.scheduler.task_mut(idx) {
-                        if sig == SIGKILL || sig == SIGSTOP {
+                        let killed = sig == SIGKILL || sig == SIGSTOP;
+                        if killed {
                             task.state = TaskState::Dead;
                         } else {
                             task.pending_signals |= 1u64 << sig;
                         }
                         let is_running = per_cpu.scheduler.task_is_current(idx);
                         drop(_guard);
+                        if killed {
+                            crate::ml_engine::release_task(target_id);
+                        }
                         if is_running && i != crate::cpu::current_cpu_num() as usize {
                             crate::drivers::apic::local_apic().send_ipi(
                                 per_cpu.apic_id,
@@ -114,6 +118,13 @@ pub fn send_signal(target_id: u64, sig: u8) -> bool {
 // ---------------------------------------------------------------------------
 // Signal handling on return to userspace
 // ---------------------------------------------------------------------------
+
+/// Mark the current task dead and release what it holds outside the
+/// scheduler, as `scheduler::mark_current_dead` does for every other death.
+fn kill_current(task: &mut Task) {
+    task.state = TaskState::Dead;
+    crate::ml_engine::release_task(task.id);
+}
 
 /// Check whether the current task has pending, unmasked signals and, if so,
 /// build a signal frame on the user stack.
@@ -142,7 +153,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
 
     if handler == 0 {
         // Default action: terminate
-        task.state = TaskState::Dead;
+        kill_current(task);
         return;
     }
     if handler == 1 {
@@ -165,7 +176,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     unsafe {
         if crate::security::smap_smep::copy_to_user(rsp as *mut u8, uc_bytes).is_err() {
             crate::serial_println!("[signal] failed to push UserContext for sig {}", sig);
-            task.state = TaskState::Dead;
+            kill_current(task);
             return;
         }
     }
@@ -177,7 +188,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
         if crate::security::smap_smep::copy_to_user(rsp as *mut u8, &sig_num.to_le_bytes()).is_err()
         {
             crate::serial_println!("[signal] failed to push signum for sig {}", sig);
-            task.state = TaskState::Dead;
+            kill_current(task);
             return;
         }
     }
@@ -188,7 +199,7 @@ pub fn check_and_handle_signals(ctx: &mut UserContext) {
     unsafe {
         if crate::security::smap_smep::copy_to_user(rsp as *mut u8, &tramp.to_le_bytes()).is_err() {
             crate::serial_println!("[signal] failed to push trampoline for sig {}", sig);
-            task.state = TaskState::Dead;
+            kill_current(task);
             return;
         }
     }
@@ -427,7 +438,7 @@ pub fn sys_sigreturn() -> ! {
         unsafe { crate::process::userspace::enter_userspace(&mut saved) }
     } else {
         crate::serial_println!("[signal] sys_sigreturn: no saved context");
-        task.state = TaskState::Dead;
+        kill_current(task);
         crate::process::scheduler::yield_current();
         loop {
             x86_64::instructions::hlt();
