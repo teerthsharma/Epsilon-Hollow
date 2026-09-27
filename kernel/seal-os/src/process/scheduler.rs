@@ -2012,16 +2012,9 @@ pub mod tests {
     }
 
     fn task_is_dead(id: u64) -> bool {
-        // SAFETY: GS base is installed before the harness runs, and the
-        // scheduler is read under its own lock.
-        unsafe {
-            let cpu = crate::cpu::this_cpu();
-            let _guard = cpu.scheduler_lock.lock();
-            let s = &cpu.scheduler;
-            s.find_task_by_id(id)
-                .and_then(|i| s.slab.get(i))
-                .is_some_and(|t| t.state == TaskState::Dead)
-        }
+        super::list_all_tasks()
+            .iter()
+            .any(|t| t.0 == id && t.2 == "dead")
     }
 
     /// RED: no task-exit path released the ML state a task held. A kernel
