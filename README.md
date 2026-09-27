@@ -7009,7 +7009,7 @@ Or maybe it's just insanity. Either way, the code compiles.
 <p align="center">
 
 <!-- RUST_LINE_COUNT_START -->
-**187685 lines of Rust** across 504 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **189508 total**
+**187762 lines of Rust** across 504 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **189585 total**
 <!-- RUST_LINE_COUNT_END -->
 
 </p>
