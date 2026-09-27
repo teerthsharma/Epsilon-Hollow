@@ -1319,6 +1319,17 @@ fn check_installer_proof_text(text: &str) -> Result<(), String> {
     require_field_eq(line, "raw_format=", "1", label)?;
     require_field_eq(line, "result=", "pass", label)?;
     parse_field(line, "selected_disk=")?;
+    // The boot-disk refusal is evidence only when it names the disk refused:
+    // the one carrying the partition firmware booted from.
+    let boot_dev = parse_field(line, "boot_dev=")?;
+    if boot_dev
+        .strip_prefix("0x")
+        .map_or(true, |hex| hex.is_empty() || !is_lower_hex(hex))
+    {
+        return Err(format!(
+            "installer proof boot_dev must name the registered boot disk as 0x<hex>, got `{boot_dev}`"
+        ));
+    }
 
     // Every structure the raw path claims to have written is read back.
     for key in [
@@ -4441,7 +4452,7 @@ mod tests {
     const SECURITY_AUDIT_LOG: &str = "[SECURITY] audit proof version=1 vfs=1 dirs=1 buffered_before=0 buffered_after=0 file=/var/log/audit.log readback=1 flushed=1 result=pass\n";
     const AUTH_SHADOW_PROOF_LOG: &str = "[SECURITY] auth proof version=1 shadow=1 default_user=seal default_present=1 default_topo5000=1 default_legacy=0 default_password_rejected=1 new_user_topo5000=1 passwd_embedded_hashes=0 result=pass\n";
     const COW_PROOF_LOG: &str = "[MM] cow-proof version=1 rollback_guard=1 fork_fallback=0 clone_fallback=0 samples=4 rollback_ok=4 tracked_frames=10 rollback_frees=10 leaked_frames=0 result=pass\n";
-    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=2 mode=raw_block selected_disk=seal-install-scratch target_dev=0x2 part_dev=0x3 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=1 raw_format=1 gpt_partitions=2 gpt_header_crc=1a2b3c4d gpt_header_crc_ok=1 gpt_entries_crc_ok=1 gpt_backup_header_crc_ok=1 gpt_backup_agree=1 gpt_alt_lba_ok=1 gpt_pmbr=1 gpt_first_usable=34 gpt_last_usable=65502 gpt_first_part_lba=2048 ext2_magic=ef53 ext2_block_size=1024 ext2_blocks=8192 ext2_inodes=512 ext2_free_blocks=7000 ext2_mount=1 ext2_root_entries=2 ext2_dot=1 ext2_dotdot=1 guard_unarmed_refused=1 guard_boot_dev_refused=1 guard_other_dev_refused=1 result=pass\n";
+    const INSTALLER_PROOF_LOG: &str = "[INSTALLER] proof version=2 mode=raw_block selected_disk=seal-install-scratch target_dev=0x2 part_dev=0x3 boot_dev=0x800 boot_marker=1 home=1 profile=1 user=1 auth_topo5000=1 raw_gpt=1 raw_format=1 gpt_partitions=2 gpt_header_crc=1a2b3c4d gpt_header_crc_ok=1 gpt_entries_crc_ok=1 gpt_backup_header_crc_ok=1 gpt_backup_agree=1 gpt_alt_lba_ok=1 gpt_pmbr=1 gpt_first_usable=34 gpt_last_usable=65502 gpt_first_part_lba=2048 ext2_magic=ef53 ext2_block_size=1024 ext2_blocks=8192 ext2_inodes=512 ext2_free_blocks=7000 ext2_mount=1 ext2_root_entries=2 ext2_dot=1 ext2_dotdot=1 guard_unarmed_refused=1 guard_boot_dev_refused=1 guard_other_dev_refused=1 result=pass\n";
     const TLS_PROOF_LOG: &str = "[TLS] proof version=1 x509=1 chain_verify=1 ecdhe=1 curve=x25519 psk_only=0 cert_parse=ok expiry_check=1 entropy=hw result=pass\n";
     const ATLAS_PROOF_LOG: &str = "[Atlas] proof version=1 source=embedded_chart format=elf64_rel machine=x86_64 object_bytes=1120 sections_placed=2 symbols_resolved=7 germs_published=2 germs_bound=1 plt_veneers=1 relocations_applied=6 r64=1 rpc32=3 rplt32=1 r32s=1 image_bytes=8192 wx=text_rx_data_rw_nx signature=ed25519_fixture truncated_object=ok unresolved_germ=ok bad_signature=ok init_code=0x5ea10042 init_expect=0x5ea10042 exit_code=0x0 exit_expect=0x0 refcount_hold_guard=refused_busy refcount_dependency_guard=refused_busy nerve_cycle=refused charts_before=0 charts_peak=3 charts_after=0 result=pass\n";
     const BUNDLE_PROOF_LOG: &str = "[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify=ok index_tampered=refused index_entries=4 store_index=ed25519_fixture provision_pkg=eph_installed requested=6 provisioned=4 not_provisioned=1 digest_ok=4 digest_refused=1 cache_hits=2 fixture=synthetic_test_fixture fixture_bytes=256 cache_hit=same_alloc refcount_peak=2 refcount_after_drop=1 cached_while_held=1 released=1 cached_after_release=0 absent_section=test-absent-fixture.section:not_provisioned corrupt_section=test-corrupt-fixture.section:digest_mismatch simulation=absent wifi=down wifi_section=none wifi_scan_entries=0 bt=down bt_section=none bt_scan_entries=0 result=pass\n";
@@ -6094,6 +6105,14 @@ fn panic(info: &PanicInfo) -> ! {
 
         let no_boot = INSTALLER_PROOF_LOG.replace("boot_marker=1", "boot_marker=0");
         assert!(check_installer_proof_text(&no_boot).is_err());
+
+        // The boot-disk control must name the disk it refused.
+        let no_boot_dev = INSTALLER_PROOF_LOG.replace("boot_dev=0x800 ", "");
+        assert!(check_installer_proof_text(&no_boot_dev).is_err());
+        let unknown_boot_dev = INSTALLER_PROOF_LOG.replace("boot_dev=0x800", "boot_dev=none");
+        assert!(check_installer_proof_text(&unknown_boot_dev).is_err());
+        let virtio_boot_dev = INSTALLER_PROOF_LOG.replace("boot_dev=0x800", "boot_dev=0xfd00");
+        assert!(check_installer_proof_text(&virtio_boot_dev).is_ok());
 
         let no_auth = INSTALLER_PROOF_LOG.replace("auth_topo5000=1", "auth_topo5000=0");
         assert!(check_installer_proof_text(&no_auth).is_err());

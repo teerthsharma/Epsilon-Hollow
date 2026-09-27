@@ -114,7 +114,7 @@ pub enum ManifoldError {
 impl core::fmt::Display for ManifoldError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NoDisk => write!(f, "No AHCI disk detected"),
+            Self::NoDisk => write!(f, "No disk detected"),
             Self::NoSuperblock => write!(f, "Disk present but no ManifoldFS superblock found"),
         }
     }
@@ -122,7 +122,7 @@ impl core::fmt::Display for ManifoldError {
 
 impl ManifoldFS {
     pub fn new() -> Self {
-        match BlockStore::mount_ahci() {
+        match BlockStore::mount_dev(crate::drivers::block::ahci::AHCI_DEV_NUM) {
             Ok(store) => Self::init_with_store(store),
             Err(_) => Self::fresh(),
         }
@@ -132,10 +132,9 @@ impl ManifoldFS {
         Self::fresh()
     }
 
-    pub fn try_mount_disk() -> Result<Self, ManifoldError> {
-        crate::drivers::disk::ahci::first_disk().map_err(|_| ManifoldError::NoDisk)?;
-
-        let store = BlockStore::try_mount_ahci().map_err(|e| match e {
+    /// Mount the ManifoldFS partition of block device `dev`.
+    pub fn try_mount_disk(dev: u32) -> Result<Self, ManifoldError> {
+        let store = BlockStore::try_mount_dev(dev).map_err(|e| match e {
             MountError::NoDevice => ManifoldError::NoDisk,
             MountError::NoSuperblock => ManifoldError::NoSuperblock,
         })?;

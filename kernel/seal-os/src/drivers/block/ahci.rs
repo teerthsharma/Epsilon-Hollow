@@ -27,6 +27,9 @@ use super::{register_block_device, BlockDevice, BlockError};
 /// needed. The NCQ paths refuse anything past one page outright instead of
 /// looping (see their doc comments); currently moot since `ncq_supported` is
 /// never set true, so they are unreachable.
+/// Block device number of the AHCI port this driver brings up: Linux's `sda`.
+pub const AHCI_DEV_NUM: u32 = 0x800;
+
 const BOUNCE_BYTES: usize = 4096;
 
 const HBA_CAP: u64 = 0x00;
@@ -871,7 +874,7 @@ pub fn init() -> Option<()> {
         };
 
         let port_ref = Box::leak(Box::new(port));
-        register_block_device(0x800, port_ref);
+        register_block_device(AHCI_DEV_NUM, port_ref);
         serial_println!("[AHCI] Registered as block device 0x800");
     }
     Some(())
@@ -881,7 +884,7 @@ pub fn init() -> Option<()> {
 
 pub fn test_ahci() {
     let mut buf = [0u8; 512];
-    match super::read_block(0x800, 0, &mut buf) {
+    match super::read_block(AHCI_DEV_NUM, 0, &mut buf) {
         Ok(()) => {
             serial_println!("[test_ahci] Sector 0 read OK");
             serial_print!("[test_ahci] First 16 bytes:");

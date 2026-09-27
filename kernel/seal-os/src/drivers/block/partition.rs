@@ -10,8 +10,8 @@
 use alloc::boxed::Box;
 
 use super::{
-    read_block, register_block_device, write_block, BlockDevice, BlockError, BLOCK_DEVICES,
-    BOOT_DEV_NUM,
+    is_boot_disk, read_block, register_block_device, write_block, BlockDevice, BlockError,
+    BLOCK_DEVICES,
 };
 
 /// Device number of partition 1 on the install scratch disk.
@@ -64,11 +64,11 @@ impl BlockDevice for Partition {
 
 /// Register a partition view as `dev_num`.
 ///
-/// Refuses to build a view onto the boot device: a partition device would
+/// Refuses to build a view onto the boot disk: a partition device would
 /// otherwise be a second name for the live disk and slip past the install
-/// target check.
+/// target check, which reads the GPT at the view's LBA 0, not the parent's.
 pub fn attach(dev_num: u32, parent: u32, start_lba: u64, sectors: u64) -> Result<(), BlockError> {
-    if parent == BOOT_DEV_NUM || dev_num == BOOT_DEV_NUM || dev_num == parent {
+    if dev_num == parent || is_boot_disk(parent)? {
         return Err(BlockError::Refused);
     }
     if sectors == 0 {

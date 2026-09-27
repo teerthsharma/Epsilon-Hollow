@@ -125,7 +125,8 @@ pub fn first_disk() -> Result<(), DiskError> {
 
     // Honest check: can we actually read sector 0 via the real block layer?
     let mut buf = [0u8; 512];
-    match crate::drivers::block::read_block(0x800, 0, &mut buf) {
+    let dev = crate::drivers::block::ahci::AHCI_DEV_NUM;
+    match crate::drivers::block::read_block(dev, 0, &mut buf) {
         Ok(()) => {
             serial_println!("[disk::ahci] First disk readable (sector 0 OK)");
             Ok(())
