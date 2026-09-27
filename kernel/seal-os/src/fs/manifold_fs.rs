@@ -323,7 +323,11 @@ impl ManifoldFS {
             sibling_prev: None,
             dir_first_child: None,
         };
-        let root_id = inodes.alloc(root);
+        // Id 0 (slot 0, generation 0): the root's own `parent: 0` above, the
+        // block store's empty-record test and every caller that starts in
+        // directory 0 all name the root that way. `alloc` would hand out
+        // generation 1, id 0x1_0000_0000.
+        let root_id = inodes.insert_at(0, root).unwrap_or(0);
         dirs.insert(root_id, ".", root_id);
         dirs.insert(root_id, "..", root_id);
 
@@ -1595,6 +1599,17 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// `Shell::new`, `FileManager::new` and `AppState::new` all start in
+    /// directory 0, and `ml_engine`'s fixtures store under 0: the root of a
+    /// fresh filesystem must answer to that id.
+    fn test_fresh_root_answers_to_id_zero() -> TestResult {
+        let mut fs = ManifoldFS::new_ramfs();
+        test_assert!(fs.ls(0).is_ok(), "ls(0) refused on a fresh filesystem");
+        test_assert!(fs.store_text("a.txt", "x", 0).is_ok(), "store under 0 refused");
+        test_assert!(fs.mkdir("d", 0).is_ok(), "mkdir under 0 refused");
+        TestResult::Pass
+    }
+
     fn test_mkdir_and_resolve_path() -> TestResult {
         let mut fs = ManifoldFS::new();
         let root = fs.root_id();
@@ -1876,6 +1891,10 @@ pub mod tests {
 
     pub fn register_all() {
         crate::testing::register_test("filesystem::store_and_ls", test_store_and_ls);
+        crate::testing::register_test(
+            "filesystem::fresh_root_answers_to_id_zero",
+            test_fresh_root_answers_to_id_zero,
+        );
         crate::testing::register_test(
             "filesystem::mkdir_and_resolve_path",
             test_mkdir_and_resolve_path,
