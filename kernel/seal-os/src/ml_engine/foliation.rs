@@ -69,9 +69,10 @@ pub const BLOCK_TOKENS: usize = 8;
 /// Maximum fan-out of a foliation leaf.
 ///
 /// ponytail: fixed fan-out with a linear child scan. Ceiling is 32 distinct
-/// continuations per prefix; past that `descend` refuses to share and reports
-/// `children_full`. Upgrade path is an open-addressed key->child map per leaf,
-/// which trades 3x metadata for unbounded fan-out.
+/// live continuations per prefix: a full prefix first reclaims a continuation
+/// no live sequence uses, and only when all 32 are live does `descend` refuse
+/// and report `children_full`. Upgrade path is an open-addressed key->child
+/// map per leaf, which trades 3x metadata for unbounded fan-out.
 pub const MAX_CHILDREN: usize = 32;
 /// Maximum blocks in one sequence's block table.
 pub const MAX_SEQ_BLOCKS: usize = 16;
@@ -469,6 +470,13 @@ impl Foliation {
         Ok(n)
     }
 
+    /// Release every sequence `owner` opened. Returns how many there were.
+    pub fn release_owner(&mut self, owner: u64) -> usize {
+        (0..self.seqs.len())
+            .filter(|&id| self.seq_release(id, owner).is_ok())
+            .count()
+    }
+
     /// Reference count of a leaf.
     pub fn leaf_refcount(&self, leaf: u16) -> u16 {
         self.leaves
@@ -665,7 +673,9 @@ impl Foliation {
         key: u64,
         tokens: [u32; BLOCK_TOKENS],
     ) -> Result<u16, FoliationError> {
-        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN {
+        if self.leaves[parent as usize].nchild as usize >= MAX_CHILDREN
+            && !self.reclaim_dead_child(parent)
+        {
             self.stats.children_full += 1;
             return Err(FoliationError::ChildrenFull);
         }
@@ -686,6 +696,45 @@ impl Foliation {
         l.tokens = tokens;
         l.depth = depth;
         Ok(idx)
+    }
+
+    /// Free one of `parent`'s child slots held by a continuation no live
+    /// sequence uses. Returns false when every child is live.
+    ///
+    /// A sequence's block table is a path from the root, so a child with no
+    /// references heads a subtree with none: the whole subtree is collapsed
+    /// and its leaves blanked. Without this a prefix that ever had
+    /// `MAX_CHILDREN` continuations refused every new one for the rest of the
+    /// boot, because the leaf GC runs only on a full arena and never takes a
+    /// resident leaf. Prefers a child already out of the pool, then the least
+    /// recently used.
+    fn reclaim_dead_child(&mut self, parent: u16) -> bool {
+        let p = &self.leaves[parent as usize];
+        let Some(top) = p.child[..p.nchild as usize]
+            .iter()
+            .copied()
+            .filter(|&c| self.leaves[c as usize].refcount == 0)
+            .min_by_key(|&c| {
+                let l = &self.leaves[c as usize];
+                (l.slot != NONE, l.last_use)
+            })
+        else {
+            return false;
+        };
+        self.unlink_child(parent, top);
+        let mut stack = Vec::new();
+        stack.push(top);
+        while let Some(x) = stack.pop() {
+            let l = &self.leaves[x as usize];
+            stack.extend_from_slice(&l.child[..l.nchild as usize]);
+            if l.slot != NONE {
+                self.collapse(x);
+                self.stats.evictions += 1;
+            }
+            self.leaves[x as usize] = Leaf::blank();
+            self.stats.leaf_gc += 1;
+        }
+        true
     }
 
     fn free_leaf(&self) -> Option<u16> {
@@ -1414,6 +1463,12 @@ pub fn with_global<R>(f: impl FnOnce(&mut Foliation) -> R) -> R {
     f(guard.as_mut().expect("foliation initialised above"))
 }
 
+/// Release every sequence `owner` holds in the global cache, for the task-exit
+/// path. Does not build the cache for a task that never used it.
+pub fn release_task(owner: u64) -> usize {
+    GLOBAL.lock().as_mut().map_or(0, |f| f.release_owner(owner))
+}
+
 /// Map a refusal to an errno for the syscall layer.
 pub fn errno(e: FoliationError) -> i64 {
     match e {
@@ -1670,22 +1725,26 @@ pub mod tests {
         let _ = fol.seq_release(id, KERNEL);
         fol.teardown();
 
-        // Fan-out: saturate the root leaf's children at the shipped ABI
-        // geometry, where neither the pool nor the leaf arena is the binding
-        // constraint, then seal one more distinct block off the root.
+        // Fan-out: saturate the root leaf's children with live sequences at
+        // the shipped ABI pool and arena, where neither is the binding
+        // constraint, then seal one more distinct block off the root. The
+        // ceiling binds live continuations only — a released one is reclaimed
+        // (`dead_children_do_not_saturate_fanout`) — so the saturating
+        // sequences stay open, which takes one slot more than the ABI table.
         let mut fol = Foliation::new(
             ABI_POOL_BLOCKS,
             ABI_LEAF_ARENA,
-            ABI_MAX_SEQS,
+            ABI_MAX_SEQS + 1,
             Policy::Foliation,
         );
+        let mut live = Vec::new();
         for round in 0..MAX_CHILDREN as u32 {
             let sid = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
             test_assert!(sid != usize::MAX);
             for j in 0..BLOCK_TOKENS {
                 let _ = fol.seq_append(sid, KERNEL, 60_000 + round * 100 + j as u32);
             }
-            let _ = fol.seq_release(sid, KERNEL);
+            live.push(sid);
         }
         test_assert_eq!(fol.stats().children_full, 0);
         test_assert_eq!(fol.stats().descents, MAX_CHILDREN as u64);
@@ -1706,6 +1765,9 @@ pub mod tests {
         test_assert_eq!(fol.stats().children_full, refusals);
         test_assert_eq!(fol.seq_counts(sid, KERNEL).map(|c| c.0), Some(0u16));
         let _ = fol.seq_release(sid, KERNEL);
+        for sid in live {
+            let _ = fol.seq_release(sid, KERNEL);
+        }
         fol.teardown();
         TestResult::Pass
     }
@@ -1921,6 +1983,246 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A prefix's `MAX_CHILDREN` slots bound its *live* continuations. A
+    /// sequence's block table is a path from the root, so a child no live
+    /// sequence references heads a subtree no live sequence references. One
+    /// task writing and releasing two-block sequences with distinct first
+    /// blocks used to fill the root's fan-out with dead continuations for the
+    /// rest of the boot — the leaf GC runs only on a full arena and never
+    /// takes a resident leaf — so every later prompt with a new first block
+    /// was refused with ENOSPC. The dead subtree must be reclaimed whole, its
+    /// frames returned, and nothing a live sequence holds touched.
+    fn test_dead_children_do_not_saturate_fanout() -> TestResult {
+        const DEAD: u64 = 7;
+        const LIVE: u64 = 8;
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        // A live bystander, opened first so it is the least recently used child.
+        let keep = fol.seq_create(2, LIVE).unwrap_or(usize::MAX);
+        test_assert!(keep != usize::MAX);
+        for &t in &prefix_tokens(80_000, 2) {
+            test_assert!(fol.seq_append(keep, LIVE, t).is_ok());
+        }
+        let held = [fol.seq_frame(keep, 0), fol.seq_frame(keep, 1)];
+        test_assert!(held[0].is_some() && held[1].is_some());
+        for round in 0..(MAX_CHILDREN as u32 - 1) {
+            let sid = fol.seq_create(2, DEAD).unwrap_or(usize::MAX);
+            test_assert!(sid != usize::MAX);
+            for &t in &prefix_tokens(100_000 + round * 100, 2) {
+                test_assert!(fol.seq_append(sid, DEAD, t).is_ok());
+            }
+            test_assert_eq!(fol.seq_release(sid, DEAD), Ok(2u16));
+        }
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS);
+
+        let sid = fol.seq_create(1, LIVE).unwrap_or(usize::MAX);
+        test_assert!(sid != usize::MAX);
+        for &t in &prefix_tokens(200_000, 1) {
+            test_assert!(
+                fol.seq_append(sid, LIVE, t).is_ok(),
+                "a new first block was refused while every other continuation was dead"
+            );
+        }
+        test_assert_eq!(fol.seq_counts(sid, LIVE).map(|c| c.0), Some(1u16));
+        test_assert!(fol.seq_frame(sid, 0).is_some());
+        test_assert_eq!(fol.stats().children_full, 0);
+        // Exactly one dead two-block subtree went: its two plaques and leaves.
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS - 1);
+        test_assert_eq!(fol.stats().leaf_gc, 2);
+        test_assert!(
+            fol.seq_frame(keep, 0) == held[0] && fol.seq_frame(keep, 1) == held[1],
+            "reclaiming a dead continuation moved a live one"
+        );
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        let _ = fol.seq_release(sid, LIVE);
+        let _ = fol.seq_release(keep, LIVE);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(
+            s.frames_freed == s.frames_backed,
+            "a reclaimed plaque's frame was not returned"
+        );
+        TestResult::Pass
+    }
+
+    /// Guard. The ABI clamps a budget past `u16` to the per-sequence ceiling
+    /// instead of wrapping it, seals exactly on every `BLOCK_TOKENS` boundary,
+    /// refuses the first token past the block table with EFBIG without
+    /// absorbing it, and answers ENOENT to a double release, to every later use
+    /// of the released id, and to ids outside the table.
+    fn test_abi_budget_clamp_and_block_boundaries() -> TestResult {
+        use crate::syscall::table::{
+            dispatch, SYS_KV_SEQ_APPEND, SYS_KV_SEQ_CREATE, SYS_KV_SEQ_RELEASE, SYS_KV_SEQ_STATS,
+        };
+        let id = dispatch(SYS_KV_SEQ_CREATE, u64::MAX, 0, 0).code;
+        test_assert!(id >= 0, "an oversized budget must be clamped, not refused");
+        let id = id as u64;
+        for j in 0..MAX_SEQ_BLOCKS * BLOCK_TOKENS {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, 300_000 + j as u64, 0).code,
+                ((j + 1) / BLOCK_TOKENS) as i64
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -27);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -27);
+        test_assert_eq!(
+            dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code,
+            MAX_SEQ_BLOCKS as i64
+        );
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code, -2);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, 1, 0).code, -2);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_STATS, id, 0, 0).code, -2);
+
+        let zero = dispatch(SYS_KV_SEQ_CREATE, 0, 0, 0).code;
+        test_assert!(zero >= 0);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, zero as u64, 1, 0).code, -27);
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, zero as u64, 0, 0).code, 0);
+
+        for bad in [ABI_MAX_SEQS as u64, u64::MAX] {
+            test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, bad, 1, 0).code, -2);
+            test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, bad, 0, 0).code, -2);
+            test_assert_eq!(dispatch(SYS_KV_SEQ_STATS, bad, 0, 0).code, -2);
+        }
+        TestResult::Pass
+    }
+
+    /// Guard. A released id is handed to the next opener; the old owner's
+    /// stale copy of it must then be refused as missing, and must neither
+    /// append to, release, nor read the new owner's sequence.
+    fn test_stale_handle_after_reuse_refused() -> TestResult {
+        const OLD: u64 = 7;
+        const NEW: u64 = 8;
+        let mut fol = Foliation::new(8, 64, 2, Policy::Lru);
+        let id = fol.seq_create(4, OLD).unwrap_or(usize::MAX);
+        test_assert!(id != usize::MAX);
+        for &t in &prefix_tokens(22_000, 1) {
+            test_assert!(fol.seq_append(id, OLD, t).is_ok());
+        }
+        test_assert_eq!(fol.seq_release(id, OLD), Ok(1u16));
+        test_assert_eq!(fol.seq_create(4, NEW), Ok(id));
+        for &t in &prefix_tokens(23_000, 1) {
+            test_assert!(fol.seq_append(id, NEW, t).is_ok());
+        }
+        test_assert!(fol.seq_append(id, OLD, 1) == Err(FoliationError::NoSuchSeq));
+        test_assert!(fol.seq_release(id, OLD) == Err(FoliationError::NoSuchSeq));
+        test_assert!(fol.seq_counts(id, OLD).is_none());
+        test_assert_eq!(fol.seq_counts(id, NEW), Some((1u16, 0u32, 1u32)));
+        test_assert_eq!(fol.seq_release(id, NEW), Ok(1u16));
+        test_assert!(fol.seq_release(id, NEW) == Err(FoliationError::NoSuchSeq));
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. At the ABI geometry the sequence table refuses the opener past
+    /// `ABI_MAX_SEQS` with `TooManySeqs`, and a released slot is reusable.
+    fn test_seq_table_full_refused() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        for i in 0..ABI_MAX_SEQS {
+            test_assert_eq!(fol.seq_create(1, KERNEL), Ok(i));
+        }
+        test_assert!(fol.seq_create(1, KERNEL) == Err(FoliationError::TooManySeqs));
+        test_assert_eq!(fol.seq_release(5, KERNEL), Ok(0u16));
+        test_assert_eq!(fol.seq_create(1, KERNEL), Ok(5));
+        for i in 0..ABI_MAX_SEQS {
+            test_assert_eq!(fol.seq_release(i, KERNEL), Ok(0u16));
+        }
+        fol.teardown();
+        TestResult::Pass
+    }
+
+    /// Guard. At the ABI geometry, with every plaque held by a live sequence,
+    /// one more block is refused with `Exhausted`: no frame is requested, no
+    /// held block moves, and the refused token is not absorbed. Once a holder
+    /// releases, the same append goes through by collapsing a free face, and
+    /// teardown returns every frame.
+    fn test_pool_exhaustion_at_abi_geometry_refused() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        let mut holders = Vec::new();
+        for k in 0..(ABI_POOL_BLOCKS / MAX_SEQ_BLOCKS) as u32 {
+            let id = fol
+                .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+                .unwrap_or(usize::MAX);
+            test_assert!(id != usize::MAX);
+            for &t in &prefix_tokens(400_000 + k * 1000, MAX_SEQ_BLOCKS) {
+                test_assert!(fol.seq_append(id, KERNEL, t).is_ok());
+            }
+            holders.push(id);
+        }
+        test_assert_eq!(fol.resident(), ABI_POOL_BLOCKS);
+        let before: Vec<Option<PhysAddr>> = (0..MAX_SEQ_BLOCKS)
+            .map(|i| fol.seq_frame(holders[0], i))
+            .collect();
+        let backed = fol.stats().frames_backed;
+
+        let extra = fol.seq_create(1, KERNEL).unwrap_or(usize::MAX);
+        test_assert!(extra != usize::MAX);
+        let toks = prefix_tokens(500_000, 1);
+        for &t in &toks[..BLOCK_TOKENS - 1] {
+            test_assert_eq!(fol.seq_append(extra, KERNEL, t), Ok(0u16));
+        }
+        let last = toks[BLOCK_TOKENS - 1];
+        test_assert!(fol.seq_append(extra, KERNEL, last) == Err(FoliationError::Exhausted));
+        test_assert!(fol.seq_append(extra, KERNEL, last) == Err(FoliationError::Exhausted));
+        let s = fol.stats();
+        test_assert_eq!(s.frames_backed, backed);
+        test_assert_eq!(s.frames_failed, 0);
+        test_assert_eq!(s.referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        for (i, f) in before.iter().enumerate() {
+            test_assert!(fol.seq_frame(holders[0], i) == *f, "a held block moved");
+        }
+
+        test_assert_eq!(fol.seq_release(holders[0], KERNEL), Ok(MAX_SEQ_BLOCKS as u16));
+        test_assert_eq!(fol.seq_append(extra, KERNEL, last), Ok(1u16));
+        test_assert_eq!(fol.stats().referenced_evictions, 0);
+        for id in holders.into_iter().skip(1).chain([extra]) {
+            test_assert!(fol.seq_release(id, KERNEL).is_ok());
+        }
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
+    /// Guard. More distinct blocks than the ABI leaf arena holds, written and
+    /// released under a fan-out that never saturates, must all be accepted:
+    /// the pool is smaller than the arena, so a non-resident, childless, dead
+    /// leaf always exists for the GC to take once eviction has run.
+    fn test_leaf_arena_recycles_at_abi_geometry() -> TestResult {
+        let mut fol = Foliation::new(ABI_POOL_BLOCKS, ABI_LEAF_ARENA, ABI_MAX_SEQS, Policy::Lru);
+        let seqs = 40u32;
+        let groups = 8u32;
+        for k in 0..seqs {
+            let id = fol
+                .seq_create(MAX_SEQ_BLOCKS as u16, KERNEL)
+                .unwrap_or(usize::MAX);
+            test_assert!(id != usize::MAX);
+            // First block shared per group, the rest distinct per sequence.
+            let mut toks = prefix_tokens(600_000 + (k % groups) * 10, 1);
+            toks.extend(prefix_tokens(700_000 + k * 1000, MAX_SEQ_BLOCKS - 1));
+            for &t in &toks {
+                test_assert!(
+                    fol.seq_append(id, KERNEL, t).is_ok(),
+                    "an append was refused while the arena held reclaimable leaves"
+                );
+            }
+            test_assert_eq!(fol.seq_release(id, KERNEL), Ok(MAX_SEQ_BLOCKS as u16));
+        }
+        let s = fol.stats();
+        test_assert!(
+            (groups + seqs * (MAX_SEQ_BLOCKS as u32 - 1)) as usize > ABI_LEAF_ARENA,
+            "the workload must overrun the arena, or it proves nothing"
+        );
+        test_assert!(s.leaf_gc > 0, "the arena was never recycled");
+        test_assert_eq!(s.children_full, 0);
+        test_assert_eq!(s.referenced_evictions, 0);
+        test_assert_eq!(fol.collapse_violations(), 0);
+        fol.teardown();
+        let s = fol.stats();
+        test_assert!(s.frames_freed == s.frames_backed, "teardown leaked a frame");
+        TestResult::Pass
+    }
+
     /// The proof must actually run and report `result=pass`.
     fn test_proof_line_passes() -> TestResult {
         let line = foliation_proof_line();
@@ -2098,6 +2400,30 @@ pub mod tests {
         crate::testing::register_test(
             "foliation::proof_replays_a_recency_trace",
             test_proof_replays_a_recency_trace,
+        );
+        crate::testing::register_test(
+            "foliation::dead_children_do_not_saturate_fanout",
+            test_dead_children_do_not_saturate_fanout,
+        );
+        crate::testing::register_test(
+            "foliation::abi_budget_clamp_and_block_boundaries",
+            test_abi_budget_clamp_and_block_boundaries,
+        );
+        crate::testing::register_test(
+            "foliation::stale_handle_after_reuse_refused",
+            test_stale_handle_after_reuse_refused,
+        );
+        crate::testing::register_test(
+            "foliation::seq_table_full_refused",
+            test_seq_table_full_refused,
+        );
+        crate::testing::register_test(
+            "foliation::pool_exhaustion_at_abi_geometry_refused",
+            test_pool_exhaustion_at_abi_geometry_refused,
+        );
+        crate::testing::register_test(
+            "foliation::leaf_arena_recycles_at_abi_geometry",
+            test_leaf_arena_recycles_at_abi_geometry,
         );
     }
 }

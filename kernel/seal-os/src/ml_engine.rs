@@ -136,6 +136,27 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     Ok(a.matmul(b))
 }
 
+/// Most epochs one `ml train` may ask for.
+///
+/// `MLP::fit` always runs the whole budget it is given, and the shell runs it
+/// on the kernel's event loop, so the number typed after `ml train` is how
+/// long the machine stops answering. Ten times the shell's default of 1000.
+pub const MAX_DEMO_EPOCHS: usize = 10_000;
+
+/// Drop every ML resource `task` holds: its fit stream and its KV sequences.
+///
+/// For the task-exit path, and nothing else releases them: a task that exits
+/// holding KV sequences leaves their plaques referenced, so never evictable,
+/// and their slots taken, for the rest of the boot. Task 0 is the kernel,
+/// which does not exit; the sequences it owns are its own proofs'.
+pub fn release_task(task: u64) {
+    if task == 0 {
+        return;
+    }
+    stratum::unregister(task);
+    foliation::release_task(task);
+}
+
 /// Train a simple MLP on synthetic XOR-like data.
 /// Returns (human-readable report, serialized model bytes).
 ///
@@ -147,7 +168,13 @@ pub fn tensor_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 /// fixture uses the same `[2, 1]` / `[1, 1]` pair. Every read below indexes
 /// with both axes for the same reason — `Tensor::compute_offset` asserts that
 /// the index rank matches the shape rank.
-pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
+pub fn demo_train_mlp(epochs: usize) -> Result<(String, Vec<u8>), String> {
+    if epochs > MAX_DEMO_EPOCHS {
+        return Err(format!(
+            "{} epochs is past the {} one `ml train` may run",
+            epochs, MAX_DEMO_EPOCHS
+        ));
+    }
     let mut mlp = MLP::new(
         OptimizerConfig::Adam {
             learning_rate: 0.01,
@@ -206,7 +233,7 @@ pub fn demo_train_mlp(epochs: usize) -> (String, Vec<u8>) {
     }
 
     let bytes = serialize_mlp(&mlp);
-    (out, bytes)
+    Ok((out, bytes))
 }
 
 /// Format a tensor for display.
@@ -351,9 +378,17 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         LossConfig::MSE,
     );
 
+    let mut prev_output = None;
     for _ in 0..n_layers {
         let input_size = read_u32(bytes, &mut off).ok_or("Missing input_size")? as usize;
         let output_size = read_u32(bytes, &mut off).ok_or("Missing output_size")? as usize;
+        // A layer consumes the previous layer's output. A mismatch loads and
+        // then aborts the kernel in the first `predict`, where
+        // `Tensor::matmul` asserts the inner dimensions agree.
+        if prev_output.is_some_and(|p| p != input_size) {
+            return Err(String::from("Layer input does not match previous layer output"));
+        }
+        prev_output = Some(output_size);
         let act_u8 = read_u8(bytes, &mut off).ok_or("Missing activation")?;
         let activation = activation_from_u8(act_u8).ok_or("Invalid activation")?;
 
@@ -375,8 +410,13 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
             return Err(String::from("Weight length does not match layer shape"));
         }
         let mut w_data = Vec::with_capacity(w_len);
+        // A NaN or infinite parameter makes every prediction NaN.
         for _ in 0..w_len {
-            w_data.push(read_f64(bytes, &mut off).ok_or("Missing weight")?);
+            w_data.push(
+                read_f64(bytes, &mut off)
+                    .filter(|v| v.is_finite())
+                    .ok_or("Missing or non-finite weight")?,
+            );
         }
         // Biases — same buffer-derived cap, and count must equal output_size
         // (bias tensor shape is [output_size, 1]) for the same reason.
@@ -389,7 +429,11 @@ pub fn deserialize_mlp(bytes: &[u8]) -> Result<MLP, String> {
         }
         let mut b_data = Vec::with_capacity(b_len);
         for _ in 0..b_len {
-            b_data.push(read_f64(bytes, &mut off).ok_or("Missing bias")?);
+            b_data.push(
+                read_f64(bytes, &mut off)
+                    .filter(|v| v.is_finite())
+                    .ok_or("Missing or non-finite bias")?,
+            );
         }
 
         let mut layer = DenseLayer::new(input_size, output_size, activation, None);
@@ -472,12 +516,16 @@ impl MarkovChain {
     pub fn generate(&self, seed: &str, length: usize) -> String {
         let mut result = String::from(seed);
         for _ in 0..length {
-            let window = if result.len() >= self.order {
-                &result[result.len() - self.order..]
-            } else {
-                &result
-            };
-            match self.sample_next(window) {
+            // The last `order` characters, as the keys were built in `train`.
+            // Cutting at `order` bytes from the end lands inside a multi-byte
+            // character of the seed and panics.
+            let start = result
+                .char_indices()
+                .rev()
+                .take(self.order)
+                .last()
+                .map_or(result.len(), |(i, _)| i);
+            match self.sample_next(&result[start..]) {
                 Some(ch) => result.push(ch),
                 None => break,
             }
@@ -659,13 +707,172 @@ pub mod tests {
     /// Reaches `demo_train_mlp`, so it is also the case that the rank-1
     /// training samples aborted in `Tensor::matmul` before the fix.
     fn test_valid_roundtrip_still_loads() -> TestResult {
-        let (_, bytes) = demo_train_mlp(1);
+        let Ok((_, bytes)) = demo_train_mlp(1) else {
+            return TestResult::Fail("one epoch must train");
+        };
         let mlp = deserialize_mlp(&bytes);
         test_assert!(
             mlp.is_ok(),
             "a genuinely serialized model must still deserialize"
         );
         test_assert_eq!(mlp.unwrap().layers.len(), 2);
+        TestResult::Pass
+    }
+
+    /// A `SEALML01` image of `layers`, each `(input, output, weight, bias)`
+    /// with every weight and every bias set to the given value.
+    fn model(layers: &[(u32, u32, f64, f64)]) -> Vec<u8> {
+        let mut b = b"SEALML01".to_vec();
+        b.extend_from_slice(&(layers.len() as u32).to_le_bytes());
+        for &(input, output, w, bias) in layers {
+            b.extend_from_slice(&input.to_le_bytes());
+            b.extend_from_slice(&output.to_le_bytes());
+            b.push(3); // Linear
+            let n = input as usize * output as usize;
+            b.extend_from_slice(&(n as u32).to_le_bytes());
+            for _ in 0..n {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+            b.extend_from_slice(&output.to_le_bytes());
+            for _ in 0..output {
+                b.extend_from_slice(&bias.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// RED: the loader checked each layer against its own header and never
+    /// against its neighbour, so a model whose second layer takes 3 inputs
+    /// after a first that produces 2 loaded as `Ok`, and its first `predict`
+    /// reached `Tensor::matmul`'s `assert_eq!` — an abort under
+    /// `panic = "abort"`. Non-finite weights and biases loaded as `Ok` as well.
+    /// All are refused at load; a chained, finite model still loads and runs.
+    fn test_unchained_or_nonfinite_model_rejected() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&model(&[(2, 2, 0.5, 0.0), (3, 1, 0.5, 0.0)])).is_err(),
+            "a layer whose input width is not the previous layer's output must be refused"
+        );
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            test_assert!(
+                deserialize_mlp(&model(&[(2, 2, bad, 0.0)])).is_err(),
+                "a non-finite weight must be refused"
+            );
+            test_assert!(
+                deserialize_mlp(&model(&[(2, 2, 0.5, bad)])).is_err(),
+                "a non-finite bias must be refused"
+            );
+        }
+        let Ok(mut mlp) = deserialize_mlp(&model(&[(2, 3, 0.5, 0.0), (3, 1, 0.5, 0.0)])) else {
+            return TestResult::Fail("a chained, finite model must still load");
+        };
+        let out = mlp.predict(&Tensor::new(&[1.0, 1.0], &[2, 1]));
+        test_assert_eq!(out.shape, vec![1, 1]);
+        test_assert_eq!(out.get(&[0, 0]), 1.5);
+        TestResult::Pass
+    }
+
+    /// Guard. A layer may declare a width no weight backs when its other
+    /// dimension is zero: `u32::MAX × 0` is zero weights. Nothing may be
+    /// sized from the declared width alone, so the load returns at once
+    /// instead of attempting a 32 GiB allocation.
+    fn test_zero_area_layer_allocates_nothing() -> TestResult {
+        test_assert!(
+            deserialize_mlp(&model(&[(u32::MAX, 0, 0.0, 0.0)])).is_ok(),
+            "a zero-area layer is well formed"
+        );
+        TestResult::Pass
+    }
+
+    /// RED: `ml train <n>` handed `n` straight to `MLP::fit`, which runs the
+    /// full budget on the shell's thread, so `ml train 18446744073709551615`
+    /// never returned. A count past `MAX_DEMO_EPOCHS` is refused before any
+    /// epoch runs. Zero epochs is a well-formed request and still reports.
+    fn test_train_refuses_unbounded_epochs() -> TestResult {
+        test_assert!(
+            demo_train_mlp(MAX_DEMO_EPOCHS + 1).is_err(),
+            "an epoch count past the ceiling must be refused"
+        );
+        test_assert!(demo_train_mlp(usize::MAX).is_err());
+        test_assert!(demo_train_mlp(0).is_ok(), "zero epochs must still report");
+        TestResult::Pass
+    }
+
+    /// RED: nothing released a task's fit stream or KV sequences when it
+    /// exited. A task that exits holding sequences leaves their plaques
+    /// referenced, so never evictable, and their slots taken, for the rest of
+    /// the boot; `ABI_MAX_SEQS` such exits deny every later
+    /// `SYS_KV_SEQ_CREATE`. `release_task` is what the task-exit path calls:
+    /// it must drop exactly that task's stream and sequences and leave every
+    /// other owner's alone. Task 0 is the kernel, which never exits, so a
+    /// call for it releases nothing.
+    fn test_release_task_frees_kv_and_fit() -> TestResult {
+        use super::foliation::with_global;
+        const DEAD: u64 = 0xDEAD_0001;
+        const ALIVE: u64 = 0xDEAD_0002;
+        let open = |owner: u64, base: u32| -> Option<usize> {
+            with_global(|f| {
+                let id = f.seq_create(2, owner).ok()?;
+                for j in 0..(2 * foliation::BLOCK_TOKENS) as u32 {
+                    f.seq_append(id, owner, base + j).ok()?;
+                }
+                Some(id)
+            })
+        };
+        let (Some(d0), Some(d1), Some(a0), Some(k0)) = (
+            open(DEAD, 810_000),
+            open(DEAD, 820_000),
+            open(ALIVE, 830_000),
+            open(0, 840_000),
+        ) else {
+            return TestResult::Fail("the global cache must open four sequences");
+        };
+        let dead_leaves = with_global(|f| [f.seq_leaf(d0, 1), f.seq_leaf(d1, 1)]);
+        stratum::register(DEAD);
+        stratum::register(ALIVE);
+
+        release_task(DEAD);
+        release_task(0);
+
+        let gone = with_global(|f| f.seq_counts(d0, DEAD).is_none() && f.seq_counts(d1, DEAD).is_none());
+        test_assert!(gone, "an exited task's sequences survived it");
+        for leaf in dead_leaves {
+            test_assert!(leaf.is_some());
+            test_assert_eq!(
+                with_global(|f| f.leaf_refcount(leaf.unwrap_or(u16::MAX))),
+                0
+            );
+        }
+        test_assert!(
+            stratum::regime_of(DEAD).is_none(),
+            "an exited task's fit stream survived it"
+        );
+        test_assert_eq!(with_global(|f| f.seq_counts(a0, ALIVE)).map(|c| c.0), Some(2u16));
+        test_assert_eq!(with_global(|f| f.seq_counts(k0, 0)).map(|c| c.0), Some(2u16));
+        test_assert!(stratum::regime_of(ALIVE).is_some());
+        test_assert!(stratum::unregister(ALIVE));
+        with_global(|f| {
+            let _ = f.seq_release(a0, ALIVE);
+            let _ = f.seq_release(k0, 0);
+        });
+        TestResult::Pass
+    }
+
+    /// RED: `MarkovChain::generate` windowed the text by its last `order`
+    /// *bytes*, `&result[result.len() - order..]`. A seed whose multi-byte
+    /// character straddles that cut — `ml generate éab`, or the same line in a
+    /// script run by `source` — sliced inside a character and panicked, which
+    /// under `panic = "abort"` halts the machine. Registered last: before the
+    /// fix it takes the rest of the run down with it.
+    fn test_generate_accepts_multibyte_seed() -> TestResult {
+        for seed in ["éab", "xéab", "日本語", "\u{fffd}ab"] {
+            test_assert!(
+                demo_generate_text(seed, 16).starts_with(seed),
+                "the seed must lead the generated text"
+            );
+        }
+        // A seed that ends on a key the corpus holds still continues.
+        let text = demo_generate_text("é Seal", 16);
+        test_assert!(text.len() > "é Seal".len(), "generation stopped at the seed");
         TestResult::Pass
     }
 
@@ -701,6 +908,26 @@ pub mod tests {
         crate::testing::register_test(
             "ml_engine::deserialize_valid_roundtrip_still_loads",
             test_valid_roundtrip_still_loads,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_unchained_or_nonfinite_model_rejected",
+            test_unchained_or_nonfinite_model_rejected,
+        );
+        crate::testing::register_test(
+            "ml_engine::deserialize_zero_area_layer_allocates_nothing",
+            test_zero_area_layer_allocates_nothing,
+        );
+        crate::testing::register_test(
+            "ml_engine::train_refuses_unbounded_epochs",
+            test_train_refuses_unbounded_epochs,
+        );
+        crate::testing::register_test(
+            "ml_engine::release_task_frees_kv_and_fit",
+            test_release_task_frees_kv_and_fit,
+        );
+        crate::testing::register_test(
+            "ml_engine::generate_accepts_multibyte_seed",
+            test_generate_accepts_multibyte_seed,
         );
     }
 }

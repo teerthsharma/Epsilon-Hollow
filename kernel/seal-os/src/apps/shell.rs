@@ -1609,9 +1609,13 @@ impl Shell {
             ),
             "train" => {
                 let epochs: usize = arg.parse().unwrap_or(1000);
-                let (report, bytes) = crate::ml_engine::demo_train_mlp(epochs);
-                self.last_model = Some(bytes);
-                report
+                match crate::ml_engine::demo_train_mlp(epochs) {
+                    Ok((report, bytes)) => {
+                        self.last_model = Some(bytes);
+                        report
+                    }
+                    Err(e) => format!("Error: {}", e),
+                }
             }
             "save" => {
                 let name = if arg.is_empty() { "model.sealml" } else { arg };
