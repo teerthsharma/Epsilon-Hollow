@@ -11,7 +11,8 @@
 //!   - `dense_attention`: ordinary scaled dot-product attention, the reference
 //!     every sparse path is checked against.
 //!   - `sparse_attention`: the same computation restricted to a boolean mask,
-//!     with an explicit guard for rows that select nothing.
+//!     with an explicit guard for rows that select nothing and a refusal of
+//!     non-finite scores.
 //!   - `Selector`: the key-selection rules, including the topological one and the
 //!     three baselines an honest evaluation needs.
 //!   - `attention_mass_recovered`: the diagnostic that says whether topology did
@@ -28,6 +29,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use libm::{exp, nextafter, sqrt};
+
+use crate::scheduled::ScheduleError;
 
 /// How a row picks the keys it may attend to.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -210,7 +213,13 @@ pub fn routing_plan(
 /// `q`, `k`, `v` are row-major `[seq, head_dim]`. Returns `[seq, head_dim]`.
 ///
 /// Equivalent to `sparse_attention` with an all-true mask, and asserted to be so.
-pub fn dense_attention(q: &[f64], k: &[f64], v: &[f64], seq: usize, head_dim: usize) -> Vec<f64> {
+pub fn dense_attention(
+    q: &[f64],
+    k: &[f64],
+    v: &[f64],
+    seq: usize,
+    head_dim: usize,
+) -> Result<Vec<f64>, ScheduleError> {
     sparse_attention(q, k, v, seq, head_dim, &vec![true; seq * seq])
 }
 
@@ -221,6 +230,11 @@ pub fn dense_attention(q: &[f64], k: &[f64], v: &[f64], seq: usize, head_dim: us
 /// reachable: a topological selector on an isolated token — a point that is its
 /// own connected component — selects nothing. Softmax over an empty set is
 /// undefined, and the naive form (exp of all `-inf`) yields `0/0`.
+///
+/// A permitted NaN or infinite score is refused with
+/// [`ScheduleError::NonFiniteScore`], as `scheduled_attention` refuses it:
+/// finite `q` and `k` can still overflow `q.k`, and the row then has no number
+/// to normalise by.
 pub fn sparse_attention(
     q: &[f64],
     k: &[f64],
@@ -228,7 +242,7 @@ pub fn sparse_attention(
     seq: usize,
     head_dim: usize,
     mask: &[bool],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, ScheduleError> {
     assert_eq!(q.len(), seq * head_dim, "q must be [seq, head_dim]");
     assert_eq!(k.len(), seq * head_dim, "k must be [seq, head_dim]");
     assert_eq!(v.len(), seq * head_dim, "v must be [seq, head_dim]");
@@ -252,6 +266,10 @@ pub fn sparse_attention(
                 dot += q[i * head_dim + d] * k[j * head_dim + d];
             }
             let logit = dot * scale;
+            // The refusal `scheduled_attention` makes on the same score.
+            if !logit.is_finite() {
+                return Err(ScheduleError::NonFiniteScore { row: i, col: j });
+            }
             logits[j] = logit;
             if logit > max_logit {
                 max_logit = logit;
@@ -281,7 +299,7 @@ pub fn sparse_attention(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

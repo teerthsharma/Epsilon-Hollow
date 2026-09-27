@@ -527,9 +527,7 @@ pub fn dense_masked_attention(
             }
         }
     }
-    Ok(crate::attention::sparse_attention(
-        q, k, v, seq, head_dim, &allow,
-    ))
+    crate::attention::sparse_attention(q, k, v, seq, head_dim, &allow)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
