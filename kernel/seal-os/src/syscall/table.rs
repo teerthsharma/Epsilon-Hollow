@@ -486,7 +486,32 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: no arm reached `foliation::set_global_policy`. SYS_KV_POLICY_SET
+    /// changes the eviction policy of the one KV cache every task shares, so
+    /// it is root-only: an unprivileged caller gets the gate's EPERM and the
+    /// policy stays LRU; root selects the adaptive policy with code 3; codes
+    /// 4 and 5 (the Belady oracle and the random null) and anything past them
+    /// are EINVAL.
+    fn test_kv_policy_set_is_root_only() -> TestResult {
+        use crate::ml_engine::foliation::{with_global, Policy};
+        test_assert!(is_gate_eperm(&dispatch_as(USER, SYS_KV_POLICY_SET, 3, 0, 0)));
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        for bad in [4, 5, u64::MAX] {
+            test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, bad, 0, 0).code, -22);
+        }
+        test_assert!(with_global(|f| f.policy()) == Policy::Lru);
+        test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, 3, 0, 0).code, 0);
+        let adaptive = with_global(|f| f.policy()) == Policy::Adaptive;
+        test_assert_eq!(dispatch_as(0, SYS_KV_POLICY_SET, 0, 0, 0).code, 0);
+        test_assert!(adaptive, "root could not select the adaptive policy");
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "syscall::kv_policy_set_is_root_only",
+            test_kv_policy_set_is_root_only,
+        );
         crate::testing::register_test(
             "syscall::fit_calibrate_refuses_a_field_past_u32",
             test_fit_calibrate_refuses_a_field_past_u32,
@@ -606,6 +631,9 @@ pub const SYS_KV_SEQ_APPEND: u64 = 131;
 pub const SYS_KV_SEQ_RELEASE: u64 = 132;
 pub const SYS_KV_SEQ_STATS: u64 = 133;
 pub const SYS_KV_POLICY_STATS: u64 = 134;
+/// arg0 = policy code: 0 LRU, 1 foliation, 2 locality, 3 adaptive. Root only:
+/// the KV cache, and so its eviction policy, is shared by every task.
+pub const SYS_KV_POLICY_SET: u64 = 135;
 
 #[derive(Debug)]
 pub struct SyscallResult {
@@ -871,6 +899,8 @@ fn identity_write_outcome() -> SyscallResult {
 /// (CAP_NET_ADMIN): `SYS_WIFI_CONNECT`, `SYS_BT_PAIR`, stubs today, gated so
 /// their implementation lands behind the check. `SYS_TELEPORT` moves files in
 /// the syscall ManifoldFS, which consults no file permission at all.
+/// `SYS_KV_POLICY_SET` sets the eviction policy of the KV cache every task
+/// shares.
 fn requires_root(num: u64) -> bool {
     matches!(
         num,
@@ -884,6 +914,7 @@ fn requires_root(num: u64) -> bool {
             | SYS_SETTING_SET
             | SYS_CHART_GRAFT
             | SYS_CHART_PRUNE
+            | SYS_KV_POLICY_SET
     )
 }
 
@@ -1540,6 +1571,13 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
         }
         SYS_KV_POLICY_STATS => {
             SyscallResult::with_data(0, crate::ml_engine::foliation::global_stats_line())
+        }
+        SYS_KV_POLICY_SET => {
+            if crate::ml_engine::foliation::set_global_policy(arg0) {
+                SyscallResult::ok(0)
+            } else {
+                SyscallResult::err(22) // EINVAL
+            }
         }
 
         SYS_SETUID => {
