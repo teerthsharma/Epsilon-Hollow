@@ -18,8 +18,8 @@
 use crate::drivers::block::partition::{attach, SCRATCH_ROOT_DEV_NUM};
 use crate::drivers::block::ramdisk::{ensure_scratch, SCRATCH_DEV_NUM};
 use crate::drivers::block::{
-    arm_install_target, disarm_install_target, read_block, write_install_block, BlockError,
-    BOOT_DEV_NUM,
+    arm_install_target, boot_disk, disarm_install_target, read_block, write_install_block,
+    BlockError,
 };
 use crate::drivers::interrupts;
 use crate::fs::ext2::{Ext2Fs, EXT2_MAGIC};
@@ -741,6 +741,8 @@ const SCRATCH_LABEL: &str = "scratch0";
 pub struct RawInstallReport {
     pub target_dev: u32,
     pub part_dev: u32,
+    /// The registered disk carrying the boot partition, if one is registered.
+    pub boot_dev: Option<u32>,
     pub gpt_written: bool,
     pub gpt: GptVerify,
     pub format_written: bool,
@@ -760,6 +762,7 @@ impl RawInstallReport {
         Self {
             target_dev,
             part_dev,
+            boot_dev: None,
             gpt_written: false,
             gpt: GptVerify::default(),
             format_written: false,
@@ -826,15 +829,21 @@ pub fn run_raw_install(dev_num: u32, part_dev_num: u32) -> RawInstallReport {
     disarm_install_target();
     report.guard_unarmed_refused =
         write_install_block(dev_num, 0, &probe) == Err(BlockError::Refused);
-    // Negative control: the boot device can never become the install target.
-    report.guard_boot_dev_refused = arm_install_target(BOOT_DEV_NUM) == Err(BlockError::Refused);
+    // Negative control: the boot disk can never become the install target.
+    // With no boot disk registered there is nothing to refuse: the control
+    // does not fire and the proof fails, rather than guarding a stand-in.
+    report.boot_dev = boot_disk();
+    report.guard_boot_dev_refused = report
+        .boot_dev
+        .is_some_and(|boot| arm_install_target(boot) == Err(BlockError::Refused));
 
     if arm_install_target(dev_num).is_err() {
         return report;
     }
     // Negative control: with the scratch disk armed, the boot disk stays refused.
-    report.guard_other_dev_refused =
-        write_install_block(BOOT_DEV_NUM, 0, &probe) == Err(BlockError::Refused);
+    report.guard_other_dev_refused = report
+        .boot_dev
+        .is_some_and(|boot| write_install_block(boot, 0, &probe) == Err(BlockError::Refused));
 
     let layout = match gpt::GptLayout::for_disk(SCRATCH_SECTORS) {
         Ok(layout) => layout,
@@ -933,7 +942,7 @@ pub fn raw_install_proof_line() -> String {
 
     format!(
         "[INSTALLER] proof version=2 mode=raw_block selected_disk={} target_dev=0x{:x} part_dev=0x{:x} \
-boot_marker={} home={} profile={} user={} auth_topo5000={} raw_gpt={} raw_format={} \
+boot_dev={} boot_marker={} home={} profile={} user={} auth_topo5000={} raw_gpt={} raw_format={} \
 gpt_partitions={} gpt_header_crc={:08x} gpt_header_crc_ok={} gpt_entries_crc_ok={} \
 gpt_backup_header_crc_ok={} gpt_backup_agree={} gpt_alt_lba_ok={} gpt_pmbr={} \
 gpt_first_usable={} gpt_last_usable={} gpt_first_part_lba={} \
@@ -943,6 +952,8 @@ guard_unarmed_refused={} guard_boot_dev_refused={} guard_other_dev_refused={} re
         SCRATCH_LABEL,
         raw.target_dev,
         raw.part_dev,
+        raw.boot_dev
+            .map_or_else(|| String::from("none"), |dev| format!("0x{:x}", dev)),
         u8::from(safe.boot_marker),
         u8::from(safe.home),
         u8::from(safe.profile),
@@ -1083,13 +1094,16 @@ pub mod tests {
             write_install_block(dev_num, 0, &probe) == Err(BlockError::Refused),
             "write allowed with no target armed"
         );
+        if gpt_disk(BOOT_CLONE_DEV, MKIMAGE_ESP_PARTUUID).is_err() {
+            return TestResult::Fail("RAM disk unavailable");
+        }
         test_assert!(
-            arm_install_target(BOOT_DEV_NUM) == Err(BlockError::Refused),
+            arm_install_target(BOOT_CLONE_DEV) == Err(BlockError::Refused),
             "boot device was accepted as an install target"
         );
         test_assert!(arm_install_target(dev_num).is_ok(), "arming scratch failed");
         test_assert!(
-            write_install_block(BOOT_DEV_NUM, 0, &probe) == Err(BlockError::Refused),
+            write_install_block(BOOT_CLONE_DEV, 0, &probe) == Err(BlockError::Refused),
             "boot device write allowed while scratch was armed"
         );
         // Positive control: the armed target itself is writable.
@@ -1101,7 +1115,86 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// ESP unique partition GUID that `seal-mkimage` writes (`write_gpt`,
+    /// `esp_part_guid`): the partition OVMF loads Seal OS from in every QEMU
+    /// run of this harness.
+    const MKIMAGE_ESP_PARTUUID: [u8; 16] = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x53, 0x45, 0x41, 0x4C, 0x4F, 0x53, 0x00,
+        0x01,
+    ];
+    const BOOT_CLONE_DEV: u32 = 0xB007;
+    const OTHER_DISK_DEV: u32 = 0xB008;
+    const BOOT_CLONE_VIEW_DEV: u32 = 0xB009;
+
+    /// Register, once, a RAM disk whose GPT holds one ESP with `esp_guid`.
+    fn gpt_disk(dev_num: u32, esp_guid: [u8; 16]) -> Result<(), BlockError> {
+        use crate::drivers::block::ramdisk::RamDisk;
+        use crate::drivers::block::{device_exists, register_block_device, BlockDevice};
+        if device_exists(dev_num) {
+            return Ok(());
+        }
+        let disk = RamDisk::new(SCRATCH_SECTORS)?;
+        let layout = gpt::GptLayout::for_disk(SCRATCH_SECTORS)?;
+        let parts = [PartSpec {
+            type_guid: gpt::TYPE_ESP,
+            first_lba: ESP_FIRST_LBA,
+            last_lba: ESP_LAST_LBA,
+            name: "EFI",
+        }];
+        let entries = gpt::build_entries(&parts, &[esp_guid]);
+        let header = gpt::build_header(
+            &layout,
+            layout.header_lba,
+            layout.backup_header_lba,
+            layout.entry_lba,
+            &[0x5E; 16],
+            gpt::crc32(&entries),
+        );
+        disk.write_sectors(0, &gpt::build_protective_mbr(SCRATCH_SECTORS))?;
+        disk.write_sectors(layout.entry_lba, &entries)?;
+        disk.write_sectors(layout.header_lba, &header)?;
+        register_block_device(
+            dev_num,
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(disk)),
+        );
+        Ok(())
+    }
+
+    /// The disk firmware booted Seal OS from is never an install target,
+    /// whatever device number it is registered under. Identity is the
+    /// partition the firmware loaded the kernel from, not a device number:
+    /// in a virtio-blk boot, 0x800 was the q35 CD-ROM and the boot disk had
+    /// no guard at all.
+    fn test_disk_carrying_boot_partition_is_refused() -> TestResult {
+        if gpt_disk(BOOT_CLONE_DEV, MKIMAGE_ESP_PARTUUID).is_err()
+            || gpt_disk(OTHER_DISK_DEV, [0xA5; 16]).is_err()
+        {
+            return TestResult::Fail("RAM disks unavailable");
+        }
+        // Positive control: a disk without the boot partition stays armable.
+        test_assert!(
+            arm_install_target(OTHER_DISK_DEV).is_ok(),
+            "a disk without the boot partition was refused"
+        );
+        disarm_install_target();
+        test_assert!(
+            arm_install_target(BOOT_CLONE_DEV) == Err(BlockError::Refused),
+            "a disk carrying the partition firmware booted from was accepted as an install target"
+        );
+        test_assert!(
+            attach(BOOT_CLONE_VIEW_DEV, BOOT_CLONE_DEV, ESP_FIRST_LBA, 1024)
+                == Err(BlockError::Refused),
+            "a partition view over the boot disk was attached"
+        );
+        disarm_install_target();
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "installer::disk_carrying_boot_partition_is_refused",
+            test_disk_carrying_boot_partition_is_refused,
+        );
         crate::testing::register_test(
             "installer::gpt_header_crc_matches_independent",
             test_gpt_header_crc_matches_independent,

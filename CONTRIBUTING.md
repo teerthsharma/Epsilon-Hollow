@@ -192,9 +192,9 @@ Seal OS kernel code is organized around ten theorems (T1–T10), stated in `docs
 3. A change may turn a line from certified to refused when the certificate was unearned. The commit that does so says so in its message body, naming the theorem and the reason.
 4. Refusal is reported, not fatal: the M0 target boots with T4 refused.
 5. A change to a theorem statement, proof sketch, or runtime check updates `docs/THEOREMS.md` in the same commit.
-6. The headless boot proof currently prints `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths` and must pass `seal-mkimage --check-theorem-log`, which requires the other nine lines individually and the T4 refusal with its numbers (`alpha + beta/dt = 5.01 >= 1` at the runtime step `GOVERNOR_DT = 0.01`).
+6. The headless boot proof prints `[BOOT] Theorems: 2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked (T3/GMC T5/HCS T6/RGCS T7/PHKP T8/TEB T9/CMA T10/WPHB)` and must pass `seal-mkimage --check-theorem-log`, which recomputes each verdict from the evidence on its line and rejects a verdict it cannot recompute.
 
-Commit 3c14df0 made the boot gate refuse T4 at the runtime governor step instead of certifying it at dt = 1.0, and made `seal-mkimage --check-theorem-log` and `--check-runtime-theorems` require that refusal. The remaining M0 item is rule 2: the other theorem lines are still computed by `verify_topology_theorems()` (`kernel/seal-os/src/lib.rs`) from fixed inputs rather than from the running kernel's state.
+`kernel/seal-os/src/theorems.rs` computes every line from the running kernel: T1 from the centroid tables the scheduler, compositor, firewall, router and ManifoldFS indexes were built from, at the scheduler governor's live epsilon; T2 from the gains of the running spectral contraction operators, measured through aether-core's own `apply`; T4 from the gains and step every runtime governor uses. T3, T5 and T6-T10 have no running instance that carries their parameters and read `not checked`. `seal-mkimage --check-runtime-theorems` fails a tree whose theorem module reads a literal where a running instance's parameter belongs.
 
 ## RED test first
 

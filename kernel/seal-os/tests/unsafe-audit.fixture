@@ -61,15 +61,15 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 634
-justified 24
-unjustified 610
+total 630
+justified 37
+unjustified 593
 files 86
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
 file atlas/mod.rs 2 0
 file atlas/relobj.rs 11 2
-file boot/uefi_entry.rs 3 0
+file boot/uefi_entry.rs 4 1
 file cpu/mod.rs 5 0
 file cpu/smp.rs 9 1
 file drivers/apic.rs 2 0
@@ -87,7 +87,7 @@ file drivers/acpi/rsdp.rs 28 0
 file drivers/acpi/topological_power.rs 3 0
 file drivers/audio/hda.rs 7 0
 file drivers/block/ahci.rs 5 0
-file drivers/block/virtio_blk.rs 17 0
+file drivers/block/virtio_blk.rs 12 12
 file drivers/cpu/amd.rs 5 0
 file drivers/cpu/intel.rs 2 0
 file drivers/disk/ahci.rs 1 0

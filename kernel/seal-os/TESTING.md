@@ -68,26 +68,33 @@ target\x86_64-unknown-uefi\release\qemu-proof\proof-manifest.txt
 The log must contain:
 
 ```text
-[THEOREM] T1/TSS VERIFIED
-[THEOREM] T2/SCM VERIFIED
-[THEOREM] T3/GMC VERIFIED
+[THEOREM] T1/TSS CERTIFIED: eps=0.1000 theta_min=0.1000 cells=8 p_max=1600.0 min_sep=0.7854 covers=scheduler+compositor+firewall+route,manifoldfs
+[THEOREM] T2/SCM CERTIFIED: operators=manifoldfs:0.70,firewall:0.30,route:0.30 max_lip=0.70 max_ratio=0.7000 unread=scheduler
+[THEOREM] T3/GMC NOT CHECKED: <reason>
 [THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
-[THEOREM] T5/HCS VERIFIED
-[THEOREM] T6/RGCS VERIFIED
-[THEOREM] T7/PHKP VERIFIED
-[THEOREM] T8/TEB VERIFIED
-[THEOREM] T9/CMA VERIFIED
-[THEOREM] T10/WPHB VERIFIED
-[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
+[THEOREM] T5/HCS NOT CHECKED: <reason>
+[THEOREM] T6/RGCS NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T7/PHKP NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T8/TEB NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T9/CMA NOT CHECKED: no kernel subsystem runs it
+[THEOREM] T10/WPHB NOT CHECKED: no kernel subsystem runs it
+[BOOT] Theorems: 2 certified (T1/TSS T2/SCM), 1 not certified (T4/AGCR), 7 not checked (T3/GMC T5/HCS T6/RGCS T7/PHKP T8/TEB T9/CMA T10/WPHB)
 [BOOT] Desktop proof frame blit done
 [BOOT] Seal OS desktop ready.
 [EVENT] Entering real event loop
 ```
 
 The log must not contain panic, fault, watchdog, or QEMU fatal markers.
-`--check-theorem-log` reads alpha, beta and dt from the
-`[T4/AGCR] Governor online:` line (the values every runtime governor uses) and
-fails a log that reports `T4/AGCR VERIFIED` while `alpha + beta/dt >= 1`.
+Every theorem line is computed by `kernel/seal-os/src/theorems.rs` from the
+running kernel: the scheduler governor's epsilon, the centroid tables the
+running Voronoi indexes were built from, and the gains of the running
+spectral contraction operators. `--check-theorem-log` recomputes each verdict
+from the evidence on its line: T1's `eps` must equal the
+`[T4/AGCR] Governor online:` epsilon, `theta_min` must be `2 asin(eps/2)` and
+`min_sep` must exceed it; every T2 gain must lie in (0, 1]; T4 is certified
+exactly when `alpha + beta/dt < 1` at the governor line's gains and step. T3,
+T5 and T6-T10 have no running instance and must read `NOT CHECKED`; a bare
+`VERIFIED` line, or any verdict the gate cannot recompute, fails.
 
 ## Rust Audit Gates
 

@@ -12,7 +12,6 @@
 //! ratio, but only for the instance its owner holds.
 
 use alloc::format;
-use core::sync::atomic::Ordering;
 
 use crate::graphics::font;
 use crate::wm::window::Window;
@@ -204,8 +203,11 @@ fn render_theorem(
     max_w: u32,
     state_idx: usize,
 ) {
-    let active = crate::THEOREM_STATES[state_idx].load(Ordering::Relaxed);
-    let state_color = if active { ACTIVE_COLOR } else { 0x00CC4444 };
+    let state_color = match crate::theorems::status(state_idx) {
+        crate::theorems::Status::Certified => ACTIVE_COLOR,
+        crate::theorems::Status::NotCertified => 0x00CC4444,
+        crate::theorems::Status::NotChecked => 0x00808080,
+    };
 
     // Active indicator dot
     for dy in 0..8u32 {

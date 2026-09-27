@@ -23,7 +23,9 @@ const MAGIC: [u8; 4] = *b"MNFD";
 const VERSION: u32 = 1;
 const JOURNAL_BLOCKS: u64 = 1024;
 const NONE_ID: u64 = u64::MAX;
-const AHCI_MANIFOLD_START_LBA: u64 = 2048 + ((64 * 1024 * 1024) / SECTOR_SIZE as u64);
+/// First LBA of the ManifoldFS partition in the image `seal-mkimage` writes
+/// (after the 64 MiB ESP at LBA 2048), on whichever disk carries it.
+const MANIFOLD_START_LBA: u64 = 2048 + ((64 * 1024 * 1024) / SECTOR_SIZE as u64);
 const JOURNAL_NAME_OFFSET: usize = 98;
 const JOURNAL_CHECKSUM_OFFSET: usize = JOURNAL_NAME_OFFSET + 128;
 const INODE_NAME_OFFSET: usize = 90;
@@ -86,15 +88,17 @@ pub trait BlockStoreBackend: Send + Sync {
     fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError>;
 }
 
-/// Adapter for the global block device registry (AHCI device 0x800).
-pub struct AhciBackend;
+/// Adapter for one device in the global block device registry.
+pub struct DiskBackend {
+    dev: u32,
+}
 
-impl BlockStoreBackend for AhciBackend {
+impl BlockStoreBackend for DiskBackend {
     fn read_sector(&self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        read_block(0x800, AHCI_MANIFOLD_START_LBA + lba, buf)
+        read_block(self.dev, MANIFOLD_START_LBA + lba, buf)
     }
     fn write_sector(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-        write_block(0x800, AHCI_MANIFOLD_START_LBA + lba, buf)
+        write_block(self.dev, MANIFOLD_START_LBA + lba, buf)
     }
 }
 
@@ -621,15 +625,15 @@ impl BlockStore {
         Ok(s)
     }
 
-    pub fn mount_ahci() -> Result<Self, BlockError> {
-        Self::mount_backend(Box::new(AhciBackend)).map_err(|e| match e {
+    pub fn mount_dev(dev: u32) -> Result<Self, BlockError> {
+        Self::mount_backend(Box::new(DiskBackend { dev })).map_err(|e| match e {
             MountError::NoDevice => BlockError::NoDevice,
             MountError::NoSuperblock => BlockError::IoError,
         })
     }
 
-    pub fn try_mount_ahci() -> Result<Self, MountError> {
-        Self::mount_backend(Box::new(AhciBackend))
+    pub fn try_mount_dev(dev: u32) -> Result<Self, MountError> {
+        Self::mount_backend(Box::new(DiskBackend { dev }))
     }
 
     pub fn format(&mut self, total_blocks: u64) -> Result<(), BlockError> {

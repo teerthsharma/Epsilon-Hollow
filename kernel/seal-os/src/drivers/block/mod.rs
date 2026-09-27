@@ -87,8 +87,38 @@ pub fn write_block(dev_num: u32, lba: u64, buf: &[u8]) -> Result<(), BlockError>
     resolve(dev_num)?.write_sectors(lba, buf)
 }
 
-/// Device number of the disk Seal OS booted from. Never a legal install target.
-pub const BOOT_DEV_NUM: u32 = 0x800;
+/// Unique GUID of the GPT partition firmware loaded Seal OS from, taken from
+/// the HD node of the UEFI LoadedImage device path. Unset when the boot media
+/// had no GPT partition (El Torito CD, network boot).
+static BOOT_PARTUUID: spin::Once<[u8; 16]> = spin::Once::new();
+
+/// Record the boot partition. Called once, from the UEFI entry, before
+/// ExitBootServices.
+pub fn set_boot_partuuid(guid: [u8; 16]) {
+    BOOT_PARTUUID.call_once(|| guid);
+}
+
+pub fn boot_partuuid() -> Option<[u8; 16]> {
+    BOOT_PARTUUID.get().copied()
+}
+
+/// True when `dev_num` carries the partition firmware booted from, whatever
+/// device number or transport it arrived under. That disk is never a legal
+/// install target. A read error is an error, never "not the boot disk".
+pub fn is_boot_disk(dev_num: u32) -> Result<bool, BlockError> {
+    match boot_partuuid() {
+        Some(guid) => crate::fs::gpt::holds_partition(dev_num, &guid),
+        None => Ok(false),
+    }
+}
+
+/// The registered device carrying the boot partition, if any.
+pub fn boot_disk() -> Option<u32> {
+    let devices: Vec<u32> = BLOCK_DEVICES.lock().devices.iter().map(|d| d.0).collect();
+    devices
+        .into_iter()
+        .find(|&dev| is_boot_disk(dev) == Ok(true))
+}
 
 const NO_INSTALL_TARGET: u32 = u32::MAX;
 
@@ -112,14 +142,14 @@ pub fn device_exists(dev_num: u32) -> bool {
 
 /// Arm `dev_num` as the sole destination for raw install writes.
 ///
-/// Refuses the boot device and any device that is not registered. The previous
+/// Refuses the boot disk and any device that is not registered. The previous
 /// target is left untouched when the request is refused.
 pub fn arm_install_target(dev_num: u32) -> Result<(), BlockError> {
-    if dev_num == BOOT_DEV_NUM {
-        return Err(BlockError::Refused);
-    }
     if !device_exists(dev_num) {
         return Err(BlockError::NoDevice);
+    }
+    if is_boot_disk(dev_num)? {
+        return Err(BlockError::Refused);
     }
     INSTALL_TARGET.store(dev_num, Ordering::SeqCst);
     Ok(())
@@ -140,9 +170,9 @@ pub fn install_target() -> Option<u32> {
 
 /// Raw install write. This is the only door through which the partitioner and
 /// the filesystem formatter reach a disk, so the target check happens once,
-/// here, for every caller.
+/// here, for every caller. `arm_install_target` never arms the boot disk.
 pub fn write_install_block(dev_num: u32, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
-    if dev_num == BOOT_DEV_NUM || install_target() != Some(dev_num) {
+    if install_target() != Some(dev_num) {
         return Err(BlockError::Refused);
     }
     write_block(dev_num, lba, buf)

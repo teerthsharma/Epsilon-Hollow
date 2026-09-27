@@ -49,6 +49,7 @@ pub mod sandbox;
 pub mod security;
 pub mod sync;
 pub mod syscall;
+pub mod theorems;
 pub mod tuner;
 #[cfg(not(test))]
 pub mod wm;
@@ -2124,132 +2125,7 @@ fn boot_serial() {
 
 #[cfg(not(test))]
 fn init_theorems() {
-    use aether_core::governor::GeometricGovernor;
-    use aether_core::tss::SphericalVoronoiIndex;
-
-    const T4: usize = 3;
-    let theorem_ok = verify_topology_theorems();
-    for (idx, ok) in theorem_ok.iter().enumerate() {
-        THEOREM_STATES[idx].store(*ok, Ordering::Relaxed);
-    }
-    // T4 is refused, not failed, when its gain margin does not hold at the
-    // runtime governor step; the governor itself still runs.
-    let t4_margin = GOVERNOR_ALPHA + GOVERNOR_BETA / GOVERNOR_DT;
-    let t4_refused = !theorem_ok[T4] && t4_margin >= 1.0;
-
-    let governor = GeometricGovernor::new();
-    let epsilon = governor.epsilon();
-    GOVERNOR_EPSILON.store(epsilon.to_bits(), Ordering::Relaxed);
-    serial_println!(
-        "[T4/AGCR] Governor online: epsilon = {:.4} alpha={} beta={} dt={}",
-        epsilon,
-        GOVERNOR_ALPHA,
-        GOVERNOR_BETA,
-        GOVERNOR_DT
-    );
-
-    let centroids = tss_boot_centroids();
-    let voronoi = SphericalVoronoiIndex::<TSS_BOOT_CELL_COUNT>::new(centroids);
-    let cell = voronoi.locate((0.5, 0.5));
-    serial_println!(
-        "[T1/TSS]  Voronoi index: 8 cells, test lookup -> cell {}",
-        cell
-    );
-
-    for (idx, (name, ok)) in THEOREM_NAMES.iter().zip(theorem_ok.iter()).enumerate() {
-        if idx == T4 && t4_refused {
-            serial_println!(
-                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
-                t4_margin,
-                GOVERNOR_DT
-            );
-        } else {
-            serial_println!(
-                "[THEOREM] {} {}",
-                name,
-                if *ok { "VERIFIED" } else { "FAILED" }
-            );
-        }
-    }
-
-    let failed = theorem_ok
-        .iter()
-        .enumerate()
-        .any(|(idx, ok)| !ok && !(idx == T4 && t4_refused));
-    if failed {
-        panic!("Seal OS theorem core failed boot verification");
-    }
-
-    let verified = theorem_ok.iter().filter(|ok| **ok).count();
-    if t4_refused {
-        serial_println!(
-            "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
-            verified,
-            THEOREM_COUNT
-        );
-    } else {
-        serial_println!(
-            "[BOOT] {} of {} theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
-            verified,
-            THEOREM_COUNT
-        );
-    }
-}
-
-fn verify_topology_theorems() -> [bool; THEOREM_COUNT] {
-    use aether_verified::{
-        aether_agcr, aether_gmc, aether_hcs, aether_scm, aether_tss, aether_world,
-    };
-
-    let centroids = tss_boot_centroids();
-    let theta = aether_tss::theta_min_from_epsilon(0.5);
-    let t1 = aether_tss::verify_packing_bound(centroids.len(), theta)
-        && aether_tss::verify_separation(&centroids, theta);
-
-    let alpha = 0.1;
-    let s1 = 5.0;
-    let s2 = 3.0;
-    let pred = 4.0;
-    let t_s1 = aether_scm::apply_operator(s1, pred, alpha);
-    let t_s2 = aether_scm::apply_operator(s2, pred, alpha);
-    let t2 = aether_scm::lipschitz_constant(alpha) < 1.0
-        && aether_scm::verify_contraction(f64::abs(s1 - s2), f64::abs(t_s1 - t_s2), alpha);
-
-    let t3 =
-        aether_gmc::verify_entropy_nonincreasing(100, 50, 1000) && aether_gmc::max_merges(8) == 7;
-
-    // T4 is judged at the gains and step every runtime governor uses. At
-    // GOVERNOR_DT = 0.01 the margin alpha + beta/dt is 5.01, so T4 is refused.
-    let rho = aether_agcr::contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
-    let t4 = rho > 0.0
-        && rho < 1.0
-        && aether_agcr::half_life(rho).is_finite()
-        && aether_agcr::gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
-
-    let t5 =
-        aether_hcs::verify_hcs(1.0, 4, 128, 10) && aether_hcs::separation_ratio(1.0, 4, 10) > 60.0;
-
-    let t6_bound = aether_world::tangent_deviation_bound(0.01, 1.0, 128);
-    let t6 = t6_bound > 0.0
-        && t6_bound < 0.01
-        && aether_world::sync_frequency(0.01, 128, 0.001, 1.0, 1.0) > 0.0;
-
-    let base_latency = aether_world::betti_latency(800, 150, 50);
-    let sparse_latency = aether_world::sparse_latency(base_latency, 0.7);
-    let t7 = sparse_latency < base_latency && base_latency < 5000.0;
-
-    let landauer = aether_world::landauer_energy_per_bit(300.0);
-    let t8 = landauer > 2.8e-21 && landauer < 2.9e-21;
-
-    let align = aether_world::alignment_error_bound(0.5, 1.0);
-    let curve = aether_world::procrustes_curvature_error(1.0, 0.5, 128, 128);
-    let t9 = align > 0.86 && align < 0.87 && curve > 0.0 && curve < 0.001;
-
-    let h_info = aether_world::predictive_horizon(1000, 128, 1e-4, 10.0);
-    let h_stability = aether_world::paper_horizon_estimate();
-    let t10 = h_info > 1e5 && h_stability > 1e6;
-
-    [t1, t2, t3, t4, t5, t6, t7, t8, t9, t10]
+    theorems::init();
 }
 
 #[cfg(not(test))]

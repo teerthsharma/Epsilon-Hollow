@@ -6,7 +6,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 
 use crate::fs::vfs::with_vfs;
 
@@ -108,20 +107,10 @@ impl SealStdlib {
                 let eps = crate::process::scheduler::governor_epsilon();
                 let mut out = alloc::format!("T4 Governor epsilon = {:.4}", eps);
                 for idx in 0..crate::THEOREM_COUNT {
-                    let ok = crate::THEOREM_STATES[idx].load(Ordering::Relaxed);
-                    let status = if ok {
-                        if idx < 5 {
-                            "ACTIVE"
-                        } else {
-                            "VERIFIED"
-                        }
-                    } else {
-                        "FAILED"
-                    };
                     out.push('\n');
                     out.push_str(crate::THEOREM_NAMES[idx]);
                     out.push_str(": ");
-                    out.push_str(status);
+                    out.push_str(crate::theorems::status_text(idx));
                 }
                 Ok(out)
             }

@@ -97,6 +97,17 @@ pub fn run() -> Status {
             }
         };
 
+    // Name the boot disk by the partition firmware loaded this image from,
+    // while boot services can still answer. The block layer refuses any disk
+    // carrying it as an install target, on every transport.
+    match boot_partition_guid(image_handle) {
+        Some(guid) => {
+            crate::drivers::block::set_boot_partuuid(guid.to_bytes());
+            serial_println!("[BOOT] Boot partition: GPT PARTUUID {}", guid);
+        }
+        None => serial_println!("[BOOT] Boot partition: none (device path has no GPT HD node)"),
+    }
+
     // Exit boot services — after this, UEFI is gone and we own the machine.
     // uefi-rs 0.32 already retries once internally on INVALID_PARAMETER
     // (VirtualBox quirk), matching the Linux kernel behaviour.
@@ -150,6 +161,38 @@ pub fn run() -> Status {
 
     // Hand off to kernel
     crate::kernel_main(&boot_info);
+}
+
+/// Unique GUID of the GPT partition in the LoadedImage device's path: the HD
+/// node UEFI 2.10 10.3.5.1 defines, whose signature is the partition's
+/// `UniquePartitionGUID` when its format is GPT.
+fn boot_partition_guid(image_handle: Handle) -> Option<uefi::Guid> {
+    use uefi::boot::{OpenProtocolAttributes, OpenProtocolParams};
+    use uefi::proto::device_path::media::PartitionSignature;
+    use uefi::proto::device_path::{DevicePath, DevicePathNodeEnum};
+
+    let image = uefi::boot::open_protocol_exclusive::<LoadedImage>(image_handle).ok()?;
+    let device = image.device()?;
+    // SAFETY: GetProtocol only reads the interface pointer; the path is walked
+    // here, before ExitBootServices, and not kept.
+    let path = unsafe {
+        uefi::boot::open_protocol::<DevicePath>(
+            OpenProtocolParams {
+                handle: device,
+                agent: image_handle,
+                controller: None,
+            },
+            OpenProtocolAttributes::GetProtocol,
+        )
+    }
+    .ok()?;
+    path.node_iter().find_map(|node| match node.as_enum() {
+        Ok(DevicePathNodeEnum::MediaHardDrive(hd)) => match hd.partition_signature() {
+            PartitionSignature::Guid(guid) => Some(guid),
+            _ => None,
+        },
+        _ => None,
+    })
 }
 
 fn get_framebuffer() -> BootInfo {

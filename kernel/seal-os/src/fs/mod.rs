@@ -40,47 +40,64 @@ pub fn sync() -> Result<(), vfs::VfsError> {
     Ok(())
 }
 
+/// Disks probed for a root filesystem, in order, with the name the boot log
+/// gives each.
+// ponytail: the two transports that register disks today; NVMe and USB mass
+// storage join this list when they can carry a root.
+const ROOT_DISKS: [(u32, &str); 2] = [
+    (crate::drivers::block::ahci::AHCI_DEV_NUM, "AHCI port 0"),
+    (
+        crate::drivers::block::virtio_blk::VIRTIO_BLK_DEV_NUM,
+        "virtio-blk 0xfd00",
+    ),
+];
+
 /// Initialize the global VFS and mount all default filesystems.
 /// Must be called after driver init (so sysfs sees PCI devices).
 pub fn init_vfs() -> Result<(), vfs::VfsError> {
     let mut v = vfs::Vfs::new();
 
-    let mut manifold = match manifold_fs::ManifoldFS::try_mount_disk() {
-        Ok(fs) => {
-            crate::serial_println!("[VFS] ManifoldFS mounted from disk");
-            Some(fs)
-        }
-        Err(_) => None,
-    };
+    // Logs `[disk::ahci] First disk readable`, which the VM proof requires.
+    let _ = crate::drivers::disk::ahci::first_disk();
+    let manifold = ROOT_DISKS.iter().find_map(|&(dev, name)| {
+        let fs = manifold_fs::ManifoldFS::try_mount_disk(dev).ok()?;
+        crate::serial_println!("[VFS] ManifoldFS mounted from disk ({})", name);
+        Some((dev, name, fs))
+    });
 
     // If ManifoldFS is primary and ext2 is available, use ext2 as the raw-byte backend.
     // A volume `Ext2Fs::mount` refuses (unsupported INCOMPAT features) is never
     // attached or mounted; the refusal and its feature bits are logged by `mount`.
-    let root_fs: Box<dyn vfs::FileSystem> = if let Some(ref mut mfs) = manifold {
-        let mut ext2 = ext2::Ext2Fs::new(0x800);
+    let root_fs: Box<dyn vfs::FileSystem> = if let Some((dev, name, mut mfs)) = manifold {
+        let mut ext2 = ext2::Ext2Fs::new(dev);
         if ext2.mount().is_ok() {
             if ext2.is_read_only() {
                 crate::serial_println!(
-                    "[VFS] Ext2 on AHCI port 0 is read-only; not attached as ManifoldFS persistence backend"
+                    "[VFS] Ext2 on {} is read-only; not attached as ManifoldFS persistence backend",
+                    name
                 );
             } else {
                 crate::serial_println!("[VFS] Ext2 attached as ManifoldFS persistence backend");
                 mfs.set_ext2_backend(ext2);
             }
         }
-        Box::new(manifold.take().unwrap())
+        Box::new(mfs)
     } else {
-        let mut ext2 = ext2::Ext2Fs::new(0x800);
-        match ext2.mount() {
-            Ok(_) if ext2.is_read_only() => {
-                crate::serial_println!("[VFS] Ext2 mounted read-only from AHCI port 0");
+        let ext2_root = ROOT_DISKS.iter().find_map(|&(dev, name)| {
+            let mut ext2 = ext2::Ext2Fs::new(dev);
+            ext2.mount().ok()?;
+            Some((name, ext2))
+        });
+        match ext2_root {
+            Some((name, ext2)) if ext2.is_read_only() => {
+                crate::serial_println!("[VFS] Ext2 mounted read-only from {}", name);
                 Box::new(ext2)
             }
-            Ok(_) => {
-                crate::serial_println!("[VFS] Ext2 mounted from AHCI port 0");
+            Some((name, ext2)) => {
+                crate::serial_println!("[VFS] Ext2 mounted from {}", name);
                 Box::new(ext2)
             }
-            Err(_) => {
+            None => {
                 crate::serial_println!("[VFS] No persistent disk found. Falling back to ramfs.");
                 Box::new(manifold_fs::ManifoldFS::new_ramfs())
             }
