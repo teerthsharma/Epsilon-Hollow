@@ -90,10 +90,13 @@ impl Activation {
         }
     }
 
-    /// Derivative for backprop
+    /// Elementwise derivative for backprop.
+    ///
+    /// Softmax has no elementwise derivative, so it returns zeros here;
+    /// `DenseLayer::backward` applies its full Jacobian instead.
     pub fn derivative(&self, x: &Tensor) -> Tensor {
         match self {
-            Activation::Softmax => Tensor::zeros(&x.shape), // Handled specially
+            Activation::Softmax => Tensor::zeros(&x.shape),
             _ => x.map(|v| self.derivative_scalar(v)),
         }
     }
@@ -261,8 +264,16 @@ impl DenseLayer {
             .expect("Forward must be called before backward")
             .clone();
 
-        let act_deriv = self.activation.derivative(&last_z);
-        let delta = grad_output.mul(&act_deriv);
+        let delta = match self.activation {
+            // Softmax couples its outputs: the Jacobian is diag(p) - p p^T,
+            // so delta is the vector-Jacobian product p * (g - <g, p>).
+            Activation::Softmax => {
+                let p = self.activation.apply(&last_z);
+                let gp = grad_output.mul(&p).sum();
+                p.mul(&grad_output.map(|g| g - gp))
+            }
+            _ => grad_output.mul(&self.activation.derivative(&last_z)),
+        };
 
         // Gradients
         // dW = delta * input^T
@@ -683,6 +694,45 @@ mod tests {
             "500 epochs drives XOR to a plateau (final loss {}), yet fit reported no convergence",
             long.final_loss
         );
+    }
+
+    #[test]
+    fn softmax_layer_input_gradient_matches_finite_differences() {
+        // L(x) = <c, softmax(W x + b)>, so `backward(c)` must return dL/dx.
+        // Four inputs over three outputs makes W^T injective, so a correct
+        // input gradient pins the pre-activation delta too. `c` is not
+        // constant: softmax is shift-invariant, and a constant `c` has zero
+        // gradient, which would pass against the old all-zero backward.
+        // No optimizer is initialised, so `backward` leaves the weights alone.
+        let mut layer = DenseLayer::new(4, 3, Activation::Softmax, Some(11));
+        let c = Tensor::new(&[1.0, -2.0, 0.5], &[3, 1]);
+        let x = [0.3, -0.7, 1.1, 0.2];
+        let mut loss = |x: &[f64]| layer.forward(&Tensor::new(x, &[4, 1])).mul(&c).sum();
+
+        let h = 1e-6;
+        let numeric: Vec<f64> = (0..4)
+            .map(|j| {
+                let (mut hi, mut lo) = (x, x);
+                hi[j] += h;
+                lo[j] -= h;
+                (loss(&hi) - loss(&lo)) / (2.0 * h)
+            })
+            .collect();
+
+        layer.forward(&Tensor::new(&x, &[4, 1]));
+        let config = OptimizerConfig::SGD {
+            learning_rate: 0.0,
+            momentum: 0.0,
+        };
+        let analytic = layer.backward(&c, &config);
+
+        for (j, &n) in numeric.iter().enumerate() {
+            let a = analytic.get(&[j, 0]);
+            assert!(
+                (a - n).abs() < 1e-7,
+                "dL/dx[{j}]: backward gives {a}, central difference gives {n}"
+            );
+        }
     }
 
     #[test]

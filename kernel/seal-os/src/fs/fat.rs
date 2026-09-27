@@ -36,9 +36,14 @@ pub struct BiosParameterBlock {
     pub hidden_sectors: u32,
     pub total_sectors_32: u32,
     pub fat_size_32: u32,
+    // fatgen103 FAT32 BPB: ExtFlags @40, FSVer @42, RootClus @44.
+    pub ext_flags: u16,
+    pub fs_ver: u16,
     pub root_cluster: u32,
-    pub _padding: [u8; 468],
+    pub _padding: [u8; 464],
 }
+
+const _: () = assert!(core::mem::offset_of!(BiosParameterBlock, root_cluster) == 44);
 
 /// On-disk 32-byte directory entry.
 #[repr(C, packed)]
@@ -106,8 +111,10 @@ impl FatFs {
                 hidden_sectors: 0,
                 total_sectors_32: 0,
                 fat_size_32: 0,
+                ext_flags: 0,
+                fs_ver: 0,
                 root_cluster: 0,
-                _padding: [0; 468],
+                _padding: [0; 464],
             },
             fat_type: FatType::Fat12,
             fat_start: 0,
@@ -1662,6 +1669,36 @@ pub mod tests {
         TestResult::Pass
     }
 
+    fn test_fat32_root_cluster_read_from_offset_44() -> TestResult {
+        // Boot sector written byte-by-byte at fatgen103 offsets, not through
+        // the struct, so a struct layout that drifts from the spec fails here.
+        // `mount` reads only sector 0; the claimed 131072 sectors never exist.
+        let disk: &'static TestDisk = Box::leak(Box::new(TestDisk::new(1, 512)));
+        {
+            let mut d = disk.data.lock();
+            d[11..13].copy_from_slice(&512u16.to_le_bytes()); // BytsPerSec
+            d[13] = 1; // SecPerClus
+            d[14..16].copy_from_slice(&32u16.to_le_bytes()); // RsvdSecCnt
+            d[16] = 2; // NumFATs
+            d[21] = 0xF8; // Media
+            d[32..36].copy_from_slice(&131_072u32.to_le_bytes()); // TotSec32
+            d[36..40].copy_from_slice(&1024u32.to_le_bytes()); // FATSz32
+            // 40..44: ExtFlags = 0, FSVer = 0 — what the old layout read.
+            d[44..48].copy_from_slice(&2u32.to_le_bytes()); // RootClus
+            d[48..50].copy_from_slice(&1u16.to_le_bytes()); // FSInfo
+            d[50..52].copy_from_slice(&6u16.to_le_bytes()); // BkBootSec
+            d[510] = 0x55;
+            d[511] = 0xAA;
+        }
+        register_block_device(0xFA7B, disk);
+
+        let mut fs = FatFs::new(0xFA7B);
+        test_assert!(fs.mount().is_ok(), "FAT32 boot sector must mount");
+        test_assert!(fs.fat_type == FatType::Fat32, "geometry must select FAT32");
+        test_assert_eq!(fs.root_cluster, 2);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
         crate::testing::register_test(
             "fat::every_fat_copy_matches_after_writes",
@@ -1698,6 +1735,10 @@ pub mod tests {
         crate::testing::register_test(
             "fat::directory_cycle_does_not_hang_entry_location",
             test_directory_cycle_does_not_hang_entry_location,
+        );
+        crate::testing::register_test(
+            "fat::fat32_root_cluster_read_from_offset_44",
+            test_fat32_root_cluster_read_from_offset_44,
         );
     }
 }

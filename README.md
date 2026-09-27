@@ -148,7 +148,7 @@ With the shipped gains $\alpha = 0.01$, $\beta = 0.05$, the margin is 0.06 at $\
 The surrounding workspace supplies the mathematics and the tooling: `aether-core` (certified β₀, certified top-k, trajectory shape, spherical Voronoi indices, SCM, governor), `aether-verified` (Rust theorem kernels and their Lean 4 sources), `epsilon-os` (a host-side model of ManifoldFS that runs the T4 check at runtime constants), Aether-Lang (a scripting language whose `no_std` runtime the kernel embeds), and `seal-mkimage` (the disk-image builder and every boot-log gate). Repository-wide line count, rewritten on each push to `main` by `.github/workflows/loc.yml`; the assembly figure counts only `.S`, `.s` and `.asm` files, so the kernel's `global_asm!` and `asm!` blocks are not in it:
 
 <!-- RUST_LINE_COUNT_START -->
-**187541 lines of Rust** across 504 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **189364 total**
+**187762 lines of Rust** across 504 files | 0 lines of x86 assembly | 1823 lines of Aether-Lang DSL | **189585 total**
 <!-- RUST_LINE_COUNT_END -->
 
 ### Seal ABI
