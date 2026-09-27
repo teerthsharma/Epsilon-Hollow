@@ -6,6 +6,12 @@
 //! The BSP copies the raw bytes of `ap_trampoline()` to a low-memory page
 //! (0x8000).  The AP starts executing there in 16-bit real mode after the
 //! INIT-SIPI-SIPI sequence.
+//!
+//! W^X: code and data live on separate pages. The code page is written once
+//! and sealed read+execute before any AP starts; the GDT, far pointers and
+//! per-AP values the BSP keeps writing live on the RW+NX data page. The AP
+//! sets EFER.NXE and CR0.WP before paging is on, so it walks the same NX-marked
+//! tables as the BSP.
 
 use core::arch::naked_asm;
 
@@ -16,15 +22,19 @@ use crate::process::context_switch::KERNEL_STACK_SIZE;
 // Trampoline page layout
 // ---------------------------------------------------------------------------
 
+/// Code page: sealed read+execute once written.
 pub const TRAMPOLINE_PAGE: u64 = 0x8000;
+/// Data page: stays RW+NX. The `OFF_*` data offsets below are relative to it.
+pub const TRAMPOLINE_DATA: u64 = 0x9000;
 
 pub const OFF_GDTR: u64 = 0x100;
 pub const OFF_PROT32_PTR: u64 = 0x110;
-pub const OFF_LONG64_PTR: u64 = 0x114;
+pub const OFF_LONG64_PTR: u64 = 0x118;
 pub const OFF_GDT_START: u64 = 0x120;
 pub const OFF_BSP_PML4: u64 = 0x180;
 pub const OFF_AP_PER_CPU_PTR: u64 = 0x188;
 pub const OFF_AP_MAIN_ADDR: u64 = 0x190;
+// Offsets into the code page.
 pub const OFF_32BIT_CODE: u64 = 0x40;
 pub const OFF_64BIT_CODE: u64 = 0xC0;
 
@@ -93,15 +103,16 @@ pub unsafe extern "C" fn ap_trampoline() -> ! {
         "mov eax, [{pml4_addr}]",
         "mov cr3, eax",
 
-        // Enable long mode (EFER.LME)
+        // Enable long mode and no-execute (EFER.LME | EFER.NXE): the BSP's
+        // tables mark data NX, and without NXE that bit is reserved.
         "mov ecx, 0xC0000080",
         "rdmsr",
-        "or eax, 0x100",
+        "or eax, 0x900",
         "wrmsr",
 
-        // Enable paging
+        // Enable paging and supervisor write protection (CR0.PG | CR0.WP)
         "mov eax, cr0",
-        "or eax, 0x80000000",
+        "or eax, 0x80010000",
         "mov cr0, eax",
 
         // Far jump to 64-bit code at fixed offset 0x80
@@ -139,12 +150,12 @@ pub unsafe extern "C" fn ap_trampoline() -> ! {
         "hlt",
         "jmp 1b",
 
-        gdtr_addr = const (TRAMPOLINE_PAGE + OFF_GDTR),
-        prot32_ptr = const (TRAMPOLINE_PAGE + OFF_PROT32_PTR),
-        pml4_addr = const (TRAMPOLINE_PAGE + OFF_BSP_PML4),
-        long64_ptr = const (TRAMPOLINE_PAGE + OFF_LONG64_PTR),
-        per_cpu_ptr_addr = const (TRAMPOLINE_PAGE + OFF_AP_PER_CPU_PTR),
-        ap_main_addr = const (TRAMPOLINE_PAGE + OFF_AP_MAIN_ADDR),
+        gdtr_addr = const (TRAMPOLINE_DATA + OFF_GDTR),
+        prot32_ptr = const (TRAMPOLINE_DATA + OFF_PROT32_PTR),
+        pml4_addr = const (TRAMPOLINE_DATA + OFF_BSP_PML4),
+        long64_ptr = const (TRAMPOLINE_DATA + OFF_LONG64_PTR),
+        per_cpu_ptr_addr = const (TRAMPOLINE_DATA + OFF_AP_PER_CPU_PTR),
+        ap_main_addr = const (TRAMPOLINE_DATA + OFF_AP_MAIN_ADDR),
         kernel_stack_off = const core::mem::offset_of!(PerCpu, kernel_stack),
         kernel_stack_size = const KERNEL_STACK_SIZE,
     );

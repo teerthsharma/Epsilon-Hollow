@@ -102,6 +102,7 @@ pub mod tests {
         super::features::tests::register_all();
         super::unsafe_audit::tests::register_all();
         super::topo_key::tests::register_all();
+        super::manifold_acl::tests::register_all();
         crate::testing::register_test("security::init", test_security_init_does_not_panic);
     }
 }

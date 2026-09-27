@@ -1,0 +1,32 @@
+# ACPICA, the ACPI Component Architecture: AML interpreter and ACPI table
+# manager. Milestone M7 (docs/design/LINUX-REPLACEMENT.md, D7). Replaces the
+# hard-coded S3/S5 SLP_TYP constants at kernel/seal-os/src/drivers/acpi/fadt.rs:125-126.
+#
+# Status "planned": no source fetched, nothing vendored, gate not yet written.
+#
+# Licence record, checked 2026-09-27 against upstream master
+# c71849d476bb5f97ca1867849e893368e12a69e6 (committed 2026-09-23):
+# - `gh api repos/acpica/acpica/license` reports BSD-3-Clause (file LICENSE.BSD-3-Clause);
+# - the repository root holds LICENSE.BSD-3-Clause and LICENSE.GPL-2.0-only;
+# - source/include/acpi.h, source/include/platform/acenv.h,
+#   source/components/dispatcher/dsfield.c and source/components/executer/exfield.c
+#   each carry `SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0-only`.
+# The other files are unchecked; bringing the port in scans every fetched file.
+# Seal takes the BSD-3-Clause option, the one D7 records FreeBSD, NetBSD,
+# Haiku and Fuchsia as using.
+#
+# github.com/acpica/acpica redirects to github.com/open-acpica/acpica
+# (GitHub API full_name, 2026-09-27); the canonical location is recorded.
+
+name = "acpica"
+status = "planned"
+upstream_url = "https://github.com/open-acpica/acpica"
+pinned_rev = ""   # full 40-hex upstream commit, set when fetched
+sha256 = ""       # SHA-256 of `git archive --format=tar <pinned_rev>`, set when fetched
+license = "BSD-3-Clause"
+upstream_license = "BSD-3-Clause OR GPL-2.0-only"
+placement = "kernel"
+patch_count = 0
+# QEMU q35: the S5 sleep type comes from ACPICA's evaluation of \_S5 in the
+# firmware DSDT, not from the fadt.rs constants, and the guest powers off with it.
+gate = "tests/ports/acpica_s5.sh"

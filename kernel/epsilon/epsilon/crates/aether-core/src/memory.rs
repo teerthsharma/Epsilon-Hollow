@@ -399,27 +399,23 @@ pub struct ChebyshevGuard {
 }
 
 impl ChebyshevGuard {
+    /// Mean and standard deviation of the occupied slots' liveness.
+    ///
+    /// The ceiling `AetherVerified.Chebyshev` proves — at most `n / k^2` scores
+    /// at or below `mu - k sigma` — needs `sigma^2 * n = sum (x - mu)^2` over the
+    /// same `x` the guard then judges, and `sigma > 0`. The variance is therefore
+    /// two-pass: the one-pass `sum_sq / n - mu^2` cancels, reading sigma 2.98e-8
+    /// for five scores whose exact sigma is 4.99e-8 and pruning two of them
+    /// against a ceiling of one.
     pub fn calculate<T>(heap: &ManifoldHeap<T>) -> Self {
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
-        let mut count = 0.0;
-
-        for block in &heap.blocks {
-            // Optimization: skip empty blocks early
-            if block.occupied_mask == 0 {
-                continue;
-            }
-
-            for i in 0..8 {
-                if (block.occupied_mask & (1 << i)) != 0 {
-                    let val = block.liveness[i];
-                    sum += val;
-                    sum_sq += val * val;
-                    count += 1.0;
-                }
-            }
-        }
-
+        let live = || {
+            heap.blocks.iter().flat_map(|block| {
+                (0..8)
+                    .filter(move |&i| block.occupied_mask & (1 << i) != 0)
+                    .map(move |i| block.liveness[i])
+            })
+        };
+        let count = live().count() as f64;
         if count == 0.0 {
             return Self {
                 mean: 0.0,
@@ -428,9 +424,9 @@ impl ChebyshevGuard {
             };
         }
 
-        let mean = sum / count;
-        let variance = (sum_sq / count) - (mean * mean);
-        let variance = if variance < 0.0 { 0.0 } else { variance };
+        let mean = live().sum::<f64>() / count;
+        // from teerthsharma/sigmoid sigmoid/telemetry.py:92: sigma is x.std() of the scores judged
+        let variance = live().map(|x| (x - mean) * (x - mean)).sum::<f64>() / count;
 
         Self {
             mean,
@@ -440,7 +436,8 @@ impl ChebyshevGuard {
     }
 
     pub fn is_safe(&self, liveness: f64) -> bool {
-        if liveness >= self.mean {
+        // No spread to measure against (sigmoid/telemetry.py:93): keep all.
+        if liveness >= self.mean || self.std_dev <= 0.0 || self.std_dev.is_nan() {
             return true;
         }
         let boundary = self.mean - (self.k * self.std_dev);
@@ -481,6 +478,10 @@ impl<T> ManifoldHeap<T> {
                     continue;
                 }
 
+                // The guard describes this pass's liveness before decay, so that
+                // is the value it judges; 0.95 x against the undecayed mean put
+                // a uniform heap entirely past the boundary.
+                let is_safe = guard.is_safe(block.liveness[s_idx]);
                 block.liveness[s_idx] *= 0.95;
 
                 let should_prune;
@@ -489,7 +490,6 @@ impl<T> ManifoldHeap<T> {
                 if let HeapSlot::Occupied { header, .. } = &mut block.slots[s_idx] {
                     generation = header.generation;
                     let is_marked = header.marked;
-                    let is_safe = guard.is_safe(block.liveness[s_idx]);
 
                     if is_marked {
                         block.liveness[s_idx] += 0.1;
@@ -603,6 +603,49 @@ mod tests {
                 cold.index(),
                 "exhausted slot was reused"
             );
+        }
+    }
+
+    #[test]
+    fn a_pass_prunes_no_more_than_the_chebyshev_ceiling() {
+        // AetherVerified.Chebyshev bounds |{x <= mu - k sigma}| by n / k^2 given
+        // sigma > 0 and sigma^2 * n = sum (x - mu)^2 over the very x judged. k = 2
+        // and no object is marked, so each pass may prune at most n / 4.
+        fn heap_at(liveness: &[f64]) -> ManifoldHeap<usize> {
+            let mut heap = ManifoldHeap::new();
+            for (i, &x) in liveness.iter().enumerate() {
+                heap.alloc(i);
+                heap.blocks[i / 8].liveness[i % 8] = x;
+            }
+            heap
+        }
+        let cases: [(&str, &[f64]); 3] = [
+            // 64 at one liveness sit at their mean: none may go.
+            ("uniform", &[1.0; 64]),
+            // sum_sq / n - mu^2 reads sigma 2.98e-8; the exact sigma is 4.99e-8.
+            (
+                "cancelling",
+                &[
+                    2.1364115047690455,
+                    2.1364115228011884,
+                    2.1364114091048214,
+                    2.1364115011049716,
+                    2.1364114084786783,
+                ],
+            ),
+            // (x - mu)^2 underflows, so sigma reads 0 over a real spread.
+            ("underflowing", &[1e-170, 2e-170]),
+        ];
+        for (name, liveness) in cases {
+            let mut heap = heap_at(liveness);
+            for pass in 0..4 {
+                let live = heap.active_count();
+                let pruned = heap.regulate_entropy(|_| {});
+                assert!(
+                    pruned * 4 <= live,
+                    "{name}, pass {pass}: pruned {pruned} of {live}"
+                );
+            }
         }
     }
 

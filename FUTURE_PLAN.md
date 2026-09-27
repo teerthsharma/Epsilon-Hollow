@@ -2,11 +2,43 @@
 
 ## Master Task Registry
 
-**Code-verified pass (2026-08-18):** 46/126 boxes ticked. Every `[x]` carries an inline `path:line` citation to the implementing code; every unticked item is either unbuilt or partial with a stated gap (annotated inline where a partial implementation exists).
+**Code-verified pass (2026-08-18):** 46/126 boxes ticked. Every `[x]` carries an inline `path:line` citation to the implementing code; every unticked item is either unbuilt or partial with a stated gap (annotated inline where a partial implementation exists). **Phase 0 added (2026-09-27):** 20 unticked boxes (9 milestones, 11 M0 items), so the registry stood at 46/146; four M0 items passed their gates the same day (kernel W^X, ext2 feature refusal, package-removal privilege check, ports and contributor docs), so it stands at 50/146.
 
 This document is the single source of truth for all remaining work. Every task has a checkbox. Agents tick `[ ] -> [x]` as work completes. Each major area links to its design document, which contains the granular task breakdown.
 
-Seal OS target is bare-metal Rust with Seal ABI, SealShell, and Aether-Lang. POSIX, Unix, Linux, libc, and GRUB compatibility goals are rejected unless explicitly labeled as legacy host interop.
+**Goal ([`docs/design/LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md), accepted 2026-09-27):** Seal OS boots under any Linux distribution as that distribution's kernel. The distribution's userland runs unmodified, its bootloader and initrd tooling work unchanged, and Linux device drivers are usable. Components Seal OS does not implement natively are brought in as ports of existing open-source kernel code ([`PORTING.md`](PORTING.md)). This replaces the earlier policy that rejected POSIX, Unix, Linux, libc and GRUB compatibility. Items below that were written under the earlier policy and conflict with the new goal are annotated "superseded by docs/design/LINUX-REPLACEMENT.md", not deleted.
+
+---
+
+## Phase 0: Linux kernel replacement
+
+> **Goal:** Seal OS replaces the kernel of an unmodified Linux distribution. The measured starting point, decisions D1–D7, milestone gates and reversibility rules are in [`docs/design/LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md), which binds each milestone to a gate that fails on the commit the plan was measured at (`9ebbe2e`). A box is ticked only when its gate passes, with the passing run cited inline. Per D6, milestone gates execute in QEMU; the source-inspection tests under `tests/linux_parity/` are pre-checks and never tick a box on their own. Where no gate file exists yet, the item says so; its gate is written, and seen failing, before the work lands ([`CONTRIBUTING.md`](CONTRIBUTING.md)).
+
+### 0.1 Milestones
+
+- [ ] M0 Substrate and safety (items in 0.2) — gates: `tests/linux_parity/chase_boot.sh usermode-seal`, `tests/linux_parity/cameron_qemu_milestone.sh ring3-seal`, `tests/linux_parity/test_cameron_syscall_entry.py`, `tests/linux_parity/chase_boot.sh wx` (`wx_violations=0`), `tests/linux_parity/chase_boot.sh ext4`; negative test `write(fd, 0x1000, 1)` returns `-EFAULT`: not yet written
+- [ ] M1 Process model: per-process address spaces with VMAs, `MAP_FIXED`, file-backed mappings, reclaiming `munmap`, page cache, per-process fd tables with fork/exec/`O_CLOEXEC` semantics, wait queues, SIGSEGV delivery, reservations sized for a JVM heap — gate: one boot-executed test per item, including a fork child reading its parent's fds; not yet written
+- [ ] M2 Linux ABI core: D1 renumbering, six-argument dispatch, auxv, `arch_prctl`, PT_TLS, `execve` with argv and envp, `exit_group`, `openat` family, `fstat`/`newfstatat`/`statx`, full `mmap`/`munmap`/`mprotect`, `brk`, `getdents64`, `futex`, `clone` threads, `rt_sig*`, `TCGETS`, `/dev/seal` — gates: `tests/linux_parity/cameron_qemu_milestone.sh ring3-glibc` (static glibc `hello` prints on serial); static busybox `sh` runs a script: not yet written. Pre-checks: `tests/linux_parity/test_chase_syscall_abi.py`, `tests/linux_parity/test_cameron_linux_abi_surface.py`, `tests/linux_parity/test_foreman_abi_substrate.py::test_initial_user_stack_has_auxv`, `tests/linux_parity/cameron_qemu_milestone.sh ring3-linux`
+- [ ] M3 Linux boot: setup header, EFI stub, command line, initramfs, `uname -r`, `seal-kernel` package layout — gate: QEMU + OVMF + GRUB loads Seal OS as `linux` with an Alpine initramfs and reaches a busybox prompt; not yet written. Pre-checks: `tests/linux_parity/test_cameron_boot_protocol.py`, `tests/linux_parity/test_cameron_cmdline_initramfs.py`, `tests/linux_parity/test_foreman_image_userland.py`
+- [ ] M4 Dynamic userland without systemd: `ld.so` through PT_INTERP, AF_UNIX sockets, `poll`/`epoll`/`eventfd`, pipes and FIFOs, ptys, full signals, per-process `/proc` — gate: Alpine (musl, OpenRC) boots to a login prompt from its own root, LTP `syscalls` count recorded; not yet written
+- [ ] M5 ext4 read and write with jbd2 — gate: the D4 crash-consistency gate (QEMU killed at N injected points inside journal transactions; a stock Linux kernel replays the journal, `e2fsck -fn` reports clean, the volume mounts); not yet written. Precondition: the M0 ext2 refusal item
+- [ ] M6 systemd distributions: cgroup2, inotify, signalfd, timerfd, `name_to_handle_at`, netlink (uevent, rtnetlink), device model with uevents, namespaces (mount, pid, net, user), seccomp on Linux numbers, the distribution's own `kernel-install` and initrd generator — gate: Debian, Ubuntu, Fedora and Arch cloud images each install `seal-kernel` with their own tools and boot to login under QEMU; not yet written
+- [ ] M7 Hardware: ACPICA port, ECAM, MSI/MSI-X, IOMMU, user-mode driver interface, LKL driver server — gate: a Linux driver, unmodified, in a driver server passes its QEMU device model behind a virtual IOMMU; not yet written. Port gate: `tests/ports/acpica_s5.sh` for [`ports/acpica/PORT.toml`](ports/acpica/PORT.toml) (planned, not yet written). Pre-checks: `tests/linux_parity/test_chase_linux_drivers.py`, `tests/linux_parity/test_cameron_linux_module_abi.py`, `tests/linux_parity/test_foreman_driver_reuse.py`
+- [ ] M8 Bare metal — gate: one reference machine boots a distribution on Seal OS to login; not yet written, and the machine is an owner decision (default: none chosen until M7 passes)
+
+### 0.2 M0 items
+
+- [ ] Ring 3 executes — gates: `tests/linux_parity/chase_boot.sh usermode-seal`, `tests/linux_parity/cameron_qemu_milestone.sh ring3-seal`; also `tests/linux_parity/test_foreman_userland.py` (QEMU boot through pytest). At `9ebbe2e` every boot logs `context_switches=0` (`kernel/seal-os/src/process/scheduler.rs:379,546,1383,1394,1408,1522`)
+- [ ] Syscall entry: `swapgs`, switch to a per-CPU kernel stack before the first store, IA32_FMASK clears TF, DF, AC, IF and NT, EFER.SCE set — gates: `tests/linux_parity/test_cameron_syscall_entry.py` (source inspection, a D6 pre-check), `tests/linux_parity/test_foreman_abi_substrate.py::test_syscall_entry_switches_to_kernel_stack`. Gate gaps: `test_fmask_clears_ac_df_tf_and_if` does not assert NT (bit 14); EFER.SCE has no gate yet (the `[SECURITY-FEATURES]` line at `kernel/seal-os/src/security/features.rs:353` prints `efer=0xd00` in CI; SCE is bit 0). Code: `kernel/seal-os/src/process/userspace.rs:132-166,209-219`
+- [ ] User faults kill the process, never the machine — gate: not yet written. Any unresolved page fault, including a user segfault, halts the machine (`kernel/seal-os/src/drivers/interrupts.rs:497-553`)
+- [ ] Exception fixups on user copies, and no global lock held across one — gate: negative test `write(fd, 0x1000, 1)` returns `-EFAULT` without halting; not yet written. `copy_from_user` has no fault fixup (`kernel/seal-os/src/security/smap_smep.rs:89-96`)
+- [x] Kernel W^X — gate: `tests/linux_parity/chase_boot.sh wx` (`wx_violations=0`). At `9ebbe2e`: 4310 of 4310 scanned kernel pages writable and executable. Passing at `b3cf934`: `wx=1 wx_violations=0 wx_pages_scanned=24004 wx_scope=kernel-root`, gate prints PASS; in-kernel `virt::kernel_image_wx` added
+- [x] ext2 feature refusal: unknown INCOMPAT refused, unknown RO_COMPAT mounted read-only — gates: `tests/linux_parity/chase_boot.sh ext4` (a distro `mkfs.ext4` disk is refused and left byte-identical), `tests/linux_parity/cameron_qemu_milestone.sh ext4-root`. `s_feature_incompat` was never read (`kernel/seal-os/src/fs/ext2.rs:308`). Passing at `d42e815`: `chase_boot.sh ext4` → "PASS: foreign ext4 refused and untouched" (sha256 unchanged, `e2fsck -fn` rc 0); `cameron_qemu_milestone.sh ext4-root` → GREEN
+- [x] Privilege check on package removal — gate: in-kernel `syscall::unprivileged_pkg_remove_is_eperm` (commit `667a1c8`; RED before, 575/575 after). `SYS_PKG_REMOVE` removed without a privilege check (`kernel/seal-os/src/syscall/table.rs:1183`); the same commit gates PKG_INSTALL, TELEPORT, WIFI_CONNECT, BT_PAIR, SETTING_SET, CHART_GRAFT/PRUNE, REBOOT and SLEEP to root and owner-checks the FIT handles
+- [ ] Governor/scheduler lock order: order between `governor_epsilon()` (`kernel/seal-os/src/process/scheduler.rs:1552`) and `scheduler_lock` fixed before user processes run; the ACL never takes the scheduler lock — gate: not yet written
+- [ ] Theorem lines from live state (T4 refused): each line reports certified, refused with its reason, or not checked — gate: not yet written. Partial at `3c14df0`: T4 is refused at the runtime `GOVERNOR_DT` and `--check-theorem-log` requires the refusal (`[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED`); the other nine lines are still computed from fixed inputs. Today the kernel prints a fixed banner (`kernel/seal-os/src/lib.rs:2151`), panics when a theorem fails (`kernel/seal-os/src/lib.rs:2148`), and CI requires the banner through `seal-mkimage --check-theorem-log` (`kernel/seal-mkimage/src/main.rs:1138`) and `--check-runtime-theorems` (`kernel/seal-mkimage/src/main.rs:9069`); this item replaces those checks. Contribution rule: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [ ] CI green — gate: every job of `.github/workflows/ci.yml` on the M0 merge commit
+- [x] `ports/`, `PORTING.md`, `CONTRIBUTING.md` rewritten — gate: `tests/ports/test_port_licenses.py` (licence gate over every `ports/*/PORT.toml`), 12 passed at `03ba455`
 
 ---
 
@@ -45,9 +77,9 @@ Seal OS target is bare-metal Rust with Seal ABI, SealShell, and Aether-Lang. POS
 - [x] `syscall`/`sysret` ABI wired (STAR, LSTAR, SFMASK) — `kernel/seal-os/src/process/userspace.rs:209`
 - [ ] Assembly entry/exit with `swapgs` mitigation — partial: `syscall_entry` exists but no `swapgs` instruction is in the entry path (`kernel/seal-os/src/process/userspace.rs:130`)
 - [ ] `SyscallFrame` + dispatch table (512 entries) — partial: `SyscallFrame` + `dispatch()` are real, but it is a `match` over ~69 syscalls, not a fixed 512-entry table (`kernel/seal-os/src/syscall/table.rs:680`)
-- [x] Tier 1 Seal ABI calls: read, write, open, close, exit, brk, mmap, fork, exec, wait, getpid, chdir, getcwd — `kernel/seal-os/src/syscall/table.rs:709`
-- [x] Tier 2 Seal ABI calls: stat, lseek, ioctl, pipe, dup, mkdir, rmdir, unlink, rename, manifold_query, theorem_status, teleport — `kernel/seal-os/src/syscall/table.rs:1059`
-- [ ] Tier 3 Seal ABI calls: signals, tasks, nanosleep, watchdog, package, WiFi/Bluetooth settings — partial: signals/nanosleep/watchdog/WiFi dispatch real, no package-management syscall (`kernel/seal-os/src/syscall/table.rs:1394`)
+- [x] Tier 1 Seal ABI calls: read, write, open, close, exit, brk, mmap, fork, exec, wait, getpid, chdir, getcwd — `kernel/seal-os/src/syscall/table.rs:709` — superseded by docs/design/LINUX-REPLACEMENT.md (D1: Linux x86_64 numbering is the one syscall table; Seal-numbered calls are renumbered)
+- [x] Tier 2 Seal ABI calls: stat, lseek, ioctl, pipe, dup, mkdir, rmdir, unlink, rename, manifold_query, theorem_status, teleport — `kernel/seal-os/src/syscall/table.rs:1059` — superseded by docs/design/LINUX-REPLACEMENT.md (D1: Linux numbering; manifold, theorem status and teleport become ioctls on `/dev/seal` and attributes under `/sys/kernel/seal/`, with no private syscall numbers)
+- [ ] Tier 3 Seal ABI calls: signals, tasks, nanosleep, watchdog, package, WiFi/Bluetooth settings — partial: signals/nanosleep/watchdog/WiFi dispatch real, no package-management syscall (`kernel/seal-os/src/syscall/table.rs:1394`) — superseded by docs/design/LINUX-REPLACEMENT.md (D1: signals and sleeps take Linux numbers; packages, Wi-Fi and Bluetooth settings move to `/dev/seal`)
 - [ ] VDSO: clock_gettime, gettimeofday, getcpu, time
 - [ ] MAC/audit integration on every syscall — partial: `audit_log` is only called for open/sudo/execve/setuid, not every syscall (`kernel/seal-os/src/syscall/table.rs:1680`)
 
@@ -136,7 +168,7 @@ Seal OS target is bare-metal Rust with Seal ABI, SealShell, and Aether-Lang. POS
 - [x] Block allocation (bitmap scan, group selection) — `kernel/seal-os/src/fs/ext2.rs:943`
 - [x] Inode allocation — `kernel/seal-os/src/fs/ext2.rs:1021`
 - [ ] Mount integration (read-only + read-write) — partial: no read-only mount mode/flag exists (`kernel/seal-os/src/fs/mod.rs:44`)
-- [ ] Legacy ext2 image interop verified without adopting Linux ABI
+- [ ] Legacy ext2 image interop verified without adopting Linux ABI — superseded by docs/design/LINUX-REPLACEMENT.md (D1 adopts the Linux ABI; D4 orders foreign-disk work as ext2 feature refusal, then ext4 with jbd2, then the crash-consistency gate)
 
 ---
 
@@ -247,7 +279,7 @@ The ultimate arc of Epsilon-Hollow is to make the computer itself **probabilisti
 
 - **The computer observes, therefore it is probabilistic**: When the kernel maps a user-space operation into its projected topology, it is not computing a deterministic path. It is computing a **distribution over paths** — and then collapsing that distribution via the same topological surgery that makes teleportation O(1). The collapse is the syscall. The distribution before collapse is the *possibility space*.
 
-- **From T1–T5 to T∞**: T1 (Voronoi) gives us spatial indexing on the observation manifold. T2 (Spectral Contraction) gives us belief propagation. T4 (Governor) gives us posterior adaptation. The missing piece — the one that makes the machine probabilistic — is the **measure on the projected space**. When a user process requests a resource, the kernel does not check a boolean permission. It computes the **measure of that request in the projected topology of the user's observed state** — and if the measure exceeds a curvature threshold, the request is granted. The kernel is not enforcing policy. It is measuring topology.
+- **From T1–T5 to T∞**: T1 (Voronoi) gives us spatial indexing on the observation manifold. T2 (Spectral Contraction) gives us belief propagation. T4 (Governor) gives us posterior adaptation. The missing piece — the one that makes the machine probabilistic — is the **measure on the projected space**. When a user process requests a resource, the kernel does not check a boolean permission. It computes the **measure of that request in the projected topology of the user's observed state** — and if the measure exceeds a curvature threshold, the request is granted. The kernel is not enforcing policy. It is measuring topology. *(Granting by measure is superseded by docs/design/LINUX-REPLACEMENT.md, D5: Linux discretionary access control and capabilities decide every grant; a geometric check may add a restriction, audit-only by default, and never grants what Linux semantics deny.)*
 
 **The end state:**
 
@@ -261,6 +293,7 @@ This is not a feature to implement. This is the shape the kernel grows into once
 
 | Document | Phase | Status |
 |---|---|---|
+| [`LINUX-REPLACEMENT.md`](docs/design/LINUX-REPLACEMENT.md) | 0 | Accepted plan (2026-09-27); milestones M0–M8 in Phase 0 |
 | [`MANIFOLDFS-O1-DESIGN.md`](docs/MANIFOLDFS-O1-DESIGN.md) | 1 | [x] Complete (docs created) |
 | [`AHCI-DRIVER.md`](docs/design/AHCI-DRIVER.md) | 2 | [x] Complete (docs created) |
 | [`BOOT-SEQUENCE.md`](docs/design/BOOT-SEQUENCE.md) | 1 | [x] Complete (docs created) |

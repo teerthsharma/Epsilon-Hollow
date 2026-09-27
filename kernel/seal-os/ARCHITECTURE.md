@@ -31,7 +31,7 @@ The first-class artifact is `target/x86_64-unknown-uefi/release/seal-os.img`, a 
 3. **IDT + PIC** — 256-entry IDT, 8259A PIC remapped to IRQ 32+
 4. **Framebuffer** - Use UEFI GOP framebuffer details from `BootInfo`
 5. **Boot splash** — ASCII seal art + progress bar
-6. **Theorems** - Boot-verify T1-T10 through `aether_verified`; activate T1-T5 runtime paths
+6. **Theorems** - Boot-check T1-T10 through `aether_verified`: nine verified, T4/AGCR refused at the runtime governor step (margin 5.01); T1-T3 and T5 active in runtime paths
 7. **ManifoldFS** — Initialize filesystem, demo O(1) teleport
 8. **Scheduler** — Spawn kernel/compositor/shell/idle tasks
 9. **Syscalls** — Dispatch table verification

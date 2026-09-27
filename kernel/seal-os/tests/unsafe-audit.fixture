@@ -61,17 +61,17 @@
 #
 # Format: "file <relpath> <sites> <justified>"
 version 1
-total 624
-justified 12
-unjustified 612
+total 627
+justified 16
+unjustified 611
 files 84
 file lib.rs 23 0
 file apps/gpu_benchmark.rs 13 0
 file atlas/mod.rs 2 0
-file atlas/relobj.rs 9 0
+file atlas/relobj.rs 11 2
 file boot/uefi_entry.rs 3 0
 file cpu/mod.rs 5 0
-file cpu/smp.rs 9 0
+file cpu/smp.rs 9 1
 file drivers/apic.rs 2 0
 file drivers/entropy.rs 3 0
 file drivers/interrupts.rs 13 0
@@ -120,7 +120,7 @@ file memory/mmap.rs 4 0
 file memory/pgtable_asm.rs 5 0
 file memory/swap.rs 5 0
 file memory/topo_ram.rs 2 0
-file memory/virt.rs 24 0
+file memory/virt.rs 25 1
 file ml_engine/topo_asm.rs 2 2
 file net/arp.rs 2 0
 file net/icmp.rs 2 0

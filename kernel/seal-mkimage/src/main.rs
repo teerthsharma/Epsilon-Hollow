@@ -1120,22 +1120,74 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     digest
 }
 
-fn check_theorem_log(log_path: &Path) -> Result<(), String> {
-    let text =
-        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+/// Boot theorem gate: T1-T3 and T5-T10 must each be VERIFIED. T4/AGCR is
+/// judged against `alpha + beta/dt < 1` at the gains and step the kernel
+/// prints on its `Governor online` line (the values the runtime governor
+/// uses): VERIFIED is accepted only when that margin holds, otherwise the log
+/// must carry the refusal line with the margin and dt.
+fn check_theorem_gate_text(text: &str) -> Result<(), String> {
     let required = [
-        EXPECTED_SEAL_OS_BANNER,
         "[THEOREM] T1/TSS VERIFIED",
         "[THEOREM] T2/SCM VERIFIED",
         "[THEOREM] T3/GMC VERIFIED",
-        "[THEOREM] T4/AGCR VERIFIED",
         "[THEOREM] T5/HCS VERIFIED",
         "[THEOREM] T6/RGCS VERIFIED",
         "[THEOREM] T7/PHKP VERIFIED",
         "[THEOREM] T8/TEB VERIFIED",
         "[THEOREM] T9/CMA VERIFIED",
         "[THEOREM] T10/WPHB VERIFIED",
-        "[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
+    ];
+    let governor = find_marker_line(text, "[T4/AGCR] Governor online:")?;
+    let gain = |key: &str| -> Result<f64, String> {
+        let value = parse_field(governor, key)?;
+        value
+            .parse::<f64>()
+            .map_err(|e| format!("invalid governor field `{key}{value}`: {e}"))
+    };
+    let (alpha, beta, dt) = (gain("alpha=")?, gain("beta=")?, gain("dt=")?);
+    let margin = alpha + beta / dt;
+    let t4_verified = text.contains("[THEOREM] T4/AGCR VERIFIED");
+    let t4_line = if margin < 1.0 {
+        String::from("[THEOREM] T4/AGCR VERIFIED")
+    } else if t4_verified {
+        return Err(format!(
+            "T4/AGCR reported VERIFIED while alpha+beta/dt={margin:.2} >= 1 at runtime dt={dt}"
+        ));
+    } else {
+        format!("[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={margin:.2} >= 1 at dt={dt}")
+    };
+    let summary = if margin < 1.0 {
+        "[BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths"
+    } else {
+        "[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths"
+    };
+    let failed: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("[THEOREM]") && line.contains("FAILED"))
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!(
+            "theorem failure lines found: {}",
+            failed.join(" | ")
+        ));
+    }
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .chain([t4_line.as_str(), summary])
+        .filter(|pattern| !text.contains(pattern))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("missing theorem patterns: {}", missing.join(" | ")));
+    }
+    Ok(())
+}
+
+fn check_theorem_log(log_path: &Path) -> Result<(), String> {
+    let text =
+        fs::read_to_string(log_path).map_err(|e| format!("read {}: {e}", log_path.display()))?;
+    let required = [
+        EXPECTED_SEAL_OS_BANNER,
         "[ALLOC] O(1) proof:",
         "[BENCH] toporam-alloc",
         "[BENCH] alloc-frame",
@@ -1174,16 +1226,7 @@ fn check_theorem_log(log_path: &Path) -> Result<(), String> {
         "triple fault",
         "qemu: fatal",
     ];
-    let failed: Vec<&str> = text
-        .lines()
-        .filter(|line| line.contains("[THEOREM]") && line.contains("FAILED"))
-        .collect();
-    if !failed.is_empty() {
-        return Err(format!(
-            "theorem failure lines found: {}",
-            failed.join(" | ")
-        ));
-    }
+    check_theorem_gate_text(&text)?;
     let fatal: Vec<&str> = text
         .lines()
         .filter(|line| fatal_markers.iter().any(|marker| line.contains(marker)))
@@ -1816,14 +1859,23 @@ fn check_kv_policy_text(text: &str) -> Result<(), String> {
     // Belady is the offline optimum: no online policy may beat it. The
     // foliation-vs-LRU margin is recorded by the kernel and deliberately not
     // gated here — gating on it would pay for a faked benchmark.
-    let belady = parse_metric(line, "hit_bp_belady=")?;
-    let foliation = parse_metric(line, "hit_bp_foliation=")?;
-    if belady < foliation {
-        return Err(format!(
-            "KV policy proof beats the offline optimum, so the benchmark is wrong: hit_bp_foliation={foliation}, hit_bp_belady={belady}"
-        ));
+    // Both traces must be present: the LRU-adversarial one and the
+    // recency-shaped chat trace, each with the locality-only null.
+    for (prefix, policies) in [
+        ("", ["hit_bp_foliation=", "hit_bp_lru=", "hit_bp_locality="]),
+        ("chat_", ["chat_hit_bp_foliation=", "chat_hit_bp_lru=", "chat_hit_bp_locality="]),
+    ] {
+        let belady = parse_metric(line, &format!("{prefix}hit_bp_belady="))?;
+        for key in policies {
+            let hit = parse_metric(line, key)?;
+            if belady < hit {
+                return Err(format!(
+                    "KV policy proof beats the offline optimum, so the benchmark is wrong: {key}{hit}, {prefix}hit_bp_belady={belady}"
+                ));
+            }
+        }
     }
-    parse_metric(line, "hit_bp_lru=")?;
+    parse_ratio(line, "chat_foliation_beats_random=")?;
     Ok(())
 }
 
@@ -2015,7 +2067,7 @@ fn check_security_features_text(text: &str) -> Result<(), String> {
         ("stackguard_probe=", "runtime-guardband"),
         ("audit_probe=", "runtime-vfs"),
         ("wx_probe=", "runtime-pagewalk"),
-        ("wx_scope=", "kernel-alias"),
+        ("wx_scope=", "kernel-root"),
     ] {
         require_field_eq(line, key, expected, label)?;
     }
@@ -2061,11 +2113,11 @@ fn check_security_features_text(text: &str) -> Result<(), String> {
         }
     }
 
-    // W^X is measured, not gated: the kernel alias really is W+X today, so a
-    // passing `wx` would mean the field was faked.
-    parse_metric(line, "wx=")?;
-    parse_metric(line, "wx_violations=")?;
-    require_field_eq(line, "wx_enforced=", "0", label)?;
+    // W^X is enforced: no leaf reachable from the kernel's page-table root may
+    // be writable and executable, and the walk must have visited something.
+    require_field_eq(line, "wx=", "1", label)?;
+    require_field_eq(line, "wx_violations=", "0", label)?;
+    require_field_eq(line, "wx_enforced=", "1", label)?;
     require_metric_min(line, "wx_pages_scanned=", 1, label)?;
     Ok(())
 }
@@ -4395,10 +4447,10 @@ mod tests {
     const BUNDLE_PROOF_LOG: &str = "[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify=ok index_tampered=refused index_entries=4 store_index=ed25519_fixture provision_pkg=eph_installed requested=6 provisioned=4 not_provisioned=1 digest_ok=4 digest_refused=1 cache_hits=2 fixture=synthetic_test_fixture fixture_bytes=256 cache_hit=same_alloc refcount_peak=2 refcount_after_drop=1 cached_while_held=1 released=1 cached_after_release=0 absent_section=test-absent-fixture.section:not_provisioned corrupt_section=test-corrupt-fixture.section:digest_mismatch simulation=absent wifi=down wifi_section=none wifi_scan_entries=0 bt=down bt_section=none bt_scan_entries=0 result=pass\n";
     const FS_PARITY_LOG: &str = "[FSPARITY] proof version=1 fat_image=fat16_fixture fat_mounted=ok fat_image_bytes=1048576 fat_blank_digest=0x00000000cafe0001 ext2_image=ext2_rev1_1k_fixture ext2_mounted=ok ext2_image_bytes=1048576 ext2_blank_digest=0x00000000cafe0002 ops_fat=48 ops_ext2=48 files_compared=6 bytes_compared=4096 content_digest_fat=0x00000000feedbeef content_digest_ext2=0x00000000feedbeef content_parity=byte_for_byte dirs_compared=3 dirs_equal=3 stat_fields_compared=18 stat_fields_equal=18 error_cases=5 error_matches=5 divergences=0 divergence_kinds=none negative_control_digest=0x00000000deadbeef negative_control=detected negative_control_restored=ok result=pass\n";
     const MLFIT_PROOF_LOG: &str = "[MLFIT] proof version=1 subsystem=stratum window=256 embed_dim=8 kappa=1.500 steps_per_case=128 bytes_per_stream=4096 long_stream_steps=4096 long_stream_points=256 bounded=ok case=underfit truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=wellfit truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=overfit truth=overfit got=overfit loop=0.2000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=collapsing truth=collapsing got=collapsing loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=negctl truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_line truth=underfit got=underfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 case=monotone_exp truth=wellfit got=wellfit loop=0.0000 h0d=0.1000 sh=0.200 sp=0.3000 rd=0.4000 td=0.5000 monotone_loop_zero=ok negctl_flagged=no naive_gap_baseline_flagged=yes incremental_batch_agree=ok correct=7/7 result=pass\n";
-    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_belady=9000 gap_closed_bp=600 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
+    const KV_POLICY_LOG: &str = "[KVPOLICY] proof version=1 subsystem=foliation block_tokens=16 pool_blocks=64 leaf_arena=256 requests=128 tokens=2048 descents=128 trace_keys=32 blocks_admitted=96 frames_backed=96 frames_freed=96 frames_failed=0 shared_descents=32 bytes_saved=131072 probe_shared_blocks=4 probe_frames_identical=1 probe_refcount_after_partial_free=1 probe_survivors_resident=4 evictions_foliation=12 evictions_lru=18 evictions_random=24 hit_bp_foliation=8200 hit_bp_lru=7600 hit_bp_random=6400 hit_bp_locality=5000 hit_bp_belady=9000 gap_closed_bp=600 chat_requests=96 chat_descents=528 chat_hit_bp_foliation=5284 chat_hit_bp_lru=8068 chat_hit_bp_locality=6818 chat_hit_bp_belady=8143 chat_foliation_beats_random=0/32 referenced_evictions=0 collapse_violations=0 refused_budget=1 refused_exhaustion=1 refused_referenced_free=1 complexity=descend<=16_children,evict<=64_plaques,lookup=O(1)_indexed result=pass\n";
     const GPU_BENCH_PROOF_LOG: &str = "[GPU-BENCH] proof version=1 arch=gfx900 backend=cpu_fallback gpu_present=0 hw_attempted=0 hw_reason=no_amd_gpu cycles=123456 kernels_real=1/3 spectral_step_bytes=256 blob_fnv1a=0x00000000cafef00d encoder_fnv1a=0x00000000cafef00d blob_matches_encoder=1 golden_words=64/64 decoded_insts=32/32 roundtrip_words=64/64 mnemonics_match=1 rsrc1=0x000c0081 rsrc2=0x00000090 ref_dim=512 ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact=512/512 cpu_ref_max_ulp=0 backend_exact=512/512 backend_max_ulp=0 result=pass\n";
     const KASLR_PROOF_LOG: &str = "[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base=0x1000000 image_size=0x400000 kernel_alias_base=0xffffffff81400000 kernel_alias_slide=0x1400000 kernel_alias_slots=512 kernel_alias_bits=9 heap_window_base=0xffff900040000000 heap_window_slide=0x40000000 heap_window_slots=4194304 heap_window_bits=22 total_bits=31 granule=0x200000 aligned=1 in_range=1 entropy=rdseed boot_nonce=0xa1b2c3d4e5f60718 resample_nonce=0x0718f6e5d4c3b2a1 resample_differs=1 cross_boot=external-diff active=1 result=pass\n";
-    const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=0 wx_violations=12 wx_pages_scanned=1024 wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
+    const SECURITY_FEATURES_LOG: &str = "[SECURITY-FEATURES] proof version=1 kpti=1 kpti_probe=runtime-cr3 smep_supported=1 smep=1 smep_probe=cpuid+cr4 smap_supported=1 smap=1 smap_probe=cpuid+cr4 nx_supported=1 nx=1 nx_probe=cpuid+efer wp=1 wp_probe=cr0 retpoline=1 retpoline_ibpb_supported=1 retpoline_probe=runtime-thunk-bytes kaslr=1 kaslr_bits=31 kaslr_probe=runtime-entropy wx=1 wx_violations=0 wx_pages_scanned=1024 wx_scope=kernel-root wx_enforced=1 wx_probe=runtime-pagewalk stackguard=1 stackguard_dirty=0 stackguard_probe=runtime-guardband audit=1 audit_probe=runtime-vfs cr0=0x80050033 cr4=0x3506f0 efer=0xd01 result=pass\n";
     const UNSAFE_AUDIT_LOG: &str = "[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version=1 blocks=4 justified=1 unjustified=3 files=2 undocumented_permille=750 rule=safety-comment-above-block result=pass\n";
     const UNSAFE_AUDIT_FIXTURE: &str = "# header\nversion 1\ntotal 4\njustified 1\nunjustified 3\nfiles 2\nfile lib.rs 3 1\nfile drivers/pci.rs 1 0\n";
     const MANIFOLDPKG_PROOF_LOG: &str = "[ManifoldPkg] proof version=1 source=embedded_eph parse=ok registry_index=ed25519_fixture install=ok extract=ok list=ok remove=ok files=1 bytes=19 package_count_before=0 package_count_after_install=1 package_count_after_remove=0 metadata_only=0 signature=ed25519_fixture channel_endpoint=https://releases.seal-os.local/channel/stable/ channel_transport=fixture_loopback channel_index_signature=ed25519_fixture channel_index_version=3 channel_packages_fetched=1 channel_digest_ok=1 channel_rollback_refused=1 channel_tamper_refused=1 channel_digest_mismatch_refused=1 channel_package_signature_enforced=1 channel_live_probe=no_network channel_fail_closed=1 channel_unverified_fallback=0 result=pass\n";
@@ -5929,6 +5981,81 @@ with:
         assert!(check_cow_proof_text(&bad_accounting).is_err());
     }
 
+    const T4_GOVERNOR_LOG: &str =
+        "[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01\n";
+    const NINE_THEOREMS_LOG: &str = "\
+[THEOREM] T1/TSS VERIFIED
+[THEOREM] T2/SCM VERIFIED
+[THEOREM] T3/GMC VERIFIED
+[THEOREM] T5/HCS VERIFIED
+[THEOREM] T6/RGCS VERIFIED
+[THEOREM] T7/PHKP VERIFIED
+[THEOREM] T8/TEB VERIFIED
+[THEOREM] T9/CMA VERIFIED
+[THEOREM] T10/WPHB VERIFIED
+";
+    const T4_REFUSAL_LOG: &str = "\
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
+";
+
+    #[test]
+    fn theorem_gate_accepts_t4_refused_at_runtime_dt() {
+        let log = format!("{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        assert_eq!(check_theorem_gate_text(&log), Ok(()));
+    }
+
+    #[test]
+    fn theorem_gate_rejects_t4_certified_at_runtime_dt() {
+        // The pre-fix kernel: T4 certified at dt=1.0 while the runtime steps at 0.01.
+        let pre_fix = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert!(check_theorem_gate_text(&pre_fix).is_err());
+
+        // Same verdict with a self-consistent 10/10 summary is still refused.
+        let ten = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert!(check_theorem_gate_text(&ten).is_err());
+    }
+
+    #[test]
+    fn theorem_gate_requires_t4_reason_governor_step_and_the_other_nine() {
+        let no_reason = format!(
+            "{T4_GOVERNOR_LOG}{NINE_THEOREMS_LOG}{}",
+            T4_REFUSAL_LOG.replace(": alpha+beta/dt=5.01 >= 1 at dt=0.01", "")
+        );
+        assert!(check_theorem_gate_text(&no_reason).is_err());
+
+        let no_dt = format!(
+            "{}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}",
+            T4_GOVERNOR_LOG.replace(" dt=0.01", "")
+        );
+        assert!(check_theorem_gate_text(&no_dt).is_err());
+
+        let no_t7 = format!(
+            "{T4_GOVERNOR_LOG}{}{T4_REFUSAL_LOG}",
+            NINE_THEOREMS_LOG.replace("[THEOREM] T7/PHKP VERIFIED\n", "")
+        );
+        assert!(check_theorem_gate_text(&no_t7).is_err());
+    }
+
+    #[test]
+    fn theorem_gate_requires_t4_verified_when_margin_holds() {
+        let stable_gov = T4_GOVERNOR_LOG.replace("dt=0.01", "dt=1");
+        let certified = format!(
+            "{stable_gov}{NINE_THEOREMS_LOG}[THEOREM] T4/AGCR VERIFIED\n\
+             [BOOT] 10 of 10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths\n"
+        );
+        assert_eq!(check_theorem_gate_text(&certified), Ok(()));
+
+        let refused = format!("{stable_gov}{NINE_THEOREMS_LOG}{T4_REFUSAL_LOG}");
+        assert!(check_theorem_gate_text(&refused).is_err());
+    }
+
     #[test]
     fn panic_serial_contract_rejects_formatting_macro_in_panic_handler() {
         let serial = r#"
@@ -6315,6 +6442,32 @@ fn panic(info: &PanicInfo) -> ! {
         // Losing to LRU is recorded, never gated.
         let loses_to_lru = KV_POLICY_LOG.replace("hit_bp_foliation=8200", "hit_bp_foliation=7000");
         assert!(check_kv_policy_text(&loses_to_lru).is_ok());
+
+        // The locality-only null and the recency-shaped chat trace are the
+        // comparisons that keep the headline honest; a proof that drops
+        // either one must not pass.
+        for field in [
+            "hit_bp_locality=5000 ",
+            "chat_hit_bp_foliation=5284 ",
+            "chat_hit_bp_lru=8068 ",
+            "chat_hit_bp_locality=6818 ",
+            "chat_hit_bp_belady=8143 ",
+            "chat_foliation_beats_random=0/32 ",
+        ] {
+            let dropped = KV_POLICY_LOG.replace(field, "");
+            assert!(
+                check_kv_policy_text(&dropped).is_err(),
+                "KV policy gate accepted a proof without {field}"
+            );
+        }
+
+        // No policy may beat the offline optimum on either trace.
+        let chat_beats_belady =
+            KV_POLICY_LOG.replace("chat_hit_bp_belady=8143", "chat_hit_bp_belady=8000");
+        assert!(check_kv_policy_text(&chat_beats_belady).is_err());
+        let locality_beats_belady =
+            KV_POLICY_LOG.replace("hit_bp_locality=5000", "hit_bp_locality=9500");
+        assert!(check_kv_policy_text(&locality_beats_belady).is_err());
     }
 
     #[test]
@@ -6471,6 +6624,7 @@ fn panic(info: &PanicInfo) -> ! {
             "retpoline=1",
             "stackguard=1",
             "audit=1",
+            "wx=1",
         ] {
             let key = field.split('=').next().unwrap();
             let broken = SECURITY_FEATURES_LOG.replace(field, &format!("{key}=0"));
@@ -6495,7 +6649,7 @@ fn panic(info: &PanicInfo) -> ! {
             "stackguard_probe=runtime-guardband",
             "audit_probe=runtime-vfs",
             "wx_probe=runtime-pagewalk",
-            "wx_scope=kernel-alias",
+            "wx_scope=kernel-root",
         ] {
             let key = probe.split('=').next().unwrap();
             let broken = SECURITY_FEATURES_LOG.replace(probe, &format!("{key}=constant"));
@@ -6521,12 +6675,21 @@ fn panic(info: &PanicInfo) -> ! {
         let efer_lies = SECURITY_FEATURES_LOG.replace("efer=0xd01", "efer=0x501");
         assert!(check_security_features_text(&efer_lies).is_err());
 
-        // W^X is measured, not gated: the kernel alias really is W+X today.
-        let wx_claimed = SECURITY_FEATURES_LOG.replace("wx=0", "wx=1");
-        assert!(check_security_features_text(&wx_claimed).is_ok());
+        // W^X is enforced: one W+X kernel leaf, a probe that stops claiming
+        // enforcement, or a walk narrowed back to the alias fails the gate.
+        let wx_violated =
+            SECURITY_FEATURES_LOG.replace("wx=1 wx_violations=0", "wx=0 wx_violations=12");
+        assert!(check_security_features_text(&wx_violated).is_err());
 
-        let enforced = SECURITY_FEATURES_LOG.replace("wx_enforced=0", "wx_enforced=1");
-        assert!(check_security_features_text(&enforced).is_err());
+        let wx_miscounted = SECURITY_FEATURES_LOG.replace("wx_violations=0", "wx_violations=1");
+        assert!(check_security_features_text(&wx_miscounted).is_err());
+
+        let unenforced = SECURITY_FEATURES_LOG.replace("wx_enforced=1", "wx_enforced=0");
+        assert!(check_security_features_text(&unenforced).is_err());
+
+        let alias_only =
+            SECURITY_FEATURES_LOG.replace("wx_scope=kernel-root", "wx_scope=kernel-alias");
+        assert!(check_security_features_text(&alias_only).is_err());
 
         let unscanned =
             SECURITY_FEATURES_LOG.replace("wx_pages_scanned=1024", "wx_pages_scanned=0");
@@ -9066,7 +9229,10 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
             &[
                 "pub static THEOREM_STATES",
                 "THEOREM_STATES[idx].store",
-                "[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths",
+                "pub const GOVERNOR_DT: f64",
+                "gain_margin_stable(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT)",
+                "[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt={:.2} >= 1 at dt={}",
+                "[BOOT] {} of {} theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths",
             ][..],
         ),
         (
@@ -9095,7 +9261,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "fn select_next_task",
                 "self.voronoi.locate",
                 ".apply(&self.predict_state, &next_task.manifold_embedding)",
-                "self.governor.adapt",
+                "self.governor.adapt(deviation, crate::GOVERNOR_DT)",
                 "process_tree",
                 "hyperbolic process tree",
             ][..],
@@ -9110,7 +9276,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "fn update_prefetch_state",
                 "self.scm.apply",
                 "self.check_entropy_and_merge",
-                "self.governor.adapt",
+                "self.governor.adapt(deviation, crate::GOVERNOR_DT)",
                 "fn update_hyperbolic_ratio",
                 "theorem_status_text",
                 "T1/TSS",
@@ -9125,7 +9291,7 @@ fn check_runtime_theorems(root: &Path) -> Result<(), String> {
                 "use aether_core::governor::GeometricGovernor",
                 "fn screen_point_cell",
                 "self.voronoi.locate",
-                "self.governor.adapt",
+                "self.governor.adapt(1.0, crate::GOVERNOR_DT)",
                 "T1: screen-space Voronoi chooses",
                 "T4: Adaptive FPS",
             ][..],

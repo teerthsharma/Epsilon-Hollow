@@ -93,4 +93,5 @@ macro_rules! test_assert_eq {
 pub mod harness;
 pub mod mock;
 pub mod runner;
+pub mod theorem_gate;
 pub mod voronoi_reach;

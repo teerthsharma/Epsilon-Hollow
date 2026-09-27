@@ -8,8 +8,11 @@ This document defines the minimum contract for version 0.4.7.5 and the later
 
 1. The kernel is bare-metal Rust, assembly at CPU edges, and Aether-Lang for
    native OS language/app logic. No Unix ABI, no Linux ABI, no POSIX contract,
-   no libc target.
-2. Boot must fail closed if any T1-T10 theorem gate fails.
+   no libc target. (Superseded by `docs/design/LINUX-REPLACEMENT.md`, accepted
+   2026-09-27: decision D1 makes the Linux x86_64 syscall ABI the native ABI.)
+2. Boot must fail closed if any T1-T10 theorem check fails. A theorem whose
+   certificate does not hold at the runtime inputs is reported as refused with
+   its reason, not failed: T4/AGCR at the runtime governor step today.
 3. T1-T5 must drive live kernel decisions, not only print boot lines.
 4. T6-T10 must stay boot-gated for the HFT/ML world-model path until they are
    wired into hot runtime governors.
@@ -25,7 +28,7 @@ This document defines the minimum contract for version 0.4.7.5 and the later
 | T1/TSS | Voronoi partitioning for frames, tasks, file/inode lookup, packets | Runtime active in TopoRAM, scheduler, ManifoldFS, topological networking |
 | T2/SCM | Spectral contraction for prefetch and next-runnable prediction | Runtime active in TopoRAM, scheduler, ManifoldFS |
 | T3/GMC | Entropy/Betti fragmentation control and merge decisions | Runtime active in TopoRAM, ManifoldFS, topological power |
-| T4/AGCR | Adaptive governor for timeslice, cache pressure, render pacing | Runtime active in scheduler, ManifoldFS, compositor, swap pressure |
+| T4/AGCR | Adaptive governor for timeslice, cache pressure, render pacing | Governor runs in scheduler, ManifoldFS, compositor, swap pressure; certificate refused at the runtime step (dt = 0.01, margin 5.01) |
 | T5/HCS | Hyperbolic separation for lifetime, path depth, hierarchy | Runtime active in TopoRAM, virtual memory, ManifoldFS, power topology |
 | T6/RGCS | Gradient coherence for ML/HFT sync | Boot-gated only |
 | T7/PHKP | Persistent homology KV partition latency | Boot-gated only |
@@ -38,17 +41,18 @@ This document defines the minimum contract for version 0.4.7.5 and the later
 The VM serial log must contain:
 
 ```text
+[T4/AGCR] Governor online: epsilon = 0.1000 alpha=0.01 beta=0.05 dt=0.01
 [THEOREM] T1/TSS VERIFIED
 [THEOREM] T2/SCM VERIFIED
 [THEOREM] T3/GMC VERIFIED
-[THEOREM] T4/AGCR VERIFIED
+[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01
 [THEOREM] T5/HCS VERIFIED
 [THEOREM] T6/RGCS VERIFIED
 [THEOREM] T7/PHKP VERIFIED
 [THEOREM] T8/TEB VERIFIED
 [THEOREM] T9/CMA VERIFIED
 [THEOREM] T10/WPHB VERIFIED
-[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 [Aether-Lang] runtime proof: parser=ok interpreter=ok app_host=ok script=aether_boot_probe result=seal-topology-ok
 ```
 

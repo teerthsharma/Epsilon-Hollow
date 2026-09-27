@@ -156,8 +156,10 @@ code{ font-family:var(--font-mono); font-size:.9em; }
 .log{
   margin:0; padding:18px 20px; min-height:24em; white-space:normal; overflow-x:auto; border-radius:14px;
   background:#1c1b19; color:#e9e6de; font-family:var(--font-mono); font-size:12.5px; line-height:1.75;
+  font-variant-ligatures:none;
 }
-.log span{ display:block; white-space:pre; }
+/* long kernel lines wrap with a hanging indent, so a refusal's reason stays on screen */
+.log span{ display:block; white-space:pre-wrap; overflow-wrap:anywhere; padding-left:2ch; text-indent:-2ch; }
 .log .ok{ color:#7fd49a; }
 .log .warn{ color:#f3b27a; }
 .log .dim{ color:#9c978c; }
@@ -182,6 +184,8 @@ code{ font-family:var(--font-mono); font-size:.9em; }
 .sec__h2{ font-size:clamp(32px, 4.4vw, 56px); line-height:1.05; letter-spacing:-0.03em; font-weight:700; max-width:18em; text-wrap:balance; }
 .sec__lede{ margin-top:16px; max-width:40em; font-size:clamp(18px, 1.6vw, 21px); line-height:1.55; color:var(--muted); }
 .sec__body{ margin-top:clamp(32px, 4vw, 48px); }
+.sec__lede a{ color:var(--blue-700); font-weight:600; }
+.sec__lede a:hover{ text-decoration:underline; }
 
 /* the rule, as a table */
 .scroll{ overflow-x:auto; border:1px solid var(--hair); border-radius:var(--r); background:var(--raised); box-shadow:var(--e1); }
@@ -201,10 +205,13 @@ td.no{ color:var(--coral-700); }
 .limits h3{ font-size:17px; line-height:1.4; font-weight:600; }
 .limits p{ color:var(--muted); line-height:1.6; }
 .limits code{ font-size:.86em; background:var(--raised); padding:.08em .3em; border-radius:4px; }
+.limits a{ color:var(--blue-700); font-weight:600; }
+.limits a:hover{ text-decoration:underline; }
 @media (max-width:760px){ .limits li{ grid-template-columns:1fr; } }
 
 /* reproduce */
 .steps{ display:grid; gap:28px; }
+.step{ min-width:0; }   /* a grid item; without this a long command line widens the whole step past a phone screen */
 .step h3{ font-size:17px; font-weight:600; }
 .step p{ margin-top:4px; color:var(--muted); max-width:52em; }
 pre.code{
@@ -298,6 +305,15 @@ pre.code .c{ color:var(--muted); }
 .claims{ padding:clamp(64px, 8vw, 104px) 0 clamp(8px, 2vw, 24px); background:var(--ground); }
 .claims .sec__h2{ margin-top:12px; }
 .claims .heads{ margin-left:0; }
+
+/* ---------- direction, and the results imported from related work ---------- */
+.direction{ border-bottom:1px solid var(--hair); }
+.direction .sec__h2{ margin-top:12px; }
+.direction .heads{ margin-left:0; }
+.direction .spec__n--coral{ color:var(--coral-700); }
+.direction__note{ margin-top:16px; }
+.imported{ border-top:1px solid var(--hair); }
+.imported .sec__h2{ margin-top:12px; }
 
 @media (prefers-reduced-motion: reduce){
   .card, .pt__cta, .chip{ transition:none; }

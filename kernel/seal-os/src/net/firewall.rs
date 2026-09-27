@@ -71,17 +71,9 @@ static PORT_HISTORY: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 
 /// Initialize firewall state.
 pub fn init() {
-    let centroids: [(f64, f64); VORONOI_K] = [
-        (0.0, 0.0),
-        (core::f64::consts::FRAC_PI_2, 0.0),
-        (core::f64::consts::PI, 0.0),
-        (0.0, core::f64::consts::FRAC_PI_2),
-        (core::f64::consts::FRAC_PI_2, core::f64::consts::FRAC_PI_2),
-        (core::f64::consts::PI, core::f64::consts::FRAC_PI_2),
-        (0.0, core::f64::consts::PI),
-        (core::f64::consts::FRAC_PI_2, core::f64::consts::PI),
-    ];
-    *TRUST_ZONE_VORONOI.lock() = Some(SphericalVoronoiIndex::new(centroids));
+    // Eight distinct zones. The {0, pi/2, pi} lattice this used put zones 0, 3
+    // and 6 on one pole, so a rule on zone 3 or 6 could never match.
+    *TRUST_ZONE_VORONOI.lock() = Some(SphericalVoronoiIndex::new(aether_core::tss::CUBE_CENTROIDS));
 }
 
 /// Add a firewall rule.

@@ -335,7 +335,123 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// A write refused by a read-only mount reaches the caller as EROFS, not
+    /// the EIO every unmapped `VfsError` falls through to.
+    fn test_read_only_vfs_error_is_erofs() -> TestResult {
+        test_assert_eq!(vfs_error_to_errno(VfsError::ReadOnly), 30);
+        TestResult::Pass
+    }
+
+    /// Unprivileged caller for `dispatch_as`: any nonzero euid.
+    const USER: u32 = 1000;
+
+    /// The gate's refusal: EPERM with no data. Every arm below answers
+    /// differently when it is reached with the arguments these tests pass, so
+    /// this shape is the gate's and nothing else's.
+    fn is_gate_eperm(r: &SyscallResult) -> bool {
+        r.code == -1 && r.data.is_none()
+    }
+
+    /// RED: the SYS_PKG_REMOVE arm called `GLOBAL_PKG.remove` for any caller,
+    /// so an unprivileged task could drop a package from the registry. It now
+    /// answers EPERM before reading its argument. Reached, the arm answers a
+    /// null name pointer with `with_data(-1, "'' is not installed")`, which
+    /// carries data; the gate's EPERM does not.
+    fn test_unprivileged_pkg_remove_is_eperm() -> TestResult {
+        test_assert!(is_gate_eperm(&dispatch_as(USER, SYS_PKG_REMOVE, 0, 0, 0)));
+        TestResult::Pass
+    }
+
+    /// Every other arm that changes system-wide state with no per-object check
+    /// is behind the same gate. Arguments are chosen so a reached arm is
+    /// harmless and answers something other than a bare EPERM: REBOOT 99 and
+    /// SLEEP 0 are EINVAL; null path pointers read as "", which PKG_INSTALL
+    /// and the chart arms answer with EINVAL; SETTING_SET stores "" and answers
+    /// 0; TELEPORT answers ENODEV before the syscall ManifoldFS exists (the
+    /// harness runs before it does) and a ManifoldFS errno or 0 after; the
+    /// Wi-Fi/Bluetooth stubs answer 0 with data.
+    fn test_unprivileged_caller_gets_eperm_from_every_root_only_arm() -> TestResult {
+        for (num, arg0) in [
+            (SYS_REBOOT, 99),
+            (SYS_SLEEP, 0),
+            (SYS_TELEPORT, 0),
+            (SYS_PKG_INSTALL, 0),
+            (SYS_WIFI_CONNECT, 0),
+            (SYS_BT_PAIR, 0),
+            (SYS_SETTING_SET, 0),
+            (SYS_CHART_GRAFT, 0),
+            (SYS_CHART_PRUNE, 0),
+        ] {
+            test_assert!(
+                is_gate_eperm(&dispatch_as(USER, num, arg0, 0, 0)),
+                "a root-only arm must refuse an unprivileged caller with EPERM"
+            );
+        }
+        TestResult::Pass
+    }
+
+    /// Positive control: the gate refuses by privilege, not by number. Root
+    /// passes it and reaches the registry, and read-only arms stay open to an
+    /// unprivileged caller.
+    fn test_root_passes_the_gate_and_reads_stay_open() -> TestResult {
+        let root = dispatch_as(0, SYS_PKG_REMOVE, 0, 0, 0);
+        test_assert!(root.data.is_some(), "root must reach the package registry");
+        test_assert_eq!(dispatch_as(USER, SYS_PKG_LIST, 0, 0, 0).code, 0);
+        test_assert_eq!(dispatch_as(USER, SYS_THEOREM_STATUS, 0, 0, 0).code, 0);
+        test_assert_eq!(dispatch_as(USER, SYS_CHART_LIST, 0, 0, 0).code, 0);
+        TestResult::Pass
+    }
+
+    /// RED: the fit arms took `arg0` as the workload handle with no owner
+    /// check, so any task could feed, recalibrate or unregister another task's
+    /// workload (and through SYS_FIT_REGIME publish its prefetch threshold).
+    /// A handle other than the caller's own task id is ENOENT and the
+    /// workload survives; the caller's own handle still works.
+    fn test_fit_arms_refuse_another_tasks_handle() -> TestResult {
+        let own = crate::process::scheduler::current_task_id();
+        let foreign = own.wrapping_add(0xF17_0100);
+        crate::ml_engine::stratum::register(foreign);
+        for num in [
+            SYS_FIT_OBSERVE,
+            SYS_FIT_REGIME,
+            SYS_FIT_CALIBRATE,
+            SYS_FIT_UNREGISTER,
+        ] {
+            test_assert_eq!(dispatch(num, foreign, 0, 0).code, -2); // ENOENT
+        }
+        test_assert!(
+            crate::ml_engine::stratum::unregister(foreign),
+            "another task's workload must survive"
+        );
+
+        test_assert_eq!(dispatch(SYS_FIT_REGISTER, 0, 0, 0).code, own as i64);
+        test_assert!(dispatch(SYS_FIT_OBSERVE, own, 0, 0).code >= 0);
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, 0, 0).code, 0);
+        test_assert_eq!(dispatch(SYS_FIT_UNREGISTER, own, 0, 0).code, 0);
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "syscall::unprivileged_pkg_remove_is_eperm",
+            test_unprivileged_pkg_remove_is_eperm,
+        );
+        crate::testing::register_test(
+            "syscall::unprivileged_caller_gets_eperm_from_every_root_only_arm",
+            test_unprivileged_caller_gets_eperm_from_every_root_only_arm,
+        );
+        crate::testing::register_test(
+            "syscall::root_passes_the_gate_and_reads_stay_open",
+            test_root_passes_the_gate_and_reads_stay_open,
+        );
+        crate::testing::register_test(
+            "syscall::fit_arms_refuse_another_tasks_handle",
+            test_fit_arms_refuse_another_tasks_handle,
+        );
+        crate::testing::register_test(
+            "syscall::read_only_vfs_error_is_erofs",
+            test_read_only_vfs_error_is_erofs,
+        );
         crate::testing::register_test(
             "syscall::setuid_reports_dropped_uid_write",
             test_setuid_reports_dropped_uid_write,
@@ -585,6 +701,7 @@ fn vfs_error_to_errno(e: VfsError) -> i64 {
         VfsError::PermissionDenied => 13, // EACCES
         VfsError::InvalidPath => 22,      // EINVAL
         VfsError::TooManySymlinks => 40,  // ELOOP
+        VfsError::ReadOnly => 30,         // EROFS
         _ => 5,                           // EIO
     }
 }
@@ -677,7 +794,46 @@ fn identity_write_outcome() -> SyscallResult {
     SyscallResult::ok(0)
 }
 
+/// Syscalls that change state every task shares, with no per-object owner or
+/// permission to check against: only effective uid 0 may make them.
+///
+/// Power state (Linux: CAP_SYS_BOOT): `SYS_REBOOT`, and `SYS_SLEEP`, whose S5
+/// is the same power-off. Package set: `SYS_PKG_INSTALL`, `SYS_PKG_REMOVE`.
+/// Kernel code (CAP_SYS_MODULE): `SYS_CHART_GRAFT`, `SYS_CHART_PRUNE`.
+/// System-wide settings: `SYS_SETTING_SET`. Network and radio configuration
+/// (CAP_NET_ADMIN): `SYS_WIFI_CONNECT`, `SYS_BT_PAIR`, stubs today, gated so
+/// their implementation lands behind the check. `SYS_TELEPORT` moves files in
+/// the syscall ManifoldFS, which consults no file permission at all.
+fn requires_root(num: u64) -> bool {
+    matches!(
+        num,
+        SYS_REBOOT
+            | SYS_SLEEP
+            | SYS_TELEPORT
+            | SYS_PKG_INSTALL
+            | SYS_PKG_REMOVE
+            | SYS_WIFI_CONNECT
+            | SYS_BT_PAIR
+            | SYS_SETTING_SET
+            | SYS_CHART_GRAFT
+            | SYS_CHART_PRUNE
+    )
+}
+
 pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
+    dispatch_as(
+        crate::process::scheduler::current_euid(),
+        num,
+        arg0,
+        arg1,
+        arg2,
+    )
+}
+
+/// `dispatch` for a caller whose effective uid is `euid`, which the root-only
+/// gate below reads. Split out so the gate is testable: `test_main` runs with
+/// no current task, where `current_euid()` is always 0.
+fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
     // Seccomp check
     let task_id = crate::process::scheduler::current_task_id();
     match crate::security::seccomp::seccomp_check(task_id, num) {
@@ -697,6 +853,10 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
             crate::process::scheduler::mark_current_dead();
             return SyscallResult::err(1); // EPERM / killed
         }
+    }
+
+    if requires_root(num) && euid != 0 {
+        return SyscallResult::err(1); // EPERM
     }
 
     let result = match num {
@@ -1634,6 +1794,16 @@ pub fn dispatch(num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallResult {
         SYS_FIT_REGISTER => {
             let handle = crate::process::scheduler::current_task_id();
             SyscallResult::ok(crate::ml_engine::stratum::register(handle) as i64)
+        }
+
+        // A fit handle is the id of the task that registered it. Any other
+        // task's handle is refused with ENOENT, the same answer as an
+        // unregistered one, as the KV arms do for sequences: otherwise a task
+        // could feed, recalibrate or drop another task's workload.
+        SYS_FIT_OBSERVE | SYS_FIT_REGIME | SYS_FIT_CALIBRATE | SYS_FIT_UNREGISTER
+            if arg0 != task_id =>
+        {
+            SyscallResult::err(2) // ENOENT
         }
 
         SYS_FIT_OBSERVE => {

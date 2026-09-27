@@ -106,10 +106,11 @@ During `init_theorems()`, Seal OS runs cheap no_std checks from `aether_verified
 
 | Range | Boot status | Runtime role |
 |---|---|---|
-| T1-T5 | Verified at boot | Active in filesystem, scheduler, memory, compositor/power paths |
+| T1-T3, T5 | Verified at boot | Active in filesystem, scheduler, memory, compositor/power paths |
+| T4 | Not certified: α + β/dt = 5.01 at the runtime step dt = 0.01 | The governor still runs in the scheduler, ManifoldFS and compositor; its convergence certificate is refused |
 | T6-T10 | Verified at boot | HFT/ML world-model bounds exposed through theorem status |
 
-If any theorem check fails, the kernel panics instead of booting a false theorem state.
+If any other theorem check fails, the kernel panics instead of booting a false theorem state. The T4 refusal is reported and boot continues (`[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01`, then `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths`).
 
 ## Aether Runtime Gate
 

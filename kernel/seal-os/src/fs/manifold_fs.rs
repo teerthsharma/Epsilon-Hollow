@@ -282,7 +282,7 @@ impl ManifoldFS {
             cluster_sizes,
             entropy_merges: 0,
             current_entropy: 0.0,
-            governor: GeometricGovernor::new(),
+            governor: GeometricGovernor::with_gains(crate::GOVERNOR_ALPHA, crate::GOVERNOR_BETA),
             governor_ticks: 0,
             max_depth: 0,
             hyperbolic_ratio: f64::INFINITY,
@@ -347,7 +347,7 @@ impl ManifoldFS {
             cluster_sizes,
             entropy_merges: 0,
             current_entropy: 0.0,
-            governor: GeometricGovernor::new(),
+            governor: GeometricGovernor::with_gains(crate::GOVERNOR_ALPHA, crate::GOVERNOR_BETA),
             governor_ticks: 0,
             max_depth: 0,
             hyperbolic_ratio: f64::INFINITY,
@@ -807,7 +807,7 @@ impl ManifoldFS {
     }
 
     fn governor_tick(&mut self, deviation: f64) {
-        self.governor.adapt(deviation, 0.01);
+        self.governor.adapt(deviation, crate::GOVERNOR_DT);
         self.governor_ticks += 1;
     }
 

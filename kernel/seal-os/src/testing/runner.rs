@@ -25,6 +25,7 @@ pub fn test_main() -> ! {
     crate::fs::manifold_fs::tests::register_all();
     crate::fs::voronoi_cap::tests::register_all();
     crate::testing::voronoi_reach::register_all();
+    crate::testing::theorem_gate::register_all();
     crate::fs::vfs::tests::register_all();
     crate::fs::dir_hash::tests::register_all();
     crate::fs::ext2::tests::register_all();
@@ -46,6 +47,7 @@ pub fn test_main() -> ! {
     crate::net::ipv6::tests::register_all();
     crate::net::icmp::tests::register_all();
     crate::net::tcp::tests::register_all();
+    crate::net::topological::tests::register_all();
     crate::pkg::channel::tests::register_all();
     crate::pkg::format::tests::register_all();
     crate::pkg::tests::register_all();

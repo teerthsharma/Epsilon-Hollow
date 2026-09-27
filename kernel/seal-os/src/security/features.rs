@@ -25,8 +25,10 @@ use x86_64::registers::control::{Cr0, Cr4};
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 
 /// Upper bound on leaf entries the W^X page walk will examine, so a corrupt or
-/// unexpectedly dense kernel page table cannot stall the boot proof.
-const WX_SCAN_BUDGET: u64 = 1 << 16;
+/// unexpectedly dense kernel page table cannot stall the boot proof. A full
+/// walk of the kernel root visits about 18,000 static leaves plus one per heap
+/// page: 24,004 in all at the boot proof under QEMU with 1 GiB.
+const WX_SCAN_BUDGET: u64 = 1 << 20;
 
 /// A single mitigation's measured state.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -243,74 +245,52 @@ pub fn audit_log() -> FeatureState {
     }
 }
 
-/// W^X over the kernel image alias — count leaf pages in the kernel's
-/// higher-half PML4 slot that are both writable and executable.
+/// W^X over every leaf the kernel's own page-table root maps: the identity
+/// map the kernel executes from (image included), the higher-half image
+/// alias, the heap window, and any other kernel mapping reachable from it.
 ///
-/// Returns `(violations, pages_scanned)`. A page is a violation when it is
-/// PRESENT and WRITABLE and does not carry NO_EXECUTE.
+/// Returns `(violations, pages_scanned)`. A leaf (4 KiB, 2 MiB or 1 GiB) is a
+/// violation when it is PRESENT and WRITABLE and does not carry NO_EXECUTE.
 pub fn wx_violations() -> (u64, u64) {
     let pml4_virt = crate::memory::virt::current_pml4_virt().as_u64();
     if pml4_virt == 0 {
         return (0, 0);
     }
-    let mut violations = 0u64;
-    let mut scanned = 0u64;
-
+    let mut counts = (0u64, 0u64);
     // SAFETY: `current_pml4_virt` returns the identity-mapped address of the
     // live PML4, and every table address reached from it is a physical frame
-    // below the 16 GiB identity map. All accesses here are aligned read-only
-    // loads of 512-entry tables, bounded by WX_SCAN_BUDGET leaf visits.
-    unsafe {
-        let pml4 = &*(pml4_virt as *const PageTable);
-        let pml4_entry = &pml4[511];
-        if pml4_entry.is_unused() {
-            return (0, 0);
+    // below the 16 GiB identity map. All accesses are aligned read-only loads
+    // of 512-entry tables, bounded by WX_SCAN_BUDGET leaf visits.
+    unsafe { count_wx(&*(pml4_virt as *const PageTable), 4, &mut counts) };
+    counts
+}
+
+/// Walk one table at `level` (4 = PML4 .. 1 = PT), adding every present leaf
+/// to `counts.1` and every W+X leaf to `counts.0`.
+///
+/// # Safety
+/// `table` and every table it points to must be readable at their physical
+/// address (the identity map).
+unsafe fn count_wx(table: &PageTable, level: u8, counts: &mut (u64, u64)) {
+    for entry in table.iter() {
+        if counts.1 >= WX_SCAN_BUDGET {
+            return;
         }
-        let pdpt = &*(pml4_entry.addr().as_u64() as *const PageTable);
-        for pdpt_idx in 0..512 {
-            let pd_entry = &pdpt[pdpt_idx];
-            if pd_entry.is_unused() {
-                continue;
-            }
-            if pd_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                scanned += 1;
-                if is_wx(pd_entry.flags()) {
-                    violations += 1;
-                }
-                continue;
-            }
-            let pd = &*(pd_entry.addr().as_u64() as *const PageTable);
-            for pd_idx in 0..512 {
-                let pt_entry = &pd[pd_idx];
-                if pt_entry.is_unused() {
-                    continue;
-                }
-                if pt_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                    scanned += 1;
-                    if is_wx(pt_entry.flags()) {
-                        violations += 1;
-                    }
-                    continue;
-                }
-                let pt = &*(pt_entry.addr().as_u64() as *const PageTable);
-                for pt_idx in 0..512 {
-                    let page = &pt[pt_idx];
-                    if page.is_unused() {
-                        continue;
-                    }
-                    scanned += 1;
-                    if is_wx(page.flags()) {
-                        violations += 1;
-                    }
-                    if scanned >= WX_SCAN_BUDGET {
-                        return (violations, scanned);
-                    }
-                }
-            }
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT) {
+            continue;
+        }
+        if level == 1 || (level < 4 && flags.contains(PageTableFlags::HUGE_PAGE)) {
+            counts.1 += 1;
+            counts.0 += u64::from(is_wx(flags));
+        } else {
+            count_wx(
+                &*(entry.addr().as_u64() as *const PageTable),
+                level - 1,
+                counts,
+            );
         }
     }
-
-    (violations, scanned)
 }
 
 /// A mapping is a W^X violation when it is present, writable, and executable.
@@ -324,10 +304,10 @@ pub fn is_wx(flags: PageTableFlags) -> bool {
 /// mitigation, each read back from live CPU or kernel state.
 ///
 /// `result=pass` requires every hardware-probed mitigation that the CPU
-/// supports to be active, plus KPTI, KASLR and the stack guard band. `wx` is
-/// measured and reported but not gated (`wx_enforced=0`): the kernel image
-/// alias is currently mapped writable+executable, and pretending otherwise by
-/// re-flagging an alias nothing executes from would be a fake win.
+/// supports to be active, plus KPTI, KASLR, the stack guard band, and W^X
+/// (`wx_enforced=1`): no leaf reachable from the kernel's page-table root —
+/// the identity map the kernel executes from included, not just the alias —
+/// is both writable and executable.
 pub fn security_feature_proof_line() -> alloc::string::String {
     let kpti = kpti();
     let smep = smep();
@@ -347,10 +327,11 @@ pub fn security_feature_proof_line() -> alloc::string::String {
         && smep.ok()
         && smap.ok()
         && nx.ok()
-        && retpoline.active;
+        && retpoline.active
+        && wx_violations == 0;
 
     alloc::format!(
-        "[SECURITY-FEATURES] proof version=1 kpti={} kpti_probe={} smep_supported={} smep={} smep_probe={} smap_supported={} smap={} smap_probe={} nx_supported={} nx={} nx_probe={} wp={} wp_probe={} retpoline={} retpoline_ibpb_supported={} retpoline_probe={} kaslr={} kaslr_bits={} kaslr_probe={} wx={} wx_violations={} wx_pages_scanned={} wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard={} stackguard_dirty={} stackguard_probe={} audit={} audit_probe={} cr0={:#x} cr4={:#x} efer={:#x} result={}",
+        "[SECURITY-FEATURES] proof version=1 kpti={} kpti_probe={} smep_supported={} smep={} smep_probe={} smap_supported={} smap={} smap_probe={} nx_supported={} nx={} nx_probe={} wp={} wp_probe={} retpoline={} retpoline_ibpb_supported={} retpoline_probe={} kaslr={} kaslr_bits={} kaslr_probe={} wx={} wx_violations={} wx_pages_scanned={} wx_scope=kernel-root wx_enforced=1 wx_probe=runtime-pagewalk stackguard={} stackguard_dirty={} stackguard_probe={} audit={} audit_probe={} cr0={:#x} cr4={:#x} efer={:#x} result={}",
         b(kpti.active),
         kpti.probe,
         b(smep.supported),

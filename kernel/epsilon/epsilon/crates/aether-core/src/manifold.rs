@@ -294,14 +294,23 @@ impl<const D: usize> SparseAttentionGraph<D> {
     /// β₁ of the Vietoris-Rips complex at this graph's scale, reduced exactly
     /// over its 2-simplices by [`crate::persistence`].
     ///
-    /// The graph's edge predicate is strict (`d < ε`) and the persistence engine
-    /// admits a simplex at `d <= r`, so the complex is built at the largest float
-    /// below ε, which admits exactly the graph's edges.
+    /// Every edge is decided before anything is counted: a pair whose rounded
+    /// distance lies within its rounding bound of ε is refused as
+    /// [`PersistenceError::UndecidedEdge`], because exact arithmetic, this
+    /// graph's norm and the engine's scale-safe norm need not agree on which
+    /// side of ε it falls. The unit square at `ε = fl(√2)` is the case: the exact
+    /// diagonal `√2` is below ε and fills the square, the rounded one is not.
+    ///
+    /// With every edge decided, the graph's edge predicate is strict (`d < ε`)
+    /// and the persistence engine admits a simplex at `d <= r`, so the complex
+    /// is built at the largest float below ε, which admits exactly the graph's
+    /// edges, which are the exact input's.
     ///
     /// A graph with cycle rank 0 is a forest: it has no triangles and β₁ = 0, so
     /// that case returns without a reduction. Otherwise the engine's simplex
     /// budget applies and a refusal is returned as its error.
     pub fn rips_betti_1(&self) -> Result<u32, PersistenceError> {
+        self.certify_edges()?;
         if self.cycle_rank() == 0 {
             return Ok(0);
         }
@@ -315,6 +324,39 @@ impl<const D: usize> SparseAttentionGraph<D> {
         };
         let diagram = persistent_homology(&self.points[..self.point_count], config)?;
         Ok(diagram.betti_at(radius).beta_1)
+    }
+
+    /// The first pair, if any, whose side of ε rounding could flip.
+    ///
+    /// Both norms, [`ManifoldPoint::distance`] and the persistence engine's
+    /// scale-safe one, are within `γ_{D+7}·d_exact + η/2` of the exact
+    /// distance: a sum of `D` non-negative rounded terms carries relative
+    /// `γ_{D-1}` (Higham, ASNA 2nd ed. §3.1), the subtraction, division,
+    /// squaring, sqrt and rescale add at most eight more, and `η = D·2^-536`
+    /// covers squares that underflow. Restated against the computed `d` that is
+    /// at most `γ_{D+8}·d + η`, and a pair is decided only when `|d − ε|`
+    /// exceeds twice it, which puts the exact distance and both rounded ones on
+    /// the same side of ε.
+    fn certify_edges(&self) -> Result<(), PersistenceError> {
+        let u = f64::EPSILON / 2.0;
+        let n = (D + 8) as f64;
+        let gamma = libm::nextafter(n * u / (1.0 - n * u), f64::INFINITY);
+        let eta = D as f64 * libm::ldexp(1.0, -536);
+        for i in 0..self.point_count {
+            for j in (i + 1)..self.point_count {
+                let d = self.points[i].distance(&self.points[j]);
+                let needed_margin = 2.0 * (gamma * d + eta) * (1.0 + 4.0 * u);
+                if threshold_trit(d, needed_margin, self.epsilon) == 0 {
+                    return Err(PersistenceError::UndecidedEdge {
+                        i,
+                        j,
+                        gap: libm::fabs(d - self.epsilon),
+                        needed_margin,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `(β₀, cycle rank)` of the ε-graph. The second entry is not β₁; see
@@ -407,6 +449,21 @@ impl<const D: usize> SparseAttentionGraph<D> {
     /// Clear the graph
     pub fn clear(&mut self) {
         self.point_count = 0;
+    }
+}
+
+/// Which side of the threshold `t` a value `d` with rounding radius `r` lies
+/// on: `1` above, `-1` below, `0` when the radius reaches `t` or any input is
+/// NaN. Each comparison is of a rounded `d ∓ r` against the float `t`, and
+/// rounding is monotone, so a nonzero answer holds for the exact `d ∓ r` too.
+// from teerthsharma/separatrix separatrix/api.py:365: threshold trit
+pub(crate) fn threshold_trit(d: f64, r: f64, t: f64) -> i8 {
+    if d - r > t {
+        1
+    } else if d + r < t {
+        -1
+    } else {
+        0
     }
 }
 

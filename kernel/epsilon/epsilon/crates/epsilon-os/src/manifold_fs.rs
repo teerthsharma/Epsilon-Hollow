@@ -86,6 +86,9 @@ pub struct ManifoldFS {
     // T1: O(1) file lookup via Voronoi
     voronoi: SphericalVoronoiIndex<VORONOI_CELLS>,
     cell_files: [Vec<u64>; VORONOI_CELLS],
+    /// The live cell each Voronoi cell routes to: itself until a T3 merge
+    /// folds it into another. Kept fully resolved, so one lookup suffices.
+    merged_into: [usize; VORONOI_CELLS],
     // T2: Predictive prefetch
     scm: SpectralContractionOperator<3>,
     access_state: [f64; 3],
@@ -120,6 +123,7 @@ impl ManifoldFS {
             next_inode: 1,
             voronoi: SphericalVoronoiIndex::<VORONOI_CELLS>::new(default_centroids),
             cell_files: Default::default(),
+            merged_into: core::array::from_fn(|i| i),
             scm: SpectralContractionOperator::new(0.7),
             access_state: [0.0; 3],
             last_prefetch_prediction: None,
@@ -181,7 +185,7 @@ impl ManifoldFS {
         }
 
         let payload = encoder::encode_data(data);
-        let cell = self.assign_voronoi_cell(&payload);
+        let cell = self.merged_into[self.assign_voronoi_cell(&payload)];
         let id = self.next_inode;
         self.next_inode += 1;
 
@@ -476,10 +480,10 @@ impl ManifoldFS {
         self.access_state = self.scm.apply(&self.access_state, &pt);
 
         // Predict next access: find nearest file to predicted state
-        let predicted_cell = self.voronoi.locate((
+        let predicted_cell = self.merged_into[self.voronoi.locate((
             libm::acos(self.access_state[2].clamp(-1.0, 1.0)),
             libm::atan2(self.access_state[1], self.access_state[0]),
-        ));
+        ))];
         self.last_prefetch_prediction = self.cell_files[predicted_cell].last().copied();
 
         if self.total_lookups % 10 == 0 {
@@ -538,7 +542,14 @@ impl ManifoldFS {
         let (src_cell, _) = sorted[0];
         let (dst_cell, _) = sorted[1];
 
-        // Merge: move all files from src_cell to dst_cell
+        // Merge: move all files from src_cell to dst_cell, and route every
+        // payload that located to src_cell there from now on.
+        for target in self.merged_into.iter_mut() {
+            if *target == src_cell {
+                // from teerthsharma/cleave cleave/persist.py:181: tracks join — the absorbed root points at the survivor
+                *target = dst_cell;
+            }
+        }
         let files_to_move: Vec<u64> = self.cell_files[src_cell].clone();
         for &fid in &files_to_move {
             if let Some(inode) = self.inodes.get_mut(&fid) {
@@ -961,6 +972,51 @@ mod tests {
         assert_ne!(hit.cell, smallest, "the merge re-homed the file");
     }
 
+    /// A T3 merge folds the smallest cell into the next for good: a file
+    /// stored afterwards with a moved file's content lands beside it, not in
+    /// the emptied cell.
+    #[test]
+    fn test_store_after_entropy_merge_lands_in_the_merged_cell() {
+        let mut fs = spread_fs();
+        let text = |n: u64| format!("{:016x}", n.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut n = 0;
+        while fs.stats().current_entropy <= ENTROPY_MERGE_THRESHOLD {
+            fs.store_text(&format!("f{n}"), &text(n), 0).unwrap();
+            n += 1;
+            assert!(n < 500, "entropy never crossed the threshold");
+        }
+        let dist = fs.stats().cell_distribution;
+        let smallest = (0..VORONOI_CELLS)
+            .filter(|&c| dist[c] > 0)
+            .min_by_key(|&c| dist[c])
+            .unwrap();
+        let victim = fs
+            .inodes
+            .values()
+            .filter(|i| matches!(i.kind, InodeKind::File) && i.voronoi_cell == smallest)
+            .map(|i| i.name.clone())
+            .min()
+            .unwrap();
+
+        let d = fs.mkdir("d", 0).unwrap();
+        fs.teleport("f0", 0, d).unwrap(); // /mv runs the T3 check
+        assert_eq!(fs.stats().entropy_merges, 1);
+
+        let twin = fs
+            .store_text("twin", &text(victim[1..].parse().unwrap()), 0)
+            .unwrap();
+        let moved = fs.inodes.values().find(|i| i.name == victim).unwrap();
+        assert_eq!(
+            fs.inodes[&twin].voronoi_cell, moved.voronoi_cell,
+            "same content, same cell"
+        );
+        assert_eq!(
+            fs.stats().cell_distribution[smallest],
+            0,
+            "a merged cell stays empty"
+        );
+    }
+
     #[test]
     fn test_mv_leaves_governor_epsilon_bit_identical() {
         // Surgery brackets a reparent; no governor tick runs inside it.
@@ -1010,5 +1066,37 @@ mod tests {
             };
             assert_eq!(*state, want, "{name}");
         }
+    }
+
+    #[test]
+    fn test_t4_certificate_holds_on_the_loop_store_runs() {
+        // A T4 certificate claims |e| reaches 1% of its first value within
+        // settling_time(ρ, 0.01) ticks. The margin α + β/dt treats the error as
+        // the control variable; store() feeds e = 1000 − 1/ε, whose gain at
+        // ε* = 0.001 is 1e6, so the margin alone cannot certify this loop.
+        // Only has teeth while the gate certifies.
+        if !governor_certified() {
+            return;
+        }
+        use aether_verified::aether_agcr::{contraction_rate, settling_time};
+        let rho = contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
+        let n = settling_time(rho, 0.01).ceil() as usize + 2;
+        let mut fs = ManifoldFS::new();
+        let (mut first, mut tail) = (0.0, 0.0f64);
+        for i in 0..n {
+            fs.store_text(&format!("f{i}"), "x", 0).unwrap();
+            let e = fs.governor.last_error().abs();
+            if i == 0 {
+                first = e;
+            }
+            if i + 2 >= n {
+                tail = tail.max(e);
+            }
+        }
+        assert!(
+            tail <= 0.01 * first,
+            "T4 certified at dt={GOVERNOR_DT}, but max |e| over ticks {}..={n} is {tail} (tick 1: {first})",
+            n - 1
+        );
     }
 }

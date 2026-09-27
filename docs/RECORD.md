@@ -1,0 +1,5025 @@
+# Seal OS development record before 2026-09-27, moved verbatim from README.md v0.4.7.5 (README.md supersedes it where they disagree)
+
+## The Gate That Was Red, And The Four Nobody Has Ever Seen
+
+This section exists because a README that grades its own homework is worth nothing, and this one has a section further down titled *Negative Controls: A Proof That Cannot Fail Is Not A Proof*. Applying that standard to the README itself: a claim nobody rechecks is not a claim, it is set dressing.
+
+An earlier version of this section said the Atlas gate was red and promised it would be rewritten rather than deleted when it went green, because "we fixed it" is also a claim. It is green. Here are the receipts, including the part where this section's own diagnosis was wrong.
+
+### What it was
+
+```
+[seal-audit] ATLAS PROOF FAIL: Atlas proof expected wx=text_rx_data_rw_nx, got wx=fail
+```
+
+`wx=fail` reads as "write-xor-execute enforcement failed," and that is how it was investigated: page permissions, remapping, TLB coherency, the `ChartImage::seal` → `remap_region` → `unmap_page` + `map_page` chain. This section previously asserted, in as many words, that "the defect is not in atlas's parsing."
+
+**That was exactly backwards.** The defect was entirely in atlas's parsing, and none of the permission machinery was ever reached.
+
+`relobj::parse()` read `Elf64_Shdr` as though the 8-byte `sh_addr` field did not exist:
+
+```rust
+offset: rd_u64(bytes, base + 16)?,   // that is sh_addr — a relocatable object writes 0 here
+size:   rd_u64(bytes, base + 24)?,   // that is the real sh_offset
+```
+
+The true layout is `sh_name` 0, `sh_type` 4, `sh_flags` 8, **`sh_addr` 16**, `sh_offset` 24, `sh_size` 32, `sh_link` 40, `sh_info` 44, `sh_addralign` 48, `sh_entsize` 56. Every field from `sh_link` onward was read correctly, which is precisely why it survived from the subsystem's first commit — nine of eleven fields were right, and the two that were wrong were wrong by exactly one field width.
+
+Consequence: `.symtab` was read with `size = 280`, which is that section's real file offset. `280 % 24 != 0`, so `parse()` rejected it as a malformed symbol table and returned `NoSymbolTable` — before `ChartImage::alloc`, before `seal()`, before any page-table code. **Atlas had never loaded a chart. Not once, in its entire existence.**
+
+### The evidence was printed on every boot and nobody read past the first field
+
+The same proof marker also said:
+
+```
+sections_placed=0 image_bytes=0 charts_before=0 charts_peak=0 charts_after=0
+init_code=0x8000000000000000
+```
+
+`charts_peak=0` means no chart was ever registered — valid signature, valid germ, irrelevant. `init_code` is `i64::MIN`, the sentinel for `graft()` returning `Err`. Both fields say the loader never reached the code everyone was theorising about. They were sitting in the same line as the `wx=fail` being quoted.
+
+Two things made that easy to miss, and both are now fixed:
+
+**A diagnostic that conflates two failures decides which wrong thing you investigate.** `Atlas::sealed()` returns `Option<bool>`; the call site did `.unwrap_or(false)`, so "chart absent" and "chart present but unsealed" both printed `wx=fail`. It now prints `absent`, `unsealed`, or `text_rx_data_rw_nx`. The gate is unchanged — the checker exact-matches the pass string — but a human reading the line now learns which half of the system to look at.
+
+**A lead that fits your hypothesis feels confirmed without being tested.** A scout had independently flagged that `map_page_inner` performs no TLB shootdown, unlike `unmap_page`. Real finding, correctly recorded, and completely unreachable in this path — `charts_peak=0` refuted it and had been printed all along.
+
+### What is red now, and the fifteen gates nobody has ever seen
+
+```
+success  Verify Atlas chart graft proof
+success  Verify firmware bundle proof
+failure  Verify raw-block installer proof
+skipped  Verify FAT/ext2 parity proof
+skipped  Verify stratum fit-control proof
+skipped  Verify foliation KV cache policy proof
+skipped  Verify GCN ISA GPU bench proof
+skipped  Verify KASLR mapping proof
+skipped  Verify per-feature security proof
+skipped  Verify unsafe-audit census against the source tree
+skipped  Verify T1-T5 runtime theorem coverage
+skipped  Verify Seal ABI/no-POSIX discipline
+skipped  Verify Seal OS language hygiene
+skipped  Verify Aether/Rust migration gates
+skipped  Verify O(1) allocator hot path
+skipped  Verify O(1) TCP demux indexes
+skipped  Inventory unsafe Rust blocks
+skipped  Verify soft boot milestones
+```
+
+The installer gate fails on one field, `auth_topo5000=0`, while everything around it passes — GPT written and CRC-verified on both copies, ext2 formatted and mounted with `.` and `..` present, all three refusal guards refusing correctly. Its root cause turned out to be `ManifoldFS::write` discarding its `offset` argument, so `add_user` truncated `/etc/passwd` and `/etc/shadow` down to the new account's single line instead of appending. That is fixed, and it was a data-loss bug on any real boot, not a test artifact.
+
+But that is not the headline of this section.
+
+**Every gate after the first failure is skipped.** The proof job runs sequentially. Atlas failed at stage one from the day the subsystem was written, so nothing past it ever ran. Not failed — *never executed*. Nobody has ever seen the result.
+
+Read that list again with the README's own claims in hand:
+
+- **`Verify T1-T5 runtime theorem coverage`.** The status table below marks "Theorem-gated boot (T1-T10)" with a ✅. The gate that checks the theorems at runtime has never run.
+- **`Verify O(1) allocator hot path`** and **`Verify O(1) TCP demux indexes`.** The pitch says every "O(1)" is "either tied to a proof gate or explicitly marked pending." The gates exist. They have never executed.
+- **`Verify KASLR mapping proof`**, **`Verify per-feature security proof`**, **`Inventory unsafe Rust blocks`**, **`Verify unsafe-audit census against the source tree`.** The entire security-posture section rests on these.
+- **`stratum` and `foliation`** — the two ML subsystems this README leads with, the reason the project claims an operating system should have opinions about your loss curve.
+
+Fifteen gates, hidden behind one parser reading `Elf64_Shdr` one field short.
+
+That is what a red gate actually costs. Not one defect deferred — the entire depth of the pipeline past the first stop, invisible for exactly as long as the first stop stands, while every badge and every ✅ upstream of it keeps rendering.
+
+An earlier revision of this very section said "four gates." That was wrong: it was written from a truncated step list without going back for the full one. The number is fifteen. Correcting it here rather than quietly editing the figure, because a document that claims its numbers are checkable has to show its own corrections too.
+
+---
+
+## Nothing In The Kernel Has Ever Been Tested
+
+> **This section is superseded and is kept for the record.** On 11 August 2026 the
+> in-kernel harness executed for the first time and reported 151 passes and 1
+> failure. Everything below was true when it was written and every mechanism it
+> describes was measured. What it got wrong was the implication that this was
+> permanent. See [The Tests Ran](#the-tests-ran) for what changed, what the 151
+> covers, and the twenty-three test groups that still have not run.
+>
+> The table below is left exactly as it was. Correcting it in place would delete
+> the evidence of how long this state persisted, which is the part worth keeping.
+
+That heading is not a joke and this section is not a bit. It is the single most important thing in this file.
+
+The kernel is 70,683 lines across 20 subsystems. Here is every mechanism that is supposed to verify it, and what each one actually does:
+
+| Mechanism | Reality |
+| --- | --- |
+| `cargo test --workspace` | Never reaches it. `kernel/seal-os` is in the workspace `exclude` list. |
+| The 65 `#[test]` functions in the kernel | Never compiled, never run. They compile in the sense that a poem compiles. |
+| The in-kernel harness under QEMU | **Never executed.** See below. |
+| `miri (UB detection)` | Failed to compile for its entire existence, so never detected any UB. Fixed this session. |
+| `memory::tests::register_all()` | An empty stub containing one comment, faithfully called by the harness every boot. Fixed this session. |
+
+The third row is the one that matters. `.github/workflows/kernel-tests.yml` is the *only* thing that boots the test-mode image and runs `testing::runner::test_main()`. It is triggered by `workflow_run` from CI, and gated:
+
+```yaml
+    if: github.event.workflow_run.conclusion == 'success'
+```
+
+CI has never concluded successfully. The Atlas boot proof failed at stage one from the day that subsystem was written, so the whole workflow has always ended in `failure`, so this job has always been skipped. Fifteen consecutive runs, every one `skipped`, on every branch.
+
+**The in-kernel test harness has never run. Not once.**
+
+Which means the honest statement about this kernel is not "the tests pass," and it is not "the tests are gated behind QEMU." It is: *there is no evidence any of it works beyond the fact that it boots and prints markers.* The boot markers are real — the machine genuinely comes up, mounts a filesystem, draws a desktop, completes a TLS handshake. Everything past that is unmeasured.
+
+The tests themselves are fine. They are written, they are registered, they are correct as far as anyone can tell by reading. They are pointed at a job that has never fired.
+
+The fix for this is not a testing change. It is the boot proof going green — the moment CI concludes successfully, `Kernel Tests` fires for the first time and every registered test executes at once. That is one gate away, and this session spent most of its time getting there.
+
+---
+
+## How This Repository Gets Reviewed Now
+
+Given the above, "review" here cannot mean "the tests caught it." It means people and process. The loop:
+
+- **scout** — read-only, one subsystem, finds defects and refuses to invent them. `DEFECT: none` is a valid and encouraged answer.
+- **smith** — implements exactly one item inside a handed file scope. Writes the failing check first and has to paste the failure. A check nobody watched fail proves nothing.
+- **shaman** — tries to *refute* the smith. Defaults to REFUTED when the evidence is thin. Confirming something wrong costs far more than sending something right back for another look.
+- **oracle** — for anything touching persistence, filtrations, diagrams, or sparse attention, checks that the invariants a wrong implementation would violate are actually asserted. Stability under perturbation. Scale equivariance. The `sqrt(3) * r` death time for a circle's H1 bar, which is a sharp non-obvious constant that a plausible-but-wrong implementation gets wrong.
+- **medic** — runs when something is on fire and has the authority to stop everything else. Currently deployed on the section above.
+
+The rule that matters: **an item counts when the shaman confirms it, not when the smith finishes it.** Those are different numbers, and pretending otherwise is how a changelog fills with work that was never checked.
+
+---
+
+## Nine Things The Verifier Caught That The Author Did Not
+
+Presented in the spirit of *A Proof That Cannot Fail Is Not A Proof*. Every one of these got past the person who wrote it, past the tests, and past a re-read of the diff. Every one was caught by someone whose only job was to attack the change.
+
+**1. A canonical-address check that admitted kernel space.** The ELF loader was hardened to stop a panic on a non-canonical `p_vaddr`. x86_64 canonical form is *two* disjoint ranges, and `VirtAddr::try_new` sign-extends bit 47, so it accepts `0xFFFF_8000_...` as readily as user space. Combined with `base = 0` for `ET_EXEC`, an unconditional `USER_ACCESSIBLE` flag, and a shallow upper-half PML4 clone, a crafted static binary could map a user-accessible page into page tables shared with the live kernel. The fix stopped a panic and left the mapping open.
+
+**2. The same file's entry point, disclosed with the wrong reason.** `entry_point: entry + base` was flagged in a commit message as "an unchecked addition — it does not reach `VirtAddr::new` in this file." True. Irrelevant. It reaches `context.rdi`, then the `iretq` frame, then `RIP`. A defect disclosed with the wrong reason attached is worse than one missed silently, because it reads as examined.
+
+**3. A DNS fix that added approximately zero entropy.** Response validation was tightened to require a matching transaction ID, source address, and source port. The transaction ID was a monotonic counter starting at 1. The source address is the configured resolver and the port is 53 — precisely the two values a spoofer forges in order to impersonate the server. Meanwhile the ephemeral destination port, the one field carrying real entropy, was parsed two lines earlier for the DHCP branch and discarded for DNS. Attacker cost after the fix: one packet.
+
+**4. A test that measured the wrong property.** `gen_range_covers_every_residue_without_low_bit_bias` asserted that each of 8 buckets received more than 800 of 8000 draws. A perfect period-8 sawtooth fills every bucket *exactly* equally and sails through. The name claimed non-periodicity; the body checked occupancy. The replacement asserts on the sequence, and against the old implementation reports `only 0 of 56 pairs differ`.
+
+**5. Two tests that were tautologies.** `default_seed_matches_historical_42` compared the new code path against itself and its comment claimed "unchanged behaviour." The values had moved — seed 42's first draw went from `-0.019956656468772427` to `0.1364606532878152`. The tests passed, the code was correct, and the *documentation* was the defect. A green suite does not audit its own comments.
+
+**6. A fallback that was not a bound.** `xorshift64` is linear and fully invertible: observe a few dozen truncated outputs and you recover the entire 64-bit state. With one RDTSC seed and no reseeding, the sustained-attack floor is the seed's entropy, not the per-draw entropy — near zero on a deterministic virtualized boot. "Random fallback" reads like a guarantee and is not one.
+
+**7. A fix that traded a bounded problem for an unbounded one.** To stop `UDP_SOCKETS` growing per DNS query, one revision replaced per-query sockets with a single shared, rebindable one. Under a preemptive scheduler a second query's rebind lands between the first query's rebind and its send, changing the on-wire source port of a query that has not gone out yet — so the legitimate response then fails the very check the work had just added. Reverted. The residual growth causes port *collisions*; the shared socket caused dropped lookups.
+
+**8. A driver that documented a contract nothing honoured.** `ahci.rs` accepted transfers up to 128 KiB, moved 4 KiB, and returned `Ok(())`. Its own module doc said "a transfer larger than one page must be split by the caller — see the `BlockDevice` impl." The `BlockDevice` impl does not split. `verify_gpt` reads 16 KiB of partition entries in one call, so 96 of 128 entries were whatever the buffer previously held, then CRC'd as though they were disk.
+
+**9. A checksum computed over the wrong memory.** `parse_madt` copied the ACPI header by value with `read_unaligned()` before validating it, so `from_raw_parts(self, self.length)` walked from a *stack* address. The checksum said nothing about the table, and the unbounded read ran off the stack rather than the ACPI region. Bounding the length alone would have produced a check that verified nothing.
+
+The through-line, if you want one: **none of these is a wrong function.** Almost every one is two individually-correct pieces of code disagreeing about the same value — a path string, an address range, a length, a contract in a doc comment. That class does not show up in a per-file review. It shows up when someone asks who else touches this value, and what it costs an attacker.
+
+---
+
+## The Ten Subsystems That Just Landed
+
+Ten subsystems arrived in one change. Each one emits a boot proof, and each proof is hard-gated by a host-side checker in `seal-mkimage`. If the marker is missing, malformed, or reports a field the checker does not like, the image does not build. Not a warning. Not a TODO. The build fails and I go make tea.
+
+| Subsystem | Source | Boot marker | Gate |
+|---|---|---|---|
+| **stratum** — topological fit control | `ml_engine/stratum.rs` | `[MLFIT] proof` | `--check-mlfit-proof` |
+| **foliation** — paged KV cache | `ml_engine/foliation.rs` | `[KVPOLICY] proof` | `--check-kv-policy` |
+| **atlas** — loadable modules | `atlas/` | `[Atlas] proof` | `--check-atlas-proof` |
+| **bundle** — device firmware | `bundle/` | `[Bundle] proof` | `--check-bundle-proof` |
+| **TLS / X.509 / ECDHE** | `drivers/net/{x509,ecdhe,tls}.rs` | `[TLS] proof` | `--check-tls-proof` |
+| **GPT + ext2 format + installer** | `fs/{gpt,ext2_format}.rs`, `apps/installer.rs` | raw install proof | `--check-installer-proof` |
+| **FAT ↔ ext2 parity** | `fs/parity.rs` | `[FSPARITY] proof` | `--check-fs-parity` |
+| **GPU ISA encoding** | `drivers/gpu/{gcn_asm,gpu_bench}.rs` | `[GPU-BENCH] proof` | `--check-gpu-bench` |
+| **KASLR** | `security/kaslr.rs` | `[KASLR] proof` | `--check-kaslr` |
+| **Security feature census** | `security/features.rs` | `[SECURITY-FEATURES] proof` | `--check-security-features` |
+| **Unsafe-block ratchet** | `security/unsafe_audit.rs` | `[UNSAFE] audit` | `--check-unsafe-audit` |
+
+That is eleven rows for ten subsystems, because the unsafe ratchet is less a subsystem and more a public humiliation device I built for myself. See below.
+
+Two of these — `stratum` and `foliation` — are the reason the pitch at the top of this README changed. The rest are the boring, load-bearing plumbing that a serious kernel needs before anyone will take the interesting parts seriously. You cannot say "best OS for ML" while your TLS stack only speaks PSK and your module system does not exist. So those got fixed too.
+
+---
+
+
+## `stratum` — Overfitting Has A Shape
+
+*(`kernel/seal-os/src/ml_engine/stratum.rs`, Seal ABI syscalls 120–124, boot gate `--check-mlfit-proof`)*
+
+### The one-paragraph version, for people who close tabs
+
+Every framework detects overfitting by watching `val_loss − train_loss` cross a threshold. That is a **level** test: it asks how high one curve sits above another. `stratum` asks a different question — has the validation trajectory **come back through values it already visited?** — because that is what overfitting geometrically *is*. Revisitation is a loop. A loop is a 1-dimensional homology class. Homology is computable, in a kernel, in fixed memory, without allocating. A monotone run scores exactly `0.0`. A fold scores above zero. That is the whole idea and everything below is me showing my work.
+
+### The construction, with the actual arithmetic
+
+Take validation loss `v_t`. Embed it à la Takens at delay τ = 1 in dimension 3:
+
+```
+p_t = (v_t, v_{t−1}, v_{t−2}) ∈ ℝ³
+```
+
+Three is not a vibe. It is the smallest dimension in which a planar fold of a 1-D signal embeds **without self-intersection** — in ℝ² the two arms of a U would cross and you would be measuring an artefact of your own projection rather than the trajectory. Four would also work and would cost 33% more distance computations for no additional discrimination. So: three.
+
+Now the two cases, which is where the geometry earns its keep.
+
+**Monotone run.** `v_t` never returns to a value range it has left, so there is no fold, and `loop_score` is exactly **0** — by a certificate, not by the complex. `trajectory_shape::fold_score` checks in O(n) that the window never turns back and returns 0 before a single edge is built.
+
+This paragraph used to argue the zero from the complex: the cloud is a simple arc, the Rips 1-skeleton at the connectivity scale is a path graph, a path graph has cycle rank 0. **That was false.** The arc is simple but not straight. A monotone delay polyline turns by up to 90° wherever the slope changes, the chord across such a corner is `√2·ε*`, which was under the `1.5·ε*` scale then in use, and every corner closed a triangle. The counterexample: `v` starting at 10, falling 0.001 per step with a 0.05 drop every third step, 128 steps, training loss `v − 0.02 − 0.001·t` — strictly decreasing validation, `loop_score = 0.969`, verdict **`Overfit`**. A drop every eighth step scored 0.141; a single drop at step 30 of a 66-step run scored 0.016 (one spurious cycle in 64 points). The host test `monotone_staircase_scores_no_fold` in `aether-core/tests/trajectory_shape.rs` pins all three at 0.
+
+**Overfitting run.** `v_t` descends, turns at some step, and climbs back. Say the local step is `s`. At validation value `v`, the *descending* point sits at:
+
+```
+p_down = (v, v+s, v+2s)
+```
+
+and the *ascending* point — same value `v`, opposite direction — sits at:
+
+```
+p_up   = (v, v−s, v−2s)
+```
+
+The separation between the two arms at matched value is:
+
+```
+‖p_down − p_up‖ = ‖(0, 2s, 4s)‖ = s√20 = 2s√5
+```
+
+while consecutive points along a single arm are:
+
+```
+‖p_t − p_{t−1}‖ = ‖(s, s, s)‖ = s√3
+```
+
+apart. That matched-value ratio is `2√5/√3 ≈ 2.58` — and it is not the closest approach, which is what an earlier version of this paragraph got wrong twice (it wrote the ratio as `√5/√3 ≈ 1.291` and built the scale floor on it). Pair points by *offset* instead. On a clean V with vertex at `c`, the descending point `p_{c−k} = (k, k+1, k+2)·s` and the ascending point `p_{c+k+2} = (k+2, k+1, k)·s` differ by `(2, 0, −2)·s`, for every `k`: the arms run alongside each other at `√8·s`, a ratio of `√(8/3) ≈ 1.633` to the along-arm spacing. For `k = 0` that pair is a two-step chord, filled by a Rips triangle; for `k ≥ 1` it is a cross-arm edge. Once the filtration scale passes 1.633 the arms zip together. The V closes. Cycle rank goes above zero. **The fold becomes a hole, and the hole is the alarm.**
+
+```
+        v                                    v
+        │  ╲                                 │  ╲        ╱
+        │   ╲                                │   ╲      ╱
+        │    ╲___                            │    ╲____╱
+        │        ╲___                        │
+        └──────────────  t                   └──────────────  t
+        monotone: arc                        overfit: closed loop
+        cycle rank 0                         cycle rank > 0
+```
+
+I drew that in a text editor at an hour I decline to name and it is the single most load-bearing ASCII in this repository.
+
+### The one free constant, and why it is 1.68 rather than vibes
+
+`LOOP_SCALE_MARGIN = 1.68`. That is it. That is the entire tuning surface of the topological signal. Everything else is derived or measured.
+
+It is a multiple of `ε*`, the **H₀ death scale** — the largest edge of the minimum spanning tree, which is exactly the single-linkage merge height at which the cloud becomes one connected component. This is not an approximation of the H₀ death scale; it *is* the endpoint of the longest finite H₀ persistence bar, computed by Prim's algorithm in O(n²) with `n = 64` and a fixed stack buffer.
+
+After arc-length reparameterisation (see the second defect below), points along an arm are `ε*` apart, which pins both ends of the admissible range:
+
+| Bound | Value | Why |
+|---|---|---|
+| **Floor** | `√8/√3 = 1.633 · ε*` | The offset pairing above: below this a clean symmetric V has no cross-arm edge and scores 0. |
+| **Ceiling** | `√3 = 1.732 · ε*` | On a stretch where the loss only falls, every delay segment lies in one closed orthant of ℝ³, so a chord spanning `k` resampled steps is at least `k·ε*/√3`. The two-step chords (`k = 2`) are filled by a Rips triangle and quotiented out of the count; the first chord that can close a spurious cycle spans three steps and needs `√3`. |
+| **Chosen** | **1.68** | Midpoint (1.6825) of `(1.633, 1.732)`, rounded. |
+
+Measured with the Rust count: the noiseless V `0.3 + 0.01·|t − 100|` scores 0 up to 1.62 and 0.391 from 1.64 (`noiseless_v_is_a_fold`). The margin was 1.5 until an outside verifier ran that V: at 1.5 **no clean V registered at all**. The monotone staircase scores 0 through 1.8 even without the monotonicity certificate; with ±0.002 jitter (no longer monotone) it scores 0 through 1.70 and 0.406 at 1.72 (`jittered_staircase_is_not_a_fold`).
+
+The band is proved for the symmetric V only. An asymmetric fold closes later: a V that descends at 0.005 and climbs at 0.01 per step scores 0.016 at 1.72 and 0.406 only at 1.8, above the ceiling, so **no margin in the band detects it**. And raising the margin from 1.5 to 1.68 costs something on noisy near-monotone windows: the staircase with ±0.005 jitter (five times its slow step) now scores 0.453, where at 1.5 it scored 0 — its treads genuinely revisit values, which is the noise-ball case `loop_score > 0` was never claimed to exclude, and the residual-drift gate still stands between it and `Overfit`.
+
+The ceiling used to be `2.0`, on the claim that the next-nearest point in time on a monotone arc is `2·ε*` away. That is true of a straight arc only; the staircase above breaks it at 1.5. Monotone windows no longer depend on the ceiling at all — the certificate zeroes them first — so it now protects only windows that are monotone apart from noise.
+
+The original sweep, on the two straight-ish fixtures, which is why the `2.0` ceiling looked right:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  κ (× ε*)      monotone_line        monotone_exp
+  < 2.0             0.000                0.000        ← both controls clean
+  = 2.0             0.969                0.969        ← both saturate at once
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+Exactly `0.0` for every value below 2.0. Then, at 2.0, a jump to `0.969` — a cliff. It was real for those two fixtures and wrong as a general bound: neither fixture has a corner, so neither could show that a corner closes a triangle at `√2`. A sweep over the fixtures one already has measures the fixtures one already has.
+
+### Underfit is a completely different animal
+
+Underfit does **not** use homology. It would be very convenient for the narrative if it did. It does not, and I am not going to pretend a variance ratio is algebraic topology because they share a source file.
+
+Underfit uses the **participation ratio** of the 3×3 covariance of the *training*-loss delay embedding:
+
+```
+PR = tr(C)² / (3‖C‖²_F)   ∈  [1/3, 1]
+```
+
+Because `C` is a covariance of a delay embedding, it is symmetric **Toeplitz** in the autocovariances `c₀, c₁, c₂`. So `tr(C) = 3c₀`, `‖C‖²_F = 3c₀² + 4c₁² + 2c₂²`, and the whole thing collapses to a closed form:
+
+```
+PR = 3c₀² / (3c₀² + 4c₁² + 2c₂²)
+```
+
+Exactly. No eigendecomposition, no Jacobi rotations, no iterative solver, no floating-point prayer circle in a kernel where `panic!` means the machine stops. Three dot products and a division.
+
+The interpretation is the good part:
+
+- **`PR → 1/3`** is the rank-1 floor: lag correlation near 1, the covariance has one real direction, the trajectory is a smooth trend. **The run is still moving.** That is underfit.
+- **`PR → 1`** is isotropic: the covariance uses all three directions equally, which means the *trend inside the window has fallen below the run's own noise floor*. Which is, if you sit with it for a second, precisely what convergence **means**. Not "the loss is low" — low compared to what? — but "the systematic component of this trajectory is now smaller than its own stochastic component."
+
+I have read a lot of definitions of convergence and that one is my favourite because it needs no reference to a target value, a patience counter, or a human deciding what "low enough" is.
+
+An exactly constant loss reports `1.0`: a flat loss is converged, not a trend, and equality is checked on the stored values, so that branch is exact.
+
+Anything short of exactly constant is certified or refused. The ratio is invariant under rescaling the loss, and it used to not be: the degenerate branch was an absolute floor, `denominator < 1e-12`, on a denominator that scales as the fourth power of the loss. The underfit fixture scaled by `1e-3` fell under it and read `spread = 1.0`, verdict `WellFit`; at `×1` and `×1e-2` it reads `0.353`, `Underfit`. The first fix, a relative floor on the same `3c₀²/(3c₀² + 4c₁² + 2c₂²)`, still broke at the extremes — `3c₀²` underflows at `×1e-150` and overflows at `×1e150` — so the series is now divided by `M = max|xᵢ|` first and the ratio taken as `3/(3 + 4(c₁/c₀)² + 2(c₂/c₀)²)`: nothing squared exceeds 1, at any finite scale. On the normalised series each deviation from the mean carries a rounding error `e ≤ (n+3)·ε`, and the ratio is reported only when `√c₀ ≥ 3e / 10⁻⁶ ≈ 4.5·10⁻⁸` (n = 64), which holds every autocovariance to within `10⁻⁶·c₀`. Below that, the loss varies by less than its own rounding can resolve and the ratio is NaN rather than a `1.0` nobody measured.
+
+What the NaN *does* was wrong once too. It first failed `measurable()`, so the verdict was `Collapsing` — `lr_scale` 0.1 and the heap clamp — for an f32 loss converged to `0.6931472` with one element a single ulp higher, and for `1 + 1e-10·sin t`. A refusal had become an intervention. The refusal now withholds the `Underfit` gate and nothing else, and `measurable()` no longer looks at `spread` (after normalisation it cannot overflow, so a refusal is its only NaN). Those two runs read `WellFit`, the verdict an exactly constant loss gets. One consequence to know about: `tuner` reclaims share on `WellFit`, so it now reclaims on them too, exactly as it does for a constant loss. Host tests: `participation_ratio_is_scale_invariant` (`1e-300` to `1e300`, agreement within `1e-9`, verdict `Underfit` through `1e150`), `participation_ratio_certifies_at_the_stated_bound`, and `refused_spread_is_not_an_intervention`.
+
+### Why this is not a loss curve with a hat on
+
+The objection I get, phrased generously: *"you have written a fancy way to look at a loss curve."*
+
+The answer is invariance, and it is checkable rather than rhetorical:
+
+- **Invariant under any strictly monotone reparameterisation of the loss axis.** Log your loss. Square it. Take its cube root. Rescale by 1000. The trajectory revisits the same value *ranges* it revisited before, because monotone maps preserve order and therefore preserve revisitation. The loop survives all of it.
+- **Invariant under time reparameterisation.** Validate every step, every tenth step, on a cosine schedule — the arc-length resampling makes the cloud's parameterisation irrelevant by construction.
+- **A gap threshold has neither property.** It reads levels. `val − train > τ` fires on *any* run whose validation loss sits above training loss, which includes every single healthy run that has an irreducible label-noise floor. Which is most of them. Which is why the negative control exists.
+
+That negative control — `negctl` — is a *healthy* exponential convergence with a large **constant** validation offset of 0.35, i.e. label noise, i.e. the most ordinary situation in supervised learning. Ground truth: `WellFit`.
+
+The naive gap baseline, with `GAP_THRESHOLD = 0.10`, flags it. Of course it does. 0.35 > 0.10 and the baseline has no other thought in its head.
+
+And the boot proof prints **both verdicts on the same line**:
+
+```
+negctl_flagged=no   naive_gap_baseline_flagged=yes
+```
+
+Read those two fields together, because that is the entire argument compressed into eleven characters of proof output. The dumb detector is wrong. The topological one is right. On the same fixture. In the same line. At every boot.
+
+**And the gate requires `naive_gap_baseline_flagged=yes`.** If the naive baseline ever *stops* misfiring on that control, the proof **fails**. I built a gate that fails when my own subsystem becomes unnecessary. It felt genuinely terrible to write and it is the most honest thing in the file.
+
+### Three real defects, all now regression-tested
+
+I am including these not for humility points but because the fixtures that catch them are the best documentation of what the thing actually measures.
+
+#### Defect 1 — the filtration ladder that measured itself
+
+**What I built first:** a 5-scale relative filtration ladder. Evaluate cycle rank at five scales expressed as fractions of the cloud diameter, aggregate.
+
+**What it did:** scored approximately `1.0` on **every case**. Overfit: 1.0. Monotone line: 1.0. Monotone exponential: 1.0. Healthy convergence: 1.0. A detector with perfect recall and zero precision, which is the technical description of a wire connected to a lightbulb.
+
+**Why:** a relative ladder pinned to the cloud *diameter* has no relationship to the *spacing* of the cloud. At the wide end of the ladder every point is everyone's neighbour, the complex saturates into a dense lattice, and the cycle rank is dominated by combinatorics rather than by shape. I was measuring the ladder.
+
+**The fix:** derive the scale from the cloud itself. `ε*` — the exact MST-derived H₀ death scale — is the one quantity in the whole point cloud that knows what "adjacent" means for *this* cloud at *this* density. One scale, derived, no ladder.
+
+**The tell I should have caught faster:** when every fixture agrees, you have not built a detector. You have built a constant with extra steps.
+
+#### Defect 2 — the exponential that was too good at converging
+
+**The failure:** a strictly monotone **exponential** decay — `v = 0.05 + 0.55·exp(−t/22)`, the single most common curve shape in all of machine learning — scored `loop_score = 1.0`. Maximal false positive. On the shape that literally every successful training run has.
+
+**Why, and this one is beautiful in a way I only appreciated after the anger subsided:** an exponentially converging run packs *hundreds* of points into a ball smaller than one of its own early steps. Sampling density across the window varies by **three orders of magnitude**. At a single global scale, the entire converged tail is one dense blob, every point in it is a neighbour of every other point, and every one of those adjacencies registers as a **recurrence**. The trajectory never returns anywhere. It just stops moving, and "stopped moving" and "came back" are indistinguishable at a fixed scale.
+
+**The fix:** reparameterise the point cloud by **arc length** before building the complex. Resample the polyline at uniform arc-length intervals, so the step size is uniform *by construction* and the filtration cannot mistake density for topology.
+
+**The fixture:** `monotone_exp` exists **solely** to catch this if it ever regresses. It is not a test of the exponential case in general. It is a tripwire around one specific bug that got all the way to a passing test suite before I noticed, and I want it in the record that the suite was green while the detector was wrong about exponential decay. Green suites are a mood, not a proof.
+
+Both controls now sit in `MONOTONE_CASES` and the proof emits `monotone_loop_zero=ok` — a hard requirement that both score **exactly** `0.0`, not "near zero", not "below the threshold". Exactly zero, checked with `!= 0.0`.
+
+#### Defect 3 — the staircase that was a fold
+
+A strictly decreasing staircase read as `Overfit` with `loop_score = 0.969` (the construction section has the fixture). The two monotone controls could not catch it: both are smooth, and the false argument — "a monotone arc's next-nearest point is `2·ε*` away" — is true of smooth arcs. **The fix** is two parts. A monotone window is certified `loop_score = 0` by an O(n) check before the complex is built. And the cycle count quotients out every two-step chord that bounds a Rips triangle, which keeps it an upper bound on β₁ while removing the corner triangles, so the staircase with ±0.002 jitter, twice its slow step (no longer monotone, so no certificate), stays at 0; at ±0.005 it does not (see the margin section). The fold fixture moved from 1.0 to 0.875 at margin 1.5, and is back at 1.0 (1.06 uncapped) at 1.68.
+
+### The decision cascade, in order, because the order is load-bearing
+
+```
+1.  nonfinite > 0                              →  Collapsing   (latched, forever)
+2.  samples < min_samples                      →  WellFit      (not enough evidence)
+3.  train_drift ≥ collapse_rise                →  Collapsing
+    OR (shatter ≥ collapse_shatter_min AND train_drift > 0)
+4.  loop_score ≥ loop_min AND resid_drift ≥ resid_rise_min  →  Overfit
+5.  spread ≤ spread_trend_max                  →  Underfit
+6.  otherwise                                  →  WellFit
+```
+
+Two orderings in there are not stylistic:
+
+- **`Collapsing` must come before `Underfit`.** A diverging run is also, locally, a perfectly smooth trend — its participation ratio sits right down at the rank-1 floor. Test it after `Underfit` and every explosion gets reported as "still learning, keep going," which is the worst possible advice delivered with total confidence.
+- **`Overfit` must come before `Underfit`.** An overfitting run's *training* loss is still descending beautifully — that is what makes it overfitting — so its participation ratio is also near the floor. Measured: the embedded fold fixture scores `spread = 0.424`, comfortably below the `0.45` underfit ceiling. This ordering is not hypothetical, it is load-bearing at a margin of 0.026.
+
+Also note step 4: **both** the loop and the residual drift are required for `Overfit`. That is not belt-and-braces, it is a structural necessity — H₁ is orientation-blind, which gets its own paragraph in the limitations section because it deserves one.
+
+### Calibration: every constant, its basis, and what it measured
+
+Every one of these is settable at runtime through `SYS_FIT_CALIBRATE`. A constant that cannot be tuned is a bug, because real trainers differ in step size, validation cadence and noise floor, and those differences move where the boundary belongs.
+
+| Field | Default | Basis | Measured against |
+|---|---|---|---|
+| `loop_min` | 0.125 | one noise recurrence contributes `1/n = 0.0156` at n=64, so 0.125 demands ~8 overlapping recurrence edges | fold fixture 1.0 (1.06 uncapped); noiseless V 0.391; both monotone controls exactly 0.0 |
+| `resid_rise_min` | 0.05 | drift is bounded in (−1,1); 0.05 ≈ late quartile mean 10% above early, below which the estimator is inside its own sampling noise | supplies the orientation H₁ cannot |
+| `spread_trend_max` | 0.45 | the PR floor is exactly 1/3 ≈ 0.333; 0.45 allows ~35% above the floor before "converged" | underfit fixture 0.353, converged fixture 0.814 |
+| `collapse_shatter_min` | 100.0 | largest single step two orders of magnitude above typical is a jump, not a trajectory | smooth fixtures 1.0–2.1, diverging fixture **1.1 × 10⁴** |
+| `collapse_rise` | 0.50 | drift is `(late−early)/(|late|+|early|)`, so 0.50 means late quartile ≥ 3× early | ordinary noise does not move a quartile mean that far |
+| `min_samples` | 16 | the drift estimator needs ≥4 points per quartile and the radius must not be dominated by warm-up | — |
+
+The `shatter` gap is my favourite number in the file: smooth runs land between 1.0 and 2.1, a diverging run lands at eleven thousand. That is not a threshold I had to agonise over. That is a canyon.
+
+### The proof line, field by field
+
+The boot proof runs the **real detector** over seven synthetic ground-truth cases — nothing is hardcoded, the classifier does the work and the printed signals are whatever it measured this boot. The summary fields:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[MLFIT] proof version=1 subsystem=stratum window=64 embed_dim=3 kappa=1.680
+        steps_per_case=128 bytes_per_stream=4792
+        long_stream_steps=4096 long_stream_points=64 bounded=ok
+        monotone_loop_zero=ok
+        negctl_flagged=no naive_gap_baseline_flagged=yes
+        incremental_batch_agree=ok correct=7/7 result=pass
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+(The line is emitted as one line. I wrapped it because your terminal has feelings. Between `bounded=ok` and `monotone_loop_zero=ok` the real line also carries a per-case block — `case= truth= got= loop= h0d= sh= sp= rd= td=` for each of the seven — whose values are measured at boot and which I am not going to transcribe from memory into a README, because a fabricated proof line is worse than no proof line.)
+
+What each field is actually asserting:
+
+| Field | Assertion | Fails when |
+|---|---|---|
+| `correct=7/7` | every fixture classified as its ground truth | any regime is misread |
+| `monotone_loop_zero=ok` | both monotone controls score **exactly** 0.0 | the monotonicity certificate is removed (the arc-length reparameterisation of defect 2 is no longer what zeroes them; the staircase of defect 3 is covered by host tests, not by this field) |
+| `negctl_flagged=no` | the healthy-but-noisy case is **not** called overfit | the detector becomes a gap threshold |
+| `naive_gap_baseline_flagged=yes` | the dumb baseline **is** wrong on that same case | the control stops discriminating and this subsystem stops being justified |
+| `bounded=ok` | 4,096 steps through a 64-point window leaves 64 points | memory grows with run length |
+| `incremental_batch_agree=ok` | streamed observations and a batch recompute agree to < 1e-12 | the streaming path diverges from the reference |
+| `bytes_per_stream=4792` | `size_of::<FitStream>()`, measured at runtime, not asserted | the struct grows |
+
+Two of those deserve a second look. `incremental_batch_agree` runs the fold fixture twice — once straight through, once split in half with a **forced recompute in the middle** — and requires the loop scores to match within 1e-12. That catches the entire class of bug where a cached signal goes stale and nobody notices because the answer is still *plausible*.
+
+And `naive_gap_baseline_flagged=yes` is, again, a gate that fires when my work becomes pointless. If somebody improves the naive baseline until it gets the control right, this proof goes red and I have to justify the subsystem's existence again from scratch. Good.
+
+### What it costs
+
+| Property | Value |
+|---|---|
+| Observation | **O(1)** — ring writes only, nothing allocated per sample |
+| Signal recompute | O(64²) lazily on read, fixed stack buffers, only when dirty |
+| Window | 64 points ≈ 66 training steps at τ=1 |
+| Embedding dimension | 3 |
+| **Memory per registered stream** | **4,792 bytes, independent of run length** |
+| Long-stream check (boot proof) | 4,096 steps → 64 points |
+| Long-stream check (test suite) | **100,000 steps** → still ≤ 64 points, all 100,000 counted |
+| β₁ | **upper-bounded, not computed**: `cycle_rank = E − V + β₀` |
+
+Four kilobytes and change per training job. Forever. There is no growth term — not a slow one, not a bounded one, not "amortised". `observe()` writes into a fixed ring and returns. The test suite pushes a hundred thousand steps through one stream and the window is still sixty-four points and the sample counter still reads exactly 100,000. I checked this three times because I did not believe it either, and then a fourth time because the first three were the same afternoon.
+
+The β₁ line is a deliberate understatement I want on the record: `cycle_rank = E − V + β₀` over the 1-skeleton, with β₀ counted **exactly** by union-find. This **upper-bounds** the Rips β₁ — filling 2-simplices can only kill cycles, never create them — and no boundary matrix is ever reduced. If you came here expecting a persistence algorithm you will be disappointed, and if you came here expecting me to *call* it a persistence algorithm you will be disappointed differently.
+
+(One implementation note, because it is a real trap somebody else will hit: component counting deliberately does **not** use the existing `SparseAttentionGraph::compute_betti_0`. That structure stores adjacency in a `u64` bitmask, so `are_neighbors` returns `false` for any index ≥ 64, and its DFS silently drops neighbours once its 64-entry stack fills. At the densities this filtration reaches, its β₀ is not sound. It does not crash. It does not warn. It returns a number. Union-find over the same `is_neighbor` predicate is used instead.)
+
+### The ABI
+
+| Syscall | Name | Does |
+|---|---|---|
+| 120 | `SYS_FIT_REGISTER` | register a training workload; idempotent, re-registering resets the stream |
+| 121 | `SYS_FIT_OBSERVE` | push `(train_loss, val_loss)`; O(1); non-finite input is rejected **and latched** |
+| 122 | `SYS_FIT_REGIME` | recompute lazily, return regime + signals + planned action |
+| 123 | `SYS_FIT_CALIBRATE` | set one calibration field at runtime |
+| 124 | `SYS_FIT_UNREGISTER` | drop the stream |
+
+Four regimes come back: `underfit` (0), `wellfit` (1), `overfit` (2), `collapsing` (3). A run that ever produced a NaN is `Collapsing` **permanently** — the non-finite counter latches and there is no path back. This is not defensive programming, it is a statement of fact about your run.
+
+And the actuation, with the honesty column that this README exists to carry:
+
+| Knob | Real or advisory | Why |
+|---|---|---|
+| `prefetch_epsilon` | **published, not enforced** | clamped to [0.1, 0.9] and published for `PrefetchEngine::new_model_training` — which has zero call sites, so nothing reads it. Every engine actually constructed is `new_gaming`. |
+| `clamp_heap` | **removed** | it read `brk_end` and wrote the same value straight back. A provable no-op. And `dispatch_brk` consults no limit, so even a different value would not have clamped anything — `RLIMIT_DATA` does not exist in this tree. |
+| `reg_scale` | advisory | the kernel cannot reach into your optimizer's regularisation coefficient |
+| `lr_scale` | advisory | see above, with feeling |
+| `batch_scale` | advisory | see above, with more feeling |
+
+Two real knobs and three strongly-worded suggestions in a struct. I could have shipped five knobs and called them all real. I preferred a table with a column that embarrasses me.
+
+---
+
+## `foliation` — A KV Cache That Thinks In Leaves
+
+*(`kernel/seal-os/src/ml_engine/foliation.rs`, Seal ABI syscalls 130–134, boot gate emits `[KVPOLICY]`)*
+
+### Vocabulary, and the luckiest coincidence in this repository
+
+A **foliation** decomposes a manifold into disjoint **leaves**. A leaf is, locally, a stack of **plaques**. This is standard differential-topology vocabulary that predates me by about seventy years, and it happens to describe a paged KV cache so precisely that I checked twice for a prank.
+
+| Foliation term | What it is here |
+|---|---|
+| **Leaf** | an equivalence class of the block-aligned-prefix relation — every sequence that wrote those tokens |
+| **Plaque** | one KV block: the piece of a leaf actually resident in physical memory, one 4 KiB frame |
+| **Leaf space** | the quotient of token-stream space by "agrees on a block-aligned prefix" |
+| **Fibre over a plaque** | the live sequences holding it — its cardinality *is* the refcount |
+| **Codimension / depth** | root-adjacent = shared prompt prefix; deep = per-sequence decode tail |
+| **Elementary collapse** | evicting a block, and yes I know how that sounds |
+
+"A leaf is locally a stack of plaques" is a sentence from a topology textbook that also correctly describes a KV cache line. I did not choose this name to sound clever. I chose it and then discovered it was accurate, which is a much better story and also, disappointingly, harder to take credit for.
+
+### Sharing is the quotient map
+
+Here is the claim I would defend in a review, and it is a structural claim rather than a performance one:
+
+> **A sequence's block table *is* its root-to-leaf path down the foliation. Prefix sharing is the quotient map, not a hash table consulted afterwards.**
+
+Appending a token accumulates into a pending block. When the block fills at `BLOCK_TOKENS = 8`, it is sealed: `key = fold_key(prev_key, tokens)`, and the sequence performs `descend(current_leaf, key)`. If a child with that key **and the same eight tokens** already exists, the sequence **lands on the same leaf as everyone else who wrote those tokens** — and therefore on the same plaque, backed by the same physical frame. The key only narrows the search: `fold_key` is a 64-bit digest and it collides (a real colliding pair off the root is pinned by a compile-time assertion in `foliation.rs`), so a block whose key matches but whose tokens differ gets its own leaf. A collision costs a missed share, never another sequence's KV state.
+
+There is no separate sharing mechanism to keep in sync with the allocator, **because there is no separate sharing mechanism at all.** The refcount of a plaque is the cardinality of the fibre over it. Deduplication is not a feature; it is what the data structure means.
+
+The key fold matters more than it looks: `fold_key` sees **only tokens**. Never residency, never policy, never timing. So the same trace produces the same key sequence under every eviction policy — which is exactly what makes a policy comparison, and a Belady oracle, well-defined at all. The boot proof asserts this rather than assuming it: `fo.descents == lru.descents == rnd.descents == opt.descents == keys.len()`, all four policies, identical descent sequence, checked. A benchmark where the policies see different workloads is not a benchmark.
+
+The proof also runs an explicit sharing probe: two sequences append an **identical** 4-block prefix, and the proof checks that (a) all four blocks land on identical leaves, (b) the physical frames are **byte-identical addresses**, (c) releasing sequence A leaves the refcount at exactly 1, and (d) all four of B's blocks are still resident with live frames. Sharing that survives a partial release is the only kind worth having.
+
+### Eviction is an elementary collapse of a free face — and that is correctness, not policy
+
+Residency is constrained to be a **connected rooted subtree** of the foliation. That constraint is not an aesthetic preference. It is a **correctness property of the block tables**: a resident child whose parent has been evicted is a block table with a hole in the middle, which is a sequence that cannot be served.
+
+So the only admissible eviction is the **elementary collapse of a free face** — a resident leaf that is:
+
+1. resident (has a plaque),
+2. `refcount == 0` (no live sequence holds it), and
+3. `resident_children == 0` (nothing below it is resident).
+
+That is a free face. Removing it does not change the homotopy type of the resident complex, and — the part that actually matters at 3 AM — it does not corrupt anybody's block table.
+
+**The consequence is the reason the benchmark means anything.** Every policy in the module — foliation, LRU, random, Belady — operates on that **identical** candidate set. They differ *only* in victim choice, never in what they are permitted to touch. Two policies with different candidate sets are not two policies. They are two benchmarks in a trenchcoat, and one of them is cheating.
+
+Within the frontier, the foliation policy ranks by:
+
+```
+(entrants, −depth, last_use)
+```
+
+Fewest distinct sequences that ever entered the leaf, first. Then deepest. Then oldest. Root-adjacent leaves — the shared system prompt everybody starts with — sink to the bottom of the eviction order by construction, because everybody entered them and their depth is small.
+
+The proof counts `collapse_violations` (resident leaf with an absent parent, or a live sequence's block with no plaque) and `referenced_evictions` (a plaque collapsed while referenced, counted inside `collapse` itself rather than downstream of the victim filter it checks) and **both must be exactly zero, for every policy**. Both can fail: tearing down under a live sequence raises each by the number of blocks it holds, and the in-kernel test `foliation::teardown_under_live_seq_is_counted` holds them to that. If the structural invariant is only checked for my policy, it is not an invariant, it is a preference.
+
+### Metadata persists, memory does not
+
+Leaf metadata — parent, key, depth, `entrants`, `last_use` — lives in a leaf arena and **survives eviction**. Only the plaque, the 4 KiB frame, is reclaimed. The foliation is a *persistent model of the workload*; residency is *transient*.
+
+This is what lets the structural signal accumulate across eviction rounds. Without it, `entrants` resets to zero every time a block is dropped and the policy provably relearns the workload's structure from scratch every round — which is a very expensive way to reinvent LRU.
+
+LRU cannot do this, structurally. LRU forgets a block the instant it evicts it. On a prefix-sharing workload that makes it behave like a goldfish with a memory allocator, which is the nicest way I have found to describe a hit rate of zero.
+
+When the arena fills, `gc_leaf` reclaims the **weakest bar** — the dead leaf with the fewest entrants — so persistent prefixes outlive noise. Dead means: not resident, no children, no references. Three conditions, all checked, because reclaiming a leaf somebody is standing on is exactly the bug you find in production at a scale where it is expensive.
+
+### The measurement
+
+Embedded workload, replayed through the **real manager** at boot: 6 rounds, each one hot request (4-block shared system prompt + 3-block fresh decode tail) plus 4 cold-burst requests (unique 4-block prefix, unique 3-block tail, never reused). That is a serving trace with a genuinely reusable prefix drowning in single-shot traffic, which is roughly what an inference endpoint actually looks like on a Tuesday.
+
+**30 requests · 1,680 tokens · 210 descents · pool of 24 plaques · leaf arena 256 · identical descent sequence asserted across all four policies.**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  policy                              hit rate    evictions
+  ─────────────────────────────────────────────────────────────────────
+  foliation                             9.52%          166
+  LRU                                   0.00%          186
+  same-budget random                    6.19%          173
+  Belady (offline oracle, same frontier) 9.52%           —
+  ─────────────────────────────────────────────────────────────────────
+  LRU → optimum gap closed:            100%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+The random row is one draw (seed 0). The proof also replays the random null under 32 seeds at the same budget and reports the spread: `hit_bp_random_min=238 hit_bp_random_max=857 random_distinct_outcomes=30 foliation_beats_random=32/32`. Foliation beats every one of the 32 draws on this trace at this pool size, and the single-draw 6.19% sits inside a 2.38–8.57% range.
+
+Foliation reaches the **offline optimum**. LRU scores literally zero — not "poorly", zero, 0 of 210 descents landed on a resident plaque. It evicts the shared prefix every single round because the shared prefix is, by definition, the least recently used thing in a workload where fresh cold traffic keeps arriving. Recency ordering is *anti-correlated* with reuse on this trace, which is the cleanest illustration I have ever seen of why "least recently used" is a heuristic and not a law.
+
+The gate also refuses to pass unless `oracle_sane` holds — Belady must dominate every realizable policy on the same candidate set. If an online policy ever beats the offline oracle, the benchmark is not measuring what it claims to measure, and a green result would be worse than a red one. That check exists because I nearly shipped a version where it would have fired.
+
+### And now the honest part, which is longer than the good part
+
+Because it should be.
+
+**The separation is a capacity cliff, not a general win.** A pool sweep at 8 / 12 / 16 / 24 / 32 / 48 / 64 / 96 / 256 plaques shows LRU reaching **the same 9.52% ceiling from 32 plaques upward.**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  pool:      8    12    16    24    32    48    64    96   256
+                              ▲     └──────── LRU ties here and above ────┘
+                        the entire result
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+At 24 plaques the workload's working set does not fit under recency ordering and does fit under structural ordering. That is a real effect. It is also a **narrow** one, living in a window that closes as soon as you buy more memory, and "my policy wins when you are exactly slightly short of RAM" is a sentence I have had to make peace with.
+
+**On a pure-recency control workload, foliation ties LRU at every pool size.** Not "wins slightly." Ties. Every size. When there is no structure to exploit, the structural policy correctly finds no structure and degrades to the baseline, which is the right behaviour and a completely unremarkable result.
+
+**At 8 plaques, both foliation and LRU lose to same-budget random.** I am reporting the pool size at which my carefully-constructed topological eviction policy is beaten by a linear congruential generator, in the README, in bold, in a table. A limitations section containing only flattering limitations is a marketing document with a sad face drawn on it.
+
+**`entrants` is honestly a frequency counter.** It is the multiplicity of the leaf's H0 bar over the trace, which is a real persistence proxy — and it is also, unambiguously, a count of how many times something was used. So the ranking rule is fairly described as **persistence-weighted LFU**, and I am going to write that down rather than wait for a reviewer to write it down for me. The structural contributions here are **the trie quotient** (sharing as the quotient map) and **the collapse constraint** (the admissible candidate set is forced by correctness). The *ranking function* is not a structural contribution. It is LFU with a tiebreak. I am not going to call an LFU counter "persistent homology" and hope nobody opens the file, because people open the file. That is the entire point of putting it on GitHub.
+
+**The trace is synthetic.** No real model was served. Same confession as `stratum`, same plan to fix it, same total absence of an excuse.
+
+### Complexity
+
+Every bound is a compile-time or construction-time constant — **independent of live sequence count, token count, and installed RAM**:
+
+| Operation | Bound | Constant |
+|---|---|---|
+| append token (mid-block) | O(1) | — |
+| block seal / descend | O(MAX_CHILDREN) | **32** |
+| admission, free plaque available | O(1) | free-list pop |
+| admission, needs eviction | O(pool_blocks) | frontier scan, fixed at construction |
+| leaf-arena GC | O(leaf_arena) | scan |
+| logical block → physical frame | **O(1)** | two indexed loads, no scan |
+| release | O(MAX_SEQ_BLOCKS) | **16** |
+
+Fan-out is capped at 32 distinct continuations per prefix. Past that, `descend` **refuses to share** and reports `children_full` rather than silently losing the sharing property. Refusing loudly is a recurring theme around here and it is the single design instinct I would keep if I had to throw out everything else.
+
+The eviction scan carries its own `ponytail:` comment in the source naming the ceiling and the upgrade path — a bucketed priority queue keyed on `(entrants, depth)`, both small integers, giving O(1) pop at the cost of maintaining bucket membership on every refcount change. Not worth it yet. Written down so that "not worth it yet" cannot quietly become "nobody remembers."
+
+### The ABI, and the syscall that deliberately does not exist
+
+| Syscall | Name | Does |
+|---|---|---|
+| 130 | `SYS_KV_SEQ_CREATE` | open a sequence with a hard block budget |
+| 131 | `SYS_KV_SEQ_APPEND` | append one token; sealing a block descends the foliation |
+| 132 | `SYS_KV_SEQ_RELEASE` | drop the sequence's references; plaques stay resident — that is the cache |
+| 133 | `SYS_KV_SEQ_STATS` | per-sequence blocks / hits / admits |
+| 134 | `SYS_KV_POLICY_STATS` | pool-wide counters |
+
+A sequence belongs to the task that opened it. 131–133 on a sequence another task opened return `ENOENT`, the same answer as an unused id, so a task can neither release someone else's blocks nor learn whether a sequence exists. Plaques themselves are still shared across tasks; ownership is per sequence, not per prefix.
+
+The cache behind these syscalls evicts by LRU. The foliation ranking wins only at the capacity cliff described above, so it is what the boot proof measures, selected explicitly there, and not what real callers get by default. `SYS_KV_POLICY_STATS` reports the policy in force.
+
+Notice what is missing.
+
+**There is no `SYS_KV_SHARE_PREFIX`.** There is no `share()`, no `dedupe()`, no `link_prefix()`, no `hint_reuse()`. Not because I ran out of syscall numbers — I have a whole decade of them sitting unused between blocks specifically so the next three subsystems can collide somewhere new and exciting.
+
+There is no share call because **sharing is what appending identical tokens does.** Asking the kernel to share a prefix would be like asking a quotient map to please identify two elements that are already equal. The API surface for the headline feature of this subsystem is zero bytes wide, and that is the strongest argument I have that the structure is the right one. Every mechanism I could have added would have been a mechanism that could get out of sync with the allocator. You cannot desynchronise something that does not exist.
+
+### The refusals
+
+Three negative controls, each of which must be refused with a **typed error**, checked at boot:
+
+| Control | Must return |
+|---|---|
+| a sequence declaring 2 blocks tries to seal a third | `BudgetExceeded` |
+| every resident plaque is referenced, frontier empty, admission attempted | `Exhausted` — refuse, never evict live state |
+| explicit collapse of a plaque a live sequence still holds | `StillReferenced` |
+
+Plus the memory ledger: `frames_failed == 0`, `frames_backed > 0`, and `frames_freed == frames_backed` at teardown for **both** foliation and LRU. A cache that leaks frames is not a cache, it is a slow memory leak with a hit-rate graph attached.
+
+---
+
+## The Honest ML Limitations
+
+Everything above is the pitch. This is the invoice. Nothing here is buried in a footnote, hedged with "currently", or softened with "in this initial release" — those are all ways of writing a limitation you hope nobody reads.
+
+**1. The kernel observes two scalars per step. That is the entire input.**
+
+`(train_loss, val_loss)`, `f64`, pushed by the training process across syscall 121. Not weights. Not activations. Not gradients. Not attention entropy, not per-layer norms, not anything else in the long list of things that would be genuinely useful. A `no_std` kernel cannot walk a userspace autograd graph, and any kernel that claims to has either linked a host interpreter runtime or is describing a research paper. Every signal `stratum` reports derives from those two numbers plus what the kernel already owns for that task — heap break, I/O prefetch state. I could have made the claim bigger. I preferred to make it true, and I want credit for how boring that decision was.
+
+**2. `loop_score > 0` does NOT imply a fold.**
+
+This is the direction that is *not* proved and I am tired of seeing it assumed. A **converged** run sitting in a noise ball revisits its own neighbourhood constantly and scores near `1.0`. That is not overfitting, that is success. What is proved and tested is the **converse**: a monotone trajectory scores **exactly 0**, at any sampling density, at any scale. One direction. Contrapositive only. If you take one thing from this section, take that the arrow only points one way.
+
+**3. H₁ is orientation-blind, and this is a structural fact, not a bug I will fix.**
+
+A loop is a loop. A run **recovering** from a validation spike traces the *same* loop as one **diverging** into it. Homology does not know which way you went around, because homology was not built to. The residual drift gate supplies the orientation that the topology structurally cannot, which is why `Overfit` requires **both** `loop_score ≥ loop_min` **and** `resid_drift ≥ resid_rise_min`. Remove the drift gate and every heroic recovery gets reported as a catastrophe.
+
+**4. The underfit/well-fit split is a convergence test, not a topological theorem.**
+
+Participation ratio is a variance ratio. It is a good variance ratio with a closed form and a genuinely nice interpretation, and it is **not** algebraic topology. It shares a file with something that is. That is the entire connection. I am naming this before a reviewer does because the alternative is being told.
+
+**5. β₁ is upper-bounded, not computed.**
+
+`cycle_rank = E − V + β₀` over the Vietoris–Rips **1-skeleton**, with β₀ counted exactly by union-find. This upper-bounds Rips β₁ — filling 2-simplices can only kill cycles, never create them. **No boundary matrix is ever reduced.** There is no persistence pairing, no reduction algorithm, no barcode. If you came for a persistent homology library you are two abstraction layers too low; if you came for an honest description of what the arithmetic does, that sentence is it.
+
+**6. All fixtures are synthetic. Nothing has been validated against a real model.**
+
+Seven regime fixtures for `stratum`. One 30-request trace for `foliation`. Both deterministic, both hand-built, both classified/replayed correctly, **zero of them produced by PyTorch, JAX, or anything with a GPU behind it.** The detector has never seen a real loss curve. The cache has never served a real token. Every number in the two sections above is true and every one of them was measured in a world I built. This is the limitation that actually keeps me up, because unlike the others it is not a design decision, it is just work I have not done.
+
+**7. Regularisation, learning-rate and batch-size adjustments are advisory.**
+
+Of everything `stratum` computes, **exactly two things are real control**: the I/O prefetch threshold (clamped to [0.1, 0.9], read by the prefetch engine) and a heap-break clamp on `Collapsing`. Both are things the kernel owns outright. `reg_scale`, `lr_scale` and `batch_scale` are numbers in a struct that your trainer is free to ignore, and most trainers will, because nobody has written the client. The struct field docs say `ADVISORY` in capital letters. So does the README table. So does this sentence.
+
+**8. One plaque is one 4 KiB frame standing in for a real KV block.**
+
+A real KV block for a 32-layer, 8-KV-head, 128-dim, fp16 model at 8 tokens per block is:
+
+```
+2 (K and V) × 32 layers × 8 heads × 128 dims × 8 tokens × 2 bytes
+  = 1,048,576 bytes = 1 MiB
+```
+
+which is **256× larger** than the frame standing in for it. Every `bytes_saved` figure this subsystem prints is therefore in **frame units** and is **not model-accurate**. The structural results — sharing, refcounts, collapse invariants, hit rates, eviction counts — are all in units of *blocks* and transfer directly. The byte figures do not. Multiply by 256 if you want a feel for it, then don't quote the result at me, because I did not measure it.
+
+**9. The workloads that make foliation win are narrow, and I published the sweep.**
+
+Covered above, restated here so this section is complete without scrolling: the 9.52% vs 0.00% result lives at 24 plaques and evaporates at 32. On a pure-recency control it ties LRU everywhere. At 8 plaques it loses to random. The scoring rule is persistence-weighted LFU wearing a nicer hat. The trie quotient and the collapse constraint are the parts I would defend; the ranking function is the part I would not.
+
+**10. `foliation` has caps, and they are small.**
+
+`MAX_CHILDREN = 32` distinct continuations per prefix; past that, sharing is refused with `children_full` rather than silently abandoned. `MAX_SEQ_BLOCKS = 16` blocks per sequence, which at 8 tokens per block is a **128-token ceiling per sequence**. That is a demo, not a serving limit, and anyone reading the hit-rate table should hold it next to that number.
+
+---
+
+### The summary, in the form of two sentences that are both true
+
+Seal OS is the only operating system whose kernel has an opinion about the first Betti number of your validation curve, computes it in 4,792 bytes per run, classifies 7/7 ground-truth regimes, and prints the naive baseline's wrong answer next to its own right one at every boot.
+
+Seal OS has also never seen a real model, moves two real knobs out of five, upper-bounds a Betti number instead of computing it, and has a KV policy that beats LRU at one pool size and loses to a random number generator at another.
+
+I am not going to publish only the first sentence. That is the whole discipline. Everything else is decoration.
+
+## atlas — Loadable Modules, But Topological
+
+*(`kernel/seal-os/src/atlas/`, Seal ABI syscalls 112–114)*
+
+An atlas is a collection of charts covering a manifold. A **chart** is a loadable module. A **germ** is a kernel symbol a chart may resolve against. The dependency graph is a **nerve**, and it must be acyclic. Grafting a chart adds it to the manifold; pruning removes it. Yes, I could have called it `insmod`. No, I was not going to.
+
+What is real: ELF64 `ET_REL` loading, germ symbol table, relocation application, ed25519 signature verification, W^X on the chart's own mappings, acyclic nerve enforcement, refcount guards on prune. The boot proof grafts a chart, calls its init and exit, compares return codes against expected constants, verifies the relocation classes sum to the applied total, and proves `charts_after == charts_before` so nothing leaked.
+
+Six negative controls, every one of which must be refused: truncated object, unresolved germ, bad signature, refcount-held prune, dependency-held prune, cyclic nerve.
+
+And now the ceilings, because there are several and one of them is genuinely funny:
+
+- **No GOT.** The relocation set is `R_X86_64_64`/`PC32`/`PLT32`/`32S`. Real compiler output from any non-trivial module will hit `UnsupportedRelocation` and stop. What loads today is what the fixture emits.
+- **Charts live in the kernel heap range**, not a dedicated ±2 GiB module area, so the PLT veneer is unconditional. Every call goes through the trampoline whether it needs to or not.
+- **W^X has a hole and I am telling you where it is.** It is enforced on the chart's own mappings. But the same frames are visible through the kernel's identity map, which is `PRESENT|WRITABLE` with no NX. Chart text is therefore still writable through that alias. This is the same hole as the unenforced kernel W^X two sections up; it has one fix and I have not shipped it.
+- **Virtual address space is never reclaimed on prune.** Graft and prune in a loop for long enough and you run out of address space, not memory. A slow leak of a resource nobody thinks to monitor.
+- **The signing key is a placeholder constant.** It is not a release key. It signs the fixture and nothing else.
+- **A chart is trusted ring-0 code once loaded.** Nothing sandboxes a signed but buggy chart. The signature proves provenance, not competence.
+- **Atlas is a single global mutex, and `chart_init` runs with it held.** So a chart that grafts another chart during its own init deadlocks. Deterministically. Every time. I found this by writing a chart that grafts another chart, because of course I did.
+
+`// ponytail: global lock, per-chart locks if anyone ever ships a chart that grafts a chart.` That comment is in the source. This README is just where it goes to be embarrassed in public.
+
+---
+
+## bundle — The WiFi Answer Nobody Wanted
+
+*(`kernel/seal-os/src/bundle/`)*
+
+For two years this README said the WiFi stack was "simulated." That was true, and it was also the single most dishonest thing in the whole document, because "simulated" is a word that sounds like engineering and functions like a lie. The old driver returned a deterministic list of invented SSIDs from an invented state machine. It printed `connected`. Nothing was connected. Nothing had ever been connected.
+
+Here is what Linux actually does, which I should have copied from the start: **Linux ships no firmware blobs either.** It ships `request_firmware()`, and the blobs live in a separate package under a separate licence. The kernel provides the mechanism; someone else provides the bytes.
+
+`bundle` is that. A fibre bundle over the space of devices: the fibre above each device is the set of images it can execute, and a **section** picks exactly one of them.
+
+- Signed section index (`EPHIDX`-framed, ed25519), digest-verified section bytes, refcounted section store at `/bundle/`
+- Provisioned by `.eph` package, so a user who legally obtains vendor firmware installs it **without rebuilding the kernel**
+- A section not in the index, not in the store, or whose bytes do not match the index digest is **refused**, by name, with a typed error
+
+**And the simulation is gone.** Not disabled. Not feature-flagged. Not "off by default." *Deleted from the source tree.* `scan()` returns an empty list and there is no code path anywhere in this kernel that can produce an SSID. The boot proof requires the literal field `simulation=absent`, which is the most passive-aggressive thing I have ever put in a gate and I stand by it entirely.
+
+The rest of the honesty:
+
+- **Seal OS ships zero vendor sections.** WiFi and Bluetooth sit in `chart_missing`/`section_missing` and every operation fails naming the section it wanted.
+- **Even with a section resident, it is never uploaded to the device.** There is no MMIO/HCI firmware-load sequence. No 802.11 association. No L2CAP, no ATT. `bundle` gets the bytes to the doorstep; nothing carries them inside yet.
+- **The index signing key is a checked-in fixture** labelled `ed25519_fixture`. It is not a chain of trust to any vendor and it is not pretending to be.
+
+So the WiFi still does not work. It now does not work *correctly*, which — and I need you to sit with this — is a strictly better state than working incorrectly. A driver that says `section_missing: brcmfmac43602-pcie.bin` has told you something true and actionable. A driver that says `connected` to a network that does not exist has told you a story.
+
+---
+
+## Negative Controls: A Proof That Cannot Fail Is Not A Proof
+
+Every one of the ten new subsystems ships a boot proof that includes **deliberate failures the kernel must refuse.** This is the single most important structural idea in the whole change, so it gets its own section and one joke per line.
+
+| Subsystem | Something that must be refused |
+|---|---|
+| atlas | truncated ELF object, unresolved germ, bad signature, prune while refcount-held, prune while dependency-held, cyclic nerve |
+| bundle | tampered index, absent section (`:not_provisioned`), corrupt section (`:digest_mismatch`) |
+| fs parity | one byte corrupted in one image — the comparison must notice, and the control digest must differ from the content digest, or the comparison was blind |
+| stratum | the healthy-but-noisy run: the naive gap baseline **must** misfire on it and the topological detector **must not** |
+| foliation | eviction of a referenced plaque, exceeding the budget, exhausting the pool, explicitly freeing a referenced plaque — all four must be refused, all four counters must read 1 |
+| KASLR | a stuck entropy generator: resample must produce a different nonce, or the gate fails |
+| security features | every decoded bit is cross-checked against the raw CR0/CR4/EFER on the same line, so a field that quietly became a constant is caught |
+| GPU | the shipped blob's FNV-1a must equal the encoder's, and `spectral_step_bytes` must be ≥ 1 — because it used to be 0, and that is the exact failure this gate was born to catch |
+| package channel | the real HTTPS transport is driven against the same endpoint as a **fail-closed control** and must refuse with a typed error |
+| installer | armed-target guards; an unarmed target must not be written |
+
+The rule, stated once: **a gate that only checks the happy path passes when you delete the feature.** Write the test that fails, then write the code that makes it pass, then — and this is the part everyone skips — write the test that must *keep* failing, and check that it still does.
+
+I learned this the expensive way. The GPU row above is not hypothetical: `find_kernel` used to hand out 0-byte placeholder shaders as zero-length blobs, pointing `COMPUTE_PGM` at uninitialised memory, and every existing check passed cheerfully the entire time. The checks were verifying that the function returned `Ok`. It did! It returned `Ok` all the way to a null shader.
+
+---
+
+## What We Got Wrong
+
+This is the section the project exists to be able to write. A benchmark that
+only ever produced good news would be a benchmark measuring the author's
+preferences.
+
+### `foliation` beats LRU on a capacity cliff, not in general
+
+The headline number is real and the headline number is scoped. Measured at
+boot by the real manager, replaying a **30-request / 1,680-token /
+210-descent** trace at **24 plaques**, four policies over an *identical*
+candidate set (resident, refcount zero, no resident children — so the
+comparison measures victim choice and nothing else):
+
+| Policy | Hit rate | What it is a control for |
+|---|---:|---|
+| **foliation** | **9.52%** | the thing being tested |
+| Belady oracle | 9.52% | the ceiling — an online policy exceeding this means the harness is broken |
+| same-budget random | 6.19% (seed 0; 2.38–8.57% over 32 seeds, beaten on 32/32) | "is the structure doing anything, or is any eviction fine?" |
+| LRU | 0.00% | the boring baseline everyone actually ships |
+
+Closing 100% of the LRU→Belady gap sounds excellent right up until the pool
+sweep, which was run at 8 / 12 / 16 / 24 / 32 / 48 / 64 / 96 / 256 plaques
+precisely because a single pool size is a cherry-pick with extra steps:
+
+| Pool size | Outcome | Control it lost or tied against |
+|---|---|---|
+| 8 plaques | **foliation and LRU both lose** | same-budget random beats both |
+| 24 plaques | foliation 9.52%, LRU 0.00% | the separation the headline reports |
+| 32 plaques and up | **LRU reaches the same 9.52% ceiling** | LRU — i.e. the advantage is gone |
+| every size, recency-control workload | **foliation ties LRU exactly** | LRU, on a workload with no reuse structure to find |
+| intermediate sizes (12, 16, 48, 64, 96, 256) | `TODO: measure` — published sweep exists; per-size rates not transcribed here | — |
+
+So: there is a band of pool sizes where the structural policy matters, it is
+bounded on both sides, and outside it the 1970s win or draw. On a workload
+built from pure recency, the topology buys exactly nothing, which is the
+correct result and was still annoying to see.
+
+**The proof gate deliberately does not require beating LRU.** It requires
+`referenced_evictions=0`, `collapse_violations=0`,
+`frames_backed == frames_freed`, and that no online policy exceeds Belady.
+Gating on "foliation wins" would create an incentive to tune the trace until
+it does, and at that point the benchmark measures the author, not the cache.
+
+### `entrants` is a frequency counter wearing a topology hat
+
+The scoring rule reads as persistence-weighted structure. It is not. `entrants`
+doubles as an H0 bar multiplicity *and* as a plain access-frequency count, so
+the honest description of the ranking function is **persistence-weighted LFU**.
+Dressing LFU in homology notation does not make it homology.
+
+The trie quotient (prefix sharing as a quotient map) and the collapse
+constraint (only free faces are admissible victims) are the real structural
+contributions, and they are the parts that hold up. The ranking function is
+not, and calling it "topological ranking" in a paper would be the kind of thing
+a reviewer notices in the first ten minutes.
+
+### `stratum`: the implication runs one way only
+
+`loop_score > 0` does **not** imply overfitting. A converged run sitting in a
+noise ball traces small loops in the delay embedding and scores near 1.0 while
+being entirely healthy. What holds is the converse and only the converse:
+**a monotone window scores exactly 0** — and it holds by an explicit O(n)
+monotonicity certificate, not as a property of the Rips count. As a property of
+the count it was false: a strictly decreasing staircase (`v` from 10, −0.001 per
+step, −0.05 every third step, 128 steps) scored `loop_score = 0.969` and, with
+the residual widening, the verdict `Overfit`. The count's corner triangles are
+now quotiented out as well, but the zero rests on the certificate.
+
+Worse, H₁ is orientation-blind. A run *recovering* from a validation spike and
+a run *diverging* into one trace the same loop and receive the same score. The
+residual drift gate supplies the orientation that homology structurally cannot,
+which means the orientation signal is not topological — it is a slope test
+standing next to a topological one.
+
+The control for the whole subsystem is a naive train/val-gap baseline running
+beside it, and the gate **requires the naive baseline to misfire** on the
+healthy-but-noisy fixture. If the dumb one agrees with the clever one on that
+case, the gate fails, because then the clever one is decoration.
+
+### β₁ is upper-bounded, not computed
+
+`cycle_rank = E − V + β₀` over the 1-skeleton. No boundary matrix is reduced.
+This is an upper bound on the first Betti number and it is described that way
+everywhere in the source, but "the kernel computes persistent homology" is the
+sentence a reader will construct if nobody stops them, so: it does not. It
+computes an Euler-characteristic bound and calls the bound what it is.
+
+### Two filtration bugs the fixtures caught before shipping
+
+Both were found by the regime fixtures, both would have produced a subsystem
+that returned confident nonsense, and neither was found by reading the code.
+
+1. **A 5-scale relative ladder saturated the signal.** Every fixture — healthy,
+   overfit, collapsing, noise — scored ~1.0. A classifier that returns the same
+   answer for all inputs is not a classifier, and the control that exposed it
+   was simply having more than one fixture.
+2. **A strictly monotone exponential decay scored 1.0.** A trajectory with no
+   loops at all scored as maximally looped, because exponential decay packs
+   later points into a ball smaller than a single early step, and the Rips
+   complex duly connected them into cycles. Fixed by arc-length
+   reparameterisation. The control was the monotone fixture, whose *only* job
+   is to score 0 — the one case where the maths guarantees the answer.
+   The maths did not guarantee it for the complex, only for the trajectory: a
+   third bug, the staircase above, got through both smooth monotone fixtures.
+
+Two bugs found by fixtures whose expected outputs were derived from theory
+rather than from a previous run of the code. Fixtures that record whatever the
+implementation did last time are a regression test, not a correctness test.
+
+### The unsafe count went **up**
+
+The `[UNSAFE] audit` ratchet is a checked-in census of every `unsafe {` site in
+`kernel/seal-os/src` and whether it carries a written `SAFETY:` justification.
+Current state: **594 blocks, 9 justified, 585 unjustified.**
+
+That is **17 more unjustified blocks than before this change**, added by the
+very subsystems that shipped the audit fixture. The tool that measures the
+problem was delivered by code that made the problem worse. The ratchet's
+contract is that `unjustified` may only decrease from here — it stops the next
+regression, it does not undo this one, and pretending otherwise would defeat
+the point of having a number at all.
+
+The control here is the previous count. Without it the fixture would read as
+"we now have an audit," which sounds like progress.
+
+### W^X is measured and not enforced
+
+`wx_enforced=0` is a **required field** in the security proof, not an omission.
+The kernel image alias is genuinely mapped writable and executable through the
+identity map. This is reported every boot specifically so that nobody — very
+much including the author — can quietly flip the narrative without flipping
+the field.
+
+### KASLR randomises mappings, not the image base
+
+UEFI picks the load address; the kernel does not re-apply PE relocations. So
+the image sits where it sat. 8 bits go to the higher-half alias and 22 bits to
+the heap window, and **only the 22 heap bits are load-bearing, because nothing
+executes from the alias.** Reporting "30 bits of KASLR" would be true in the
+sense that a lawyer would enjoy.
+
+The gate's control is a resample check: two draws must produce different
+nonces, so a stuck entropy source cannot pass by returning the same "random"
+slide forever.
+
+### Three of four GPU kernels are 0 bytes
+
+`spectral_step.bin` is 96 bytes of real GFX9 machine code, verified word-for-word
+against LLVM's AMDGPU assembler — which is a genuine result and is also 1 of 4.
+`voronoi_assign`, `jl_project` and `s2_distance` are still zero-length and
+report `kernel_not_found`. And the encoding being proved says nothing about
+execution: `backend=pm4_hw` has never appeared in any log, ever, because no AMD
+GPU has been present on any machine that runs this code.
+
+### The remote package channel has never touched a network
+
+Signed-index fetch, monotonic rollback protection, SHA-256 digest verification
+and signature enforcement are all real code paths exercised over
+`channel_transport=fixture_loopback`. **No packet has left the machine.** The
+control is the real HTTPS transport, pointed at the same endpoint, which is
+required to refuse with a typed error — so the fixture path cannot be silently
+swapped for a live one without the control noticing.
+
+### TLS does not interoperate with a stock TLS 1.3 server
+
+Three disqualifying facts, each on its own line because each is enough on its
+own:
+
+- **Ed25519 certificates only.** RSA and ECDSA get `UnsupportedAlgorithm`. A
+  refusal rather than a silent accept, which is the minimum bar, not a feature.
+- **Traffic secrets derive over `client_random`/`server_random`**, not a running
+  transcript hash. There is therefore no downgrade protection across the
+  handshake messages.
+- **The peer `Certificate` message is read as plaintext** where RFC 8446
+  encrypts it.
+
+The `[TLS] proof` gate demands `x509=1 chain_verify=1 ecdhe=1 curve=x25519
+psk_only=0 entropy=hw result=pass`, and it will happily pass while none of the
+above is fixed, because the gate tests this implementation against itself. Its
+control is `entropy=hw`: a boot that could not draw from RDSEED/RDRAND does not
+get to claim a key exchange happened. There is no interop control, and until
+there is one, "TLS 1.3 client" means "a TLS 1.3-shaped client that talks to
+exactly one server, which is also us."
+
+### The pattern in these eleven failures
+
+Read them together and three shapes repeat, which is more useful than any
+individual entry:
+
+1. **The boring baseline wins more often than expected.** LRU ties or wins
+   outside one band. Same-budget random beats both at small pools. The naive
+   train/val gap is right on most fixtures — it is required to be wrong on
+   exactly one, and that one case is the entire justification for `stratum`.
+   Carry-forward and the naive threshold keep showing up in the results because
+   they are genuinely hard to beat, which is the single most common thing a
+   research kernel forgets to check.
+2. **Structure is easier to claim than to earn.** The quotient map and the
+   collapse constraint survived scrutiny. The "topological ranking function"
+   turned out to be LFU. "Computes β₁" turned out to be an Euler bound. The
+   parts that held up are the parts that constrain the *state space*; the parts
+   that folded are the parts that ranked things.
+3. **Measured-and-reported is not enforced.** `wx_enforced=0`. `entropy=none
+   result=fail`. `hardware_dispatch=0`. `channel_transport=fixture_loopback`.
+   Each of these is a required field precisely because a field that must be
+   printed is a field that cannot quietly become true in the narrative before
+   it becomes true in the code.
+
+---
+
+## Bugs This Change Found In Existing Code
+
+Five real defects in code that already existed, each confirmed the only way a
+bug fix is ever confirmed: **revert the fix, re-run, watch it break.** A fix
+whose absence changes nothing was not fixing anything.
+
+| # | Site | Defect | Revert-the-fix control |
+|---|---|---|---|
+| 1 | `fs/buffer_cache.rs` | Addressed the device in filesystem blocks while the block layer addresses 512-byte sectors | ext2 completes **0 of 19** parity operations. Fatal on any real disk |
+| 2 | `fs/fat.rs` `lookup_path` | Compared 8.3 names case-sensitively while `find_entry_in_dir` folded case | `create("/lower.txt")` returns true, `lookup("/lower.txt")` returns false |
+| 3 | `fs/fat.rs` directory walkers | Descended into `.` and `..`, whose cluster pointers re-enter the walk | `stat` never returns |
+| 4 | `fs/ext2.rs` `unlink` | Returned `NotADirectory` when the target *was* a directory | Directory removal fails with an error that names the opposite of the situation |
+| 5 | `drivers/gpu` `find_kernel` | Handed out 0-byte placeholder blobs as zero-length shaders | `COMPUTE_PGM` points at uninitialised memory |
+
+Bug 1 deserves its own paragraph, and not a flattering one. A block-size versus
+sector-size confusion in the buffer cache is the single most ordinary
+filesystem bug in existence, it sat in the tree undetected, and it was **found
+independently by two contributors working in isolated worktrees.** Two people
+converging on the same defect from different directions is a strong signal
+about the defect and an equally strong signal about the test coverage that let
+it live there. The parity harness — both filesystems formatted in-tree, mounted
+on RAM-backed devices, driven through an identical nine-operation sequence,
+compared byte-for-byte, with a corrupt-one-byte negative control — is what
+finally caught it. Nine operations. That is how shallow the water was.
+
+Bug 5 is the reason the GPU section above is worded so carefully. The shader
+that got encoded correctly and the shader that was a zero-length placeholder
+were, until this change, indistinguishable to the dispatch path.
+
+### Found and not fixed
+
+`fs/fat.rs` `write_fat_entry` updates FAT copy 1 and never the mirror. The
+function writes to `self.fat_start` and stops there; every caller —
+`alloc_cluster`, the free-chain walk, both `write_clusters` extension paths —
+inherits the omission.
+
+This is invisible through this driver, because this driver only ever reads
+copy 1, so the parity harness passes and will keep passing. It is inconsistent
+for **every other FAT implementation on earth**, including the one in the
+firmware that would mount the resulting volume. It is listed here rather than
+fixed because the honest state of the tree is more useful than a shorter list,
+and because a bug you have written down is a bug that cannot ambush you later.
+
+---
+
+## Verification Status
+
+The section that decides whether any of the above is believable. Two columns:
+what was actually executed, and what was not. Nothing lives in between, because
+"should work" is not a column.
+
+### Executed
+
+| # | Check | Result | Control |
+|---|---|---|---|
+| 1 | Kernel links, release profile | 6.2 MB UEFI PE, `MZ` header verified | Header bytes checked, not assumed from a successful exit code |
+| 2 | Kernel links, `--features test-mode` | Same, verified separately | The test-mode build is a different binary and gets its own check |
+| 3 | Compiler warnings | **57**, matching the pre-change baseline **count and set exactly** | The baseline set — a count match with a different membership would have passed a count-only check |
+| 4 | `seal-mkimage` test suite | **71/71** | — |
+| 5 | Workspace clippy under `-D warnings` | Clean | `-D warnings`, so "clean" means zero, not "zero important ones" |
+| 6 | Full image pipeline | 128 MB bootable UEFI disk produced | — |
+| 7 | All 10 new gate flags against an empty log | Every one rejects, each with a **named** error | The empty log — a gate that accepts nothing-at-all is not a gate. Named errors, so a gate cannot pass by failing for the wrong reason |
+
+### Not executed
+
+Same typographic weight, because this is the half that determines what the
+other half is worth.
+
+| # | Thing | Status | Why, and what stands in for it |
+|---|---|---|---|
+| 8 | **Boot proofs observed from an actual boot** | **NO** | No QEMU on the build machine. Emitters were verified by compiling the *real* kernel modules against host shims; gates were verified against *assembled sample logs*. Neither is a boot. **CI's QEMU job is the first real execution of any of it** |
+| 9 | Hardware GPU dispatch | **Never executed** | `backend=cpu_fallback`, `hardware_dispatch=0`, `shader_used=0`. No AMD GPU in CI. The CPU fallback is checked for `mismatches=0` against the reference computation, so the claim is `cpu_fallback_correctness_only` and nothing beyond it |
+| 10 | Raw install against a physical disk | **Never executed** | 4 MiB memory-backed scratch device only, because CI boots QEMU with a single disk. The same code path drives a physical disk once armed; that combination has not been run |
+| 11 | **A real ML model** | **Never run** | All `stratum` and `foliation` fixtures are synthetic. Both subsystems' entire empirical basis is traces the author wrote |
+
+Two of the executed rows are worth a sentence each, because they are the two
+that would have been easy to fake.
+
+Row 3 compares the **set** of 57 warnings, not just the count. A count-only
+check passes when one warning is silenced and a different one is introduced,
+which is exactly the kind of drift a count-only check exists to catch and
+exactly the kind it does not.
+
+Row 7 runs all ten new gate flags against an **empty log** and requires each to
+reject with a *named* error. Two separate failure modes are covered: a gate
+that accepts an empty log is measuring nothing, and a gate that rejects with a
+generic parse error might be rejecting for a reason unrelated to the field it
+claims to check. Only the named-error version distinguishes them.
+
+Item 8 is the load-bearing admission of this document. Every proof marker
+quoted anywhere in this README was produced by a real emitter and consumed by a
+real checker, and the two have never met inside a running kernel on this
+machine. The emitters compile against host shims. The gates parse assembled
+logs. If CI's QEMU job disagrees with both, CI is right and this section is the
+reason anyone would know to check.
+
+---
+
+## The Seal ABI, In Full
+
+Sixty-nine syscalls. The names are borrowed, not inherited. `fork`, `write`, `mmap`, `sleep` — you have seen these words before, and that is precisely the problem, because you have seen them attached to POSIX semantics and this kernel has never signed that treaty. `sleep` is an ACPI sleep state, not a duration. `waitpid` does not wait. `write` to a real file descriptor does not write the buffer you passed. Read the note column before you assume anything; that column is where the surprises are kept, deliberately, in the open.
+
+Every call routes through one `dispatch(num, arg0, arg1, arg2)` in `kernel/seal-os/src/syscall/table.rs`, and every call passes a seccomp filter check first: `SECCOMP_RET_KILL` marks the calling task dead and returns `-1`, `SECCOMP_RET_ERRNO` returns `-1` without the funeral, `SECCOMP_RET_ALLOW` proceeds, and anything else is treated as KILL rather than allowed through. Three calls — `open`, `exec`, `setuid` — leave an audit record on the way out. The rest do not, which is a gap rather than a design.
+
+All syscalls return `SyscallResult { code: i64, data: Option<String> }`. Errors are returned as `-errno` in `code`. Numbers **12 and 13 are unassigned** and fall to the catch-all: `-38`, `ENOSYS`.
+
+### Core (0–45)
+
+| # | Name | Arguments | Returns | Note |
+|---|------|-----------|---------|------|
+| 0 | `exit` | — | `0` | Marks the current task dead and yields. Takes no exit code; nothing collects one anyway |
+| 1 | `write` | `fd`, `buf`, `len` | bytes written | `fd` 1 or 2 copies `min(len, 1024)` from user and prints to serial. **Any other fd writes the global `SYSCALL_PATH` string** at offset 0 and ignores `buf`/`len` entirely |
+| 2 | `read` | `fd`, `buf`, `len` | bytes read | `fd` 0 drains the 256-byte stdin ring. Otherwise a VFS read of `min(len, 4096)` **at offset 0** — the fd's own offset is not consulted |
+| 3 | `open` | `path`, `flags`, `mode` | fd | `flags & 0x40` is `O_CREAT`. `mode` is accepted and discarded. Fds come from a global counter starting at 3 |
+| 4 | `close` | `fd` | `0` | Removes the entry from the global fd table. `EBADF` if it was not there |
+| 5 | `exec` | `path` | does not return on success | ACL `PERM_EXEC` check, then dispatch by content: `\x7FELF` loads at an ASLR base, `#!` resolves an interpreter (which must itself be ELF), `.aether` runs in `AetherRuntime`. Then marks the caller dead and yields |
+| 6 | `fork` | — | child task id | COW page-table clone. The parent receives the child id; the child's saved `rax` is set to 0, so it wakes up believing what POSIX told it to believe |
+| 7 | `waitpid` | `pid` | `pid` | Returns `arg0` unchanged. It does not wait. It does not check. It is an echo with a job title |
+| 8 | `mmap` | *(ignored)*, `len`, `prot` | virtual address | `ceil(len/4096)` pages. `prot & 0x2` sets WRITABLE; `prot & 0x4` **unset** sets NO_EXECUTE. The address hint in `arg0` is ignored |
+| 9 | `getpid` | — | task id | |
+| 10 | `stat` | `path` | `0` + text | `data` is a formatted block: `Size`, `Permissions` (octal), `UID`, `GID`, `Type` |
+| 11 | `mkdir` | `path` | `0` | |
+| 14 | `chdir` | `path` | `0` | Resolves the path and rejects it with `ENOTDIR` if it is not a directory. Per-task cwd |
+| 15 | `getcwd` | — | `0` + cwd | |
+| 16 | `setuid` | `uid` | `0` | Sets uid **and** euid. Always succeeds — there is no privilege check here. Audited |
+| 17 | `setgid` | `gid` | `0` | Sets gid and egid. Same absence of a check |
+| 18 | `reboot` | `mode` | `0` | `0` = ACPI power off, `1` = keyboard controller `0xFE`, `2` = load a null IDT and `int 3` until the machine gives up. Anything else is `EINVAL` |
+| 19 | `lseek` | `fd`, `offset`, `whence` | new offset | `SEEK_SET`/`SEEK_CUR`/`SEEK_END`. Updates the stored offset that `read` and `write` then decline to read |
+| 20 | `unlink` | `path` | `0` | |
+| 21 | `rmdir` | `path` | `0` | |
+| 22 | `rename` | `old`, `new` | `0` | |
+| 23 | `getrandom` | `buf`, `len` | bytes written | `len` capped at 256. Hardware entropy; fails closed with `EIO` rather than returning something plausible |
+| 24 | `kmsg_read` | `buf`, `len` | bytes read | `min(len, 4096)` from the kernel message ring |
+| 25 | `kill` | `pid`, `sig` | `0` | A negative `pid` collects the hyperbolic process subtree rooted at `-pid` and signals every descendant |
+| 26 | `sigaction` | `sig`, `handler`, `flags` | handler result | |
+| 27 | `sigreturn` | — | context-dependent | |
+| 28 | `pipe` | `*mut [u64; 2]` | `0` | Writes both fds back through the user pointer. Null pointer is `EINVAL` |
+| 29 | `dup` | `fd` | new fd | Clones the fd entry to the next free number |
+| 30 | `dup2` | `old`, `new` | `new` | Silently drops whatever was at `new` |
+| 31 | `brk` | `addr` | new break | `addr == 0` reports the current break. Growing maps PRESENT + WRITABLE + USER. Shrinking updates the limit and frees nothing |
+| 32 | `gettimeofday` | `*mut Timeval` | `0` | RTC seconds plus `(ticks % 1000) * 1000` microseconds. The microseconds are a tick counter wearing a costume |
+| 33 | `settimeofday` | — | `EPERM` | Unconditionally. The stub is honest about being a stub |
+| 34 | `watchdog` | `pet` | `0` | Pets the watchdog if `pet != 0`. Otherwise a very expensive no-op |
+| 35 | `ioctl` | `fd`, `request`, `arg` | driver result | Only char and block device nodes. Everything else is `ENOTTY` |
+| 36 | `sleep` | `state` | `0` | **ACPI sleep state**, not a duration. `3` = S3, `5` = S5, anything else `EINVAL`. If you wanted to wait, you wanted 39 |
+| 37 | `sync` | — | `0` | Flushes the filesystem layer |
+| 38 | `getppid` | — | parent id | Walks the hyperbolic process tree upward; falls back to `1` at the root |
+| 39 | `nanosleep` | `ms` | `0` | The argument is **milliseconds**, measured in timer ticks, and the implementation is a spin-yield loop. The name is aspirational by three orders of magnitude |
+| 40 | `seteuid` | `euid` | `0` | |
+| 41 | `setegid` | `egid` | `0` | |
+| 42 | `clone` | `flags` | child task id | Thread or process depending on flags |
+| 43 | `setrlimit` | `resource`, `value` | `0` | |
+| 44 | `getrlimit` | `resource` | limit | |
+| 45 | `sigaltstack` | `ss`, `old` | handler result | |
+
+### Device and settings (100–111)
+
+| # | Name | Arguments | Returns | Note |
+|---|------|-----------|---------|------|
+| 100 | `manifold_query` | `theorem_index` | `0` + `"NAME: STATUS"` | **Not a Voronoi query.** `arg0` is a 1-based theorem index; out of range is `EINVAL`. Status is `ACTIVE` for T1–T5, `VERIFIED` for T6–T10, `FAILED` otherwise |
+| 101 | `teleport` | `src_dir`, `dst_dir` | `0` + description | Path comes from the global `set_path` buffer, not an argument. O(1) metadata surgery on the same filesystem |
+| 102 | `theorem_status` | — | `0` + all ten | Space-separated `NAME:STATUS` for the full T1–T10 set |
+| 103 | `pkg_install` | `name` | `0` or `-1` + message | Failures return `code = -1` with the reason in `data`, not an errno |
+| 104 | `pkg_remove` | `name` | `0` or `-1` + message | Same convention |
+| 105 | `pkg_list` | — | `0` + listing | `"no packages installed"` when empty, which is at least a complete sentence |
+| 106 | `wifi_scan` | — | `0` + `"no wireless hardware detected"` | Succeeds and returns nothing. There is no vendor firmware section to load and the simulation was deleted rather than disabled |
+| 107 | `wifi_connect` | — | `0` + same text | Also succeeds. Also connects to nothing |
+| 108 | `bt_scan` | — | `0` + `"no Bluetooth adapter detected"` | |
+| 109 | `bt_pair` | — | `0` + same text | |
+| 110 | `setting_get` | `key` | `0` + value | `ENOENT` for an unknown key |
+| 111 | `setting_set` | `key`, `value` | `0` | Writes into the live settings map. No validation, no schema, no opinions |
+
+### Atlas — loadable charts (112–114)
+
+| # | Name | Arguments | Returns | Note |
+|---|------|-----------|---------|------|
+| 112 | `chart_graft` | `object_path`, `signature_path` | `0` + `"grafted 'N' init=0x…"` | Both files are slurped through the VFS. The registry name is the basename with its extension stripped. Failure returns `-1` with a tag, e.g. `graft 'x': <tag>` |
+| 113 | `chart_prune` | `name` | `0` + `"pruned 'N' exit=0x…"` | Refused while a refcount hold or a nerve dependency is outstanding |
+| 114 | `chart_list` | — | `0` + listing | Grafted charts with reference counts |
+
+### stratum — topological fit control (120–124)
+
+| # | Name | Arguments | Returns | Note |
+|---|------|-----------|---------|------|
+| 120 | `fit_register` | — | handle | `arg0` is ignored; the handle **is** the calling task id |
+| 121 | `fit_observe` | `handle`, `train_bits`, `val_bits` | regime code | Both losses are `f64::to_bits`. `ENOENT` if the handle was never registered |
+| 122 | `fit_regime` | `handle` | regime code + report | Applies the enforced actuators in the caller's own context first, then returns the full state including the advisory knobs |
+| 123 | `fit_calibrate` | `handle`, `field_id`, `f64` bits | `0` | `EINVAL` for an unknown field |
+| 124 | `fit_unregister` | `handle` | `0` | `ENOENT` if it was not registered |
+
+Two `f64`s in, one stratum out. There is no version of this ABI where a `no_std` kernel walks your autograd graph.
+
+### foliation — paged KV cache (130–134)
+
+| # | Name | Arguments | Returns | Note |
+|---|------|-----------|---------|------|
+| 130 | `kv_seq_create` | `block_budget` | sequence id | Budget clamped to `u16::MAX` |
+| 131 | `kv_seq_append` | `id`, `token` | blocks sealed | Sealing a block descends the foliation; identical tokens land on the same leaf |
+| 132 | `kv_seq_release` | `id` | blocks released | Shared blocks survive, because someone else is standing on them |
+| 133 | `kv_seq_stats` | `id` | `0` + line | `ENOENT` for an unknown sequence |
+| 134 | `kv_policy_stats` | — | `0` + line | Cache-wide: hits, evictions, frontier size |
+
+Note the absence of a `kv_share` call. That is the whole design: sharing is what *happens* when two sequences write the same tokens, not something either of them asks for.
+
+---
+
+## The Twelve Proof Markers
+
+A capability claim in this repository is not a sentence in a README. It is a single line printed to COM1 at boot, parsed by `kernel/seal-mkimage`, and hard-failed in CI when a field is missing, malformed, or the wrong value. Twelve markers, twelve gates.
+
+What makes them worth reading is not the positive fields — anything can print `result=pass`. It is the **negative controls**: each proof deliberately attempts a set of things that must fail, and reports that they failed. A gate that only checked the happy path would still pass on a kernel where every safety check had been commented out. These do not.
+
+### `[TLS]`
+
+- **Emitted by** `kernel/seal-os/src/drivers/net/tls.rs`, `tls_proof_line()`
+- **Gated by** `--check-tls-proof <log>`
+
+```
+[TLS] proof version=1 x509={} chain_verify={} ecdhe={} curve=x25519 psk_only={} cert_parse={} expiry_check={} entropy={} result={}
+```
+
+At boot the kernel parses the leaf, intermediate and root DER fixtures; verifies the leaf/intermediate chain against the embedded root at the *live RTC time*; and runs two real X25519 key generations, agreeing in both directions and confirming the shared secret is not all zeroes. `entropy=hw` is only printed when both ephemeral keys came from hardware; `entropy=none` means the exchange never drew from the CPU, and the gate rejects anything that is not `hw`. `psk_only` is the logical negation of `ecdhe`, so a build that quietly regressed to the PSK path could not print `psk_only=0`.
+
+**Negative controls.** `x509=1` cannot be earned by a parser that says yes to everything: the truncated leaf (first half of the DER) must fail to parse, the empty slice must fail to parse, and a rogue chain must be rejected specifically as `IssuerNotCa` — a BasicConstraints CA-flag violation, probed at a fixed timestamp inside every fixture's validity window so it measures CA enforcement rather than the clock. `expiry_check=1` requires *both* directions: the good leaf inside its window and the expired leaf rejected as `Expired`.
+
+### `[Atlas]`
+
+- **Emitted by** `kernel/seal-os/src/atlas/mod.rs`, `module_proof_line()`
+- **Gated by** `--check-atlas-proof <log>`
+
+```
+[Atlas] proof version=1 source=embedded_chart format=elf64_rel machine=x86_64 object_bytes={} sections_placed={}
+  symbols_resolved={} germs_published={} germs_bound={} plt_veneers={} relocations_applied={} r64={} rpc32={}
+  rplt32={} r32s={} image_bytes={} wx={} signature=ed25519_fixture truncated_object={} unresolved_germ={}
+  bad_signature={} init_code={:#x} init_expect={:#x} exit_code={:#x} exit_expect={:#x} refcount_hold_guard={}
+  refcount_dependency_guard={} nerve_cycle={} charts_before={} charts_peak={} charts_after={} result={}
+```
+
+The proof grafts a real signed ELF64 `ET_REL` chart, runs its init, holds it, builds a two-chart nerve, prunes everything, and confirms the atlas is exactly as long as it started. The gate checks `init_code == init_expect` and `exit_code == exit_expect` (so the chart actually executed), that `relocations_applied` is nonzero and equals `r64 + rpc32 + rplt32 + r32s` (so the classes cannot be padded), that `charts_after == charts_before` (no leak) and `charts_peak > charts_before` (it really held one). `wx=text_rx_data_rw_nx` — chart images are genuinely W^X sealed, which is more than the kernel's own alias can say.
+
+**Negative controls.** A truncated object must be refused as an object error. A chart with an unresolved germ must be refused as `UnresolvedGerm`. A chart whose signature has had its first byte flipped must be refused as `BadSignature`. `prune` on a chart with an outstanding hold must return `Busy` (`refcount_hold_guard=refused_busy`), and so must `prune` on a chart another chart depends on (`refcount_dependency_guard=refused_busy`). Closing the nerve back on itself must return `NerveCycle` (`nerve_cycle=refused`).
+
+### `[Bundle]`
+
+- **Emitted by** `kernel/seal-os/src/bundle/mod.rs`, `firmware_proof_line()`
+- **Gated by** `--check-bundle-proof <log>`
+
+```
+[Bundle] proof version=1 store=/bundle index=ed25519_fixture index_verify={} index_tampered={} index_entries={}
+  … cache_hit={} refcount_peak={} refcount_after_drop={} cached_while_held={} released={} cached_after_release={}
+  absent_section={}:{} corrupt_section={}:{} simulation={} wifi={} wifi_section={} wifi_scan_entries={}
+  bt={} bt_section={} bt_scan_entries={} result={}
+```
+
+The firmware store is provisioned through ManifoldPkg with a real `.eph` — the same path a user would take with a vendor package — carrying section bytes under `/bundle/` and a signed `/bundle/index.seal`. The same section is then requested twice; `cache_hit=same_alloc` requires `Arc::ptr_eq` on the two handles, and the refcount is read back live at peak and after drop. The gate requires `refcount_peak > refcount_after_drop` and `cached_after_release=0`.
+
+`simulation=absent` is the field that matters most: the WiFi and Bluetooth simulation was deleted, not feature-flagged, and both drivers run their real PCI probe during the proof. Zero scan entries is the honest answer, and the proof reports it as such.
+
+**Negative controls.** Flipping one byte of the signed index body must make signature verification fail (`index_tampered=refused`). Requesting a section that exists in the index but was never provisioned must fail as `absent_section=<name>:not_provisioned`. Requesting a section whose bytes were mutated by exactly one byte — same length, different content — must fail on the digest as `corrupt_section=<name>:digest_mismatch`.
+
+### `[INSTALLER]`
+
+- **Emitted by** `kernel/seal-os/src/apps/installer.rs`, `raw_install_proof_line()`
+- **Gated by** `--check-installer-proof <log>`
+
+```
+[INSTALLER] proof version=2 mode=raw_block selected_disk={} target_dev=0x{:x} part_dev=0x{:x} boot_marker={}
+  home={} profile={} user={} auth_topo5000={} raw_gpt={} raw_format={} gpt_partitions={} gpt_header_crc={:08x}
+  gpt_header_crc_ok={} gpt_entries_crc_ok={} gpt_backup_header_crc_ok={} gpt_backup_agree={} gpt_alt_lba_ok={}
+  gpt_pmbr={} gpt_first_usable={} gpt_last_usable={} gpt_first_part_lba={} ext2_magic={:04x} …
+  guard_unarmed_refused={} guard_boot_dev_refused={} guard_other_dev_refused={} result={}
+```
+
+The installer writes a real GPT (protective MBR, primary and backup headers, two partitions) to a scratch device and formats a real ext2 filesystem on the second one. Nothing is trusted from the write path: the superblock is re-read straight off the partition at byte offset 1024, the magic must be `ef53`, and the filesystem is then mounted with the ordinary ext2 reader and walked to confirm `.` and `..` exist. The gate independently checks that the GPT usable range is non-empty and that the first partition does not start before it, and requires `gpt_header_crc` to be exactly eight lowercase hex digits — the format is part of the claim.
+
+**Negative controls.** With nothing armed, a write to the *intended* target must be refused. Arming the boot device must be refused outright. With the scratch disk armed, a write to the boot device must still be refused. Separately, the gate scans the whole log for the strings `Would create GPT`, `Would format`, `Would copy`, `Would install`, `Installation simulation complete` and `SHA-256 hash` — the fossils of the old simulated installer — and fails if any of them appear anywhere.
+
+### `[FSPARITY]`
+
+- **Emitted by** `kernel/seal-os/src/fs/parity.rs`, `fs_parity_proof_line()`
+- **Gated by** `--check-fs-parity <log>`
+
+```
+[FSPARITY] proof version=1 fat_image=fat16_fixture fat_mounted={} … ext2_image=ext2_rev1_1k_fixture
+  ext2_mounted={} … ops_fat={} ops_ext2={} files_compared={} bytes_compared={} content_digest_fat={:#018x}
+  content_digest_ext2={:#018x} content_parity={} dirs_compared={} dirs_equal={} stat_fields_compared={}
+  stat_fields_equal={} error_cases={} error_matches={} divergences={} divergence_kinds={}
+  negative_control_digest={:#018x} negative_control={} negative_control_restored={} result={}
+```
+
+The same tree of operations is built on a mounted FAT16 image and a mounted ext2 rev-1 image, then compared four ways: content digest, normalised directory listings, the stat fields both formats can actually express, and the error returned by a matched set of failure probes. The gate requires each `*_compared` count to equal its `*_equal` counterpart exactly, and the two content digests to be identical.
+
+**Negative controls.** One byte at offset 17 of `/LOGS/BOOT.LOG` is flipped on the ext2 side only. The comparator must notice (`negative_control=detected`), and must go quiet again when the byte is put back (`negative_control_restored=ok`). The gate additionally refuses to accept a run where `negative_control_digest` equals the content digest — if the corrupted digest matched, the comparison was blind and every other field on the line is worthless.
+
+### `[MLFIT]`
+
+- **Emitted by** `kernel/seal-os/src/ml_engine/stratum.rs`, `stratum_proof_line()`
+- **Gated by** `--check-mlfit-proof <log>`
+
+```
+[MLFIT] proof version=1 subsystem=stratum window={} embed_dim={} kappa={:.3} steps_per_case={}
+  bytes_per_stream={} long_stream_steps={} long_stream_points={} bounded={}
+  [ case={} truth={} got={} loop={} h0d={} sh={} sp={} rd={} td={} ] × 7
+  monotone_loop_zero={} negctl_flagged={} naive_gap_baseline_flagged={} incremental_batch_agree={}
+  correct={}/{} result={}
+```
+
+Seven regime fixtures — underfit, well-fit, overfit, collapsing, negative control, monotone-line, monotone-exponential — are each run through the real detector and classified. The gate does not take `correct=7/7` on trust: it walks the `truth=`/`got=` token pairs in order, requires each pair to match, requires the pair count to equal the case count, and requires at least seven cases. A `truth=` with no following `got=` is an error.
+
+**Negative controls.** Three of them, and one is unusual. (1) `monotone_loop_zero=ok` requires the cycle rank of a strictly monotone trajectory to be *exactly* zero — a monotone loss curve has no fold, at any sampling density. (2) `negctl_flagged=no` requires the healthy-but-noisy control not to be classified as overfitting. (3) `naive_gap_baseline_flagged=yes` requires the naive fixed-threshold validation-gap baseline to **misfire** on that same control. If the naive baseline ever stopped misfiring, the control would no longer discriminate between the two methods and the comparison would be decoration; the gate fails in that case, which is the correct and slightly counterintuitive behaviour. Two more invariants ride along: a stream 64× longer than the window must not grow the window (`bounded=ok`), and the same observations delivered in one batch and in two halves with a recompute in between must agree to within 1e-12 (`incremental_batch_agree=ok`).
+
+### `[KVPOLICY]`
+
+- **Emitted by** `kernel/seal-os/src/ml_engine/foliation.rs`, `foliation_proof_line()`
+- **Gated by** `--check-kv-policy <log>`
+
+```
+[KVPOLICY] proof version=1 subsystem=foliation block_tokens={} pool_blocks={} leaf_arena={} requests={}
+  tokens={} descents={} trace_keys={} blocks_admitted={} frames_backed={} frames_freed={} frames_failed={}
+  shared_descents={} bytes_saved={} probe_shared_blocks={} probe_frames_identical={}
+  probe_refcount_after_partial_free={} probe_survivors_resident={} evictions_foliation={} evictions_lru={}
+  evictions_random={} hit_bp_foliation={} hit_bp_lru={} hit_bp_random={} hit_bp_belady={} gap_closed_bp={}
+  referenced_evictions={} collapse_violations={} refused_budget={} refused_exhaustion={}
+  refused_referenced_free={} complexity=… result={}
+```
+
+One trace is replayed through four policies — foliation, LRU, random, and Belady as the offline optimum — on the same candidate set. A sharing probe confirms that two sequences with the same prefix land on physically identical frames (`probe_frames_identical=1`) and that releasing one leaves the shared plaques resident with the right refcount. The gate requires `frames_backed == frames_freed` (no leak), `frames_failed=0`, `referenced_evictions=0`, `collapse_violations=0`, and at least one shared descent.
+
+**Negative controls.** A sequence declaring a two-block budget must be refused with `BudgetExceeded` when it tries to seal a third (`refused_budget=1`). A pool in which every plaque is referenced by a live sequence must refuse admission with `Exhausted` rather than evicting live state (`refused_exhaustion=1`). Force-collapsing a plaque a live sequence still holds must return `StillReferenced` (`refused_referenced_free=1`).
+
+And one control pointed at the benchmark itself: `hit_bp_belady < hit_bp_foliation` fails the gate. Belady is the offline optimum; an online policy that beats it has not discovered anything, it has broken the harness. The foliation-vs-LRU margin, notably, is *recorded and not gated* — gating on it would put a price on a faked benchmark.
+
+### `[GPU-BENCH]`
+
+- **Emitted by** `kernel/seal-os/src/drivers/gpu/gpu_bench.rs`, `gpu_bench_proof_line()`
+- **Gated by** `--check-gpu-bench <log>`
+
+```
+[GPU-BENCH] proof version=1 arch=gfx900 backend={} gpu_present={} hw_attempted={} hw_reason={} cycles={}
+  kernels_real={}/{} spectral_step_bytes={} blob_fnv1a={:#018x} encoder_fnv1a={:#018x} blob_matches_encoder={}
+  golden_words={}/{} decoded_insts={}/{} roundtrip_words={}/{} mnemonics_match={} rsrc1={:#010x}
+  rsrc2={:#010x} ref_dim={} ref_alpha_num=1 ref_alpha_den=4 cpu_ref_exact={}/{} cpu_ref_max_ulp={}
+  backend_exact={}/{} backend_max_ulp={} result={}
+```
+
+The checked-in GCN binary is hashed and compared against the same instructions re-emitted by the in-kernel encoder, disassembled to mnemonics, and round-tripped word for word. Numeric output is compared bit-exactly against a golden reference: the gate requires every `N/M` ratio to be `M/M` and both `max_ulp` fields to be exactly `0`. `require_metric_min(spectral_step_bytes, 1)` exists because the shipped blob was once zero bytes long, and a proof that passed on an empty blob is the specific failure this gate was built after.
+
+**Negative controls.** `kernels_real={}/{}` counts only the kernels whose `.bin` is non-empty; zero real kernels fails. `gpu_present=1` with `hw_attempted=0` fails — finding a GPU and not trying it is not a fallback. `gpu_present=1` with `backend=cpu_fallback` fails — that is a silent fallback, which is the thing this marker exists to make loud. Today it prints `backend=cpu_fallback` honestly, on a machine with no AMD GPU, with `hw_reason=no_amd_gpu`.
+
+### `[KASLR]`
+
+- **Emitted by** `kernel/seal-os/src/security/kaslr.rs`, `kaslr_proof_line()`
+- **Gated by** `--check-kaslr <log>`
+
+```
+[KASLR] proof version=1 scope=mappings image_base_randomised=0 firmware_image_base={:#x} image_size={:#x}
+  kernel_alias_base={:#x} kernel_alias_slide={:#x} kernel_alias_slots={} kernel_alias_bits={}
+  heap_window_base={:#x} heap_window_slide={:#x} heap_window_slots={} heap_window_bits={} total_bits={}
+  granule={:#x} aligned={} in_range={} entropy={} boot_nonce={:#x} resample_nonce={:#x} resample_differs={}
+  cross_boot=external-diff active={} result={}
+```
+
+Every field is read out of live state. The gate pins `scope=mappings`, `granule=0x200000`, `heap_window_slots=4194304`, `heap_window_bits=22`, `kernel_alias_bits >= 8`, requires `total_bits` to equal the sum of the two window budgets, requires each base to sit inside its declared range and to be 2 MiB aligned, and requires `entropy` to be `rdseed` or `rdrand` — a software fallback is rejected outright.
+
+**Negative controls.** `image_base_randomised=0` is *required by the gate*. Printing a `1` there would fail the build, because the image base genuinely is not randomised and the proof's job is to keep saying so. `resample_differs=1` re-draws from the same hardware source at proof time and fails if the second draw equals the first, which catches a stuck generator that would otherwise hand every boot the same "random" slide. `boot_nonce` may not be zero and may not equal `resample_nonce`.
+
+### `[SECURITY-FEATURES]`
+
+- **Emitted by** `kernel/seal-os/src/security/features.rs`, `security_feature_proof_line()`
+- **Gated by** `--check-security-features <log>`
+
+```
+[SECURITY-FEATURES] proof version=1 kpti={} kpti_probe={} smep_supported={} smep={} smep_probe={}
+  smap_supported={} smap={} smap_probe={} nx_supported={} nx={} nx_probe={} wp={} wp_probe={} retpoline={}
+  retpoline_ibpb_supported={} retpoline_probe={} kaslr={} kaslr_bits={} kaslr_probe={} wx={} wx_violations={}
+  wx_pages_scanned={} wx_scope=kernel-alias wx_enforced=0 wx_probe=runtime-pagewalk stackguard={}
+  stackguard_dirty={} stackguard_probe={} audit={} audit_probe={} cr0={:#x} cr4={:#x} efer={:#x} result={}
+```
+
+The predecessor marker, `[SECURITY] hardening proof`, lumped KPTI and SMAP/SMEP into one verdict, so a regression in either was indistinguishable from a regression in the other. This one splits them and names the probe for each, so a probe that silently degrades into a constant is visible on the line.
+
+**Negative controls.** The strongest one is a cross-check: the gate re-derives `smep`, `smap`, `wp` and `nx` from the raw `cr0=`, `cr4=` and `efer=` values printed on the same line — CR4 bit 20, CR4 bit 21, CR0 bit 16, EFER bit 11 — and fails if a decoded field disagrees with its own register. Without that, every decoded bit could be a constant. Beyond it: any `*_supported=1` with the matching `*=0` fails ("supported but off" is the exact silent failure this catches); `stackguard_dirty` must be `0`; `kaslr_bits >= 22`; and `wx_enforced=0` is **required**, not tolerated — see below.
+
+### `[UNSAFE-AUDIT]`
+
+- **Emitted by** `kernel/seal-os/src/security/unsafe_audit.rs`, `unsafe_audit_proof_line()`
+- **Gated by** `--check-unsafe-audit <log> <root>`
+
+```
+[UNSAFE-AUDIT] proof version=1 fixture=tests/unsafe-audit.fixture fixture_version={} blocks={} justified={}
+  unjustified={} files={} undocumented_permille={} rule=safety-comment-above-block result={}
+```
+
+`tests/unsafe-audit.fixture` is a checked-in per-file census, `include_str!`-compiled into the image, so the boot log carries the census that was true for *this* build. The host gate then re-scans `kernel/seal-os/src` itself and compares three ways: logged fields against the fixture, fixture total against the re-scan, and per-file unjustified counts against the fixture's. The scan rule is defined once, in `scan_source`, and mirrored in the checker with a comment saying so — a host checker that disagrees with that function is measuring something else. Both copies spell the block-opening token as `concat!("unsa", "fe {")` so that the scanner files do not add phantom sites to their own census.
+
+**Negative controls.** The gate is a **ratchet**: `unjustified` may fall, never rise. Any file whose unjustified count increases fails the build and is named in the error with its delta. Any change in total site count at all fails until the fixture is regenerated, so an unsafe block cannot be added quietly.
+
+### `[ManifoldPkg]`
+
+- **Emitted by** `kernel/seal-os/src/pkg/mod.rs`, with the channel fields measured by `pkg/channel.rs`
+- **Gated by** `--check-theorem-log <log>` (and transitively `--check-vm-proof`)
+
+```
+[ManifoldPkg] proof version=1 source=embedded_eph parse={} registry_index={} install={} extract={} list={}
+  remove={} files=1 bytes={} package_count_before={} package_count_after_install={}
+  package_count_after_remove={} metadata_only=0 signature={} channel_endpoint={} channel_transport={}
+  channel_index_signature={} channel_index_version={} channel_packages_fetched={} channel_digest_ok={}
+  channel_rollback_refused={} channel_tamper_refused={} channel_digest_mismatch_refused={}
+  channel_package_signature_enforced={} channel_live_probe={} channel_fail_closed={}
+  channel_unverified_fallback=0 result={}
+```
+
+A real `.eph` is parsed, installed, extracted, listed and removed. `metadata_only=0` and a nonzero `files`/`bytes` are required, so a package manager that recorded a manifest and wrote nothing to disk would fail. The package count must rise by exactly one and return to baseline.
+
+The channel half drives a signed release index over a fixture loopback transport. `channel_transport=fixture_loopback` is **pinned by the gate**: a log claiming a live transport in CI would mean something answered on that hostname, and trusting it is precisely the failure this gate exists to prevent. `channel_digest_ok` must equal `channel_packages_fetched` exactly — a shortfall means an unverified package was installed.
+
+**Negative controls.** Five, each an attack the channel refuses. Replaying index v2 against a channel that has accepted v3 must fail as `IndexRollback`. An index with one flipped body byte and an intact signature must fail as `IndexSignatureInvalid` or `IndexMalformed`. A valid index serving a mutated package body must fail as `DigestMismatch` or `SizeMismatch`. An index that vouches for a package whose signature has been zeroed must still fail as `PackageRejected` — the index does not get to override the package signature. And the live probe runs the *real* HTTPS transport against the configured endpoint as a fail-closed control: it must return one of the five typed refusals (`no_network`, `dns_failed`, `transport_failed`, `http_status`, `insecure_scheme`) and must leave the package count unchanged. A reachable probe fails the build.
+
+### Summary
+
+| Marker | Gate flag | What it would take to make it lie |
+|--------|-----------|-----------------------------------|
+| `[TLS]` | `--check-tls-proof` | A parser that accepts a truncated DER and a rogue CA, plus a clock check that only tests one direction |
+| `[Atlas]` | `--check-atlas-proof` | A loader with the signature check, the germ resolver, the refcount guard and the nerve-cycle detector all removed, that still executes a chart and returns the right init and exit codes |
+| `[Bundle]` | `--check-bundle-proof` | Restoring the deleted simulation, or a digest check that accepts a one-byte edit, or an index whose signature does not cover the body |
+| `[INSTALLER]` | `--check-installer-proof` | Writing a GPT whose backup disagrees with the primary, then reading the superblock back off the disk and finding `ef53` anyway |
+| `[FSPARITY]` | `--check-fs-parity` | A digest function that returns a constant — which the negative-control digest comparison catches |
+| `[MLFIT]` | `--check-mlfit-proof` | A detector that gets 7/7 by hardcoding, past a checker that walks the `truth=`/`got=` pairs in order and counts them |
+| `[KVPOLICY]` | `--check-kv-policy` | A Belady implementation that is not optimal, plus three refusal paths that report success without refusing |
+| `[GPU-BENCH]` | `--check-gpu-bench` | A zero-byte blob whose FNV-1a matches the encoder, or a bit-exact numeric parity with a nonzero max ULP |
+| `[KASLR]` | `--check-kaslr` | Claiming image-base randomisation, which the gate rejects by requiring `image_base_randomised=0` |
+| `[SECURITY-FEATURES]` | `--check-security-features` | Faking a decoded mitigation bit while also faking the raw `cr0`/`cr4`/`efer` value it is cross-checked against |
+| `[UNSAFE-AUDIT]` | `--check-unsafe-audit` | Editing the fixture, which the host-side re-scan of the source tree immediately contradicts |
+| `[ManifoldPkg]` | `--check-theorem-log` | Something actually answering at `releases.seal-os.local`, which fails the build rather than passing it |
+
+---
+
+## What Each Gate Refuses
+
+Every row is a deliberate failure the kernel attempts at boot and must decline. If any of them started succeeding, CI would go red.
+
+| Attack or mistake | Caught by | What the refusal looks like |
+|---|---|---|
+| Truncated ELF relocatable object | `[Atlas]` | `AtlasError::Object(_)` → `truncated_object=ok` |
+| Chart referencing a germ nobody published | `[Atlas]` | `ObjError::UnresolvedGerm` → `unresolved_germ=ok` |
+| Chart signature with one flipped byte | `[Atlas]` | `AtlasError::BadSignature` → `bad_signature=ok` |
+| Unloading a chart with an outstanding hold | `[Atlas]` | `AtlasError::Busy` → `refcount_hold_guard=refused_busy` |
+| Unloading a chart another chart depends on | `[Atlas]` | `AtlasError::Busy` → `refcount_dependency_guard=refused_busy` |
+| Closing the chart dependency graph into a cycle | `[Atlas]` | `AtlasError::NerveCycle` → `nerve_cycle=refused` |
+| Leaking a chart across the proof | `[Atlas]` | `charts_after != charts_before` fails the gate |
+| Signed index body altered, signature left intact | `[Bundle]` | `index_tampered=refused` |
+| Firmware section indexed but never provisioned | `[Bundle]` | `absent_section=<name>:not_provisioned` |
+| Section bytes corrupted, length preserved | `[Bundle]` | `corrupt_section=<name>:digest_mismatch` |
+| Section still cached after release | `[Bundle]` | `cached_after_release` must be `0` |
+| Writing to an install target that was never armed | `[INSTALLER]` | `BlockError::Refused` → `guard_unarmed_refused=1` |
+| Arming the boot device as an install target | `[INSTALLER]` | `BlockError::Refused` → `guard_boot_dev_refused=1` |
+| Writing to the boot device while a scratch disk is armed | `[INSTALLER]` | `BlockError::Refused` → `guard_other_dev_refused=1` |
+| Simulated-installer language anywhere in the log | `[INSTALLER]` | Six banned substrings; any hit fails the gate |
+| A blind filesystem comparator | `[FSPARITY]` | `negative_control_digest == content_digest_fat` fails |
+| One flipped byte on one image | `[FSPARITY]` | `negative_control=detected`, then `negative_control_restored=ok` |
+| A monotone loss trajectory scoring a nonzero cycle rank | `[MLFIT]` | `monotone_loop_zero` must be `ok` |
+| The healthy-noisy control classified as overfitting | `[MLFIT]` | `negctl_flagged=no` |
+| The naive gap baseline *not* misfiring on that control | `[MLFIT]` | `naive_gap_baseline_flagged=yes` required |
+| Unbounded memory growth on a 64×-length stream | `[MLFIT]` | `bounded=ok`, `long_stream_points <= window` |
+| Exceeding a declared sequence block budget | `[KVPOLICY]` | `FoliationError::BudgetExceeded` → `refused_budget=1` |
+| Admitting a block when every plaque is live | `[KVPOLICY]` | `FoliationError::Exhausted` → `refused_exhaustion=1` |
+| Freeing a KV plaque a live sequence still holds | `[KVPOLICY]` | `FoliationError::StillReferenced` → `refused_referenced_free=1` |
+| An online policy beating the offline optimum | `[KVPOLICY]` | `hit_bp_belady < hit_bp_foliation` fails the gate |
+| Leaking KV frames | `[KVPOLICY]` | `frames_backed != frames_freed` fails |
+| Shipping a zero-length GPU kernel blob | `[GPU-BENCH]` | `spectral_step_bytes >= 1`, `kernels_real > 0` |
+| Silently falling back to CPU with a GPU present | `[GPU-BENCH]` | `gpu_present=1` + `backend=cpu_fallback` fails |
+| Finding a GPU and never dispatching to it | `[GPU-BENCH]` | `gpu_present=1` + `hw_attempted=0` fails |
+| Truncated DER certificate | `[TLS]` | Parse must fail, or `x509=1` is unearned |
+| Empty DER certificate | `[TLS]` | Parse must fail |
+| Leaf issued by a cert without the CA flag | `[TLS]` | `X509Error::IssuerNotCa` |
+| Expired certificate accepted | `[TLS]` | `X509Error::Expired` required, both directions checked |
+| A key exchange that never touched hardware entropy | `[TLS]` | `entropy=none` fails the gate |
+| A stuck entropy generator | `[KASLR]` | `resample_nonce == boot_nonce` fails |
+| Claiming image-base KASLR | `[KASLR]` | `image_base_randomised` must be `0` |
+| An unaligned or out-of-range slide | `[KASLR]` | `aligned`, `in_range`, plus independent host-side range checks |
+| A mitigation bit decoded as a constant | `[SECURITY-FEATURES]` | Cross-check against `cr0`/`cr4`/`efer` on the same line |
+| A mitigation supported by the CPU but left off | `[SECURITY-FEATURES]` | `*_supported=1` with `*=0` fails |
+| A dirty kernel stack guard band | `[SECURITY-FEATURES]` | `stackguard_dirty` must be `0` |
+| Claiming W^X enforcement | `[SECURITY-FEATURES]` | `wx_enforced=0` is required |
+| An unjustified `unsafe` block added anywhere | `[UNSAFE-AUDIT]` | Ratchet failure, named per file with its delta |
+| Editing the census instead of the code | `[UNSAFE-AUDIT]` | Host-side re-scan disagrees with the fixture |
+| Replayed stale (rolled-back) release index | `[ManifoldPkg]` | `ChannelError::IndexRollback` → `channel_rollback_refused=1` |
+| Tampered signed index | `[ManifoldPkg]` | `IndexSignatureInvalid` / `IndexMalformed` |
+| Corrupted package body under a valid index | `[ManifoldPkg]` | `DigestMismatch` / `SizeMismatch` |
+| Unsigned package the index vouches for | `[ManifoldPkg]` | `ChannelError::PackageRejected` |
+| A live network host answering in CI | `[ManifoldPkg]` | `channel_live_probe` must be one of five typed refusals |
+| Installing anything over the live probe | `[ManifoldPkg]` | `channel_fail_closed=1`, package count unchanged |
+
+---
+
+## Security Posture, Measured Not Claimed
+
+The distinction this table exists to draw: a mitigation that is *compiled in* and a mitigation that is *live on this CPU* look identical in a build log and completely different in a debugger. Every row names its probe.
+
+| Mitigation | Probe | Status |
+|---|---|---|
+| KPTI | `runtime-cr3` — distinct kernel/user CR3 roots, live | **Hardware-verified active.** Both roots read back, required to differ and to be nonzero |
+| SMEP | `cpuid+cr4` — CPUID.7:0.EBX[7] and CR4[20] | **Hardware-verified.** Supported-but-off fails the gate |
+| SMAP | `cpuid+cr4` — CPUID.7:0.EBX[20] and CR4[21] | **Hardware-verified.** Same rule |
+| NX | `cpuid+efer` — CPUID.8000_0001:EDX[20] and EFER[11] | **Hardware-verified.** Same rule |
+| CR0.WP | `cr0` — live CR0[16] | **Hardware-verified.** Without it, W^X on kernel pages is unenforceable regardless of how the tables are flagged |
+| Retpoline | `runtime-thunk-bytes` | **Runtime-verified, not a hardware bit, and scoped to one thunk.** There is no control register for "the compiler emitted thunks", so the probe reads 32 bytes of the RAX thunk's own machine code back out of the live image and requires three things: it begins `0xe8` (`call rel32`), it contains the tail `48 89 04 24 c3` (`mov [rsp], rax; ret`), and the `pause; lfence` capture loop `f3 90 0f ae e8` appears **before** that tail. The ordering requirement is the one with teeth — `call .+0; mov [rsp], rax; ret` satisfies the first two, traps no speculation, and is architecturally a bare indirect call. Offsets are not pinned, so the check survives the assembler choosing `rel8` or `rel32` for the backward jump. What it does **not** show: that any indirect branch routes through a thunk (none does), or that the compiler emitted thunks (`-Zretpoline` is off). IBRS/IBPB support is reported separately as `retpoline_ibpb_supported` |
+| KASLR | `runtime-entropy` | **Active on mappings only.** See below |
+| Stack guard | `runtime-guardband` | **Runtime-measured, and weaker than it sounds.** A 16 KiB zeroed band sits below each per-CPU kernel stack; the probe counts nonzero bytes. Stacks grow down, so a dirty byte is an overflow that already happened. **There is no `-Z stack-protector` in this build** — this band is the only stack protection that exists |
+| W^X | `runtime-pagewalk`, scope `kernel-alias` | **Reported, NOT enforced.** `wx_enforced=0`. The page walk counts live leaf entries that are PRESENT and WRITABLE without NO_EXECUTE, bounded at 65,536 visits. The kernel alias genuinely is mapped writable *and* executable today, and re-flagging an alias nothing executes from would be a fake win, so the number is printed and the gate requires the honest `0` |
+| Audit flush | `runtime-vfs` | **Runtime-verified.** Measured by reading `/var/log/audit.log` back through the VFS and checking its size is nonzero — not by trusting the in-memory buffer |
+
+### KASLR, precisely
+
+The kernel is a UEFI PE image. The firmware picks the load address, applies the PE base relocations, and hands over a running image; after `ExitBootServices` the kernel executes out of the identity map at that firmware-chosen physical address. **Nothing in this kernel re-applies PE relocations, so the image base is not randomised.** What is randomised is the virtual layout the kernel builds itself, in two windows:
+
+| Window | Base | Span | Granule | Slots | Bits |
+|---|---|---|---|---|---|
+| Kernel image higher-half alias | `0xffff_ffff_8000_0000` | 1 GiB | 2 MiB | image-size dependent | 8 (measured, `>= 8` gated) |
+| Kernel heap virtual window | `0xffff_9000_0000_0000` | 8 TiB of a 16 TiB window | 2 MiB | 4,194,304 | 22 |
+
+Slides come from RDSEED with an RDRAND fallback; if neither is available, or the source returns the same word twice, no slide is applied, the state records `entropy=none`, and the proof prints `result=fail` so the image gate rejects the build. The kernel deliberately does not halt — a mitigation that bricks boot on a CPU without RDRAND is worse than a build that cannot claim the mitigation.
+
+**Only the 22 heap bits are load-bearing.** Nothing executes from the alias, so its 8 bits hide the alias and nothing else, and it is reported separately for exactly that reason. A leaked kernel heap pointer, on the other hand, no longer discloses a build-constant address, which is the whole point.
+
+Cross-boot variation cannot be proven from inside one boot, and the proof does not pretend otherwise: it carries a per-boot `boot_nonce` for an external harness to diff across two logs (`cross_boot=external-diff`), plus a same-boot `resample_differs` check that fails if the generator is stuck.
+
+### The `unsafe` census
+
+**594 `unsafe` blocks across 84 files. 9 justified. 585 not.** That is 984 per mille undocumented, a number the proof line computes and prints so that nobody has to divide two numbers to notice how bad it is.
+
+`result=pass` on `[UNSAFE-AUDIT]` means the census is internally consistent and matches the source tree. It does not mean the unsafe code is safe. It means we know exactly how much of it is unexplained. The gate is a ratchet: the count may fall, and any increase — in total sites, or in unjustified sites for any single file — fails the build with the offending file and its delta named in the error.
+
+---
+
+## Incident Report: The Week Ten Subsystems Landed At Once
+
+*Filed by: the only person on the incident response team.*
+*Reviewed by: the same person, later, more tired.*
+*Severity: retroactively terrifying.*
+*Customer impact: none, there are no customers, this is the only genuinely good news in this document.*
+
+### Summary
+
+Over a single week, ten subsystems developed in isolated git worktrees were merged into `main`. The merge surfaced one silent ABI collision affecting three subsystems, one duplicate independent fix of a pre-existing filesystem bug, one GPU execution path pointed at uninitialised memory, and a net increase of 17 unjustified `unsafe` blocks discovered by an audit introduced in the same change.
+
+No production systems were affected. There are no production systems. This is load-bearing.
+
+### Timeline
+
+**T-minus 3 weeks.** Ten subsystems are scoped. Parallel development is chosen on the grounds that the subsystems are independent. This assessment is correct about the subsystems and incorrect about the integers.
+
+**T-minus 2 weeks, various days.** Three separate worktrees each consult the Seal ABI table, each observe that syscall 112 is the next free number, and each claim 112–116. All three observations are accurate. All three are made in good faith. All three are made by the same person on different days, which is the detail that keeps me up.
+
+**T-minus 9 days.** A contributor working in an isolated worktree investigates ext2 behaviour on a real disk image and finds that `fs/buffer_cache.rs` addresses the device in filesystem blocks while the block layer addresses 512-byte sectors. Fixes it. Moves on.
+
+**T-minus 8 days.** A *different* contributor, in a *different* worktree, unaware the first exists, investigates ext2 behaviour and finds that `fs/buffer_cache.rs` addresses the device in filesystem blocks while the block layer addresses 512-byte sectors. Fixes it. Moves on.
+
+Neither of them mentions it, because from inside each worktree it is a small ordinary bug fix and not a historic moment.
+
+**T-minus 6 days.** Four GPU shader `.bin` files are committed at 0 bytes as placeholders. The build passes. Nothing complains. Nothing was ever going to complain.
+
+**T-minus 4 days.** `S_AND_SAVEEXEC_B64` is hand-encoded as opcode 33. This is correct for GFX8. The target is GFX9.
+
+**T-minus 2 days.** The `unsafe` audit tool is written. It is not yet run against the merged tree, because the tree is not yet merged. Its author feels good about this contribution.
+
+**T-0.** Merge.
+
+**T+15 minutes.** The build passes. This is the most alarming line in the entire timeline. Three subsystems have just collided on five syscall numbers and the compiler has approved it. Duplicate match arms are legal Rust; the first arm wins and the remainder become silently unreachable. Two full subsystems have been deleted from the ABI and the toolchain has said nothing, because from the compiler's point of view nothing happened.
+
+**T+40 minutes.** A grep for duplicate syscall numbers — run on a hunch, not on a schedule, not by any automated gate, on a hunch — returns three hits at 112.
+
+**T+45 minutes.** Quiet.
+
+**T+2 hours.** Renumbering complete: `atlas` 112–114, `stratum` 120–124, `foliation` 130–134, with deliberate gaps.
+
+**T+4 hours.** The `unsafe` audit is run for the first time against the merged tree. Result: 594 blocks, 9 justified, 585 unjustified, and the count is **up 17** relative to before the merge. The instrument's first reading is of damage the instrument's author caused that same week.
+
+**T+6 hours.** `find_kernel` is examined during unrelated GPU work. It is discovered that the zero-byte shaders were not being rejected — they were being served as valid zero-length shaders, uploaded as nothing, and `COMPUTE_PGM` was being pointed at uninitialised VRAM. The GPU had not been failing to find a kernel. It had been finding whatever was lying around and running it.
+
+**T+9 hours.** The 96-byte GFX9 shader is cross-checked against the AMDGPU assembler discovered inside rustc nightly. Opcode 33 vs 32 surfaces. The bug had survived hand review, code review, and being stared at in hexadecimal.
+
+**T+2 days.** A floating nightly adds two required methods to `Step`. The `x86_64` crate lacks them. The kernel stops compiling for reasons entirely unrelated to anything anyone did. The incident is technically over by this point but the universe wanted the last word.
+
+### Root Causes
+
+**RC-1: The ABI table was a shared resource that nobody modelled as a shared resource.** Every worktree treated "the next free syscall number" as a fact to be read rather than a claim to be made. Reading is idempotent. Claiming is not. Three readers, one claim, no lock.
+
+**RC-2: Rust's duplicate match arm behaviour is silent by default.** This is defensible language design and it is also, in this specific case, the mechanism by which two subsystems were nearly erased without a diagnostic. The language that catches use-after-free catches this with a lint that was not on.
+
+**RC-3: Zero-byte files are obviously incomplete to humans and completely unremarkable to code.** `find_kernel` had no length check. Nobody thought a length check was needed, because everybody could see the files were empty. Everybody was a person.
+
+**RC-4: Isolation was total in both directions.** The same isolation that let two contributors independently find the `buffer_cache` bug — which is genuinely a good sign for the bug's findability — also let them duplicate the entire investigation. Isolation does not distinguish between duplicated mistakes and duplicated insight.
+
+**RC-5: The audit was built before the merge and run after it.** Correct order for detection, wrong order for prevention. It measured the problem it was designed to prevent, one week too late to prevent it, which at least made for an unambiguous first data point.
+
+### Contributing Factors
+
+- The Seal ABI has 69 syscalls and 8 bits of space, so the collision was not driven by scarcity. It was driven by everyone independently applying the same reasonable heuristic to the same sorted list.
+- The kernel links to a 6.2 MB UEFI PE binary, so "does it build" takes long enough that nobody runs it speculatively for fun.
+- Boot output is 12 markers on a serial port under `-nographic`. All 12 markers passed throughout. Every single one of these problems was invisible to every single gate that existed at the time, which is the actual finding here.
+
+### What Went Right
+
+Genuinely, several things:
+
+- **The `buffer_cache` bug was found twice.** Reverting the fix drops ext2 to **0 of 19** parity operations — not degraded, *zero*. That bug had been sitting in the tree silently making ext2 wrong on any real disk, and the week that nearly broke everything is also the week it finally got caught. Twice.
+- **The syscall collision was caught before release**, by a grep, by luck, but caught.
+- **The shader path got worse and more honest simultaneously.** Three shaders now return `kernel_not_found` instead of quietly aiming the GPU at uninitialised memory. Fewer things work. Nothing lies.
+- **The audit exists now.** Its first reading was humiliating. That is what a working instrument looks like.
+
+### Action Items
+
+| ID | Action | Owner | Status |
+|----|--------|-------|--------|
+| AI-1 | Add a build gate for duplicate syscall numbers so this is not guarded by a hunch | me | open |
+| AI-2 | Reject zero-length shader blobs in `find_kernel` rather than serving them | me | done, embarrassingly late |
+| AI-3 | Cross-check all hand-derived GPU opcodes against the rustc-nightly AMDGPU assembler | me | done for 96 bytes, undone for the future |
+| AI-4 | Write `SAFETY:` comments for 585 `unsafe` blocks | me | open, will remain open, we all know this |
+| AI-5 | Format the EFI System Partition | me | open since the partition table was written |
+| AI-6 | Make the ext2 formatter write more than one block group so images can exceed 8 MiB | me | open |
+| AI-7 | Stop developing ten subsystems in parallel worktrees | me | rejected — it worked, it was just loud |
+| AI-8 | Pin the nightly toolchain | me | rejected — see Decision 18, I have chosen this life |
+
+Five of eight action items are assigned to the same person, who is also the incident commander, the on-call rotation, the reviewer, and the root cause. Escalation path: louder.
+
+---
+
+## The Day Six Gates Ran For The First Time
+
+There are twenty-seven proof gates in the QEMU job. They run in order. Each one
+greps the serial log for a marker the kernel is supposed to have printed, and if
+the marker is missing or wrong, the step fails and every step after it is
+skipped.
+
+That last clause is the whole story. A red gate is not one failure. It is one
+failure and a silent agreement not to ask about anything downstream.
+
+For most of this project's life the pipeline died at gate ten, on the Atlas chart
+graft proof, because `relobj::parse()` read a section header's fields at the
+wrong offsets and no chart had ever loaded — not once, not since the subsystem
+was written. Fixing that moved the failure to gate twelve, the raw-block
+installer proof, which failed because `ManifoldFS::write` accepted an `offset`
+parameter and then ignored it, so the second user account written to `/etc/passwd`
+destroyed the first one.
+
+Fixing *that* produced the following, which is the most interesting thing that
+has ever happened to this repository:
+
+```
+success  Verify raw-block installer proof
+success  Verify FAT/ext2 parity proof
+success  Verify stratum fit-control proof
+success  Verify foliation KV cache policy proof
+success  Verify GCN ISA GPU bench proof
+success  Verify KASLR mapping proof
+success  Verify per-feature security proof
+failure  Verify unsafe-audit census against the source tree
+```
+
+Six gates executed for the first time in the history of this project. Six
+subsystems — the filesystem parity check, the stratum fit control, the foliation
+KV cache policy, the GPU ISA bench, the KASLR randomisation proof, and the
+per-feature security gate — had markers, had checkers, had CI steps with
+confident names, and had never once been asked whether they were telling the
+truth.
+
+All six passed. I want to be clear that this is a good outcome and also that I
+had no right to expect it. Six mechanisms nobody had ever run, all correct on the
+first attempt, is not a testament to my care. It is a testament to the fact that
+they were written by someone who could not check them and therefore had to be
+careful, which is a worse development process that occasionally produces better
+code.
+
+Eighteen gates green. One red. Eight still standing behind it in the dark.
+
+### And now the part that is funny
+
+The gate that failed is the unsafe-code audit.
+
+It failed because it contains two different functions for counting unsafe blocks,
+and they disagree.
+
+The checker counts occurrences of the literal `unsafe {`. The inventory generator
+counts *lines* matching any of `unsafe {`, `unsafe{`, `unsafe fn`, or
+`unsafe impl`. On one file — `drivers/acpi/madt.rs`, byte-identical across both
+commits, nobody touched it — the recorded fixture says 12, the checker says 18,
+and the generator says 20.
+
+Three numbers. One file. Zero changes.
+
+The fixture that these tools are arguing about opens with a comment I wrote, in
+which I warn myself, in writing, that:
+
+> the host checker and the kernel-side parser must agree exactly, or the gate is
+> measuring two different things
+
+I then wrote two scanners that do not agree exactly, put them 5,000 lines apart in
+the same file, and never ran the gate that would have told me.
+
+There is a version of this where I am embarrassed. Instead I am delighted,
+because the divergence turns out to hide a real hole: the checker misses
+`unsafe{` written without a space. That is valid Rust. Unsafe code written that
+way is invisible to the audit. The only reason nothing has ever slipped through
+is that the `cargo fmt` gate runs first and quietly inserts the space — which
+means, for the entire life of this project, the security audit has been
+load-bearing on a formatter.
+
+### The number I am not going to defend
+
+While failing, the gate printed this:
+
+```
+blocks=594 justified=9 unjustified=585 undocumented_permille=984 result=pass
+```
+
+Read the last two fields together. **98.4% of the unsafe blocks in this kernel
+have no `SAFETY:` comment**, the audit measures that to a tenth of a percent, and
+it reports `pass`.
+
+It is not broken. It is doing exactly what it was written to do, which is check
+that the count of unsafe blocks hasn't drifted from a recorded fixture. It just
+also computes, prints, and then walks past a statistic that describes the actual
+state of the codebase far better than the thing it's gating on.
+
+I am not fixing that in the same change that fixes the scanner, because
+tightening a ratchet from 1.6% would fail every build from now until someone
+writes 585 safety comments, and that is a decision about how this project spends
+the next month rather than a bug. But I am writing the number down here, in the
+README, where it is harder to forget than in a log line inside a job that had
+never run.
+
+Nine of five hundred and ninety-four. I looked at it for a while.
+
+## Four Bugs That Were Not There
+
+A thing I did not expect from putting a verification pass in front of every fix
+is how often the verification pass comes back and says there was nothing to fix.
+
+Four times now. Each one cost a full investigation. Each one was worth it, and I
+want to write them down, because a repository that only records its fixes is
+quietly claiming that every hunch it had was correct.
+
+**The doc comment that wasn't copy-pasted.** A report claimed `aegis-core`'s
+`lib.rs` opened with a doc comment pasted from another crate. The verifier ran
+`git show HEAD` and found the file had no doc comment at all. It then refused to
+write a fix, on the grounds that it would have had to invent a "before" state to
+have something to improve. I think about that refusal a lot. It would have been
+very easy to write a nice doc comment, commit it, and describe it as fixing a
+copy-paste error, and nobody would ever have known that the error did not exist.
+
+**The TLB shootdown that was innocent.** The Atlas boot proof was red, and I was
+confident it was a stale TLB entry in `map_page_inner` — a real hazard, in a
+function that genuinely has one. The evidence that refuted it was in the log I
+had already read: `charts_peak=0`. Not "the wrong chart was mapped." Zero charts.
+The subsystem had never loaded anything, ever, and the fault was a section header
+parser reading fields at the wrong offsets. My hypothesis was about the wrong
+half of the system, and the number that disproved it had been sitting in front of
+me the whole time.
+
+**The password hashes that were fine.** Same shape, a day later. The installer
+proof was red and I was sure it was `passwd_embedded_hashes`. The refutation was
+reading what `add_user` actually writes to disk. It was fine. The real defect was
+one layer down, in `ManifoldFS::write`, which accepted an `offset` parameter and
+then ignored it, so writing the second account destroyed the first.
+
+Two of the four were mine. Both were refuted by evidence I already had. This is
+worth being precise about: the failure mode is not that my sources were bad. It
+is that I formed a hypothesis, found it plausible, and did not go back and check
+it against the log I had read twenty minutes earlier.
+
+**The UDP sockets that never move.** A scout reported that the UDP socket table
+hands out array indices as handles, and that removal shifts entries so an old
+index names the wrong socket. Real defect class, correctly described, and the
+kind of thing that produces a use-after-free with a straight face.
+
+The verifier grepped the file for every operation that could shrink a `Vec`. Two
+hits. Both were `self.rx_buffer` — the datagram queue *inside* a single socket,
+not the table of sockets. The socket table has exactly one length-changing
+operation in the entire file, and it is a `push`. It has never removed anything.
+It cannot remove anything. There is no `close`.
+
+The scout had read `remove(0)` and pattern-matched to the defect. So would I
+have. So, I suspect, would you.
+
+The verifier also declined to add a generation-tagged handle scheme, on the
+grounds that it would protect against a removal path that does not exist. It did
+leave one note, which is the most useful sentence in the whole report: the day
+someone adds socket reclamation — and they will, because the table currently
+grows forever — they must not implement it with `Vec::remove`. That is the day
+this bug becomes real.
+
+It filed a warning about a bug that hasn't happened yet, then closed the ticket
+for the bug that hadn't happened yet. I find this an unreasonably good outcome
+for a process I mostly set up so I would stop trusting myself.
+
+## The Number Nobody Reads
+
+I want to add to the unsafe-audit story, because fixing it turned up two things
+worse than the thing I was fixing.
+
+Recall the setup: a gate that counts unsafe blocks in the kernel and compares
+that count against a checked-in fixture. It failed because two scanners
+disagreed. Fine. Unified them, regenerated the fixture, 628 blocks across 84
+files, done.
+
+Except.
+
+**The kernel computes a statistic and no one is on the other end.** Every boot,
+the audit emits:
+
+```
+blocks=628 justified=9 unjustified=619 files=84 undocumented_permille=985
+```
+
+That fifth field is the fraction of unsafe blocks with no `SAFETY:` comment,
+expressed in parts per thousand. 985. The kernel calculates it, formats it, and
+prints it into the serial log at every single boot.
+
+The checker's list of fields it compares is `blocks`, `justified`,
+`unjustified`, `files`.
+
+`undocumented_permille` appears in the checker's source exactly twice, both times
+inside a test string literal. Nothing reads it. It has been computed and thrown
+away on every boot this kernel has ever performed. It is the most informative
+number the audit produces and it goes directly into the bin.
+
+**And the gate does not do what its own documentation says.** The fixture header
+states that a listed file gaining an unjustified block fails the gate. The
+implementation builds a per-file `drift` vector and a per-file `ratchet` vector,
+which is exactly the machinery you would need for that — and then both failure
+conditions compare *global sums*.
+
+So a file gaining an unsafe block while another file loses one passes silently.
+The per-file vectors are built and discarded. And `drift`, the vector that would
+tell you which files moved, is only printed inside the branch that fires when the
+totals mismatch — meaning in the one case where the totals match and the files
+have shifted underneath, it is populated, correct, and invisible.
+
+I wrote that header. I wrote that implementation. I have no memory of intending
+either to be a lie about the other, which is precisely the problem: nobody
+decided this. It drifted, in a file whose entire job is detecting drift, and the
+gate that would have caught it had never run.
+
+### The tally I am obliged to report
+
+Nine of 628 unsafe blocks in this kernel carry a `SAFETY:` comment.
+
+All nine live in four files: `fs/block_store.rs` (2 of 2 — perfect score,
+congratulations), `security/features.rs` (4 of 4 — likewise), `net/tcp.rs` (1 of
+3), and `lang/mod.rs` (2 of 40).
+
+`lang/mod.rs` having 40 unsafe blocks and 2 comments is the single most honest
+line in this document.
+
+I am not fixing that in the same change. Tightening the ratchet from 1.6% fails
+every build from now until someone writes 619 safety comments, and that is a
+decision about how this project spends the next month, not a bug I get to fix on
+a Tuesday. But it is in the README now, which is harder to lose than a log line
+inside a job that had never executed.
+
+The audit works. It has always worked. It was just never *asked*.
+
+## The Gate That Reads The Documentation And Not The Code
+
+I have to write this section carefully, because the gate it is about scans this
+file, and if I name the thing plainly the gate will fail and you will not be
+reading this at all. So: there is a host scripting language, extremely popular,
+named after a comedy troupe. You know the one. I am going to call it **the
+language** for the next several paragraphs and we will both cope.
+
+`Verify Seal OS language hygiene` exists to keep host scripting out of a kernel
+that is supposed to be `no_std` Rust all the way down. Good goal. Real risk. I
+wrote it on purpose.
+
+It works by scanning `README.md`, `docs/`, `.github/workflows/`, and `scripts/`
+for a list of banned substrings, and failing if it finds one.
+
+Note the list of things it scans. Note, in particular, what is not on it.
+
+It does not scan source code.
+
+When it finally ran — twenty-one gates deep into a pipeline that had never
+reached this far — it produced seven findings. Three were prose in this README,
+in sentences making fun of *other people's* systems for linking a 400 MB runtime.
+Four were entries in `docs/` accurately stating that the `tests/` directory
+contains host tests written in the language, and that `epsilon_core` is a
+compatibility area for it.
+
+Those four are true. There are eighty-nine source files in that language in this
+repository. The gate cannot see a single one of them.
+
+So the sole thing this gate has ever caught, in its entire existence, is the
+documentation being honest about the contents of the repository it documents.
+
+I want to be fair to it. It does enforce something real: it stops a host runtime
+from being introduced *by documentation*, which is roughly how these things
+actually spread — a README suggests a helper script, someone writes the helper
+script, six months later the build depends on it. Catching that at the doc layer
+is not stupid.
+
+But a check that reads the description and never the thing being described is a
+particular kind of failure, and it is the same one this entire document has been
+circling: **two things that are each individually reasonable, disagreeing about
+what they are talking about.** The gate believes it is enforcing a property of
+the codebase. It is enforcing a property of the prose. Those were the same thing
+only for as long as nobody looked.
+
+There is an allowlist, `language_line_allowed`, containing entries like
+`host runner` and `host ci` — phrases that mark a mention as being about the
+quarantined host side rather than the kernel. So past me understood the problem
+and built the mechanism. Past me then never ran the gate, so the mechanism was
+never exercised, and the documentation drifted freely for however long
+`docs/repository-layout.md` has existed.
+
+The fix is not mine to make casually, because the honest options are:
+
+1. Reword the docs so they stop saying the tests are written in the language —
+   which makes them false, to make a light turn green.
+2. Extend the allowlist so accurate descriptions of the quarantined surface are
+   permitted — which is what the mechanism is for, and which requires deciding
+   exactly what remains catchable afterward.
+3. Make the gate scan source, at which point it finds eighty-nine files and the
+   conversation becomes a very different one.
+
+Option 1 is off the table. A repository that edits its own documentation into
+inaccuracy in order to satisfy its own automated check has invented a machine for
+lying to itself, and has done so with a straight face and a green checkmark.
+
+Option 3 is honest and enormous. Option 2 is honest and small. I know which one
+gets done first, and I know that is not the same as knowing which one is right.
+
+## Eleven Things Wrong With A Window Manager Nobody Had Read
+
+Someone read the whole window manager. All of it — 22 files, 5,699 lines across
+`wm/` and `graphics/` — in one sitting, with instructions to report only things
+they could name a trigger for.
+
+Eleven defects. Three missing capabilities. I want to walk through the ones that
+say something, because collectively they explain what a green CI gate is and is
+not.
+
+### First, what the green gate actually proves
+
+`Verify desktop compositor soak marker` has been passing for as long as it has
+existed. It runs `run_desktop_soak_probe`: twenty-four iterations of "render the
+desktop, mark the whole screen dirty, compose, blit," nudging the mouse a little
+every third frame, at whatever mode the firmware handed us.
+
+Its own output line contains `input_events=0`.
+
+So it proves the kernel survives redrawing itself twenty-four times. It proves
+nothing whatsoever about clicking, dragging, resizing, maximizing, the taskbar,
+menus, changing theme, the keyboard, any colour depth other than 32-bit, or any
+resolution other than 1024x768. The welcome screen auto-dismisses after 500
+ticks, so CI has never touched that screen's input path either.
+
+Every defect below lives in that gap. They did not survive because they were
+subtle. They survived because nothing ever asked.
+
+### The screen is 1024x768 and always has been
+
+`Compositor::screen_w` and `screen_h` are initialised to `1024` and `768`. The
+only thing that ever writes them is `mouse_move`. The only live caller of
+`mouse_move` passes `1024, 768` as literals.
+
+Every drawing function in the same file reads the real `fb.width` and
+`fb.height`.
+
+So on any machine whose firmware picks 1280x1024 — and mode selection scores
+purely on resolution, so plenty will — the cursor stops dead at x=1023, the power
+button is drawn somewhere it can never be reached, and maximizing a window makes
+it 1024 wide on a 1280-wide screen. On an 800x600 screen the cursor walks off the
+visible area entirely and disappears, because `put_pixel` quietly refuses to draw
+it, and clicks in the bottom 168 pixels are routed to taskbar logic operating on
+a taskbar that is drawn 168 pixels higher.
+
+The soak probe, incidentally, passes `fb.width` and `fb.height` correctly.
+Whoever wrote the probe knew. The knowledge just never made it four files over.
+
+### The power button has two different left edges
+
+It is drawn starting at `fb.width - 36`.
+
+It is hit-tested starting at `fb.width - 40`.
+
+Four columns of visible red button do nothing when clicked. Four columns of
+apparently-empty taskbar open the power menu. Both numbers are correct
+implementations of "near the right edge." Neither is aware the other exists.
+
+The power menu itself then opens anchored by its *left* edge to that button, and
+it is 150 pixels wide with about 40 pixels of screen remaining. You get `Shut`,
+`Rebo`, `Logo`. They are still clickable. You just have to know what they say.
+
+### The welcome screen wants you to right-click
+
+`welcome.rs` matches on mouse button `1`. The mouse driver emits `0` for left and
+`1` for right. All five other places in the codebase that handle a click read `0`.
+
+So on first boot, clicking "Get Started" does nothing. Clicking any of the four
+theme buttons does nothing. The wizard can be escaped with Enter, or by waiting
+500 ticks for it to give up on you.
+
+Right-clicking works perfectly. I did not design this. I could not have designed
+this.
+
+### The compositor's best feature has never run
+
+`Compositor::compose` implements damage tracking: it unions the dirty rectangles,
+clips to them, redraws only what changed, and skips frames adaptively. The module
+documentation advertises it. `Rect::union`, `Rect::intersects`, and `Rect::area`
+exist to support it.
+
+It has zero call sites. Everything calls `compose_full`, which redraws the entire
+screen. On every input event. Forever.
+
+And there is a second-order consequence I like very much. `themes::theme_changed()`
+is a flag, and it has exactly one consumer: a line inside `compose`. Since
+`compose` never runs, the flag is set and never read. So when you pick a theme in
+the welcome wizard, the desktop and taskbar change colour — they read the current
+theme every frame — while every window's title bar, border, and buttons stay in
+the old palette, because those are baked into the window's own buffer and only
+repainted when the window is focused, resized, or renamed.
+
+Your desktop is one theme. Your windows are another. Clicking each window fixes
+it, one at a time, which reads as a feature if you squint.
+
+### You can type into a window you cannot see
+
+`z_order` is assigned once, when a window is created, and never written again.
+The sort that determines paint order is stable, so paint order is permanently
+creation order.
+
+Clicking a window focuses it. Focus determines who receives keystrokes. It does
+not determine who is painted on top, because nothing does.
+
+So: boot, restore an app from the taskbar, click back to the terminal. The
+terminal has focus. The terminal receives every key you press. The other app is
+still painted over the top of it. You are typing into a window that is behind
+another window, and the only evidence that it is working is that the thing you
+can see is not changing.
+
+### And the one that actually kills the machine
+
+`render_decorations` computes its three title-bar button positions as `w - 20`,
+`w - 40`, and `w - 60`. These are unsigned. Release builds have no overflow
+checks. Nothing anywhere establishes a minimum window width.
+
+A script can ask for a window four pixels wide. `4 - 40` is not `-36`; it is
+`4294967260`. The loop that follows is not empty, and the first thing it does is
+index a 104-element buffer at offset 4294967276.
+
+`panic = "abort"`. No unwind. The machine stops.
+
+That one is being fixed as I write this, which is a sentence I can only publish
+because someone read all 5,699 lines instead of the 200 the failing test pointed
+at.
+
+## Right About The Bug, Wrong About Both Numbers
+
+Here is the strongest argument I have for making somebody check the report before
+somebody acts on it, and it is not the case where the report was wrong. It is the
+case where the report was right.
+
+Someone read the window manager and found that `render_decorations` computes
+`w - 20`, `w - 40`, and `w - 60` on unsigned integers with no minimum window
+width. That is a real defect. A four-pixel window makes `4 - 40` evaluate to
+4294967260, and the loop that follows indexes a 104-element buffer at
+4294967276. The machine stops. All of that is correct and it is exactly what
+happens.
+
+The report then said two more things, both reasonable, both load-bearing for the
+fix, and both wrong.
+
+**"The safe minimum width is 12."** It is 60.
+
+The person who fixed it did not take that number. They swept every width from 0
+to 200 through the actual rendering body and printed what happened. Widths 12
+through 59 do not crash. They wrap `w - 60` and the resulting index lands *back
+inside the buffer*, so the write succeeds, in the wrong place, silently.
+
+Think about what shipping the reported number would have done. It would have
+raised the floor to 12, closed the crash, produced a green test, and converted
+every window between 12 and 59 pixels wide from a loud immediate abort into
+quiet pixel corruption. The bug report would have been closed. The defect would
+have gotten harder to find.
+
+**"It's reachable from the shell's `run` command."** It is not.
+
+`cmd_run` calls `execute_file(file, "")`. It passes an empty source string. It
+never opens the file. That entire path is dead, and had the fix been justified
+solely by it, the justification would have been fiction.
+
+The real path is `SYS_EXEC` on any file ending in `.aether`, which does read the
+bytes, and where the window dimension arrives via
+`get_arg_num(args, 1).unwrap_or(640.0) as u32`. That cast saturates, so a
+negative literal produces 0 and a huge literal produces `u32::MAX`. Both ends of
+the range are reachable, and neither goes anywhere near the shell.
+
+### The part I want to keep
+
+Three claims. The defect was real. The threshold was wrong by a factor of five,
+in the direction that would have hidden the problem. The trigger was wrong
+entirely, and the fix's stated justification would have described a code path
+that cannot execute.
+
+A reviewer reading the diff would have caught none of this. The diff was fine.
+The numbers *in* the diff were the problem, and the only thing that finds a wrong
+number is measuring it.
+
+Which is the whole thesis, really. Every gate in this repository was written by
+someone confident about a number. The unsafe audit was confident about 594. The
+compositor is confident the screen is 1024 pixels wide. A test was confident that
+a loss below 0.1 meant a network had learned, when the real value was 0.00026 and
+the bound was four hundred times too loose to notice anything going wrong.
+
+None of them were lying. All of them were unmeasured.
+
+## The Tests Ran
+
+Earlier in this document there is a section explaining that nothing in this
+kernel had ever been tested. Seventy thousand lines, sixty-five `#[test]`
+functions that never compiled, an in-kernel harness that boots under QEMU and
+greps for `ALL TESTS PASSED`, and a CI job to run it that had reported `skipped`
+on every run on every branch since it was written, because it gates on a green CI
+that had never existed.
+
+That section is now wrong, and I am leaving it in, because how it became wrong is
+the only interesting part.
+
+Six root causes, in order, each one hiding the next:
+
+1. `cargo fmt` failed on two files that had never been formatted, because they
+   had never been compiled.
+2. `miri` had never compiled at all — a `use std::f64;` shadowed the primitive
+   type, so `f64::MAX` quietly resolved to the deprecated module constant.
+3. The Atlas boot proof failed because `relobj::parse()` read the section header's
+   fields at the wrong offsets. Not "sometimes wrong": no chart had ever loaded,
+   ever, and the boot log had been printing `charts_peak=0` the entire time.
+4. The installer proof failed because `ManifoldFS::write` accepted an `offset`
+   parameter and ignored it, so creating a second user account destroyed the
+   first one.
+5. The unsafe-block census failed because the audit contained two scanners that
+   disagreed with each other.
+6. The language-hygiene gate failed on documentation that was accurately
+   describing the repository.
+
+And then, at 04:49 on a Tuesday:
+
+```
+[TEST] === Suite: All Registered Tests ===
+TEST_PASS: installer::gpt_header_crc_matches_independent
+TEST_PASS: installer::write_to_unselected_device_is_refused
+TEST_PASS: shell::root_secret_denied_for_unprivileged_shell
+TEST_PASS: virt::map_page_inner_refuses_present_leaf
+TEST_PASS: mmap::munmap_user_refuses_foreign_page_table
+TEST_PASS: filesystem::write_honors_offset
+...
+```
+
+**151 passed. 1 failed.**
+
+I have written a lot of words in this README about not trusting things that look
+like verification. So let me be precise about what that number is and is not.
+
+### What it is
+
+Those are real assertions, executing on a real x86_64 kernel, booted under real
+firmware, on a machine that is not mine. `filesystem::write_honors_offset` is the
+test for the bug that was eating `/etc/passwd`. It ran. It passed. That is no
+longer a claim I am making; it is a thing that happened.
+
+### What it is not
+
+**The suite did not finish.** It aborted at registration group 31 of 54.
+
+The thirty-second group reaches `with_vfs`, which is `.expect("VFS not
+initialized")`, and this kernel builds with `panic = "abort"`, so there is no
+catching it. Everything after that never ran: the network stack, the language
+runtime, all three ACPI parsers, TLS, AHCI, virtio, the ramdisk, the ML engine.
+Twenty-three groups.
+
+151 is a floor. I do not know what the total is. Nobody does yet.
+
+### Update, four hours later: 296 passed, 0 failed
+
+The abort was `with_vfs`, which is `.expect("VFS not initialized")`. The harness
+runs from `kernel_main_continue` immediately after the entropy driver, many layers
+before the filesystem is set up — and under the test-mode build, `init_vfs` is
+never reached at all. So the tests had always been running before the filesystem
+existed. Nobody could have known, because the tests had never run.
+
+The file the panic named was not at fault, incidentally. `bundle` already guarded
+its filesystem access correctly; the unguarded call was two frames deeper, in the
+package installer, reached through a test fixture. That is the third time in one
+day that the location a report named turned out to be one layer off the cause.
+
+With a test-mode filesystem root mounted on first use:
+
+```
+PASS=296  FAIL=2  PANIC=0
+```
+
+All fifty-four registration groups execute. The suite finishes.
+
+And the moment it did, it found two more:
+
+```
+TEST_FAIL: dns::legit_response_accepted
+TEST_FAIL: ahci::large_read_matches_chunked_small_reads - 16 KiB read from boot device failed
+```
+
+Both live in suites that had never executed. Both are now being investigated, and
+I genuinely do not know yet whether the code or the test is wrong in either case —
+which, four hours ago, was not a question this project was capable of asking.
+
+The DNS one has a suspect. Earlier in this same series, a commit made DNS query IDs
+and source ports unguessable, drawn from hardware entropy, specifically to stop
+cache poisoning. If that test's fixture hardcodes a query ID, then a security fix
+broke it by doing precisely what it was supposed to do. The correct repair is to
+teach the test to use the real generated ID — not to relax the check that makes it
+unpredictable.
+
+### The one that failed on the first run
+
+```
+TEST_FAIL: atlas::relocation_arithmetic
+  compute_reloc(R_X86_64_PLT32, 0xFFFF_9000_0000_1000, -4, 0xFFFF_9000_0000_1100)
+  != Ok(RelocWrite::W4(0xFFFF_FF00))
+```
+
+`PLT32` is `L + A - P`. The operands give `-0x104`, which is `0xFFFF_FEFC`. The
+test wanted `0xFFFF_FF00`, which is `-0x100`. It dropped the addend.
+
+The code was right. The test was wrong.
+
+And here is the part that made me laugh out loud: **the assertion two lines above
+it tests `PC32` with the same `A = -4` and expects the correct answer.** Same
+file. Same function. Same sitting. The addend was honoured in one branch and
+forgotten in the next, and then the whole thing sat there being wrong for the
+entire life of the project, because there was no mechanism on Earth that would
+have told anyone.
+
+That is the shape of every defect in this document, one last time, and this time
+the thing that caught it was the project's own test harness — working correctly,
+on the first occasion it was ever permitted to try.
+
+## Three Subsystems That Had Never Once Worked
+
+This is the finding I did not expect and still find slightly upsetting.
+
+Not "had a bug." Not "failed in an edge case." Three separate subsystems of this
+operating system had, from the day they were written until today, never
+successfully performed their function a single time. Each one reported success.
+Each one was wired into the boot, referenced in documentation, and visible in the
+logs. All three did nothing.
+
+**Atlas, the chart loader.** `relobj::parse()` read a section header's fields at
+the wrong offsets — it took the address where the file offset lives, and the file
+offset where the size lives. So the loader read garbage, rejected it, and moved
+on. The boot log had been printing `charts_peak=0` the entire time, on every boot,
+for the life of the subsystem. Zero charts. Not "sometimes fails to load a chart."
+It had never loaded one.
+
+**The filesystem's write path.** `ManifoldFS::write` took an `offset` parameter and
+ignored it, replacing the file contents on every call. The read path honoured its
+offset correctly. So writing the second user account to `/etc/passwd` destroyed
+the first, and the installer proof had been red for as long as it had existed.
+
+**The DNS resolver.** This one is my favourite, because the bug is four bytes wide
+and the consequence is total.
+
+A DNS answer's owner name is almost always a compression pointer — two bytes
+saying "the name is back at offset 12." The parser consumed those two bytes
+correctly. Then it also ran its *other* clause, the one that skips the single zero
+byte terminating an uncompressed name, and ate the high byte of the field that
+follows.
+
+The field that follows is the record type. It reads `0x0001` for an A record. Read
+one byte late, it reads `0x0100`. So the check for "is this an A record" was
+comparing 256 against 1, forever, and the answer was silently skipped.
+
+Every real resolver on Earth emits that pointer form. **No legitimate DNS response
+had ever been cached.** The resolver accepted the packet, validated the
+transaction ID, validated the source address, validated the port, validated the
+question echo — five checks, all passing, all correct — and then threw the answer
+away because it was reading the type field one byte too far along.
+
+### What these three have in common
+
+Nothing, technically. An ELF offset error, a discarded function parameter, and an
+off-by-one in a name parser. Different subsystems, different authors' moods,
+different decades of prior art to get wrong.
+
+What they share is that **none of them could fail loudly.** The chart loader
+returned "no charts." The write path returned success. The resolver returned "no
+answer for that name," which is a perfectly ordinary thing for a resolver to say.
+
+And the one mechanism that would have caught all three — a test suite running
+against a booted kernel — existed, was correctly written, was wired into CI, and
+had never executed, because it was gated behind a green build that had never
+happened.
+
+You can have every part of a verification pipeline and still verify nothing, if
+one link is a condition that is never true. I had twenty-seven proof gates and a
+test harness and 70,000 lines of kernel, and three of my subsystems were
+elaborately-decorated no-ops.
+
+The fix for the resolver, incidentally, was a deletion. The file already contained
+a correct name decoder that handles the pointer-versus-terminator distinction
+properly. Both skip loops now call it instead of open-coding it wrongly. Twenty-four
+lines removed.
+
+That is usually how it goes. The correct code was already there, twelve lines up,
+being ignored.
+
+## Checks That Cannot Fail: A Complete Taxonomy
+
+By this point in the document you have watched me discover, repeatedly, that
+something I believed was verifying my code was not. I have now found enough of
+them to sort them into kinds, which feels like progress and is actually just
+filing.
+
+Here is every distinct way a check in this repository has turned out to be
+incapable of failing. All seven were found in a single day. All seven were green.
+
+**1. The check that was commented out.** `test_mlp_xor` trained a neural network
+on XOR and then had `// assert!(result.final_loss < 0.1);`. It passed whether
+training converged, diverged, or produced NaN. Someone commented it out, presumably
+intending to come back.
+
+**2. The check whose subject was hardcoded.** One line below that, in the same
+test, `assert!(result.converged)` — where `fit()` sets `converged = true`
+unconditionally, under the comment `// Simple logic`. Two assertions, adjacent,
+neither capable of failing, for different reasons.
+
+**3. The check with the wrong expected value.** `atlas::relocation_arithmetic`
+expected `0xFFFF_FF00` where the ABI requires `0xFFFF_FEFC`. The addend was
+dropped. And the assertion two lines above it, testing a sibling relocation with
+the *same* addend, gets it right. One author, one sitting, honoured in one branch
+and forgotten in the next.
+
+**4. The check that measured a tautology.** The foliation proof reports
+`bounded=ok`, computed as `long_points <= STRATUM_WINDOW` — where the only code
+that increments `long_points` does so inside `if len < STRATUM_WINDOW`. It cannot
+exceed it. The documentation says this field reports failure "if the memory bound
+is exceeded." It is gated in CI.
+
+**5. The check whose failing state is unconstructible.** The same proof reports
+`referenced_evictions=0`. It is computed after `pick_victim` has already skipped
+every leaf with a non-zero refcount, and nothing mutates a refcount in between.
+Zero is not a measurement. It is the only value the expression can produce. Also
+gated in CI. There is a third one exactly like it.
+
+**6. The statistic computed and discarded.** Every boot, the unsafe-code audit
+emits `undocumented_permille=985` — the fraction of unsafe blocks with no safety
+comment, to a tenth of a percent. The checker compares four fields. That is not
+one of them. It appears in the checker's source exclusively inside test string
+literals. Nine hundred and eighty-five per mille, computed and binned, on every
+boot this kernel has ever performed.
+
+**7. The check that killed the machine before it could report.**
+`topo_asm::distance_basic` asserts a distance of 3.0 from a function that returns
+0.0 for every input — the comparison uses `jbe`, which skips the larger candidate,
+so an accumulator seeded at zero never moves. That test should fail loudly on every
+boot. It does not, because something in the same hand-written assembly takes the
+kernel down first, and a dead kernel prints no failures.
+
+That last one is my favourite and I want to be precise about why. **The test
+correctly detects the bug. The bug prevents the test from reporting it.** The suite
+runs 318 assertions, passes every one, and then goes quiet — no failure, no panic,
+no summary line — and because the harness never prints its verdict, the job that
+greps for that verdict fails with no explanation. Three separate mechanisms, each
+working exactly as designed, arranged in a sequence that produces silence.
+
+### Epilogue to case 7, four hours later
+
+The test was right the whole time.
+
+`topo_asm::distance_basic` asserted a distance of 3.0. The function returned 0.0.
+The test would have caught it on the first boot it was allowed to run.
+
+What killed the kernel was not the arithmetic. It was that **every hand-written
+assembly block in that module took its arguments in System V registers, on a
+target whose ABI is Win64.** `rustc --print target-spec-json --target
+x86_64-unknown-uefi` says `"entry-abi": "win64"` — arguments arrive in `rcx`,
+`rdx`, `r8`. The code read `rdi`, which held whatever the caller happened to leave
+there, and used it as a load base. The loop bound came from `rdx`, which under the
+real ABI holds the *second pointer*. So it swept memory from a garbage address for
+something like a hundred million iterations until it walked out of the mapping.
+
+That was proved by lifting the assembly verbatim into a host binary and watching
+it fault on the first call — `STATUS_ACCESS_VIOLATION`, printing its "about to
+call" line and nothing after, which is precisely the shape of the serial log. Feed
+the identical bytes System V registers and the crash disappears.
+
+There was a second one nobody had suspected. The kernel builds `+soft-float`.
+Compiling a caller with `--emit asm` shows it reading `%rax` and calling
+`__gtdf2`, the software floating-point comparison. The old code returned its
+result in `xmm0`. Garbage even on the paths that didn't fault.
+
+And `simd_betti_accumulate` had the identical fatal ABI bug, sitting quietly
+beside it, unnoticed by everyone including the survey that found the first one.
+
+The AVX-512 path was deleted rather than repaired: `git grep xsetbv` finds nothing
+in this kernel, so XCR0 is never enabled, so executing a ZMM instruction there is
+`#UD` — the same silent death, waiting for the first machine that reported the
+CPUID bit.
+
+The result, on the first run that contained the fix:
+
+```
+TEST_PASS: topo_asm::distance_identity
+TEST_PASS: topo_asm::distance_basic
+TEST_PASS: topo_asm::distance_peak_at_end
+TEST_PASS: topo_asm::betti_count
+TEST_PASS: topo_asm::betti_count_rejects_nan
+```
+
+359 assertions passing, zero failures.
+
+**The test had been correct, and armed, and pointed directly at the defect, for
+the entire life of the function.** It simply lived inside the blast radius.
+
+### The thing they have in common
+
+Not one of these is a mistake in the sense of someone doing arithmetic wrong. Every
+single one is a check whose *shape* is correct and whose *content* is empty. They
+read like verification. They occupy the place in the file where verification goes.
+They emit the strings verification emits.
+
+A gate is not evidence. A gate is a **claim** that evidence exists. The only way
+to find out is to make it fail on purpose and watch.
+
+I know that now because a smith working on filesystem ownership deliberately
+corrupted a journal entry to see whether any test would notice, none did, and
+that is how we learned the write-ahead log has never journalled anything — the
+`TOPJ` header and the journal entries are written to the same sectors, so nothing
+has ever parsed, and `replay_journal` has replayed nothing since the day it was
+written.
+
+It found that by breaking its own code on purpose. There is no other way.
+
+## The Network Stack, Or: Two Packets That Ended The Machine
+
+Somebody read all 5,237 lines of the networking code in one sitting. I want to
+report the two worst findings first, because they are the kind of thing that
+should make a person stop and check their own repository.
+
+**One UDP packet to port 68 aborts the kernel.** The DHCP option loop guards with
+`if i + len > pkt.len() { break; }` — which bounds the length the *packet claims*
+— and then reads a fixed one or four bytes regardless. A 242-byte payload with
+option 53 and a declared length of zero passes that guard and indexes byte 242 of
+a 242-byte buffer. No authentication. No prior DHCP exchange. The only other gate
+is a transaction ID hardcoded to `0x12345678` and never written, so it is not a
+secret.
+
+**One IPv4 header aborts the kernel.** The parser establishes that the header
+length is at least 20, checks that the total length does not exceed the buffer,
+and then slices `&pkt[ihl..total_len]`. A total length of zero passes both checks
+and produces a slice that starts at 20 and ends at 0. Rust panics on a reversed
+range, and this kernel builds with `panic = "abort"`.
+
+Both are now fixed. Both existed because the guard bounded a different quantity
+than the code read — which is the same defect this document has been describing
+for several thousand lines, arriving in a form where a stranger on the network
+gets to trigger it.
+
+### And then the quieter ones
+
+**Every checksum this stack has ever sent went out byte-swapped.** `internet_checksum`
+returns a host-order number; seven sites stored it into a packed header without
+converting. The receive path verifies by recomputing and comparing to zero — so
+the kernel rejected its own packets, including on loopback.
+
+The reason nobody caught it by reading is genuinely interesting: **there was no
+single correct example to copy.** The tree holds three conventions. Four sites
+write the bytes explicitly with shifts and are right. Two more are right a third
+way, because that struct holds host order in every field and converts on the way
+out. Which means there are two structs both named `TcpHeader`, one file apart,
+with opposite in-memory conventions. Open one file and you learn one rule; open
+the other and you learn a different one.
+
+**ARP requests were addressed to this machine.** The Ethernet header wants
+destination in bytes 0..6 and source in 6..12. `send_arp_request` wrote its own
+MAC first and the broadcast address second. So every request went out addressed to
+itself, sourced from broadcast — a frame no peer accepts and most switches drop.
+
+On-demand address resolution has therefore never once succeeded. The cache filled
+only by accident, from ARP traffic addressed to other hosts. Four sibling sites in
+the same tree get the order right. One did not.
+
+**And TCP has never handled a reset.** `_FLAG_RST` is defined with a leading
+underscore, and a repository-wide grep finds exactly one hit: the definition. So
+connecting to a closed port — the most ordinary failure on a network — leaves the
+socket in `SynSent` forever, feeding a retransmit queue that never removes its
+entries and grows by one per poll, permanently, while re-sending SYNs at poll rate
+rather than at the retransmit timeout.
+
+That one is not fixed yet. It is written down, which is the difference between a
+bug and a secret.
+
+## I Fixed The Checksum And The Kernel Stopped Booting
+
+This one is mine, it happened while writing the sections above, and it is the
+best illustration in this entire document of the thing the document is about. So
+it goes in, in the present tense, unresolved at time of writing.
+
+Recall the checksum defect: `internet_checksum` returns a host-order number, seven
+sites stored it into a packed header without converting, and every packet this
+stack ever sent went out byte-swapped. The receive path verifies by recomputing
+and comparing against zero, so the kernel rejected its own packets — including on
+loopback, where `send_ipv4_packet` routes 127.0.0.1 straight back into
+`handle_ipv4_packet`.
+
+I fixed it. Seven `.to_be()` calls. Proven by round-tripping a packet the kernel
+builds through the verifier the kernel uses, which is about as unambiguous as
+evidence gets.
+
+CI went red. The boot stops. Fourteen milestones pass, eleven do not, no panic
+message, no fault report — the serial log just ends.
+
+The first line missing from the log, compared against the last good boot, is
+`[BENCH] tcp-roundtrip`. That benchmark opens eight TCP connections with both
+endpoints set to `127.0.0.1`.
+
+And `send_ipv4_packet`'s loopback branch does not queue. It calls
+`handle_ipv4_packet` **synchronously, from inside the send path.**
+
+My first guess was that this recursed forever — send, loop back, dispatch, answer,
+send. That guess was wrong, and the real answer is tidier and worse.
+
+`poll()` takes the lock on the socket table. **While still holding it**, it sends
+the SYN-ACK. That goes to `send_ipv4_packet`, which loops back, which dispatches
+to `handle_tcp_packet`, which takes the lock on the socket table.
+
+It is a `spin::Mutex`. Non-reentrant. There is no second packet and no stack
+growth — one re-entry, and the boot thread spins on a lock it is itself holding,
+forever.
+
+You can see it in the log without knowing any of that. The failing serial output
+ends with twenty-two consecutive timer-interrupt lines and nothing else, for two
+hundred and thirty-four seconds, until the harness gives up. The CPU is alive.
+Interrupts are being delivered. The kernel is simply never going to do anything
+again.
+
+**That cycle has been there the whole time.** It was unreachable for exactly one
+reason: every packet the kernel built failed its own checksum test and got
+dropped at the door. The bug was load-bearing. Fixing it removed the only thing
+standing between this kernel and an infinite loop.
+
+I want to be precise about the shape, because it has happened repeatedly in this
+repository and I have now been on both ends of it.
+
+Earlier, `map_page_inner` was overwriting live page-table entries. Making it
+refuse a present leaf was correct — and it turned a silent corruption into an
+`Err` that the caller was discarding with `let _`, which leaked a frame on every
+concurrent double-fault. One fix, one new defect exposed, both real.
+
+This is the same, and worse, because the suppressed defect is a lock-ordering
+deadlock in the network stack rather than a leaked page. A wrong checksum was the
+only reason `handle_tcp_packet` had never been re-entered while the socket table
+was locked.
+
+### What I am not going to do about it
+
+**Revert the checksum fix.** It restores a defect in which this operating system
+cannot send a valid packet to anybody, including itself, in order to hide a
+different defect. That trade is exactly what the preceding eighty commits exist
+to undo.
+
+**Weaken the verifier.** Same reason, with extra steps.
+
+**Make the benchmark skip the live path.** Then the benchmark stops measuring the
+thing it is named after, and this document gains an eighth entry in its taxonomy
+of checks that cannot fail — authored deliberately, by me, to make a light turn
+green. No.
+
+The fix is a loopback path that cannot re-enter itself: queue the packet for the
+next poll rather than dispatching it from inside the send. Structural, not
+bounded — impossible rather than merely limited.
+
+There was also a question that changes the shape of the repair, and I have the
+answer now. **Has loopback ever worked at all?**
+
+No. Not once. The checksum arithmetic for the exact header that fixture emits was
+worked out by hand: `internet_checksum` returns `0xBBCF`, which verifies to
+`0x0000` when stored with the conversion and `0xEC13` without. So every locally
+built packet was dropped at `ipv4.rs:194` before reaching any handler, for the
+life of the code.
+
+Which makes this the tenth thing in this document found never to have worked, and
+means the repair is to make loopback function for the first time rather than to
+restore the accident that was standing in for it.
+
+But I need to correct something I wrote a paragraph ago, in the same breath.
+
+I said `tcp-roundtrip` had "been passing by some other route." True — and I then
+said out loud, to someone, that it had therefore been measuring nothing. That was
+wrong and I want it on the record next to the rest.
+
+The benchmark reports `established=8`, `server_rx=512`, `client_rx=512`, and
+those numbers are real. The fixture injects packets **directly** into
+`handle_tcp_packet` rather than putting them on the wire, so the TCP state
+machine genuinely was being exercised: eight connections, real transitions, real
+byte accounting. What was dead underneath it was the *transmit* path — the
+packets `send_tcp_packet` handed to `send_ipv4_packet` were discarded at the
+checksum, and the fixture never depended on them arriving.
+
+So: the measurements were honest, the plumbing under them was not, and I nearly
+filed a working test as a fake one because the distinction is two layers down.
+
+Which is the entire lesson of this document arriving one more time, at my
+expense, in the paragraph where I was explaining the lesson.
+
+I will know shortly. The kernel now has a way to tell me, which is new.
+
+## 364/364
+
+```
+[TEST] Suite All Registered Tests: 364/364 passed, 0 failed, 0 panicked
+[TEST] ALL TESTS PASSED
+```
+
+That is the first time this repository has ever produced those words.
+
+The workflow that prints them now reads twelve failures, eleven skips, and two
+successes. Before today the success column was zero, and it was not a matter of
+bad luck. It was structural: `kernel/seal-os` sits in the workspace `exclude`
+list, so `cargo test --workspace` never reached it and its sixty-five `#[test]`
+functions never compiled; and the job that boots the kernel and runs them gates on
+a green CI that had never, in the life of the project, existed.
+
+Getting here meant clearing eleven root causes, and the ordering was not
+negotiable. A failed gate skips everything behind it, so at any moment you can see
+exactly one of them:
+
+1. `cargo fmt` — two files never formatted, because never compiled
+2. `miri` — a `use std::f64;` shadowed the primitive, so the job had never compiled at all
+3. Atlas — the chart loader read a section header's fields at the wrong offsets, and had loaded zero charts since the day it was written
+4. the installer — `ManifoldFS::write` took an `offset` and ignored it, so the second user account destroyed the first
+5. the unsafe census — two scanners in the same binary, five thousand lines apart, disagreeing four ways
+6. language hygiene — a gate that reads the documentation and never the source
+7. the harness itself — `with_vfs` asserts, and the tests run before the filesystem exists
+8. a relocation test that expected the wrong number, with the correct version of the same arithmetic two lines above it
+9. hand-written assembly taking its arguments in the wrong registers for the target's ABI, returning through the wrong register for its float model
+10. a rank-1 tensor handed to something that requires a column vector
+11. me
+
+Number eleven deserves its place. I fixed the checksum — a real defect, seven
+sites, every packet this stack ever sent going out byte-swapped — and the kernel
+stopped booting. The wrong checksum had been the only thing preventing a
+loopback delivery from re-entering a lock its own caller was holding. And beneath
+*that*, loopback replies carried a source address of `0.0.0.0`, so they missed a
+flow index keyed on source and were dropped.
+
+Three defects in a stack. The top one was hiding the second, which was hiding the
+third, and none of them could be seen until the one above it was repaired.
+
+The tempting move was to revert. It would have taken ten seconds and restored a
+green pipeline — by restoring a state in which this operating system cannot send a
+valid packet to anything, including itself. I did not do that, and the refusal is
+the only part of this section I would defend as a principle rather than a
+consequence.
+
+### Postscript: 365, and the four-defect stack
+
+The section above was written at 364. The next run said 365, and the extra one is
+`udp::loopback_sendto_does_not_reenter_socket_lock`, which matters more than a
+single increment.
+
+Because it turned out the checksum fix had been holding down not one defect but
+three, and they had to come off in order.
+
+**One.** Every packet this stack sent went out byte-swapped, so peers dropped it
+and the kernel's own receive path dropped it too.
+
+**Two.** Fixing that woke a lock re-entry. `poll()` holds the socket table, sends
+a SYN-ACK, and the loopback branch dispatches straight back into the handler,
+which takes the same non-reentrant mutex. Self-deadlock at re-entry depth *one* —
+which is why the depth guard I had suggested as a fallback would have fixed
+precisely nothing, sitting as it would beneath any ceiling a counter could reject.
+
+**Three.** Fixing *that* still failed, because loopback replies carried a source
+address of `0.0.0.0`, so they missed a flow index keyed on source and were handed
+to the ARP path and dropped. `exact_flow=0 result=fail`, with the deadlock gone.
+
+**Four.** And the same pattern sat in UDP, at two sites — one reported, one not,
+and neither covered by any test. Its IPv6 leg had been deadlocked since the day it
+was written, with no checksum ever involved, because IPv6 has no header checksum
+to fail.
+
+Four defects, each one visible only after the one above it was repaired. The
+revert was available at every step and would have taken ten seconds. It was
+refused three times, and each refusal cost hours and bought a real bug.
+
+I do not think there is a general lesson in that beyond the obvious one, which is
+that a green pipeline and a working system are different things and this
+repository has spent its entire existence demonstrating the gap. But it is a
+pleasing shape: the document argues that fixing the visible defect reveals the
+next, and then the argument had to be made four more times on the author's own
+commits before it would let the build go green.
+
+### 370, and a network stack that works
+
+The count is 370 now. The five new ones are TCP resets, retransmission, and the
+receive window — and with them, this operating system can do a list of things it
+has never done:
+
+- send a packet whose checksum is correct
+- deliver a packet to itself, over TCP or UDP, without deadlocking
+- complete a three-way handshake over `127.0.0.1`
+- resolve an address by ARP
+- cache a DNS answer
+- notice that a connection was refused
+- stop retransmitting something that was already acknowledged
+- refuse a duplicate segment instead of appending it to the receive buffer twice
+- refuse a neighbour advertisement that carries no address
+
+Every one of those is a thing an operating system is generally assumed to do on
+the first day. This one has been shipping without them, through twenty-seven
+proof gates, a boot-milestone checker, and a benchmark suite that emitted
+`result=pass` the entire time.
+
+That is not because anybody was careless. It is because a network stack that
+cannot send a valid packet still boots, still passes every gate that greps a log
+line, and still reports `established=8 result=pass` from a fixture that injects
+its packets directly into the handler and never touches the wire.
+
+The failure mode of a network is silence, and silence is also what success looks
+like from the outside.
+
+### What the number is not
+
+364 is not coverage. It is the count of assertions that now execute on every boot,
+in a kernel of a hundred thousand lines. Most of this system is still untested.
+Eight of eleven surveyed networking defects are still open, including TCP never
+handling a reset. Eight of ten in the ML engine are still open. Three CI proof
+fields remain structurally incapable of failing, and I have left them that way
+deliberately, with a note, because narrowing them is a decision about what this
+project should enforce rather than a bug I get to fix on a Tuesday.
+
+What changed is not that the kernel is correct. It is that the kernel can now be
+asked.
+
+## Three Things Shaped Like Checks
+
+379/379. It was 364 that morning, 370 by lunch, and the nine assertions in
+between came from three defects that turned out to be the same defect wearing
+different hats.
+
+The theme, stated once so the rest of this section makes sense: **none of the
+three was a wrong function.** Each was code that had the shape of a check
+without the substance of one. A guard that cannot fire. A counter that
+increments while the state it guards proceeds regardless. A field parsed into a
+struct and never read again. If you skim these three diffs you will see
+nothing wrong, which is precisely the problem, and precisely why they survived
+this long.
+
+**One: the regime detector that could not report bad news.**
+
+`ml_engine/stratum.rs` classifies a training run as `wellfit`, `drifting`, or
+`collapsing` from topological signals — the shatter ratio of a minimum spanning
+tree, the loop score, the residual drift. My brief to the agent said the bug
+was NaN: that `shatter` could go NaN and every comparison against NaN is false,
+so every threshold would silently pass.
+
+The agent came back and told me I was wrong, which is the most useful thing an
+agent did all day.
+
+`shatter` cannot be NaN. `mst_edge_stats` only records an edge when
+`best_key.is_finite()`, so the maximum is never infinite and the ratio is never
+NaN. What actually happens is worse. Feed the detector a training run whose
+loss has diverged to 1e200 and *every pairwise distance overflows*. Prim's
+algorithm records no edges at all. The function returns `(0.0, 0.0)`. And a
+`raw_max` below `EPS_FLOOR` is indistinguishable from the one case the code
+does handle — a cloud where every point genuinely coincides — so control falls
+into the every-point-coincides branch and **fabricates** `shatter=1.000
+h0_death=0 loop=0`.
+
+Measured, before the fix, on a stream whose validation loss had gone to
+infinity:
+
+```
+C/report: regime=wellfit loop=0.0000 h0_death=0.0000 shatter=1.000 ...
+C/all-finite=true
+```
+
+Every signal finite. Every threshold passed. Regime: well fit. The model had
+exploded and the instrument reported a clean bill of health with no NaN
+anywhere for a NaN guard to catch. I had asked for a fix to the wrong bug, and
+the fix I asked for would have found nothing.
+
+The kernel now marks a cloud unmeasurable when its own radius is not finite,
+and refuses to compare a non-finite signal against a threshold at all. The
+signals stay NaN across the ABI on purpose rather than being clamped to
+something tidy. `regime=collapsing shatter=NaN` tells an operator "this was not
+measurable". `shatter=1.000` tells them a lie with a decimal point on it.
+
+There is a second half nobody would have found by reading the classifier.
+`set_field`, the calibration ABI, accepted any finite `f64` for all six knobs.
+`min_samples` is cast `as u64`. Hand it `1e300` and the cast saturates to
+18446744073709551615, and the detector waits for eighteen quintillion samples
+before it will classify anything ever again. One syscall, and the instrument is
+off for the lifetime of the machine, with no error, no counter, and no log
+line. Every knob is now bounded by the range of the statistic it is compared
+against.
+
+**Two: the leaf that was resident and also absent.**
+
+`ml_engine/foliation.rs` manages a pool of physical frames behind a tree of
+leaves. `admit` pops a slot, allocates a frame, and publishes the leaf. When
+the allocation fails it increments `frames_failed`, writes a plaque with
+`frame: None`, sets `leaves[leaf].slot` anyway — and returns `Ok(())`.
+
+So the leaf is resident and not resident at the same time, depending which
+function you ask. `leaf_resident` reads `slot != NONE` and says yes.
+`seq_frame` reads `plaques[slot].frame` and returns `None` — the same `None`
+that means *no such block exists*. Two functions, one leaf, opposite answers,
+and every frame counter stays perfectly balanced because `collapse` only frees
+when `frame.take()` yields `Some`. The books balance. The building is on fire.
+
+The counter-based checks could not see it. That is the whole lesson. A counter
+that only counts successful frees will never disagree with a counter that only
+counts successful allocations, no matter how wrong the state between them gets.
+
+The agent found a second instance I had not scoped: `teardown` frees every
+frame but clears neither the slot nor the plaque, so *after teardown* leaves
+still report resident with nothing behind them. Same shape, opposite direction.
+It fixed that one by deleting code and calling the existing `collapse`, which
+is the best kind of fix.
+
+And then it did the thing I have been trying to get agents to do all day. It
+wrote its assertion, mutated the code to break the fix, ran the assertion — and
+the assertion **passed**. Its test carried `frames_failed == 0`, a condition
+that holds under starvation whether the code is fixed or broken. It reported
+this in its own results, deleted the line, and reran until the test
+discriminated. An agent catching its own test being useless is worth more than
+an agent catching a bug.
+
+**Three: the checksum field that was parsed and thrown away.**
+
+Four network handlers. Four different flavours of not checking:
+
+| handler | what it does with the checksum |
+|---|---|
+| `tcp::handle_tcp_packet` | parses it into the struct, never reads the field |
+| `udp::handle_udp_packet` | it's in the type, nothing touches it |
+| `icmp::handle_icmp_packet` | indexes `[0]`, `[1]`, `[4..8]` — skips `[2..4]` entirely |
+| `ipv6::handle_icmpv6_packet` | same |
+
+The first one is my favourite. `TcpHeader::from_bytes` does real work to
+extract `u16::from_be_bytes([bytes[16], bytes[17]])`, stores it in a field, and
+no line of code anywhere ever reads that field. It is a variable that exists
+purely so that a reader will assume the check happens.
+
+The consequence for ICMPv6 is not academic. A corrupted Neighbor Advertisement
+went straight into the neighbor cache. That is a remote path to a wrong
+link-layer address — poison the cache and traffic goes to the wrong MAC. There
+is no authentication in NDP by design; the checksum is the only thing standing
+between the cache and whatever arrives on the wire, and it was not being
+consulted.
+
+Fixing it required unifying four private copies of the ICMPv6 pseudo-header
+builder, and unification exposed a fifth bug that had been sitting in plain
+sight: **one of the four applied `.to_be()` to the result and three did not.**
+Same field, same protocol, same file, two different byte orders. One of those
+senders had been emitting a wrong checksum every single time it ran. Duplicated
+code hid it perfectly — nothing in the system ever compared the four copies to
+each other, and fixing any one of them would have left the others wrong.
+
+The agent then stopped, and stopping was the right call. TCP and UDP need the
+*destination* address for their pseudo-headers, and `handle_tcp_packet(src,
+pkt)` is only handed the source. It could have guessed `local_ip()`. It
+explicitly refused, and gave the reason: QEMU slirp sends the DHCP offer to
+255.255.255.255 while `local_ip()` is still 0.0.0.0, so the checksum would fail
+and **DHCP would die at boot**. A security guard that bricks the network is not
+a security fix, it is the same self-inflicted outage I caused with the IPv4
+checksum earlier in this very README, and it recognised the shape from a
+sentence in its brief.
+
+It also corrected two more of my facts on the way out. I told it `icmp.rs`
+contained zero `unsafe` blocks; it contains two. Every agent this round found
+at least one thing I had stated confidently and wrong. The count of things I
+was wrong about is now large enough that I have stopped being embarrassed by it
+and started treating it as the point.
+
+**What the number actually says.**
+
+379 assertions execute on every boot, up from 364, and the nine new ones were
+mutation-tested: break the fix on purpose, confirm the test goes red. Sixteen
+mutations across the three units, sixteen kills, one of which was a test
+killing itself.
+
+What 379 does not say is that the kernel is correct. TCP and UDP still do not
+verify a checksum on receive. `referenced_evictions` still increments on a path
+`pick_victim` cannot select, which means that CI field proves nothing and I
+have left it that way with a note. `link_child` still returns an error it
+cannot return. The list of things I know are wrong is longer than the list of
+things I fixed, which is a healthier ratio than it sounds, because in the
+morning the list of things I *knew* was empty and the list of things that were
+wrong was exactly the same size as it is now.
+
+The instruments were the whole job. You cannot fix what the instrument reports
+as fine, and every one of these three defects was, in its own way, an
+instrument reporting fine.
+
+## 455, And A Shell You Can Actually Type Into
+
+364 in the morning. 455 by the afternoon. The number is not the point, but the
+shape of how it moved is.
+
+It did not move by writing 91 tests. It moved by finding nine test *groups* that
+had been sitting in the tree, fully written, never once executed — because
+`kernel/seal-os` is in the workspace `exclude` list, so `cargo test --workspace`
+walks straight past it, and every `#[test]` inside it compiles to nothing. TCP
+had seventeen. The `.eph` package parser had three. Each was written by someone
+who believed they were adding coverage, and each was, in the sense that a
+parachute in a box on the ground is technically a parachute.
+
+Four of TCP's seventeen were also *broken*, which is how you know nobody had
+ever run them. Not broken subtly. One pushed a socket into `TCP_SOCKETS` without
+indexing it, so the socket existed and could not be found. One left `remote_ip`
+at `0.0.0.0` while the segment arrived from `192.168.1.1`, so indexing filed it
+under an address no packet carries. One left `ack_num` at zero while the FIN
+carried sequence 500 — that test predates the RFC 793 sequence check by months
+and quietly rotted the day that check landed. And one had no bug at all: it
+inherited an ESTABLISHED socket from the test *before* it, on exactly the
+four-tuple its own SYN used, and lost the race to its own predecessor.
+
+The agent I sent after them was told my diagnosis. It applied my diagnosis to one
+test, showed the test still red, and went and found the other two causes. Then it
+reported that the file has seventeen tests and I had said sixteen.
+
+**The remote one.**
+
+While bounding the ephemeral port allocator — `NEXT_TCP_PORT`, a `u16` that
+started at 40000 and got `*p += 1` with nothing watching — the agent noticed the
+allocation inside `poll()` was dead. It computed a port, built a socket with it,
+and then immediately overwrote `local_port` with the destination port from the
+packet. The number was thrown away.
+
+The counter still moved.
+
+Once per SYN. From anywhere. A remote peer could walk that counter to 65535 and
+past it, with no local socket involved, no connection established, and nothing in
+any log. In release the wrap is silent and the counter lands on **zero** — not on
+the floor of the ephemeral range, because nothing had ever named a floor — and
+then walks up through 0, 1, 2, and starts handing out 22, 80 and 443 to outgoing
+connections. Under `overflow-checks` it just aborts the kernel.
+
+The fix that mattered was deleting four lines that did nothing.
+
+**A shell that composes.**
+
+Three commits took the shell from one-command-per-line to something you can
+actually work in:
+
+```
+OUT=hits.txt
+peek serial.log | grep -i 'error' | sort -u | wc -l > $OUT
+```
+
+Pipelines, `<` and `>` and `>>`, then `wc`, `head`, `tail`, `sort`, `uniq`, `tr`,
+`cat` and `grep -vinc`, then `NAME=value`, `$NAME`, `${NAME}`, `export`, `unset`,
+`env`, `set`. Every one of those went through the same drill: write the
+assertion, break the code on purpose, confirm the assertion goes red, and — the
+part that kept catching people — check that it goes red in the *registry* and not
+only in the host harness, because the registry is what CI runs and the harness is
+what makes you feel good.
+
+The variables agent ran thirty-four mutations and killed thirty-four. Then it
+volunteered that four of the kills came from the harness alone, that those four
+are precisely the ordering decisions the whole design rests on, and that the
+table must not be read as coverage it does not have. Nobody asked it that.
+
+Its three self-caught failures are my favourite thing in this README. All three
+were handbook assertions, and all three were substring accidents:
+
+- `book.contains("export")` passed — because the word **exported** appears on the
+  `env` line.
+- `book.contains("NAME=value")` passed — because the `export` help line has a
+  parenthetical `(NAME=value works)`.
+- `help_for("set")` only checked the page was not the string "No help available",
+  so the page could lose every sentence about listing variables and still pass.
+
+Three tests asserting the presence of *letters* rather than the presence of
+documentation. Delete the entire feature from the handbook and two of them stay
+green. This is the taxonomy from earlier in this file, reappearing in the one
+place I would have sworn it could not: a test whose subject is a string
+literal I wrote myself, ten minutes earlier.
+
+**And one I did.**
+
+`ipv4::transport_checksum_uses_the_delivered_destination` sends a broadcast
+datagram, then sends the same datagram checksummed against a different address
+and requires the second to be refused. Its guard checked that the two addresses
+differed:
+
+```rust
+test_assert!(dst != crate::net::local_ip(), "...proves nothing");
+```
+
+They differ. `dst` is `255.255.255.255` and `local_ip()` is `0.0.0.0`, because
+DHCP has not run at test time. The assertion passed and the test failed in CI,
+and it took me embarrassingly long to see why, given the answer is a property of
+the internet checksum I had written a commit message about ninety minutes
+earlier: one's complement addition with end-around carry makes `0xFFFF` an
+identity. `x + 0xFFFF` overflows to `x - 1`, and the carry adds one back. Adding
+`0x0000` is an identity too.
+
+So `255.255.255.255` and `0.0.0.0` produce **byte-identical checksums**. The
+"wrong" datagram was correctly checksummed for the address it was delivered to.
+The kernel accepted it because it was valid.
+
+Address inequality does not imply checksum distinguishability. The agent that
+wrote this test had *proven* that exact fact one message earlier, when it
+demonstrated that swapping source and destination in the pseudo-header is an
+equivalent mutant no test can kill. It applied the insight to the mutation and
+not to its own fixture. So did I, reading the diff.
+
+Then I fixed it wrong. I added a `wrong_dst` that genuinely differs, added a
+guard comparing the two checksums, pushed it — and left the actual mirror
+datagram still being built from `local_ip()`. A guard proving a property of a
+value the assertion never used. A check that cannot fail, introduced in a commit
+whose entire subject was a check that could not fail, in a session whose entire
+subject was checks that cannot fail.
+
+455/455 now. The number is real, and every one of those assertions runs in QEMU on
+every push. But the honest summary of today is not that the kernel got better,
+though it did. It is that for about eleven hours the instruments were the work,
+and every single time I was sure I had finished fixing them, one of them turned
+out to be reporting fine.
+
+## Round 1: Thirteen Commits, And The One That Says Do Not Ship This
+
+455/455 was where the last section left off. This one covers what landed after
+it: thirteen commits on `ralph/graph-round-1`, seven of them fixes to things
+that were already shipping and already wrong, five of them subsystems that did
+not exist, and one of them a feature that was built, measured, and then refused
+by the measurement.
+
+The through-line is not "the kernel got faster". Nothing here got faster. The
+through-line is that six of these thirteen exist because a *previous* commit
+wrote down its own ceiling in a limits paragraph, and then someone came back and
+read it.
+
+### The shell learned to run a file
+
+`source script.eph`, and `.` as its alias. `#` comments. `echo`. That is the
+whole feature, and it took a surprising amount of deciding.
+
+Comments are cut at the very top of `run_line` — before the assignment test,
+before the `|` split, and long before variable expansion. Cutting before
+expansion is the part that matters: a `#` that arrives *from a variable* is
+text, not a comment that reaches backward and truncates the line that already
+parsed. And a `#` opens a comment only where a word opens, at the start of a
+line or after whitespace, because with no quoting anywhere in this shell,
+cutting at every `#` would silently shorten `A=v#1` to `A=v` with no way on
+earth to ask for the character back.
+
+Three bounds, all separate on purpose. `MAX_SOURCE_DEPTH` is 8, and the wall is
+the kernel stack rather than the heap — each level stacks `run_line` →
+`run_pipeline` → `dispatch` → `cmd_source` → `run_script`. `MAX_SCRIPT_BYTES` is
+65,536, the same `PIPE_CAPACITY` a `< file` redirect already uses. And
+`MAX_SCRIPT_LINES` is 1,024 *separately*, because a file of 200,000 blank lines
+is nothing in bytes and still walks `run_line` once per line. Exceeding any of
+them refuses the whole script instead of running the part that fits, because
+half a script is a different script and the operator cannot tell which half ran.
+
+Where it stops is the honest bit. A script stops when `run_line` returns `Err` —
+a syntax error, an unclosed `${`, a refused redirect. It keeps going when a line
+*ran* and printed something, including `peek: 'x' not found`, because `dispatch`
+returns a `String` whether it worked or not and the shell genuinely cannot tell
+those apart. Sniffing for a `seal: ` prefix was considered and rejected:
+`seal: unknown command` is ordinary `dispatch` output, so that rule would halt
+on a typo and sail past a real failure. There is no exit status. There should
+be. That is written down as the ceiling rather than papered over.
+
+Assertions in the module went 34 → 41, twenty-three mutations applied and
+twenty-three killed. Five of those kills come only from the host harness and not
+from the registry CI runs, and all five are the `&mut self` parts — which is to
+say, the ordering decisions the whole design rests on. That is in the commit
+message too, because a mutation table that does not say which layer killed each
+mutation is a table that reads as more coverage than it has.
+
+One detail worth stealing: the depth assertion was first written against
+`MAX_SOURCE_DEPTH` symbolically, so changing the constant to 64 would have left
+it green. It is pinned to the literal `8` instead, sitting next to the handbook
+assertion that prints the same number, so the documented bound cannot drift from
+the enforced one.
+
+### Every TCP port this machine ever used, held forever
+
+`TCP_SOCKETS` was a `Vec` that only grew. `close()` changed a state and removed
+nothing. `alloc_ephemeral_port` skips any port a socket in that table holds. So
+every port this kernel ever used was held until reboot.
+
+The state named in the item was not the state that mattered. `TimeWait` was
+*terminal* — its arm carries a comment saying the socket should stay there for
+2×MSL, and no timer anywhere ever left it. An active close goes `FinWait1` →
+`TimeWait` and stops. Reaping `Closed` alone would never have touched the path
+that actually leaks.
+
+So: a real 2MSL timer, `TIME_WAIT_TICKS` of 60,000 on the ~1 kHz counter, an MSL
+of 30 seconds the way BSD and Linux use it. Reaping `TimeWait` on sight was
+rejected outright — RFC 793 holds the four-tuple precisely so a delayed
+duplicate cannot be misread as a new connection, and collecting it early is a
+correctness regression wearing a cleanup's clothes.
+
+`Closed` is not enough on its own either, twice over. `socket()` hands back a
+`Closed` socket with `remote_port == 0`, so reaping on state alone yanks the
+table entry out from under a caller standing between `socket()` and `connect()`.
+And `abort()` *promises* the received bytes stay readable — `drivers/net/http.rs`
+relies on exactly that, draining after it observes `Closed`. A socket is
+collected only when it is `Closed`, has a peer, and its receive buffer is empty.
+
+Removing from a `Vec` was never an option: six classes of holder store an index
+into it, including both demux indexes and two benchmark fixtures that address
+sockets positionally, and `swap_remove` repoints all six. `TCP_SOCKETS` is now a
+slot map. A slot is emptied in place and never moves. The handle stays a `usize`
+and stops being an index — low half slot, high half generation — and `resolve`
+returns a slot only when it is occupied *and* the generation matches. A
+tombstone alone leaves the table growing one slot per socket ever opened, which
+is the original defect with extra steps; reuse without a generation lets a stale
+handle read whatever moved in. The generation counter is global rather than
+per-slot, because `cleanup_tcp_fixture` truncates, and a per-slot counter would
+be dropped with its slot and could re-mint a generation a live handle still
+holds.
+
+And `free_slot` repairs both demux indexes, which is the quieter half of the
+bug. Those key on slot across 256 buckets. A leaked entry holds its bucket
+forever, so after 256 finished connections `insert` refuses and new connections
+are not demuxed **at all**.
+
+21 → 26 assertions, sixteen mutations, sixteen killed. One survived at first,
+and the fix was to the harness rather than the test: with a clock starting at
+zero, a `TimeWait` entry that recorded no timestamp is indistinguishable from a
+fresh one. The harness clock now starts at 1,234,567.
+
+### The gate that went red for the right reason
+
+Making `TCP_SOCKETS` a slot map turned CI red, and the failing thing was not the
+kernel.
+
+`--check-o1-network` requires the two demux lookups to validate a candidate
+socket by *direct index* rather than by scanning, and it enforced that by
+requiring the literal `.get(idx)` in each body. After the slot map, both bodies
+call `slot_sock(sockets, idx)` — which is `sockets.get(slot).and_then(...)`, the
+same direct index, one call deep. The property held perfectly. The gate was
+pattern-matching on a spelling.
+
+Both checks now accept either shape, and the indirection is not taken on faith:
+`slot_sock` is *itself* checked to contain `sockets.get(slot)` and to contain no
+`iter()`, no `for`, no `while`. That is a check the gate did not previously
+have, for the excellent reason that before this change there was nothing sitting
+between the lookup and the table. 76/76 in `seal-mkimage`, and
+`O(1) NETWORK OK` against a very specific `O(1) NETWORK FAIL` beforehand.
+
+### A handshake nobody answers, forever
+
+Same file, next defect, and this one the previous commit had named on its way
+out the door.
+
+`is_finished` has two arms — `Closed` with a peer and a drained buffer, and
+`TimeWait` past 2MSL — and `_ => false` swallows `SynSent`. Nothing moves a
+socket out of `SynSent` except an inbound SYN-ACK or an acceptable reset, and a
+silent host sends neither. `retransmit_expired` backs the RTO off to `RTO_MAX`,
+64,000 ticks, and then retransmits at that rate until the machine is turned off.
+Both callers confirm nobody cleans up: `http.rs` and `tls_socket.rs` spin to
+their own 3,000-tick deadline, return `Err("TCP connect timeout")`, and drop a
+wrapper with no `Drop` impl that never calls `close`.
+
+`SynReceived` leaks identically and worse. `poll` builds an accepted socket per
+inbound SYN and answers it, and the same `_ => false` catches that too — so a
+peer that half-opens and walks away costs one table slot and one of the 256
+demux buckets **per SYN**, with no local socket involved at all.
+
+Both are now bounded by `SYN_RETRIES` = 6, counted per handshake and raised only
+when an expiry fires in one of the two handshake states, where the retransmit
+queue holds the handshake's own segment and nothing else. Attempts land at 1, 3,
+7, 15, 31 and 63 seconds; the seventh expiry aborts instead of retrying, at 127
+seconds — the same wall clock Linux reaches from the same `tcp_syn_retries`
+default. Counting *expiries* rather than polls is deliberate: the poll rate is
+the caller's business, not the protocol's, and there is a mutation and a control
+proving twenty polls before any expiry cost nothing.
+
+Fixing that immediately exposed a hole in the commit before it. A socket that
+aborts is `Closed`, and `tcp_flow_key` treats a `Closed` socket as unkeyable, so
+`free_slot`'s index removal was a no-op and the bucket leaked *even though the
+slot came back*. The reset path had escaped it only by accident, because
+`handle_tcp_packet` refreshes the index first and `poll` did not.
+
+26 → 29, sixteen mutations, sixteen killed. Both CI benchmarks unmoved. What is
+still open, stated plainly: `listener.pending_accept` still grows without bound
+under a SYN flood — reaping the half-open socket returns its slot and its
+bucket, but the stale handle stays queued at 8 bytes per SYN. Strictly better,
+never worse, still not closed.
+
+### Three commits of TLS, in the order they had to happen
+
+**First, the audit told on the code.** `docs/CRYPTO_AUDIT.md` described a system
+that had stopped existing and, in other places, had never existed. Section 3.2
+documented a package signature function that was deleted three weeks earlier and
+whose preimage had never been the installer's anyway. Section 1 opened by
+calling the TLS stack PSK-only with no X.509 and no ECDHE, which three separate
+line ranges in the shipping code contradict. Section 1.3 called the HKDF
+implementation non-compliant with RFC 5869, next to the RFC 4231 and RFC 5869
+vectors that pass.
+
+The rewrite carries a file and a line for every claim and quotes no Rust at all,
+because the quoted blocks are exactly what drifted while the citations stayed
+correct. It records one new limit nobody had ever written down: the package
+signature covers *parsed fields* rather than manifest bytes, so two wire
+manifests that parse identically share one signature. Inert today. Written down
+anyway.
+
+Reading it that carefully surfaced ten code defects, none fixed in a
+documentation commit. Two were load-bearing, and the next two commits are them.
+
+**Second, the peer was never authenticated.** `tls_socket.rs` validated a
+certificate chain against the embedded trust anchor and set `connected = true`.
+There was no CertificateVerify message anywhere in either file — grep for the
+term or for handshake type `0x0f` and you find the word "transcript" in a doc
+comment and the byte `0x0f` inside an RFC 5869 test vector. **A certificate
+chain is public data.** Replaying an observed one passed that check completely.
+There was no Finished either, and the handshake traffic secrets derived over the
+client and server randoms alone, so a modified ServerHello left no trace — and
+the ServerHello parser skipped the cipher suite without reading it.
+
+Now there is a running SHA-256 transcript over ClientHello, ServerHello,
+Certificate, CertificateVerify and Finished; secrets derive over
+`Transcript-Hash(ClientHello..ServerHello)` per RFC 8446 7.1; anything but
+`0x1301` is refused; only Finished sets `authenticated`, and `encrypt` and
+`decrypt` refuse until it does. An unknown handshake type *inside* the
+authentication window is refused rather than skipped, because skipping
+desynchronises the transcript silently, which is the worst available failure
+mode.
+
+`set_require_peer_auth` and its field were deleted rather than defaulted. A
+switch that turns authentication off is the defect, not a mitigation for it.
+
+32 → 51 assertions. The strongest control is `psk_finished_completes`, where the
+harness computes the RFC 8446 7.1 schedule and the 4.4.4 MAC with its own
+independent code — so agreement means the kernel matches the specification and
+not merely itself. Ten mutations, ten killed. One survived the first pass and it
+was a real hole rather than a weak test: dropping the Certificate message from
+the transcript passed 51 of 51, because nothing proved a CertificateVerify was
+bound to *which* certificate the peer had sent. The repair runs two handshakes
+identical except that one sends `[LEAF, INTERMEDIATE]` and the other
+`[LEAF, INTERMEDIATE, ROOT_CA]` — same leaf key, different transcript — and
+requires each one's CertificateVerify to be refused by the other.
+
+**Third, authenticated as *somebody*.** The peer now proves it holds the
+certificate's key. It did not have to be the certificate for the host you asked
+for. `connect` took an address and no name, so any valid certificate from the
+anchor passed, including one issued for a different host entirely — and
+`x509.rs` has had a tested, working `matches_dns` all along with no production
+caller. `connect` now takes a hostname threaded from `http.rs`, and the leaf must
+match it while the leaf still borrows the message buffer, so no state is carried.
+A session with no hostname matches nothing and refuses every chain. An address
+with no name is refused rather than accepted: RFC 6125 6.4 forbids matching an IP
+literal against a dNSName, so matching one anyway is precisely "silently accept
+any name".
+
+Two more in the same commit. `wrap_record` computed `payload.len() as u16`, so a
+plaintext at or above 65,536 bytes emitted a record whose length field had
+wrapped — reachable, because `tls_socket.rs` passes caller data straight
+through. `encrypt` now fragments at 2^14 per RFC 8446 5.1, each fragment its own
+record with its own sequence number; refusing instead would have broken every
+body over 16 KiB and pushed chunking onto every caller. And both `encrypt` and
+`decrypt` were passing an *empty* AAD where RFC 8446 5.2 binds the record
+header, which was an undocumented third deviation in a module whose
+documentation claimed exactly two.
+
+51 → 61. The best assertion in the file is `record_aad_is_the_rfc8446_header`,
+which builds the additional data from the RFC 8446 5.2 text and the nonce from
+5.3, opens the kernel's record with a *separate* AES-GCM invocation that never
+calls `record_header`, and then requires that same record to fail under empty
+AAD and under a wrong length field. Twelve mutations, twelve killed. Two
+survived the first pass and both were the assertions' fault: one guard turned
+out to be dead code (`is_some_and(None)` already fails closed) and was deleted
+rather than given a test for a check that cannot fail, and one oversize-record
+fixture was built from garbage bytes that failed the AEAD tag regardless, so it
+could not distinguish a length refusal from a tag refusal. It now forges a
+record with a genuinely valid tag at exactly `MAX_RECORD_LEN` and at one byte
+more, where only the length separates them.
+
+That taxonomy of unfailable checks, from earlier in this file, has now appeared
+in every single subsystem it could possibly appear in.
+
+### A rollback floor that reset every boot
+
+`ReleaseChannel::new` set `accepted_index_version: 0` and kept the rollback
+floor in a struct field — read at one line, written at another, never touching
+disk.
+
+A floor exists to stop an attacker replaying an old, validly signed index with a
+known vulnerability in it. A floor that resets on reboot stops nothing an
+attacker can simply wait out.
+
+The floor now lives at `/packages/.channel_floor` through the same `with_vfs`
+path the installer already uses, rather than a second persistence mechanism
+invented for the occasion. The record is a fixed 80 bytes — magic `EPHFLR1\0`,
+the floor as big-endian u64, an Ed25519 signature over the first sixteen under a
+key separate from both the index and package keys. Fixed width means a short
+read is a refusal and a rewrite cannot leave a stale tail.
+
+A missing record accepts. A corrupt record refuses **everything**. Those are
+opposite answers to the same question and both are deliberate: a fresh system
+has never established a floor and the only thing that creates the record is a
+first accept, so refusing on absence leaves the channel permanently dead with
+nothing to downgrade below. A record that is present but short, misframed or
+wrongly signed is a different situation entirely — treating *that* as zero turns
+one flipped byte into "the floor is gone", which is the attack rather than the
+mitigation. Recovery is an operator deleting the file.
+
+The forward-only guard lives in the store rather than at the call site:
+`persist_floor` re-reads and treats anything not strictly higher as a no-op, so
+no *future* caller can lower it, not only the one caller that exists today.
+
+17 → 23 assertions. The central one is the attack itself: write a floor, drop
+the channel, rebuild it from nothing, and require a package below the floor to
+be refused with `IndexRollback { accepted: 9, offered: 8 }` and the package
+count unchanged. Six mutations, five killed. The sixth is reported rather than
+papered over — swallowing a failed floor write with `let _ =` instead of `?`
+survives, because that branch is only reachable when the VFS write itself fails
+and no fault-injection seam exists in the VFS to reach it. The `?` stays because
+it fails in the safe direction. It is untested and says so.
+
+The boot proof deliberately replays index v2 after v3 to demonstrate rollback
+refusal, so fixtures had to opt out through a new `ReleaseChannel::ephemeral` or
+the second boot on the same disk would turn `result=pass` into `result=fail`.
+`ReleaseChannel::new` — the network-facing one — is the persistent one, so the
+default is the safe default.
+
+### Permission as a total field instead of a table with holes
+
+`check_file_permission` has three paths that return `true` without consulting
+any rule: a uid 0 short-circuit, an allow-everything when no policy is loaded,
+and falling off the end of the rule walk. It is a lookup table with holes, and
+every hole is a question a human has to answer — which is the entire cost when
+an agent is driving the machine.
+
+`security/perm_field.rs` adds a *total* function `evaluate(sources, query)` over
+`(uid, path, action)`, defined everywhere by construction from a sparse set of
+placed sources. Three properties carry it.
+
+Deny dominates: any denying source in range returns `Deny` no matter how many
+grants are nearer, so no point between a grant and a denial evaluates to a
+grant. Totality does not invent: a point no source reaches returns `Unknown`,
+and `permits()` is true for `Allow` alone, so a caller cannot write `v != Deny`
+and quietly permit. `Unknown` refuses *without prompting* and reports the point
+as uncovered — which is the whole reason totality is worth having. The kernel
+never asks a human; an agent closes the gap once by adding a source, instead of
+answering the same question forever.
+
+And inference only narrows, structurally rather than by convention. `infer`
+returns a `Narrowing` holding `Cut`, and `Cut` has no polarity field. Widening
+is not declined at runtime; there is nowhere to put it. `narrow` writes
+`Polarity::Deny` as a literal. A grant is not something inference can emit.
+
+The resource metric is descendant depth in the path tree, and it is asymmetric
+on purpose. A symmetric tree distance puts `/etc` two steps from `/data`, so a
+grant on `/data` with radius 2 would reach `/etc`. Ancestors are excluded for
+the same reason: granting `/data/x` must not grant `/data`. Subject and action
+stay discrete, because nothing observable in this kernel makes two uids or two
+actions similar, and a fake metric there would generalise wrongly *with
+confidence*, which is strictly worse than the table it replaces. The path axis
+is justified because `mac.rs` already writes every rule as a path prefix at
+component boundaries — two siblings are security-similar exactly because the
+existing policy language cannot separate them without a new rule.
+
+The influence kernel is a step function, and that is not laziness. The verdict
+is a three-value lattice under deny-dominance, so any monotone-decreasing kernel
+with the same support produces the same verdict everywhere. Smooth falloff would
+be decoration that cannot change an answer.
+
+0 → 8 assertions, against 1 passed / 7 failed in a red state produced by
+transplanting today's `mac.rs` semantics into the field. Seventeen mutations,
+seventeen killed. The radius threshold is shifted in *both* directions —
+tightening to `d < r` and loosening by removing the clamp both fail — because a
+guard nobody can over-tighten is a guard whose boundary was never tested. The
+bound is enforced twice, in `push` and again in `evaluate`, and each layer is
+mutated separately.
+
+`mac.rs` is untouched. This field is not wired into the live permission check,
+because replacing it is a separate change with its own risk, and shipping both
+at once means neither one can be reviewed.
+
+### Giving back what a converged run no longer needs
+
+A model's demand for compute falls as it converges, and nothing in this OS
+noticed, so a converged job held everything it had been given until it exited.
+
+`ml_engine/stratum.rs` already classifies a run as `Underfit`, `WellFit`,
+`Overfit` or `Collapsing` from topological signals. `tuner.rs` turns that into a
+share in `[floor, 1.0]` and hands the difference back. The model's own code
+contains no limit, which is the entire point — it does not know and must not have
+to.
+
+Reading the regime alone would have been wrong three separate ways, and finding
+that is most of the change. `classify` fails closed to `Collapsing` when the
+signal is unmeasurable, so a tuner trusting it would treat "no signal" as a
+reason to *restore*; the rule is that an unmeasurable signal leaves the
+allocation neither reduced nor raised, so `read_signal` mirrors the classifier's
+cascade and diverges in exactly one place. `classify` also returns `WellFit`
+while `samples < min_samples`, which is a default rather than a measurement, and
+reclaiming on it would starve every new job through its first sixteen steps.
+
+The third path is the one the whole design is defending against. Under three
+points, `measure()` returns the empty set with `spread = 1.0`, which reads as
+converged — and `set_field(5, 0.0)` is an accepted ABI value, which stratum's own
+test asserts. Before that was gated, stratum fabricated
+`shatter=1.000 h0_death=0 loop=0` for a cloud whose every pairwise distance had
+overflowed, reporting a run diverged to 1e200 as `WellFit` with every signal
+finite. A reclaimer built on a signal that can fabricate convergence starves
+exactly the jobs that most need capacity.
+
+Hysteresis is 3. Two kills a one-on-one-off flap; three is the smallest that
+also kills a two-observation transient, because `quartile_drift` averages
+sixteen points and a single outlier moves the estimate for as long as it sits in
+the tail quartile. Reclaim is capped at a quarter of the current share per
+decision — the largest step for which a full descent still takes five decisions,
+so a transient cannot empty an allocation before the detector re-measures. The
+bound applies to reductions only; a restore returns everything this module took.
+
+10 assertions against 24 passed / 6 failed with the implementation stubbed,
+alongside 20 unmodified `stratum::*` assertions run through the same harness as
+a control that the harness itself is faithful. Sixteen mutations, sixteen
+killed. The decisive one is raising the share on an unmeasurable signal, which
+separates "freeze" from "restore" — a distinction the regime alone cannot even
+express.
+
+**No GPU allocation is claimed.** `gpu_bench.rs` is a benchmark and no path in
+the GPU tree divides a device between two workloads, so the share is a
+dimensionless fraction of the run's own initial grant. Making it real needs one
+thing in each direction: a per-task quantum the scheduler decrements, and a
+`brk` that consults a limit instead of assigning one.
+
+### The sandbox that measured the wrong quantity, twice
+
+This is the pair the round is named for, and the second half is the reason this
+section exists at all.
+
+**The first commit** sizes a guest's resident frame count from the structure of
+the pages it actually touches. Accesses are recorded as `(tick, page)` points,
+single-linkage H₀ over the MST gives the working-region count, and the envelope
+follows. Both axes are rescaled to `[0,1]`, which is not cosmetic — page indices
+run to millions while ticks run to 64, so a raw Euclidean distance is a page
+distance with rounding noise stapled to it. Time is an *axis* rather than an
+ordering because a phase is what makes a region worth keeping: two page ranges
+touched in strict alternation are one working set, and the same two touched in
+separate phases are two, and only the time axis can tell them apart.
+
+The cut is placed at the largest *ratio* between consecutive sorted MST edges
+rather than the largest gap, because a ratio is scale-free — eight regions
+separated by 10× is a reading worth acting on, and eight separated by 1.01× is
+noise about where the cut happened to land. That ratio is carried forward as
+confidence and scales the grant, so an unseparated reading grants nothing above
+the floor.
+
+Four rules, each with an assertion and a mutation that kills it. The cap is
+fixed at construction with no setter and applied last and unconditionally.
+Unmeasurable sizes to the floor — and the assertion compares the returned
+variant *exactly*, so a conservative fabrication dies too, not only a generous
+one. Allocation failure drains everything already taken and refuses. A shrink
+returns only unpinned frames and leaves the guest running. `saturating_add` is
+load-bearing rather than defensive: with `clusters` at `usize::MAX` a plain
+`floor + grant` wraps to 3 under the release profile's absent overflow checks,
+slips under the cap, and looks exactly like the rule held.
+
+And then the limits paragraph said this, in bold, about its own work:
+
+> **This sizes region count, not region extent, and that is the wrong quantity
+> for the workload it is named after.**
+
+A model with one contiguous multi-gigabyte weight tensor reads as a single
+cluster and gets `FRAMES_PER_REGION` frames. Four. For eight gigabytes.
+
+**The second commit** is that, closed. `WorkingSet::Clustered` now carries
+`pages` beside `clusters` and `separation` — the summed page span of every
+component holding at least `MIN_SAMPLES` accesses, read off the *same* MST cut
+the cluster count comes from. `mst_edges` returns edges with endpoints instead
+of lengths alone, because the partition is what carries a region's population
+and span. `size_envelope` takes the larger of the two demands, at 32 pages per
+frame.
+
+Two design calls in there are worth the space.
+
+Extent is deliberately **not** weighted by `separation`. That looks inconsistent
+until you notice that a single contiguous region has no spectral gap to separate
+anything at, so its separation is exactly 1 — and a weighted extent would
+therefore be worth precisely nothing on the one case this commit exists for.
+That is the original defect in its deepest form: the 8 GiB tensor is *one*
+cluster with *no* separation, and every count-shaped term about it is 1.
+
+And extent is deliberately **not** invariant under an affine page relabel, which
+the summary's other two fields are and have an assertion proving it. `pages` is
+not a shape. It is a quantity of memory, measured off the raw page indices, and
+a guest striding seven times as far over seven times as much memory should ask
+for seven times the stripe.
+
+Supporting a partition also forced a repair to the cut rule. A uniformly sampled
+cloud has a spectrum uniform to within rounding, so every consecutive ratio in
+it is `1 + O(ulp)` and the largest one lands wherever the last bit happened to
+fall. The first commit tolerated that because a ratio that close to 1 grants
+nothing above the floor. A partition cannot tolerate it, because a cut placed by
+rounding noise shreds one contiguous region into fragments and charges the guest
+for none of them.
+
+6 → 8 assertions. `extent_sizes_one_large_region` pins three tensors that a
+count-driven envelope sizes *identically* — 64 accesses at strides of 16,384,
+32,768 and 229,376 pages, all reading as `clusters == 1` — at 32,257, 64,513 and
+451,585 frames, then re-asserts the cap against each of them, then asserts
+`frames_for_pages(u64::MAX) == 576,460,752,303,423,488` against a cap nothing
+can reach, then drives the whole thing through a live `Sandbox` whose 128-frame
+cap holds. `thin_cluster_buys_no_extent` builds three phases of 40,
+`MIN_SAMPLES` and `MIN_SAMPLES − 1` accesses and requires `pages` to be
+39,937 + 3,073 exactly — the third phase straddles 100,001 pages and is charged
+to nobody, which is 1,345 frames rather than 4,375.
+
+Rule 1 matters more after this change, not less. Extent multiplies page counts
+rather than region counts, so it is the likelier of the two demands to wrap
+under a profile with `overflow-checks = false`, and a wrapped demand arrives
+*under* the cap looking like the cap held. Saturation is applied at the
+measurement as well as at the sizing, because a component spanning page 0 to
+`u64::MAX` covers `u64::MAX + 1` pages, which is not a u64.
+
+Still no production caller. No syscall, no page-fault hook feeding `observe`, no
+boot-proof line. An empty trace sizes to the floor forever, and that wiring is
+the next change. Written down here so the next person reading a limits paragraph
+has something to come back for.
+
+### The one that says do not ship this
+
+A fuzzy extractor that maps a password to a point cloud, computes an exact
+Vietoris–Rips H₀ persistence diagram, quantises the death times to a stable
+fingerprint, and feeds that to a KDF with an Ed25519 commitment. Typo tolerance
+backed by a hard cryptographic commitment, standard primitives underneath,
+topology only as a front end. It works. Every invariant holds.
+
+The measurement says do not use it, and **the measurement is the deliverable.**
+
+Over an exhaustive corpus — all 65,536 passwords across a 16-character alphabet,
+so the distribution is exact rather than sampled — the construction produces:
+
+| construction | distinct keys | collision entropy | min-entropy | case typos tolerated |
+|---|---|---|---|---|
+| this module | 200 | 6.293 bits | 4.871 bits | 63,364 / 65,536 |
+| `KDF(password)` | 65,536 | 16 bits | 16 bits | 0 |
+| `KDF(ascii_lowercase(password))` | 4,096 | 12 bits | 12 bits | 65,536 / 65,536 |
+
+It costs 9.707 bits against the first and 5.707 against the second, and buys
+strictly *less* tolerance than the second, which is one line of code.
+
+The obvious rebuttal is that the quantiser grain is wrong, and it is answered by
+measurement rather than by argument. A grain finer than any tolerated edit can
+move a death time is the raw diagram itself — the ceiling no quantiser can beat.
+That gives 3,001 keys and 10.182 bits, still 1.8 bits below the one-liner, and
+by then the tolerance is gone at 20 of 65,536. The lossy step is the topological
+sketch, not the quantiser. The original hypothesis was that the loss came from
+ordering; `perm_collisions=0/128` refuted it, and the documentation now records
+the measured cause instead of the predicted one.
+
+So the module is not wired into `shadow.rs`, not into `verify_login`, not into
+any syscall. What ships is the apparatus and its verdict, re-runnable, with
+`CLAIMED_SHIPPABLE = false` asserted *against the computed result* so the
+conclusion cannot drift away from the code.
+
+The topology is correct independently of that conclusion, and that is checked
+properly: permutation invariance over sixteen seeded shuffles and a tied grid,
+scale equivariance across c from 1e-6 to 1e6 with purely relative tolerance, the
+stability bound at 2ε for three values of ε with the hypothesis re-asserted
+before the conclusion, the elder rule cross-checked against a separately written
+Prim MST, and a negative control paired with a positive one so that returning
+nothing cannot pass. 28 assertions. Fourteen mutations, fourteen killed —
+including a `CLAIMED_SHIPPABLE` flipped to true.
+
+Three assertions survived their mutations on the first pass and all three were
+repaired, and they are the usual suspects wearing new hats. The scale sweep only
+used factors where every distance stayed above 1.0, so an absolute `.max(1.0)`
+never bit. A `bottleneck_h0` returning zero satisfied every stability assertion,
+so the yardstick is now calibrated against a known separation before it is
+trusted. And the version gate was unobservable because the signature already
+covered the parameter block, so the test now builds a validly signed
+forward-version record, asserts its signature genuinely verifies, and *then*
+asserts `open` still refuses it.
+
+A fourth mutation was correctly identified as *equivalent* rather than as a
+hole: a constant salt of repeated bytes is absorbed by the stuck-source guard.
+Re-run with distinct bytes, it died.
+
+I like this commit more than any of the twelve that came before it. Building the
+thing and then publishing the number that kills it is the only part of this
+project I would defend without qualification.
+
+### What the round looks like from above
+
+| commit | assertions before → after | mutations | survived |
+|---|---|---|---|
+| shell scripts | 34 → 41 | 23 | 0 |
+| TCP slot map | 21 → 26 | 16 | 0 |
+| `--check-o1-network` | 76/76 in mkimage | — | — |
+| SYN retry limit | 26 → 29 | 16 | 0 |
+| crypto audit | docs only | — | — |
+| TLS peer auth | 32 → 51 | 10 | 0 (1 repaired) |
+| TLS name + AAD | 51 → 61 | 12 | 0 (2 repaired) |
+| rollback floor | 17 → 23 | 6 | 1, reported |
+| permission field | 0 → 8 | 17 | 0 |
+| training tuner | 0 → 10 | 16 | 0 |
+| sandbox envelope | 0 → 6 | 13 | 0 (1 killed by panic) |
+| sandbox extent | 6 → 8 | — | — |
+| topological password | 0 → 28 | 14 | 0 (3 repaired) |
+
+Three things I want on the record about that table.
+
+**One survived mutation is in it, and stayed.** The rollback floor's swallowed
+write error is unreachable without a fault-injection seam the VFS does not have.
+It is in the table as a survivor rather than quietly dropped, because a mutation
+table with no survivors in it is a table that has learned to round.
+
+**Four subsystems in this round have no production caller.** The permission
+field, the tuner, the sandbox, and the topological password module. Two of them
+are deliberate — you do not replace a live permission check and ship the
+replacement in the same commit, and you do not wire in a construction your own
+measurement rejected. Two of them are just not finished, and saying "landed" about
+them would be a lie of the exact kind the rest of this README exists to catalogue.
+
+**Six of thirteen exist because a limits paragraph got read.** The SYN retry
+limit was named in the slot-map commit's limits. The name binding and the
+fragmentation were named in the peer-auth commit's limits. The peer auth and the
+rollback floor were both named in the crypto audit. The extent sizing was named,
+in bold, in the sandbox commit's own limits. That is the mechanism actually
+doing the work in this project, more than any test and more than any gate: write
+down what you did not do, in the same commit, in a place the next person will
+look — and then be the next person.
+
+## `nettree` — Deleting Points Without Changing The Shape
+
+*(`kernel/epsilon/epsilon/crates/aether-core/src/nettree.rs`, 448 lines. Tests in `tests/house_nettree_invariants.rs`, `house_nettree_dimension.rs`, `house_relaxed_distance.rs`, `house_relaxed_entry_time.rs`. Every number below is in `.claude/RALPH_MATH_LEDGER.md` with the iteration that produced it.)*
+
+### The number that made this necessary
+
+Open `persistence.rs` and look at the presets. They are honest to the point of being rude:
+
+| preset | homology | `max_points` |
+|---|---|---|
+| `h0_only` | connected components | 512 |
+| `h1_dense` | components + loops | **128** |
+| `h2_default` | components + loops + voids | **48** |
+
+Forty-eight. This README opens by claiming OS state is a point cloud on S², and the ambition written into the mission is *n* in the tens of thousands. The engine that computes the shape of that cloud gives up at forty-eight points if you want to know about voids, and at a hundred and twenty-eight if you only want loops.
+
+Those caps are not timidity. They are a measurement, taken with `cargo run -p aether-core --example scale_probe --release` on one core of a Windows 11 box, and pasted into the doc comment where nobody can lose it:
+
+| dim | n | pairs | seconds |
+|---|---|---|---|
+| 2 | 50 | 19,650 | 1.859 |
+| 2 | 70 | 54,810 | **15.338** |
+| 1 | 120 | 7,141 | 2.202 |
+| 1 | 200 | 19,901 | **20.728** |
+
+Going from 50 points to 70 — a factor of 1.4 in *n* — costs a factor of 8.25 in time. That is what `O(n^(d+1))` feels like from the inside. At *n* = 10,000 and *d* = 2 you are not waiting longer; you are waiting for the heat death.
+
+### What the machine is actually doing, for people who have not met a Rips complex
+
+Take your points. Grow a ball of radius `α/2` around every one of them, simultaneously. Two balls touch when the points are `α` apart, so draw an edge. Three balls mutually touch, draw a filled triangle. Four, a tetrahedron. Sweep `α` from zero to infinity and you get a **filtration** — a nested family of shapes, each one containing the last, that starts as dust and ends as one solid blob.
+
+Holes appear during that sweep and later get filled in. A hole that survives across a long stretch of `α` is a real feature of the cloud; a hole that appears at `α = 0.31` and dies at `α = 0.32` is a sampling artefact. That is the whole idea of persistent homology, and it is genuinely beautiful. It is also the reason for the caps: the number of triangles is on the order of `n³` and the number of tetrahedra `n⁴`, and you have to build them all before you can throw any of them away.
+
+So the obvious move is to build fewer simplices. The non-obvious question is how you do that **without lying** — how you skip work and still get the same answer, or a provably close one, rather than a fast wrong one.
+
+### Sheehy's move, which is not the move you expect
+
+Sheehy (arXiv:1203.6786, *Discrete & Computational Geometry* 49(4):778–796, 2013) does not compute the complex more cleverly. He changes the **metric**.
+
+Here is the intuition, and it took me an embarrassingly long time to see it. At a coarse scale `α`, most of your points are redundant. If ten points sit inside a blob of diameter much smaller than `α`, the complex does not care which nine of them you throw away — the balls have swallowed the differences. The obstruction is that deleting a point *does* change the complex, in the small annoying way where a triangle loses a vertex and a hole flickers.
+
+Sheehy's fix is to give each point a **weight** that grows with `α`, and to measure distances in the inflated metric
+
+```
+d_α(p, q) = d(p, q) + w_p(α) + w_q(α)
+```
+
+The weight is a bribe. A point about to be deleted gets fattened just enough that the balls of its surviving neighbours cover everything it was covering, so its removal leaves no hole for the filtration to notice. Points then get **deleted as the scale grows**, and the diagram you compute on the shrinking point set interleaves with the true one to within a multiplicative `ε`.
+
+The weight function, transcribed from section 4 of the paper into `nettree.rs`:
+
+```
+w_p(α) = 0                              if α ≤ (1 − 2ε)·t_p
+       = (α − (1 − 2ε)·t_p) / 2         if (1 − 2ε)·t_p < α < t_p
+       = ε·α                            if t_p ≤ α
+```
+
+```
+  w_p(α)
+     │                                    ╱   slope ε
+     │                          ╱────────╯
+     │                      ╱   slope ½
+     │                  ╱
+     │────────────────╯
+     └────────────────┴─────────┴────────────────────  α
+          w = 0    (1−2ε)·t_p   t_p
+```
+
+Zero until just before the point's deletion time `t_p`, then a ramp at slope ½, then a gentler ramp at slope `ε` forever. It is continuous at both knees — at `α = t_p` the middle branch gives `(t_p − (1−2ε)t_p)/2 = ε·t_p`, which is exactly the third branch — and because `ε ≤ 1/3 < 1/2` the whole thing is ½-Lipschitz. That Lipschitz constant is not decoration; it is the hinge of the paper's Lemma 4.1, which is the reason any of this is a filtration at all.
+
+### One implementation problem the paper does not have
+
+`d_α` moves with `α`. It is not a distance matrix. You cannot hand it to a Rips builder, which wants one fixed number per pair.
+
+Lemma 4.1 says: if `d_α(p,q) ≤ α` and `α ≤ β`, then `d_β(p,q) ≤ β`. In words — once a pair is admitted it stays admitted. The set of admitting scales is an upward-closed ray, so its infimum is a well-defined **entry time**, and entry times *are* a distance matrix. `relaxed_entry_time` finds it by bisection on a predicate that Lemma 4.1 guarantees flips exactly once. Five properties are pinned, all green, including the one that matters most: set the deletion times far beyond the scale and the entry time collapses to the true distance, so the relaxed filtration degenerates to the exact Rips filtration. If that reduction failed, nothing else would be worth measuring.
+
+### The deletion times, and the two ways I got them wrong
+
+Everything above is scaffolding. `t_p` — when each point dies — is where the construction lives or dies with it. The paper, section 6, verbatim:
+
+> "For each `p` in `P` the deletion time `t_p` is defined as `t_p := (1 / (ε(1 − 2ε))) · rad(par(v_p))`."
+
+where `v_p` is the last node in the net-tree still represented by `p`. I shipped a "defensible monotone substitute" instead, documented at the time as carrying no inherited guarantee, and it was wrong in two independent ways:
+
+1. **The wrong node.** It is the radius of the **parent** of `v_p`, one level coarser. I used the node's own radius. Radii double per level, so this halved every deletion time.
+2. **No `ε` at all.** I omitted the factor `1 / (ε(1 − 2ε))` entirely. That factor is **9** at `ε = 1/3` and **22.2** at `ε = 0.05`.
+
+The second one is the whole ballgame, and it is worth stating slowly because it is the mechanism of the entire approximation. A smaller `ε` produces a **later** deletion time, so points are retained longer, so the sparse complex is closer to the dense one. That is *how* the approximation tightens as you ask for more accuracy. A deletion rule with no `ε` dependence cannot tighten, no matter how monotone and defensible it looks, and nothing else in the construction compensates for it.
+
+Measured, same fixture both times — regular circle, `n` = 40, H₁, bottleneck distance against the exact Rips diagram:
+
+| ε | bottleneck BEFORE | bottleneck AFTER | b/ε after |
+|---:|---:|---:|---:|
+| 0.0200 | 0.036368 | **0.000000** | 0.000 |
+| 0.0500 | 0.093790 | **0.000000** | 0.000 |
+| 0.1000 | 0.240529 | **0.000000** | 0.000 |
+| 0.2000 | 1.188009 | **0.065746** | 0.329 |
+| 0.3333 | 2.437642 | **0.065746** | 0.197 |
+
+At `ε = 1/3` — the largest value the paper permits — the error fell by a factor of **37**. Read the third column, not the second: `b/ε` *falls* as `ε` grows. That is what distinguishes a multiplicative interleaving from an implementation that happens to be small at one parameter, and before the fix it ran 1.82, 1.88, 2.41, 5.94, 7.31 in the wrong direction.
+
+The scale to judge that 0.065746 against is 1.782013, the exact H₁ death for a regular 40-gon, `2·sin(π·⌈40/3⌉/40)`, derived in closed form and matched by the oracle to 3.1e-6. So the worst measured error at the loosest legal `ε` is **3.7% of the feature it is measuring**, and below `ε = 0.1` the sparse diagram is not close to the Rips diagram, it **is** the Rips diagram. Bottleneck 0.000000. Exactly zero.
+
+Before the fix, at `ε = 1/3`, the error was 2.437642 against a feature scale of 1.782013 — the approximation was larger than the thing it approximated. It had not loosened. It had collapsed, and the ledger entry that recorded the collapse was written as a pinned assertion that would go **red** if anyone ever corrected the deletion times. Someone did. It went red. It forced this rewrite instead of letting a stale claim sit there looking fine.
+
+### Does it actually get smaller, though
+
+Accuracy is half of Theorem 9.3. The other half is size, and size is the entire point.
+
+**Circle, intrinsic dimension 1.** An edge belongs to the sparse filtration exactly when both endpoints are still alive at its entry time.
+
+| ε | fitted sparse exponent | fitted dense exponent | sparse/dense at n = 1024 |
+|---:|---:|---:|---:|
+| 0.1000 | **0.975** | 2.005 | 0.0505 |
+| 0.2000 | **1.011** | 2.005 | 0.0275 |
+| 0.3333 | **1.023** | 2.005 | 0.0201 |
+
+Sparse grows like `n^1.0`. Dense grows like `n^2.005`. **That 2.005 is the load-bearing number in the table** — it is the control. The dense edge count is known to be exactly `n(n−1)/2`, so if the fitting procedure could not recover 2.0 from it, the 0.975 next to it would be an artefact of the fit rather than a fact about the complex. It recovers 2.005. The ratio then halves at every doubling of *n* — 0.3046, 0.1575, 0.0797, 0.0401, 0.0201 — which is what linear-against-quadratic looks like when you watch it happen.
+
+**Sphere S², which is the case this OS actually cares about, and which took four tries to get right.** The quantity Sheehy's Lemma 9.2 bounds is not the degree of a point. It is `|E(p)|`, the neighbours of `p` that **outlive** `p` — each edge charged exactly once, to its shorter-lived endpoint. I measured the undirected degree instead, watched it grow 4.04× across a 16× range in *n*, and issued a verdict that the implementation violated the bounded-degree invariant. It does not. I was counting the wrong set.
+
+On the correct set, extended to *n* = 8192:
+
+| n | MAX \|E(p)\| | mean \|E(p)\| | max d/t_p | min sep/t_p |
+|---:|---:|---:|---:|---:|
+| 256 | 69 | 45.45 | 0.6666 | 0.05556 |
+| 512 | 78 | 49.94 | 0.6667 | 0.05556 |
+| 1024 | 82 | 52.53 | 0.6667 | 0.05559 |
+| 2048 | 94 | 57.74 | 0.6667 | 0.05556 |
+| 4096 | 95 | 56.25 | 0.6667 | 0.05557 |
+| 8192 | **90** | **55.83** | 0.6667 | 0.05556 |
+
+Per-doubling growth of MAX `|E(p)|`: 1.130, 1.051, 1.146, 1.011, **0.947**. **The last doubling decreased it.** The mean peaked at 57.74 and came back down. The maximum plateaus somewhere in 90 to 95 and sits there. Mean `|E(p)|` is total edges over *n*, so a flat mean is a linear edge count, stated as a plateau you can see rather than as an exponent you have to trust. At *n* = 8192 the sparse complex carries **1.36%** of the dense edges.
+
+The last two columns are Sheehy's own preconditions, checked pointwise instead of fitted:
+
+- **Containment.** `max d(p,q)/t_p = 0.6667` at every single *n*, against the paper's requirement of ≤ 1. Not declining, not drifting.
+- **Separation.** `min sep/t_p = 0.05556` at every single *n*. That is `1/18`. Sheehy's floor is `K_p·ε(1−2ε)`, which at `ε = 1/3` is `K_p/9`, so the measurement implies `K_p = 0.5` — a perfectly reasonable net-tree packing constant, arrived at by measurement rather than by hoping.
+
+Both constant to five significant figures across a **32× range in *n***. Constants that do not move are the most boring possible evidence and by a distance the most convincing.
+
+Triangles tell the same story with a longer detour: at *n* ≤ 192 the fitted exponent was 1.896 and I wrote down "nearly quadratic"; at *n* ≤ 2048 it was 1.161; at *n* ≤ 8192 the tail exponent is **0.923**, and triangles per point peak at 1416.97 (*n* = 2048) and fall to 1272.80 (*n* = 8192). Three successive positions on one question, two of them wrong, and what settled it was never a better argument — it was another doubling. More on that below, because it turns out to be a general disease.
+
+### The part that does not work, stated as plainly as the part that does
+
+Sheehy's section 10 uses the net-tree to find neighbours without examining all pairs, giving `O(n log n)` construction. **It is not achieved here.** Three attempts, all measured, all negative:
+
+| attempt | result at n = 2048 |
+|---|---|
+| descend from the root | 1027.15 ms against the linear scan's 8.48 ms — **0.01×** |
+| start the descent at the level matching the query radius | 958 ms. Still 0.01× |
+| order discovery by deletion time | 1467.07 ms against 1285.53 ms — 0.88× |
+
+The range query is *correct*: 1064 (query, radius) pairs agree with the scan exactly, across *n* = 32 to 256, radii 0.05 to 3.0, plus eight exact duplicates, a two-point set, and radius zero. It is simply a hundred times slower than the thing it replaced, and the reason is arithmetic rather than engineering. `t_p` is nine net radii at `ε = 1/3` and twenty-two at `ε = 0.05`, while S² has a chordal diameter of 2.0. At `ε = 1/3`, **40.6%** of query balls cover the entire sphere; at `ε = 0.05`, **100%** do. A spatial index cannot prune a query that legitimately wants everything, and it gets worse exactly as `ε` shrinks — which is the regime where the approximation is best.
+
+The selectivity of `E(p)` was never spatial. It is `t_q > t_p`. And reordering by deletion time cannot help either, because `Σ_p |{q : t_q > t_p}| = n(n−1)/2` — a permutation of the same comparisons. That one line of arithmetic was available before the implementation was written, which is the sort of thing you file under process rather than mathematics.
+
+So: **four of Sheehy's five claims are measured and hold in this implementation. The fifth needs the Har-Peled–Mendel net-tree with explicit parent pointers and bounded child counts, which is a different data structure and a real project.** Edge discovery is still `O(n²)` — quadratic work to find a set now demonstrated linear. The complex you get at the end is small. Getting it is not yet fast.
+
+---
+
+## Nine Defects, One Defect: The Local Hypothesis Was Never Load-Bearing
+
+The README already has a section on negative controls, and it states the rule once: **a gate that only checks the happy path passes when you delete the feature.** I have now audited the mathematics of this repository against that rule for thirty-three iterations, and found nine defects across four crates.
+
+I spent a while filing them as nine.
+
+They are one.
+
+> **The local hypothesis is not load-bearing.** Not that some local-implies-global step was invalid — the step is usually fine. The disease is that the conclusion holds *without the assumption*, or is forced by the code's own definitions. A hypothesis that cannot change the answer is not a hypothesis. It is a decoration attached to an answer that was already determined.
+
+That is the same organism as "a proof that cannot fail is not a proof," seen from the other end. A negative control asks whether your test can go red. This asks whether your *premise* could ever have mattered. Nine times the answer was no, and each time the number involved was reported to five decimal places, in a passing test, with a confident doc comment above it.
+
+### Instance: a function that returned its own type parameter
+
+`tss.rs`, the S² index this README's opening claim rests on:
+
+```rust
+/// Betti-0 number: by construction each Voronoi cell is one connected
+/// component, so beta_0 = K.
+pub fn betti_0(&self) -> u32 { K as u32 }
+```
+
+`K` centroids induce a Voronoi decomposition of S². The **union** of those cells is S², which is connected, so β₀ is 1 however finely you cut it. Adjacent cells share boundaries; a decomposition is not a disjoint union.
+
+The test asserted `betti_0() == 4` for `K = 4`, and `capacity() == 4` on the very next line. So a homology invariant and an allocation count were pinned to the same literal, one of them named after a homology group. Then it asserted `betti_0() == 8` for `K = 8` — **it explicitly pinned β₀ growing when the tiling is refined**, which is the clearest possible statement that the function counts cells. Measured for the fix: `K = 4` with one duplicated centroid leaves exactly **3** cells reachable over 4000 random queries, so `K` is not even a count of *occupied* cells. `betti_0()` now returns 1, `capacity()` still returns `K`, and nothing is lost except a lie.
+
+### Instance: assuming the sphere in order to derive the sphere
+
+The `epsilon` crate computed `β₂ = 2 − β₀ + β₁` and the surrounding doc claimed the hollow manifold was "**derived**, not assumed."
+
+That formula is the Euler characteristic rearranged with `χ = 2` substituted in. `χ = 2` **is** the sphere. The function assumes a sphere and then reports having found one.
+
+With `β₀ = 1` — any connected input — it reduces to `1 + β₁`, and `β₁ ≥ 0` always, so it can never return 0. It is structurally incapable of representing a non-sphere. The RED test, run against unmodified code:
+
+```
+DISC    n=49 -> b0=1 b1=108 b2=109   (true beta_2 = 0)
+SEGMENT n=10 -> b0=1 b1=0   b2=1     (true beta_2 = 0)
+```
+
+**Ten collinear points — a straight line — were reported as containing a spherical void.** And since it is exactly `1 + β₁` for connected input, the field carried no information beyond the field sitting next to it in the wire payload. The old test asserted `b0 == 1` and then `b2 >= 1`, which follows algebraically from the line above it. It could not fail. It never had.
+
+### Instance: a bound compared against itself
+
+Theorem T2, the spectral contraction mapping, ships a convergence check. The step is `(1−α)·state + α·pred`, so the error obeys `e_{n+1} = (1−α)·e_n` and the realised error **equals** `(1−α)^steps · e_0`. Not is bounded by. Equals. Measured ratio of realised error to "bound", five values of α, three step counts each:
+
+```
+alpha=0.10  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.25  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.50  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.75  steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.90  steps=1,5,20   ratio = 1.00000000000000000
+```
+
+A ratio of exactly 1.0, fifteen times, is not a passing test. It is a function comparing a value to itself with extra steps. The designed misfire proves it: at `α = 0` the operator is the identity, the state never moves, and the old check cheerfully reported `converged = true`.
+
+The same shape turned up in the attention cost model, where a test compared `plan.cost_ratio` against `selection_dot_cost(..)/dense` — and `routing_plan` computes `cost_ratio` by calling `selection_dot_cost` with those exact arguments and dividing by that exact denominator. Measured difference: **0.00000000000000000e0**, against a tolerance that allowed 1e-12. Exactly zero is what an identity looks like. A real prediction-versus-measurement check does not come out bitwise equal, and if yours does, you have measured your own storage layer.
+
+### Instance: the one this effort wrote, while auditing for exactly this
+
+This is the one I would lead with if I were being honest about how hard the pattern is to see.
+
+Iteration 27 built a containment certificate for the sparse complex: every accepted edge must lie within `2·t_p`. It passed at every *n* with a reach ratio of exactly **0.1667**, unvarying. Its required misfire control — inflate every deletion time by 2× and confirm the check trips — **did not trip it**.
+
+Because an edge is accepted only when `d < min(t_p, t_q) ≤ max(t_p, t_q)`, so `d / (2·max(t_p,t_q)) < 1/2` **by construction, for every possible input**. The certificate was the acceptance predicate wearing a lab coat. A constant that never varies is not a measurement.
+
+That was the ninth instance, it was written by the audit that exists to find the pattern, and it was caught in the same iteration only because the misfire control was mandatory. Two of the three instruments built that iteration were faulty. The pattern is not a thing other people do.
+
+### Instance: a conjecture of my own, killed by a constant
+
+This one is the cleanest statement of the disease, because the mathematics was correct and the hypothesis was still worthless.
+
+The conjecture: OS state on S² is a congestion game, its load-balancing equilibrium keeps occupancy even, and **that equilibrium is what makes linear-size persistence legal**. Two lemmas underneath it, sent to fifteen blind adversarial verifiers, fifteen HOLDS, zero holes. The lemmas are fine.
+
+Sheehy's hypothesis is metric doubling: the minimum number of radius-`r` balls needed to cover any radius-`2r` ball, on the finite point set. S² with the chordal metric is exactly Ahlfors 2-regular — chordal ball area is exactly `πt²` for `0 ≤ t ≤ 2`, confirmed symbolically, by quadrature to 1e-16, and by Monte Carlo. A disjoint-cap area count gives at most **25** points in a maximal `(r/2)`-separated subset of any radius-`r` ball, **uniformly for all r > 0** — attained throughout `r ≤ 1.6`, falling to 16 at the diameter, and to 1 past `r = 8`. Doubling is inherited by arbitrary subsets, here with no loss at all, because the bound is an ambient area count.
+
+So **every** point configuration on S² satisfies Sheehy's hypothesis already, whatever the occupancies are, balanced or catastrophically lopsided. The equilibrium bought nothing. The topology was never expensive; there was nothing for the game theory to make cheap. The architectural claim survives — "OS state is topology on S²" really is what makes the linear bound legal — but it survives for a reason so much simpler than the conjecture that the conjecture was pure ornament. The sphere alone does it.
+
+The reason this instance is worth its own subsection: nothing was *wrong*. The lemmas hold. The game theory is real. The conclusion is true. And the hypothesis still had to be deleted, because deleting it changed nothing.
+
+### The general form, which has four instances of its own
+
+The same disease shows up in measurement rather than in code, and it cost more iterations than all the vacuous tests combined:
+
+> **A fitted exponent over a range where the constant has not settled measures the approach to the plateau, not the growth rate.** When a bound is `C·n` with `C` exponential in some parameter, no fit below the scale where `C` stops dominating is informative.
+
+Four instances on this branch. The clearest is the triangle count on S²: exponent **1.896** at *n* ≤ 192, recorded as "nearly quadratic"; **1.161** at *n* ≤ 2048; **0.923** at *n* ≤ 8192. The raw counts were correct at every stage — brute force and the adjacency reformulation agree exactly at *n* = 32, 48, 64, 96, 128 — so nothing was miscomputed. The exponent fitted over them simply was not a fact about the object. Sheehy's constant is `(1/ε)^O(kd)`, which at `k = 2`, `d ≈ 2`, `ε = 1/3` is `3^O(4)`: plausibly in the hundreds. Against *n* ≤ 192, the constant *is* the measurement.
+
+The honest response to an inconvenient exponent is another doubling, not a verdict. I issued the verdict twice.
+
+### How to tell, in one sentence
+
+Delete the hypothesis and see whether the conclusion moves.
+
+If `betti_0` still returns `K` when you rip out the Voronoi decomposition, it was never about the decomposition. If `β₂` still says "sphere" for ten points on a line, it never read the points. If the convergence check still passes for an operator that does not converge, it never checked convergence. If linear-size persistence is legal on S² whether or not the load is balanced, the balancing was scenery.
+
+The README already says a proof that cannot fail is not a proof. This is the same sentence pointed one level up: **an assumption that cannot change the answer is not an assumption.** Nine times, in four crates, across a codebase whose entire pitch is that the mathematics is real. It is real. It just needed a control on every single one of its premises, including the ones the audit itself was writing at the time.
+
+
+## Nine More Checks That Cannot Fail, And I Wrote The Ninth
+
+The taxonomy above has seven entries, all found in one day, all in the kernel.
+This is nine more, found by a bounded loop pointed at the *math* crates instead
+— `aether-core`, `epsilon`, `aether-verified`, the code the kernel's topology
+claims rest on. Different files, different week, same shape. Every one was
+green. Every one has a command beside it that produced the number.
+
+I am going to give the count away in the title, so: eight of these were waiting
+for me. The ninth I wrote myself, during the iteration whose entire stated
+purpose was finding the other eight.
+
+**1. The invariant that was not permutation invariant.**
+`topology::compute_betti_0`. The module doc says bytes are "a 1D point cloud on
+R", which makes the byte *values* the points and their positions irrelevant. The
+code walked consecutive *positions* and counted maximal runs of large gaps. Two
+errors stacked: the wrong quantity, and the wrong space.
+
+| input | returned | true beta_0 |
+| --- | ---: | ---: |
+| `[0x90; 64]` | 0 | 1 |
+| `[5]` | 1 | 1 |
+| `[5, 5]` | **0** | 1 |
+| 19 random bytes, order A | 3 | — |
+| the same 19 bytes, order B | 2 | — |
+
+Sixty-four points with zero connected components. Adding a second point at the
+same coordinate *removed* a component. And a homology invariant of a point cloud
+that changes when you shuffle the input is not an invariant of anything.
+
+The test was `test_uniform_data_low_density`, and it asserted `betti_0 == 0` for
+`[0x90; 64]`. The suite did not miss the defect. The suite **certified** it. The
+RED replacement failed 5 of its 6 assertions on unmodified code. The fix is a
+256-entry presence scan — `O(n + 256)`, no allocation, `no_std`, permutation
+invariant by construction, because a sort has no opinion about input order.
+
+**2. The formula that could not represent a non-sphere.** `epsilon`'s
+`compute_betti_2_euler` returned `2 - b0 + b1`. For any connected input `b0 = 1`,
+so the expression collapses to `1 + beta_1`, and `beta_1 >= 0` always. It cannot
+return zero. Not "rarely returns zero" — cannot.
+
+```
+DISC    n=49 -> b0=1 b1=108 b2=109   (true beta_2 = 0)
+SEGMENT n=10 -> b0=1 b1=0   b2=1     (true beta_2 = 0)
+```
+
+Ten collinear points. A straight line. Reported as containing a spherical void.
+
+Its test was named `test_betti_2_sphere_cloud_is_one`, and it asserted
+`b0 == 1`, and then on the next line asserted `b2 >= 1`. The second assertion
+follows algebraically from the first. It was not a test, it was the identity
+`1 + beta_1 >= 1` written in test syntax. The same identity also means the wire
+field `signature_b2` carries no information that `signature_b1` does not already
+carry, which nobody had noticed in either direction.
+
+**3. The function that returned its own type parameter.**
+
+```rust
+/// Betti-0 number: by construction each Voronoi cell is one connected
+/// component, so beta_0 = K.
+pub fn betti_0(&self) -> u32 {
+    K as u32
+}
+```
+
+The union of the Voronoi cells is `S^2`. `S^2` is connected. Cutting it more
+finely does not disconnect it, and adjacent cells share their boundaries. So
+beta_0 is 1, at every `K`, and the doc comment is the defect written out
+longhand.
+
+The test asserted `betti_0() == 4` at `K = 4`, and asserted `capacity() == 4` on
+the line immediately after — pinning two quantities to the same number with only
+one of them named after a homology group. Then it asserted `betti_0() == 8` at
+`K = 8`. That is a test which **explicitly pins a topological invariant growing
+when the tiling is refined**, and it had been green since it was written.
+
+The third RED assertion is my favourite: duplicate one centroid at `K = 4` and a
+cell becomes unreachable. Measured over 4000 random queries, exactly 3 cells were
+ever hit. `betti_0` still said 4. So the function was not even a correct count of
+*occupied* cells, which is the thing it was accidentally computing.
+
+**4. The bound that was the closed form of the thing it bounded.** Theorem T2's
+step is `(1 - alpha) * state + alpha * pred`, so the error obeys
+`e_{n+1} = (1 - alpha) e_n` and the realized error **equals**
+`(1-alpha)^steps * e_0`. The "theoretical error bound" `verify_convergence`
+compares against is that expression. Measured ratio of realized error to bound:
+
+```
+alpha=0.10 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.25 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.50 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.75 steps=1,5,20   ratio = 1.00000000000000000
+alpha=0.90 steps=1,5,20   ratio = 1.00000000000000000 (two at 0.99999999999999978)
+```
+
+Seventeen zeros. The only inputs that could ever flip the check are 1-ULP
+rounding events around 1e12.
+
+The designed misfire is the part worth keeping. At `alpha = 0` the step is the
+identity map: the state never moves, the operator has no convergence whatsoever,
+and `converged` came back **true**. A second defect fell out of the same reading
+— `TelemetryOperator::new(alpha_min, alpha_max, ..)` never checks the ordering,
+so `new(0.5, 0.1, 0.1, 0.9)` reported a Lipschitz constant of **0.5** against a
+measured worst per-step factor of **0.9**. Optimistic, in a contraction claim,
+which is the one direction that is not survivable.
+
+**5. The contract that was an assignment.** `tests/attention_contracts.rs:1044`
+asserts `plan.cost_ratio` against `selection_dot_cost(..) / dense_dot_cost(..)`.
+`routing_plan` computes `cost_ratio` at `src/attention.rs:164` by calling
+`selection_dot_cost` with those arguments and dividing by that denominator.
+
+Measured difference between the two sides: **0.00000000000000000e0**.
+
+Not "within the 1e-12 the assertion allows". Exactly zero, bitwise, because they
+are the same floating-point operations in the same order. The assertion's own
+failure message says "plan predicted X of dense, selector cost Y", which reads
+like a prediction checked against a measurement and is a variable checked against
+itself. Any error inside `selection_dot_cost` moves both sides together and is
+invisible to it.
+
+**6. The distance function that was zero on the fixture.**
+`great_circle_distance`. The index builds unit vectors as
+`[sin t cos p, sin t sin p, cos t]`, which is the **colatitude** convention, for
+which `cos d = cos(t1) cos(t2) + sin(t1) sin(t2) cos(p1 - p2)`. Both
+implementations computed `sin(t1) sin(t2) + cos(t1) cos(t2) cos(p1 - p2)` — the
+latitude formula, fed colatitude inputs, with `cos(p1 - p2)` on the wrong term.
+
+Two points on the equator, a quarter turn apart:
+
+| | value |
+| --- | --- |
+| correct | `1*1*cos(pi/2) + 0*0 = 0` -> `acos 0 = pi/2` |
+| implemented | `1*1 + 0*0*cos(pi/2) = 1` -> `acos 1 = 0` |
+
+**It returned 0 for two points a quarter turn apart.** Worst disagreement over
+2000 random pairs: **3.045645 radians**, against a maximum possible of pi.
+
+Here is why it lived. The only property test on the S2 index checked
+`d(p, p) = 0` and symmetry. Both of those are true under **both** conventions.
+They are not weak properties, they are properties *orthogonal to the defect*,
+which is worse, because they look like coverage. All 64 existing
+`aether_verified` tests passed before the fix and all 64 passed after it. The
+same wrong formula was sitting in two crates.
+
+The coda is that writing the mutation test which should have existed turned up
+something worse than the thing it was written for: the `acos` form loses about
+half its significant digits near zero separation, and at a true separation of
+1e-8 returned **exactly 0.0** — two distinct points reported as coincident. Both
+copies now use the haversine identity, where `d(p, p)` is exact to 1e-15.
+
+**7. The check that was not there at all.** `ml/convergence.rs`'s
+`ResidualAnalyzer::compute_betti` had zero tests. Not a weak test — none. It is
+load-bearing: `convergence.rs:131` decides convergence with
+`if self.is_betti_stable() && self.is_drift_stable()`.
+
+What it computes, now pinned: `beta_0 = ceil((sign_changes + 2) / 2)` walking the
+sequence in order, so it is not permutation invariant and cannot be an invariant
+of a point set. Residuals of 1e-12 and 1e9 produce identical output — only signs
+are read, magnitudes are discarded entirely. Empty input returns `(1, 0)`, where
+beta_0 of the empty space is 0.
+
+The honest verdict is that the *decision* may be fine, because `is_betti_stable`
+asks whether the numbers stop changing rather than what they are, and the
+stability of a sign-change count is a legitimate convergence signal. It is a
+naming defect wearing topology, and it ranks below the four above it. But it had
+no test, and "probably fine" is the thing this document exists to stop me saying.
+
+**8. The gate that scored its own build failures as wins.** The mutation gate
+applies a named one-line mutation, runs the crate's tests, and records whether
+anything went red. One mutation reverted a function to its old `acos` form —
+which no longer compiled, because `acos` had been dropped from the imports.
+Non-zero exit. Scored **CAUGHT**.
+
+A compile failure is not a test catching anything, and counting it inflates the
+suite by exactly one claim. The gate now reports `NOCOMPILE` as its own outcome
+and names those mutations for rewriting instead of banking them. That mutation
+was rewritten to `sqrt(h.clamp(1e-16, 1.0))`, which compiles and attacks the same
+precision property. Final state: **19 caught, 0 survived, 0 invalid, 2 documented
+equivalent mutants.**
+
+**9. The one I wrote, in the iteration about the other eight.** A containment
+certificate: every accepted edge should lie within `2 * t_p`. It passed at every
+`n` with a reach ratio of exactly **0.1667**, unvarying across five doublings.
+Its required-misfire control inflated every deletion time by 2x and **did not
+trip it**.
+
+The reason is structural and takes one line. An edge is accepted only when
+`d < min(t_p, t_q)`, and `min(t_p, t_q) <= max(t_p, t_q)`, therefore
+`d / (2 * max(t_p, t_q)) < 1/2` for every input that can reach the check. The
+threshold was 1.0. There is no failing input. There has never been a failing
+input. I wrote a check whose threshold is six times looser than the largest value
+its own acceptance predicate permits, and then reported the constant it produced
+as a measurement.
+
+### What the nine have in common, which is not what I expected
+
+| # | crate | what it asserted | what it could not detect |
+| ---: | --- | --- | --- |
+| 1 | aether-core | `betti_0([0x90;64]) == 0` | that beta_0 was a gap-run count |
+| 2 | epsilon | `b2 >= 1` after `b0 == 1` | that `b2` could never be 0 |
+| 3 | aether-core | `betti_0() == K` | that beta_0 grew under refinement |
+| 4 | aether-core | realized error `<=` its own closed form | an operator with zero contraction |
+| 5 | aether-core | `cost_ratio ==` the expression that set it | any error inside that expression |
+| 6 | aether-verified | `d(p,p) == 0`, symmetry | a formula wrong by up to 3.045645 rad |
+| 7 | aether-core | — | anything |
+| 8 | the gate | non-zero exit means CAUGHT | a mutation that does not build |
+| 9 | mine | `d / (2 max) < 1.0` | any input whatsoever |
+
+Rows 1, 2 and 3 are the same defect in three different crates: a quantity named
+after a homology group, computed as something else, guarded by a test that could
+not fail. Three in three is not a suspicion about this codebase. It is a rate.
+
+Row 9 is the argument for the required-misfire control, and I want to be exact
+about why. That certificate looked correct. It produced a number with four
+significant figures that did not vary across five doublings of `n`, which is the
+shape a stable measurement has and also the shape a constant has. Nothing about
+reading it would have caught it. The control caught it in one run, and the only
+reason it appears in this section rather than in a results table is that the
+control does not believe me and I have not found a way to argue with it.
+
+## The Loop That Kept Being Wrong About Itself
+
+The ledger for that loop is 2,563 lines. The most useful thing in it is not the
+ten repairs. It is the seven times it had to go back and correct something it had
+already written down as established.
+
+I am recording all seven, because a ledger that only accumulates wins is not
+evidence, and because the error rate of the thing doing the finding is a number
+the reader is entitled to.
+
+**1. The Theiler window that changed nothing.** The Lyapunov estimator failed its
+own ground truth in iteration 1: it reported the logistic map's exponent 4x too
+small and gave a damped exponential the wrong *sign*. I attributed that to a
+missing Theiler window, which is the standard fix for exactly this failure and
+is, here, irrelevant. Measured at n=1500, noise-free:
+
+| Theiler window | lambda |
+| ---: | ---: |
+| 0 | 0.6700 |
+| 10 | 0.6703 |
+| 30 | 0.6686 |
+
+Three thousandths, across a 30x change in the parameter I had blamed.
+
+The actual discriminator was the `R^2` of the fit over the scaling region, which
+I had not been computing at all:
+
+| series | lambda | R^2 | verdict |
+| --- | ---: | ---: | --- |
+| logistic r=4 (true 0.6931) | 0.5369 | 0.987 | CHAOS |
+| sine (true 0) | 0.0188 | 0.333 | reject |
+| damped decay (true < 0) | 0.0064 | 0.374 | reject |
+| white noise (control) | 0.0685 | 0.453 | reject — misfires as required |
+| shuffled logistic (control) | 0.0813 | 0.466 | reject — misfires as required |
+
+0.987 against a worst non-chaotic 0.466 is a margin of 0.52. Lambda alone cannot
+do this job at all: white noise returns 0.0685 and shuffled logistic 0.0813, both
+small positives that a sign test would have to guess at. I had the right symptom,
+the wrong organ, and the right instrument sitting unused in the same script.
+
+**2. "A bound must sometimes be strict."** I wrote a test asserting that, aimed
+at the T2 error bound in entry 4 above. It is false. For a linear contraction the
+closed form is *exact*, so a bound equal to the realized error at every alpha and
+every step count is not by itself evidence of anything wrong. The test was
+rewritten.
+
+The defect was never that the value is exact. It is that an exact value was used
+as a check on itself. Those are different sentences and I shipped the first one.
+
+**3. `BettiNumbers::default()`.** I asserted it is `(0, 0)`. It is `(1, 0)`. One
+line, in a test written to pin down a function that was wrong about topology.
+
+**4. "A selector cannot cost more than dense."** Also false, and this one is the
+repository being *better* than my premise. `selection_dot_cost` charges
+`cluster_count + candidates` per row — the honest cost of comparing against every
+cluster centroid to decide which clusters to take — and clamps to legal keys, so
+a routed selector can never bill for keys the causal mask forbids. At
+`budget = 4`, `clusters = 2`, `head_dim = 4`:
+
+| seq | dense | routed | ratio |
+| ---: | ---: | ---: | ---: |
+| 8 | 4.500 | 6.250 | 1.389 |
+| 16 | 8.500 | 7.312 | 0.860 |
+| 32 | 16.500 | 16.594 | 1.006 |
+| 64 | 32.500 | 33.844 | 1.041 |
+| 128 | 64.500 | 65.984 | 1.023 |
+
+Routing does not pay at these two parameter settings, the mechanism reports
+itself as not worthwhile, and that is the entire reason the threshold exists. I
+had flagged a cost model as broken for including an overhead a naive sparsity
+claim would have quietly dropped.
+
+**5. Three successive positions on one exponent, none of them reasoned.** The
+sparse complex's triangle count on the sphere, fitted as a power law in `n`:
+
+| iteration | range | exponent | what I wrote at the time |
+| ---: | --- | ---: | --- |
+| 23 | n <= 192 | 1.896 | "nearly quadratic" |
+| 24 | n <= 2048 | 1.161 | "corrected, still not linear" |
+| 32 | n <= 8192, tail | **0.923** | linear |
+
+Triangles per point peak at **1416.97** at n=2048 and fall to **1272.80** by
+n=8192. Every one of those three positions was overturned by another doubling of
+`n`, and not one of them was overturned by thinking harder about the points I
+already had.
+
+The general form, which now has four instances on this branch: when a bound is
+`C * n` with `C` exponential in some parameter, a fit taken below the scale where
+`C` stops dominating measures the approach to the plateau, not the growth rate.
+The honest response to an inconvenient exponent is another doubling, not a
+verdict. That lesson was learned first for `k = 1`, across iterations 22, 23 and
+28, and then it had to be learned all over again for `k = 2`.
+
+**6. The Lean audit accusation, withdrawn entirely.** I wrote that three theorems
+in `EpsilonTheorems.lean` are `True := trivial` while the executed audit only
+greps for `sorry`. The first half is true. The second half I repeated without
+opening the file.
+
+The check at `kernel/seal-mkimage/src/main.rs` strips Lean comments first, tests
+`sorry` / `admit` / `axiom` against the stripped source, and then **separately**
+detects `True := trivial`, failing unless a `placeholder`, `skeleton` or
+`deferred` marker appears within eight lines above it. All three carry one, and
+each names what is missing:
+
+```
+line  75  Statement-level placeholder until S^2 great-circle distance is imported.
+line 113  Statement-level placeholder until the entropy comparison model is imported.
+line 232  Statement-level placeholder until cache-tier locality is modeled in Lean.
+```
+
+The audit is *stronger* than the one I accused it of running. The only residual
+defect is the exact reverse of my claim: `lean/README.md:30` describes the audit
+as `grep -rn "sorry"` and thereby undersells what actually executes.
+
+The failure mode has a name now, and it is verifying half a claim and shipping
+the other half on the strength of the first half feeling right.
+
+**7. A verdict retracted one iteration after it was issued.** I measured the
+neighbourhood degree of the sparse filtration on the sphere, found it growing,
+and wrote: *the implementation violates the bounded-degree invariant*. I measured
+the **undirected** degree, which Sheehy does not bound.
+
+His `E(p)` lives on `N_{t_p} = {r : t_r > t_p}`, so it contains only the
+neighbours that **outlive** `p`. Each edge is charged exactly once, to its
+shorter-lived endpoint. That asymmetry is the entire mechanism by which the sum
+stays linear, and I counted every edge from both ends.
+
+| n | MAX undirected | MAX \|E(p)\| |
+| ---: | ---: | ---: |
+| 64 | 63 | 45 |
+| 128 | 127 | 63 |
+| 256 | 190 | 68 |
+| 512 | 288 | 82 |
+| 1024 | 370 | 83 |
+| 2048 | 513 | **93** |
+
+Over a 16x increase in `n` the undirected maximum grows **4.039x** and Sheehy's
+quantity grows **1.476x** — `n^0.50` against `n^0.14`. Withdrawn one iteration
+later, on a re-read of the primary source that cost less than either measurement.
+Extending to n=8192 then resolved it outright: `MAX |E(p)|` plateaus at 90 to 95,
+the last doubling **decreased** it, and both Lemma 9.2 preconditions are flat to
+five significant figures — containment `max d/t_p = 0.6667` at every `n` against
+a requirement of 1, separation `min sep/t_p = 0.05556 = 1/18` at every `n`.
+
+Those separation figures had also been measured over the undirected neighbourhood
+in the retracted iteration, where they appeared to decline: 0.00982, 0.00556,
+0.00556, 0.00278. That decline was an artefact of the wrong quantity, not a
+property of anything.
+
+Two of the three instruments built in that iteration were faulty. The other one
+was entry 9 of the section above.
+
+### And three attempts at a fast neighbour search, all measured, all negative
+
+Sheehy's section 10 uses the net-tree to answer neighbour queries in `O(n log n)`
+instead of scanning all pairs. This loop's own prompt claimed that construction.
+It was attempted three times.
+
+| attempt | idea | measured result |
+| ---: | --- | --- |
+| 1 | descend the net-tree from the root | **0.01x** — 8.48 ms scan against 1027.15 ms query at n=2048 |
+| 2 | start the descent at the level matching the query radius | 1027 ms to 958 ms. Still 0.01x |
+| 3 | order discovery by decreasing deletion time | 1.03x, 0.99x, 0.88x at n = 256, 1024, 4096 |
+
+The first is correct — 1064 (query, radius) pairs agree with the linear scan
+exactly, across n = 32 to 256, radii 0.05 to 3.0, plus eight exact duplicates and
+a two-point set. It is simply a hundred times slower than the thing it was built
+to replace, because cumulative reach at the top level is about `2 * r_top = 5.3`
+on a sphere whose every pairwise distance is at most 2, so the root test keeps
+every branch and the frontier expands to the full net at each level.
+
+The second failed for a reason worth stating: `t_p` is `rad(par(v_p))` divided by
+`eps(1 - 2 eps)`, which is a factor of 9 at `eps = 1/3` and 22.2 at `eps = 0.05`.
+The share of query balls that cover the entire sphere is therefore large, and
+it moves with both `eps` **and** `n`:
+
+| n | eps = 1/3 | eps = 0.1 | eps = 0.05 |
+| ---: | ---: | ---: | ---: |
+| 256 | 99.2% | 99.2% | 100.0% |
+| 1024 | 40.6% | 40.6% | 99.8% |
+| 4096 | 11.9% | 11.9% | 39.6% |
+
+No spatial index beats a linear scan when the query is "everything", and at
+every fixed `n` the problem gets worse as `eps` shrinks - which is exactly the
+regime where the approximation is tightest.
+
+**An earlier version of this paragraph quoted 40.6% for `eps = 1/3` against 100%
+for `eps = 0.05` and read them as a comparison.** They are the `n = 1024` and
+`n = 256` rows respectively, so the comparison held `n` constant nowhere and took
+the most favourable row on one side. The trend it asserted does survive at fixed
+`n` - 40.6% to 99.8% at 1024, 11.9% to 39.6% at 4096 - but the two numbers as
+printed did not establish it. The full table is above so the reader can pick
+their own row, which is what should have been printed the first time.
+
+The third is the one I am embarrassed about, and it is a process failure rather
+than a reading failure. I argued that deletion ordering and spatial pruning would
+be complementary, implemented the ordering *without* the index that would exploit
+it, and measured no change. The arithmetic that kills it is one line:
+
+```
+sum over p of |{q : t_q > t_p}| = n(n-1)/2
+```
+
+Reordering a double loop is a permutation of the same comparisons. That line was
+available before a single character of the implementation was written, and I
+wrote the implementation first because I had already convinced myself.
+
+### The tally, since I am obliged to report it
+
+Ten repairs. Seven corrections to claims this loop had already recorded as
+established. Two of the seven were full retractions of a stated verdict rather
+than a refinement.
+
+What overturned them is the column I would put first if I could only keep one.
+Five went down to a measurement that was **run or extended** — a parameter sweep
+for the Theiler window, a ratio table for the strict bound, an executed test for
+the default, an executed cost comparison for the selector, two more doublings of
+`n` for the exponent. Two went down to **reading**: the audit's source for the
+Lean accusation, and Sheehy's own definition of `E(p)` for the degree verdict.
+
+Zero of the seven were overturned by arguing better about evidence already in
+hand. Every single time, the fix was to go and get one more number, or to open
+the file I had been describing from memory. That ratio is not flattering and it
+is not supposed to be.
+
+None of them were lying. All of them were unmeasured. That sentence appears
+earlier in this document about somebody else's code, and it turns out to
+generalise.
+
+## Two Hundred Halvings To Find A Root That Was Already Written Down
+
+`relaxed_entry_time` answers one question: given two points at distance `d`, with
+deletion times `t_p` and `t_q`, at what scale does the pair enter the sparse
+filtration? Sheehy's relaxed distance moves with the scale, so the answer is not
+a table lookup — it is the least `alpha` satisfying
+
+```
+d + w_p(alpha) + w_q(alpha) <= alpha
+```
+
+Lemma 4.1 says the set of admitting `alpha` is an upward-closed ray, so there is
+a single crossing and bisection finds it. That is what the function did: bracket,
+then halve two hundred times. It is correct, it is obviously correct, and it is
+the inner loop of an all-pairs scan.
+
+It is also unnecessary, and the reason is written three functions above it.
+
+### The weight has three pieces and all three are straight lines
+
+Here is Sheehy's weight, transcribed from section 4 and unchanged since:
+
+```
+w_p(alpha) = 0                             if alpha <= (1 - 2 eps) t_p
+           = (alpha - (1 - 2 eps) t_p) / 2 if (1 - 2 eps) t_p < alpha < t_p
+           = eps * alpha                   if t_p <= alpha
+```
+
+Slopes `0`, `1/2`, `eps`. Nothing else. So
+
+```
+g(alpha) = d + w_p(alpha) + w_q(alpha) - alpha
+```
+
+is affine on every interval cut out by the four breakpoints `(1-2eps)t_p`, `t_p`,
+`(1-2eps)t_q`, `t_q` — at most five pieces — and on each piece its slope is
+`a_p + a_q - 1`, where each `a` is one of those three numbers.
+
+Now write out every slope that can occur. The largest is `1/2 + 1/2 - 1 = 0`.
+Every other combination is strictly negative, because `eps <= 1/3`. So `g` is
+non-increasing on the whole ray.
+
+That is Lemma 4.1. Not a consequence of it, not a check consistent with it —
+**it is the same statement**, arrived at by adding two slopes instead of by
+citing a paper. The monotonicity the bisection depends on is a fact about the
+arithmetic of `0`, `1/2` and `eps`, and once it is seen that way the root is a
+division:
+
+```
+alpha* = -c / s        on the first piece where g reaches zero
+```
+
+There are at most five pieces to try, and the last one always succeeds, because
+on `[max(t_p, t_q), infinity)` both weights are `eps * alpha`, the slope is
+`2 eps - 1 <= -1/3`, and the root is
+
+```
+entry time = d / (1 - 2 eps)
+```
+
+That last line is the most useful thing in this section. Above both deletion
+times, the entry time of a pair does not depend on the deletion times at all.
+
+### Three statements, and what each one is for
+
+**Lemma D.** Both weights are non-negative, so `d_alpha >= d` for every `alpha`,
+so the entry time is never below the true distance. A pair can appear in a
+filtration truncated at `alpha_max` only when `d <= alpha_max`.
+
+That converts edge discovery from a question about `t_p` and `t_q` into a
+**fixed-radius** geometric query, with no false negatives. Which matters, because
+the previous section of this document records three attempts at a fast neighbour
+search dying on exactly this point: the per-point radius `t_p` is 9 to 22 times a
+net radius and covers the whole sphere for most points. `alpha_max` is not.
+
+**Lemma E.** Once `alpha >= max(t_p, t_q)`, admission reads
+`d + 2 eps alpha <= alpha`, so the entry time is `d / (1 - 2 eps)` exactly.
+Closed form, not a limit. Exercised on 1,287 of the 2,880 swept argument tuples
+that reach that regime.
+
+**Lemma F.** With both deletion times far beyond the scale, both weights vanish
+and the entry time **is** `d`. The relaxed filtration degenerates to the exact
+Rips filtration. This is the reduction the entire construction has to satisfy,
+and it is the first thing worth checking in anybody's implementation of it.
+
+### Does the closed form actually agree
+
+The bisection is kept. It is not dead code and it is not a fallback — it is the
+oracle. `tests/house_entry_time_closed_form.rs` sweeps 2,880 argument tuples
+covering every ordering of the four breakpoints, including the degenerate ones
+the input clamps produce, and requires the two to agree.
+
+| quantity | measured |
+| --- | ---: |
+| tuples swept | 2,880 |
+| tuples where the two disagree | **0** |
+| worst relative gap | **3.331e-16** |
+| tuples reaching the `eps` regime (Lemma E) | 1,287 |
+| bisection, 115,200 evaluations | 85.95 ms |
+| closed form, same evaluations | **1.84 ms** |
+| ratio | **46.6x** |
+
+`3.331e-16` is one and a half machine epsilons. The two functions agree to the
+last bit a double can carry, and the accumulated sums over all 115,200
+evaluations match to the three decimals the test prints. Both figures come from
+one run of `cargo test -p aether-core --test house_entry_time_closed_form` on the
+development machine; the ratio is hardware-dependent and the test asserts only
+that the closed form is not slower, which is the outcome that would invalidate
+the change.
+
+This is the shape of gate `stratum` and `foliation` already use, and it is the
+shape worth trusting: a reference implementation allowed to be slow, and a fast
+path required to reproduce it. Three named mutants attack the fast path
+specifically — flip the sign of the root, sample the affine piece at the interval
+endpoint instead of inside it, drop the intercept that makes the middle piece
+meet the knee.
+
+### What this is not
+
+It is a constant. It is 46.6 times, it is measured, and it does not change a
+single exponent. Edge discovery is still an all-pairs scan, and this makes each
+pair cheaper rather than removing pairs. Lemma D opens the door to removing them
+— a fixed radius is indexable in a way `t_p` was not — but on a bounded sphere
+with `n` growing, the number of pairs within a fixed `alpha_max` still grows
+quadratically, and nothing here says otherwise. Section 10 remains dead.
+
+The request that produced this was "either calculate the trajectory linearly or
+have a constant to it". This is the constant, honestly labelled.
+
+## The Fourth Instrument That Could Not Fail
+
+Four checks in this repository have now reported success while measuring nothing.
+Counting them in public beats discovering a fifth the same way.
+
+| instrument | what it could not see | how it was caught |
+| --- | --- | --- |
+| `ci_parity.sh` failure counter | every test failure, always | its own required-misfire self-test |
+| gate summary parser | `3 skipped` sitting next to `0 survived` | reading it |
+| gate fragment matcher | the entire H2 filtration path | Wilson |
+| gate exit code | `1 did not compile`, exiting 0 | this section |
+
+The third should worry a reader most. `max6`'s body contains `max3`'s body as a
+**prefix**, the driver used "replace the first occurrence", and `max3` comes
+first in the file. So for its whole life the gate mutated `max3` twice and `max6`
+never, while printing `19 caught, 0 survived`. `max6` computes the filtration
+value of a tetrahedron, which is the birth coordinate of every H2 bar this crate
+produces.
+
+Patching that one instance would have guaranteed a fifth. So the gate now runs
+`audit_fragments()` before it mutates anything, and refuses to start unless every
+target fragment occurs in its file **exactly once** and no fragment is a
+substring of another.
+
+Run against the tree as it stood, it reproduced Wilson's finding by two
+independent routes before a single mutation executed:
+
+```
+oracle-rips-max3-to-min: fragment occurs 2 times in .../persistence.rs;
+    only the first is mutated, the rest are unguarded
+oracle-rips-max3-to-min's fragment is contained in oracle-rips-max6-to-min's
+    in .../persistence.rs; the shorter one shadows it
+```
+
+Then it did something better, which is why this section exists. When the
+closed-form entry time above was added, its input guard was copied from the
+bisection instead of shared with it. The audit failed on that change, in the same
+run, before any test executed:
+
+```
+sparse-liveness-dropped: fragment occurs 2 times in .../nettree.rs
+```
+
+The fix was not to re-anchor the mutant. It was to notice the guard had been
+duplicated and extract it, so one mutant now covers both call sites and the
+duplication is gone. **A check that catches its own author on the day it is
+written is worth more than one that catches somebody else in a year.**
+
+### And a gate that poisoned the tree when you killed it
+
+The driver mutates a source file, runs the tests, and restores it in a `finally`.
+Kill it mid-run and the `finally` never executes: the mutation stays on disk, the
+process is gone, and nothing anywhere says so. Two copies running concurrently
+plus a timeout produced exactly that, and left a live mutation sitting in
+`nettree.rs`.
+
+The obvious fix is to handle `SIGTERM` and let the existing `finally` unwind. It
+does not work here, and the only reason that is known is that it was tried and
+then tested by killing a running gate: on Windows a `terminate()` is
+`TerminateProcess`, which delivers no signal and runs no handler. The mutation
+was still there, with the handler installed.
+
+So the guarantee moved off the process and onto the disk. A byte copy is written
+beside the file before the mutation and deleted only after the restore, and
+`recover_pending()` runs at startup. It is a write-ahead log for a test script,
+which is more ceremony than a test script deserves, and it is the only version of
+this that survives a kill it cannot intercept.
+
+Three separate kills, three recoveries. Only one was observed printing its
+own message - `RECOVERED ... restored .../aether_tss.rs` - because [host interpreter; name redacted for the seal-mkimage language-hygiene gate]
+buffers stdout when piped and the other two runs were killed before the buffer
+flushed. Those two are confirmed by the weaker evidence that the file returned
+to unmodified in `git status` and its backup was gone. The message now flushes
+on write, since a recovery notice lost to buffering is the same silent failure
+this whole section is about.
+
+## A Homology Rank That Grew When You Sampled Harder
+
+`compute_betti_1` had a docstring saying it approximates 1-dimensional homology.
+Here is what it returned on `[0, 60, 120, 0]`, repeated:
+
+| length | 4 | 8 | 16 | 32 | 64 | 128 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| β₁ | 1 | 2 | 4 | 8 | 16 | 32 |
+
+That is `n / 4`. It is the same three-value pattern the whole way down; only the
+number of times it was written out changed. If sampling a circle twice as
+densely doubles the number of holes you find, you are not counting holes.
+
+There is a second disqualification, and it is the one this repository has
+already written down elsewhere. A point cloud has no order. Any permutation of
+the samples is a relabeling, and a relabeling is a provable no-op against
+persistent homology — the crate asserts exactly that for β₀ in
+`proptest_manifold_topology.rs::betti_0_is_permutation_invariant`. Apply a stride
+permutation to a 16-byte input and this function moves from 4 to 7.
+
+So it slid a window along a sequence and counted oscillations. Which is a fine
+thing to do. It is not β₁, and the two are not close.
+
+### What β₁ actually is here, and why it is boring
+
+The bytes are numbers between 0 and 255. They are points **on a line**. So:
+
+Order the distinct values `x_1 < ... < x_n`. In the Rips graph at scale `t`, the
+neighbours of `x_1` are exactly the values in `(x_1, x_1 + t]`. Any two of those
+differ by at most `t`, so they are all adjacent to each other. `N[x_1]` is a
+clique, `x_1` is a simplicial vertex, its closed star is a full simplex, and
+deleting it is an elementary collapse. Induct.
+
+Every component collapses to a point. `H₁ = 0`, at every scale, for every input.
+
+You cannot make a loop out of points on a line. It took four lines to say and it
+is completely rigid: no threshold, no tolerance, no parameter to tune, no input
+that escapes it.
+
+That is the same correction the `epsilon` crate's β₂ needed — a function that
+was structurally unable to return zero for a space with no voids. The failure
+mode is identical and worth naming: **a quantity that cannot take the value the
+mathematics forces will return a plausible number instead**, and a plausible
+number is much harder to notice than a crash.
+
+### The proof gets checked against the crate's own machinery
+
+The collapse argument above is four lines and could be wrong. So the test does
+not assume it: it builds the distance matrix over the byte values, runs
+`persistent_homology_from_distances`, and requires zero H1 bars. Five corpora,
+seven radii each, from 0.5 to 200.
+
+**Total H1 bars found: 0.**
+
+That test passed on its first run, *before* the repair — which is the point. It
+was checking the mathematics, not the new code. If it had found a bar, either
+the argument above is wrong or `persistence.rs` is, and both are things worth
+finding out on a Tuesday.
+
+### One exact number instead of one inequality
+
+The statistic survives under its own name, `oscillation_count`, because it is a
+real signal about a byte *sequence* and because `verify_shape` rejects on it.
+And it now has an exact form rather than a hand-wave:
+
+For a period-3 repetition of three values further apart than the tolerance,
+every 4-window qualifies, so
+
+```
+oscillation_count = len - 3
+```
+
+Checked at every length from 4 to 64. This matters because the obvious test —
+"it grows with length" — passes for `len - 3` and passes for `len / 4`, and
+`len / 4` is the bug. An exact form distinguishes them; an inequality does not.
+This document has made that mistake before, with a death radius that converged to
+`sqrt(3)` from above under both `floor` and `ceil`.
+
+### The branch nobody had ever tested
+
+`verify_shape` rejects data whose oscillation exceeds 10. The repair kept that
+branch pointed at the statistic rather than the true β₁, with a comment
+explaining that substituting β₁ would make the branch unreachable.
+
+That comment is worth nothing unless the branch is reachable *now*. So: is it?
+
+Before this work, **no assertion anywhere in the repository exercised
+`ExcessiveLoops`**. Zero coverage. The justification was resting on an untested
+claim, which is the exact failure this document keeps cataloguing.
+
+The window turns out to be narrow, and the two constraints fight each other.
+Rejection needs `density = β₀ / len` inside `[0.1, 0.6]` *and* the statistic above
+10. A period-3 pattern gives `β₀ = 3` and, by the exact form above, a statistic of
+`len - 3`. So
+
+```
+3 / len >= 0.1     and     len - 3 > 10       =>      14 <= len <= 30
+```
+
+Seventeen lengths, out of every possible input. At `len = 21`: β₀ 3, density
+0.1429, oscillation 18, rejected. The branch is live, and now something says so.
+
+### And the failing test that was blamed on someone else
+
+`cargo test --workspace` had exactly one failure. `ci_parity.sh` had excused it
+since iteration 36, in these words: "fails on origin/main as well, at 23 passed
+and 1 failed. It is reported, not counted."
+
+It asserts `Betti([0, 50, 100])[0] == 1.0`, with the inline comment "has one
+large-gap component per compute_betti_0 logic".
+
+Three values, gaps of 50, threshold 15. That is three isolated components. β₀ is
+**3**, and the "compute_betti_0 logic" the comment appeals to is the gap-run
+counting that was itself the first defect this whole effort repaired. The
+assertion outlived the code it was pinning.
+
+The part that stings: the comment three lines above the call already read
+`-> gaps > 15 -> 3 components -> [3.0, 0.0]`. Somebody corrected the comment and
+left the assertion. Both were sitting in the same function, four lines apart, for
+six iterations, while a script called it pre-existing and moved on.
+
+It now asserts 3.0. It also asserts the second slot is 0.0, which nothing checked
+before — and the interpreter, which used to return a **hardcoded** `0.0` there,
+now reads it from the function that proves it is zero. Same value. One of them is
+a fact and the other was a guess that happened to be right.
+
+The tolerance is gone from `ci_parity.sh`. An allowance for a failure that no
+longer exists is the fifth blind instrument, and this document is already
+carrying four.
+
+## Twelve Verifiers, Nine Refutations, And The Worst One Was Mine
+
+Before writing any of the prose above, four load-bearing claims went out to three
+adversarial verifiers each — one attacking the deduction, one attacking the
+hypotheses, one attacking the evidence — all instructed to refute and to default
+to refuted when the evidence looked thin.
+
+| claim | verdict |
+| --- | --- |
+| the closed-form entry time | **refuted** 2/3 |
+| a line has no loops | **refuted** 3/3 |
+| the β₂ arity argument | **refuted** 3/3 |
+| the exact forms | contested 1/3 |
+
+Default-to-refute inflates that column, so the tally is not the finding. What
+follows is what survived reading every gap.
+
+### The one that was a real bug, in code that shipped with a table
+
+The closed-form entry time sampled each interval at its midpoint, written
+`0.5 * (lo + hi)`.
+
+That forms the sum first. Once `lo + hi` exceeds `f64::MAX` it is infinity, and
+`weight_affine(inf, ...)` falls through both of its guards and reports the `eps`
+piece for both points — whatever piece the interval is actually in. The walk then
+reads the wrong slope and can step straight over the least root.
+
+It is reachable with finite arguments. `1e308 + 1.11111e308` is already too big.
+The verifier handed over the input and it reproduced on the first run:
+
+```
+d = 9.2e307, t_p = 1e308, t_q = 1.11111e308, eps = 0.05
+returned 1.0222e308, least root 9.4e307, relative gap 8.747e-2
+```
+
+**8.7% late.** Not a rounding artefact.
+
+The section above this one reports "0 disagreements across 2,880 tuples, worst
+relative gap 3.331e-16". Every number in it is true. It is also not evidence,
+and this is the part worth keeping: the sweep caps deletion times at 50 and
+infinity, so it never enters the regime where the arithmetic breaks. **A control
+that cannot reach the failure is not a control**, however many digits it prints.
+
+The fix is to halve the width instead of the sum — `lo + 0.5 * (hi - lo)` — and
+the new test checks against a from-scratch least-root scan rather than against
+the bisection, because the bisection brackets by doubling and has the same range
+problem.
+
+### Three tests that could not fail, one of them the flagship
+
+All three verifiers on the line-has-no-loops claim agreed the mathematics is
+right. `H₁ = 0` for points on a line stands. What they took apart was the
+evidence, and they were correct every time.
+
+The claim in the docstring was:
+
+> it runs the crate's own persistent homology over the byte values and requires
+> zero H1 bars across 5 corpora at 7 radii each. A disagreement would indict
+> either this proof or `persistence.rs`.
+
+**The test never called `betti_1`.** It computed persistent homology, asserted
+the answer was 0, and never once mentioned the function it was written to
+justify. Delete the collapse argument, return any constant, and it passes. It
+was verifying the mathematics — genuinely, and that has value — while the
+docstring claimed it was tying the mathematics to the implementation.
+
+That is the exact defect this document names as characteristic of the codebase,
+in the test written to demonstrate the fix for it. One line of `assert_eq!` closes
+it.
+
+Two more of the same shape: the no-growth test is `0 == 0` for every input, since
+`betti_1` never reads its argument; and Lemma D's test passes unchanged for a
+function that returns infinity for everything.
+
+### And the one that was properly wrong
+
+The β₂ argument. This one deserves the space.
+
+`b2 = 2 - b0 + b1` assumes the space is a sphere, imposes `χ = 2`, and solves.
+The argument written against it was: a disc and a sphere both have `β₀ = 1` and
+`β₁ = 0` and differ in `β₂`, so a function of `(β₀, β₁)` alone cannot be `β₂` —
+no constant repairs it, because the inputs do not determine the output.
+
+The logic is valid. The measurements are real. It is still wrong, because
+**those are not the inputs**.
+
+Those `(β₀, β₁)` are Vietoris–Rips invariants of the point cloud. `euler_defect`
+never sees them. It reads `SparseGraph::compute_betti_0` and
+`SparseGraph::estimate_betti_1` — the invariants of the 1-skeleton — and on that
+domain the disc is `(1, 511)`, not `(1, 0)`. The disc and the sphere do not
+collide on the inputs the code consumes. The counterexample was constructed
+against a function that does not exist.
+
+Same file. Same day. The header of that file explains that the repository's
+characteristic defect is a hypothesis that is not load-bearing.
+
+It gets one degree worse. The file labelled this line a "vacuity control":
+
+```rust
+assert_eq!(defect, imposed_chi_two(gb0, gb1));
+```
+
+That is an algebraic identity. It cannot fail for any point set at any epsilon.
+A vacuity control that is itself vacuous, sitting under a comment explaining
+vacuity.
+
+**The argument that works** needs no second sample and no collision. On a
+connected graph `β₀ = 1`, so
+
+```
+euler_defect = 2 - 1 + β₁ = 1 + β₁ ≥ 1
+```
+
+It is bounded strictly below by 1 and can never be 0. The true β₂ of a connected
+contractible sample **is** 0. So it disagrees on every connected contractible
+input. The defect is that the quantity has the wrong **range** — not that `χ` has
+the wrong value — and stating it that way makes clear no tuning helps.
+
+The disc still supplies the number. 48 points, ε = 0.9: `β₀ = 1`, `β₁ = 511`,
+Euler defect **512**, true β₂ **0**. Five hundred and twelve spherical voids in a
+flat disc.
+
+### The critic asked the question none of the twelve asked
+
+A thirteenth agent was given the verdicts and asked only: what did nobody look
+at?
+
+All three verifiers argued about whether the arity argument transferred to the
+code. **None asked whether the repair reached the value.**
+
+It had not. `SparseGraph::full_shape` computed `2 - b0 + b1` inline — a second
+copy of the expression that `euler_defect` holds — and `ManifoldPayload::from_graph`
+assigned that copy to `signature_b2`. Renaming the function and rewriting its
+docstring changed neither the copy nor the number on the wire. The payload still
+carried 512 for the disc.
+
+Two verifiers had read that file. The question "is the thing you renamed the
+thing that runs?" was not on anyone's list.
+
+### The hyperbolic ceiling, which was set by the wrong constant entirely
+
+`PoincareBall::unit().distance(origin, [r, 0])` returned **12.206067645522225**
+for every `r` at or past `1 - 1e-5`. Not approximately that number. Exactly it,
+every time, because `2 atanh(1 - 1e-5) = ln(199999)`.
+
+There are two clamps in that file. `DISTANCE_ARG_MARGIN = 1e-7` sits right next
+to the `atanh` call and looks like the one that sets the ceiling. It is not, and
+it never was.
+
+The Möbius-difference norm was separately clamped to
+`max_norm = 1/√c − BALL_MARGIN`, so `arg ≤ 1 − √c·1e-5`, which is tighter than
+`1 − 1e-7` for every curvature above `1e-4`. Measured: the ball-margin ceiling is
+12.206067645522225, the arg-margin ceiling is 16.81124278204462, and the gap of
+4.605 is the distance the second clamp was never allowed to cover.
+
+`BALL_MARGIN` exists to keep *projected points* strictly inside the ball. It is
+not a statement about how large a distance may be, and it had been acting as one.
+The norm helper has exactly one caller, so the clamp came out and the margin was
+retuned to `1e-15`, putting the ceiling where f64 resolution puts it. `project`
+is untouched and still keeps every point strictly inside, asserted separately so
+that raising the ceiling could not be achieved by weakening the thing the margin
+is actually for.
+
+After: `r = 1 - 1e-12` returns **28.324190418452805**, strictly increasing across
+eight probes.
+
+One number not to overstate, since this section is about overstated numbers.
+28.324190418452805 is **not** `ln(2e12) = 28.324168296488494`. The 2.2e-5 gap is
+not implementation error: `fl(1 - 1e-12)` is `0.999999999999`, whose real
+distance from 1 is `9.999778782798785e-13`. The argument sits 4504 ulps below 1,
+so the boundary gap carries a relative error near `1.1e-4`. The function returns
+the right distance for the point that can actually be represented.
+
+### Removing an allowance surfaced the next failure, on schedule
+
+The section above argues that an allowance kept after the thing it excused is
+gone will hide the next failure behind it. That was a prediction, and it paid out
+within the hour.
+
+With the excused test failure removed, `cargo test --workspace` surfaced
+`test_verify_theorems_all_pass` failing on `T1_TSS`. A clean worktree at HEAD
+confirms it fails there too — it had been sitting behind the tolerance.
+
+The fixture is `[(0.0, 0.0), (1.2, 0.0), (0.0, 1.2)]` in (colatitude, longitude).
+Under colatitude, `(0.0, 0.0)` and `(0.0, 1.2)` are **the same point** — both the
+north pole, where longitude means nothing. Their separation is exactly zero, and
+`verify_separation` refused them, correctly, every time it ran.
+
+The fixture was written for the latitude convention that the great-circle repair
+replaced. It has been stale since that repair, and the theorem check was right
+the whole time. Three points along a meridian fix it, where great-circle distance
+is just the colatitude difference and a reader can check 1.2, 2.4, 1.2 by hand.
+
+Second stale fixture pinning pre-repair behaviour, after the β₀ one.
+
+### The hour lost to running two things at once
+
+Running `cargo test --workspace` while `ci_parity.sh` was in its mutation-gate
+step produced two failures in `house_geodesic_convention.rs`. Great-circle tests.
+Nothing whatsoever wrong with great circles — the gate simply had `nettree.rs`
+mutated at that instant.
+
+That is the worst possible symptom: the hazard shows up as *unrelated tests
+failing*, which reads as a regression in whatever the other command was checking.
+The gate now takes a lock and refuses to start while one is held, naming the file
+to remove if the holder is dead. It cannot stop an unrelated cargo command, and
+the message says so rather than implying the tree is safe.
+
+### What the round costs to state plainly
+
+Nine of this effort's corrections came from running a measurement or opening a
+file. This is the first that came from handing the claims to someone whose job
+was to break them, and it found a numerical bug, three unfalsifiable tests, and
+one argument that was aimed at the wrong function — none of which eight
+iterations of self-review had turned up.
+
+The workspace is now green with no allowances at all: 756 tests, 0 failures, 0
+formatting diffs, 0 clippy warnings, 0 rustdoc warnings. It is the first time in
+this effort that sentence has been true without a footnote.
+
+## The Verdict, With The Abstentions Left In
+
+Forty-five iterations. This is what holds, what does not, and what was never
+settled either way.
+
+### What was built
+
+`nettree.rs`. A hierarchical net-tree with packing and covering asserted at every
+level; Sheehy's weight function from section 4 transcribed verbatim; the deletion
+times from section 6, `t_p = rad(par(v_p)) / (eps(1 - 2 eps))`; and an entry time
+that is now solved in closed form rather than by two hundred halvings, 46.6x
+faster on 115,200 evaluations, agreeing with the retained bisection to
+3.331e-16 across a 2,880-tuple sweep.
+
+The approximation half works. Below `eps = 0.1` the relaxed diagram is
+**exactly** the Rips diagram, bottleneck distance 0.000000. At `eps = 1/3` it is
+0.065746, a 37x improvement once section 6 was transcribed correctly.
+
+The size half holds where it was measured. Sparse edge and triangle counts fit
+exponents of 0.975 to 1.023 on the circle against a dense control that fits
+2.005, and on the sphere `max |E(p)|` plateaus between 90 and 95 with the final
+doubling *decreasing*.
+
+### What does not work, stated as plainly as what does
+
+**Sheehy's section 10 is not implemented, and three attempts died measured.**
+Root descent ran 100x slower than the linear scan it was built to replace,
+because cumulative reach at the top level exceeds the sphere's diameter and no
+branch is ever pruned. Level-matching the descent moved 1027 ms to 958 ms.
+Ordering discovery by deletion time is a permutation of the same comparisons -
+`sum over p of |{q : t_q > t_p}| = n(n-1)/2` - and measured 1.03x, 0.99x, 0.88x.
+Edge discovery remains `O(n^2)`.
+
+The closed form is a constant. It does not move an exponent. Lemma D makes the
+candidate set indexable at a fixed radius in principle, and the measurement says
+what that is worth: at `alpha_max = 0.75` the filter keeps 13.98% of pairs and
+at 0.20 it keeps 0.80%, but **`kept %` is constant in n**, so the saving is a
+factor and not an order.
+
+### Is any single mathematical statement here new
+
+No, and that is a literature answer rather than a modest one.
+
+Prior art was found for four of five claims searched: net-tree box counting is
+standard, Lemma A and Lemma C are Rosenthal 1973 and textbook load balancing,
+and `T ~ 1/lambda` appears verbatim in arXiv:2606.13092. The fifth - gating
+kernel speculation on a measured predictability horizon - returned nothing in two
+searches, which is **weak evidence of absence and not a novelty claim**.
+
+The search that would settle it has a name and was not run: ISCA, MICRO and
+ASPLOS proceedings for chaos or Lyapunov exponents in prefetch and speculation
+gating. Until that is done, the honest status of that one statement is unknown,
+not new.
+
+One conjecture of this effort's own was refuted outright. The Occupancy Flow
+bridge argued that a congestion-game equilibrium would buy a doubling bound on
+`S^2`. It does not: `S^2` is Ahlfors 2-regular under the chordal metric with
+doubling constant at most 25 unconditionally, so equilibrium contributed nothing
+to the static bound and the conjecture was withdrawn rather than weakened.
+
+### The error rate, since this document is obliged to report it
+
+Sixteen defects repaired, each with a named mutant that kills the repair.
+Corrections to claims this effort had already recorded as established: eleven.
+Three of those were full retractions rather than refinements - the accusation
+that the Lean audit was a `grep sorry`, the bounded-degree verdict that measured
+the undirected degree instead of Sheehy's `E(p)`, and the beta_2 arity argument
+aimed at inputs the code does not receive.
+
+What overturned them is the column worth keeping. Nine went down to a measurement
+that was run or extended, or to opening a file that had been described from
+memory. **Zero were overturned by arguing better about evidence already in hand.**
+
+The exception is the last round, and it is the most useful data point here. Four
+claims went to twelve adversarial verifiers with instructions to refute. They
+found a numerical bug in a function this document had already certified at a
+worst relative gap of 3.331e-16 - the sweep capped deletion times at 50 and could
+not reach the input where the answer is 8.7% wrong - three tests that could not
+fail including the flagship one, and an argument built against a function that
+does not exist. Eight iterations of self-review had found none of them.
+
+Five checks written during this effort could not fail, and two of those were
+written while auditing for exactly that. The count is not a confession; it is the
+measured rate at which this failure mode recurs when nobody is attacking.
+
+### Abstentions, shipped plainly
+
+**Scale.** Every certification here is validated at `n <= 128`, because
+`bottleneck_distance` is cubic in bar count, H1 bars grow like `n^2 / 2`, and
+`n = 120` was killed at 600 seconds. The deliverable claims `n` in the tens of
+thousands. **The refutability of every claim here drops to zero at exactly the
+scale the claim is about.** Subsampled cross-validation is strictly weaker than
+the theorem asserts.
+
+**Calibration.** `DENSITY_MIN`, `DENSITY_MAX` and `MAX_OSCILLATION` are
+uncalibrated. Their values are 0.1, 0.6 and 10, and no labelled corpus in this
+repository justifies any of them. `verify_shape` is a gate whose thresholds are
+guesses, and the honest position is that it decides nothing defensible until a
+corpus exists.
+
+**The torus.** The repair plan asked for a torus sample. Forty-eight points
+resolve one 1-cycle rather than two and no 2-cycle, against a true `(1, 2, 1)`.
+That case is reported at five radii and **not** certified.
+
+**The wire.** `ManifoldPayload::signature_b2` still carries the Euler defect
+under a name that says `beta_2`. Its documentation states plainly that it is not
+`beta_2` and that for connected graphs it is `signature_b1 + 1` and therefore
+redundant. Renaming it is a wire-format change and was left as the maintainer's
+decision rather than taken unilaterally.
+
+**Coverage.** Seventy-one tests in this effort never went red for any mutation.
+Two families of that were genuine gaps and are closed. The rest are observation
+probes and negative-result records, plus an artefact of running the gate in
+`--quick` mode, where a mutation in one crate cannot redden a test in another.
+The list is printed rather than summarised so that nobody counts a probe as
+evidence.
+
+**Not run.** `cargo audit` and `cargo deny` need network. The QEMU UEFI boot
+smoke test needs QEMU. `cargo +nightly clippy` and `miri` need the nightly
+toolchain. Their status is unverified, not assumed, and `ci_parity.sh` prints
+that list every run rather than quietly omitting it.

@@ -33,7 +33,27 @@ fn great_circle_distance(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
     2.0 * libm::asin(libm::sqrt(h.clamp(0.0, 1.0)))
 }
 
-/// Verify all centroid pairs satisfy separation ≥ θ_min (used in `new`).
+/// Bound on `|great_circle_distance(t1, p1, t2, p2) - exact distance|`, the
+/// same one `aether_verified::aether_tss::verify_separation` uses.
+///
+/// The two half-angle differences round once each, moving their `sin` by at
+/// most `u·|x|`; libm's `sin` is within an ulp; the products, sum and `sqrt`
+/// add a few `u` more. So the `h` whose root is taken is within
+/// `Δ = 8u·(8 + |t1| + |t2| + |p1| + |p2|)` of the exact one, with room to
+/// spare. `2·asin(√h)` moves by at most `2·asin(√Δ) ≤ π√Δ` under that, the
+/// worst case being the antipode, where its slope is unbounded; the slack
+/// between the two covers `asin`'s own ulp and this line's rounding.
+#[inline]
+fn great_circle_radius(t1: f64, p1: f64, t2: f64, p2: f64) -> f64 {
+    let angles = libm::fabs(t1) + libm::fabs(t2) + libm::fabs(p1) + libm::fabs(p2);
+    core::f64::consts::PI * libm::sqrt(4.0 * f64::EPSILON * (8.0 + angles))
+}
+
+/// Verify every centroid pair is certified more than θ_min apart.
+///
+/// A pair counts only when its distance minus its rounding radius still
+/// exceeds θ_min. A pair within that radius of θ_min, or at a NaN distance, is
+/// refused, not certified.
 #[inline]
 pub fn verify_separation(centroids: &[(f64, f64)], theta_min: f64) -> bool {
     let n = centroids.len();
@@ -43,7 +63,10 @@ pub fn verify_separation(centroids: &[(f64, f64)], theta_min: f64) -> bool {
         while j < n {
             let (t1, p1) = centroids[i];
             let (t2, p2) = centroids[j];
-            if great_circle_distance(t1, p1, t2, p2) < theta_min - 1e-6 {
+            let d = great_circle_distance(t1, p1, t2, p2);
+            let r = great_circle_radius(t1, p1, t2, p2);
+            // from teerthsharma/separatrix separatrix/api.py:365: threshold trit
+            if crate::manifold::threshold_trit(d, r, theta_min) != 1 {
                 return false;
             }
             j += 1;
@@ -246,6 +269,31 @@ pub struct SphericalGridStats {
 
 /// Legacy empty-location sentinel from `SphericalGridHash.locate`.
 pub const EMPTY_LOCATE: isize = -1;
+
+/// Eight cell centroids at the cube vertices `(±1, ±1, ±1)/√3`, in colatitude:
+/// `acos(1/√3)` and `π − acos(1/√3)`, at longitudes `π/4 · {1, 3, 5, 7}`. The
+/// same values as seal-os `tss_boot_centroids`.
+///
+/// Adjacent vertices are `acos(1/3) ≈ 1.231` rad apart, so slot `k` is its
+/// own centroid's nearest cell with a margin no rounding reaches
+/// (`tests/tss_cell_centroids.rs`). The `{0, π/2, π}²` lattice puts slots 0,
+/// 3 and 6 on the north pole and 2 and 5 on the south pole: two cells are
+/// unreachable and one pair is split by `sin(fl(π)) ≠ 0`.
+pub const CUBE_CENTROIDS: [(f64, f64); 8] = {
+    use core::f64::consts::{FRAC_PI_4, PI};
+    let north = 0.955_316_618_124_509_2;
+    let south = PI - north;
+    [
+        (north, FRAC_PI_4),
+        (north, FRAC_PI_4 * 3.0),
+        (north, FRAC_PI_4 * 5.0),
+        (north, FRAC_PI_4 * 7.0),
+        (south, FRAC_PI_4),
+        (south, FRAC_PI_4 * 3.0),
+        (south, FRAC_PI_4 * 5.0),
+        (south, FRAC_PI_4 * 7.0),
+    ]
+};
 
 /// Return the auto-sized spherical grid dimensions for `p` centroids.
 #[inline]
@@ -558,8 +606,8 @@ impl<const K: usize> SphericalVoronoiIndex<K> {
 
     /// Construct and validate that centroids satisfy the TSS separation bound.
     ///
-    /// Returns `None` if any centroid pair has great-circle distance below
-    /// `theta_min` (within a 1e-6 tolerance).
+    /// Returns `None` unless [`verify_separation`] certifies every centroid
+    /// pair more than `theta_min` apart.
     #[inline]
     pub fn new_verified(centroids: [(f64, f64); K], theta_min: f64) -> Option<Self> {
         if verify_separation(&centroids, theta_min) {
@@ -775,6 +823,34 @@ mod tests {
         let centroids = [(0.5, 0.5), (0.5001, 0.5001), (2.0, 3.0), (2.5, 4.5)];
         let theta_min = 0.5; // demand large separation
         assert!(SphericalVoronoiIndex::<4>::new_verified(centroids, theta_min).is_none());
+    }
+
+    #[test]
+    fn separation_is_certified_only_beyond_the_rounding_radius() {
+        use core::f64::consts::FRAC_PI_2;
+        // 0.4999995 apart is short of 0.5, and was certified inside the old
+        // `theta_min - 1e-6` slack.
+        let short = [(0.5, 0.0), (0.999_999_5, 0.0)];
+        assert!(!verify_separation(&short, 0.5));
+        assert!(SphericalVoronoiIndex::<2>::new_verified(short, 0.5).is_none());
+
+        // Two equator points pi - 1e-9 apart (to 1e-32). The haversine rounds
+        // sin^2 of the half-angle to 1 and returns fl(pi), so a theta_min
+        // between the two is short of the true separation yet below the
+        // computed one.
+        let phi = core::f64::consts::PI - 1e-9;
+        let theta_min = phi + 5e-10;
+        assert!(great_circle_distance(FRAC_PI_2, 0.0, FRAC_PI_2, phi) > theta_min);
+        assert!(!verify_separation(
+            &[(FRAC_PI_2, 0.0), (FRAC_PI_2, phi)],
+            theta_min
+        ));
+
+        // A NaN distance decides nothing.
+        assert!(!verify_separation(&[(f64::NAN, 0.0), (1.0, 0.0)], 0.1));
+
+        // Control: 0.6 apart clears 0.5 by far more than any rounding.
+        assert!(verify_separation(&[(0.5, 0.0), (1.1, 0.0)], 0.5));
     }
 }
 

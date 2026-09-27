@@ -208,8 +208,8 @@ The smoke test must verify these serial output patterns:
 | 4 | `SYSCALL/SYSRET MSRs programmed` | Syscall entry configured |
 | 5 | `Governor online` | T4 governor started |
 | 6 | `Voronoi index: 8 cells` | T1 Voronoi active |
-| 7 | `[THEOREM] T1/TSS VERIFIED` through `[THEOREM] T10/WPHB VERIFIED` | Every theorem line verified |
-| 8 | `All T1-T10 theorems VERIFIED` | Theorem summary verified |
+| 7 | `[THEOREM] T4/AGCR NOT CERTIFIED: alpha+beta/dt=5.01 >= 1 at dt=0.01` | T4 refused with its gain-margin reason; the other nine `[THEOREM]` lines must read `VERIFIED` (checked by `--check-theorem-log`) |
+| 8 | `[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED` | Theorem summary: 9 of 10 verified, T4 refused |
 | 9 | `[BENCH] toporam-alloc` | Hint-biased TopoRAM target-cell hot path measured |
 | 10 | `[BENCH] alloc-frame` | Single-frame allocator hot path measured |
 | 11 | `[BENCH] slab-alloc` | Slab allocator covered all 6 size classes, refill, free-list reuse, free, and grow/shrink copy-realloc fixtures |
@@ -243,7 +243,7 @@ Additional Rust-native audit commands run against the same OS surface:
 
 | Command | Purpose |
 |---|---|
-| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires all T1-T10 theorem lines, Aether runtime proof, LAAMBA app proof, auth shadow proof, COW rollback/no-fallback proof, ManifoldPkg `.eph` install/extract proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
+| `seal-mkimage --check-theorem-log /tmp/seal-os.log` | Requires the nine `VERIFIED` theorem lines (T1-T3, T5-T10), the T4/AGCR refusal line with the margin and `dt` read from the `[T4/AGCR] Governor online` line, and the `9 of 10` summary, and rejects `[THEOREM] T4/AGCR VERIFIED` while the margin is at least 1; also requires the Aether runtime proof, LAAMBA app proof, auth shadow proof, COW rollback/no-fallback proof, ManifoldPkg `.eph` install/extract proof, serial desktop pixel proof, desktop live input proof, desktop proof frame blit, desktop soak marker, desktop readiness, event loop entry, and rejects panic/fault/watchdog fatal markers |
 | `seal-mkimage --check-vm-proof /tmp/seal-os.log` | Requires theorem proof, QEMU AHCI disk identity, block device `0x800`, readable disk, persistent ManifoldFS root, serial desktop pixel proof, live desktop input proof, desktop frame, desktop soak marker, desktop ready, and event loop; rejects ramfs fallback and missing AHCI |
 | `seal-mkimage --check-aether-runtime /tmp/seal-os.log` | Requires the Aether runtime boot marker proving parser, interpreter, and app host executed `aether_boot_probe` inside the kernel runtime |
 | `seal-mkimage --check-laamba-app-proof /tmp/seal-os.log` | Requires `[LAAMBA] app proof:` with `native_app=kernel`, `window=LAAMBA_Governor`, `launcher_id=10`, desktop icon/start-menu evidence, Aether host window id, Rust native-manifest bridge, `python_runtime=0`, and `result=pass` |

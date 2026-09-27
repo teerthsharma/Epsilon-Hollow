@@ -78,7 +78,7 @@ Measures how fast each OS reaches its trust gate.
 Seal OS endpoint:
 
 ```text
-[BOOT] All T1-T10 theorems VERIFIED; T1-T5 ACTIVE in runtime paths
+[BOOT] 9 of 10 theorems VERIFIED; T4/AGCR NOT CERTIFIED; T1-T3, T5 ACTIVE in runtime paths
 ```
 
 Ubuntu endpoint:
