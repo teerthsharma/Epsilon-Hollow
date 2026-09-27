@@ -1011,4 +1011,36 @@ mod tests {
             assert_eq!(*state, want, "{name}");
         }
     }
+
+    #[test]
+    fn test_t4_certificate_holds_on_the_loop_store_runs() {
+        // A T4 certificate claims |e| reaches 1% of its first value within
+        // settling_time(ρ, 0.01) ticks. The margin α + β/dt treats the error as
+        // the control variable; store() feeds e = 1000 − 1/ε, whose gain at
+        // ε* = 0.001 is 1e6, so the margin alone cannot certify this loop.
+        // Only has teeth while the gate certifies.
+        if !governor_certified() {
+            return;
+        }
+        use aether_verified::aether_agcr::{contraction_rate, settling_time};
+        let rho = contraction_rate(GOVERNOR_ALPHA, GOVERNOR_BETA, GOVERNOR_DT);
+        let n = settling_time(rho, 0.01).ceil() as usize + 2;
+        let mut fs = ManifoldFS::new();
+        let (mut first, mut tail) = (0.0, 0.0f64);
+        for i in 0..n {
+            fs.store_text(&format!("f{i}"), "x", 0).unwrap();
+            let e = fs.governor.last_error().abs();
+            if i == 0 {
+                first = e;
+            }
+            if i + 2 >= n {
+                tail = tail.max(e);
+            }
+        }
+        assert!(
+            tail <= 0.01 * first,
+            "T4 certified at dt={GOVERNOR_DT}, but max |e| over ticks {}..={n} is {tail} (tick 1: {first})",
+            n - 1
+        );
+    }
 }
