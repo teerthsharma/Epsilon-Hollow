@@ -365,11 +365,11 @@ pub mod tests {
     /// Every other arm that changes system-wide state with no per-object check
     /// is behind the same gate. Arguments are chosen so a reached arm is
     /// harmless and answers something other than a bare EPERM: REBOOT 99 and
-    /// SLEEP 0 are EINVAL; null path pointers read as "", which PKG_INSTALL
-    /// and the chart arms answer with EINVAL; SETTING_SET stores "" and answers
-    /// 0; TELEPORT answers ENODEV before the syscall ManifoldFS exists (the
-    /// harness runs before it does) and a ManifoldFS errno or 0 after; the
-    /// Wi-Fi/Bluetooth stubs answer 0 with data.
+    /// SLEEP 0 are EINVAL; null path pointers read as "", which PKG_INSTALL,
+    /// the chart arms and SETTING_SET answer with EINVAL; TELEPORT answers
+    /// ENODEV before the syscall ManifoldFS exists (the harness runs before it
+    /// does) and a ManifoldFS errno or 0 after; the Wi-Fi/Bluetooth stubs
+    /// answer 0 with data.
     fn test_unprivileged_caller_gets_eperm_from_every_root_only_arm() -> TestResult {
         for (num, arg0) in [
             (SYS_REBOOT, 99),
@@ -431,7 +431,74 @@ pub mod tests {
         TestResult::Pass
     }
 
+    /// RED: SYS_FIT_CALIBRATE narrowed its field id with `arg1 as u32`, so
+    /// field `1 << 32` calibrated field 0 and answered 0. A field id past `u32`
+    /// is EINVAL, and field 0 itself still applies.
+    fn test_fit_calibrate_refuses_a_field_past_u32() -> TestResult {
+        let own = crate::process::scheduler::current_task_id();
+        test_assert_eq!(dispatch(SYS_FIT_REGISTER, 0, 0, 0).code, own as i64);
+        let half = 0.5f64.to_bits();
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, 1 << 32, half).code, -22);
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, u64::MAX, half).code, -22);
+        test_assert_eq!(dispatch(SYS_FIT_CALIBRATE, own, 0, half).code, 0);
+        test_assert_eq!(dispatch(SYS_FIT_UNREGISTER, own, 0, 0).code, 0);
+        TestResult::Pass
+    }
+
+    /// RED: SYS_KV_SEQ_APPEND narrowed its token with `arg1 as u32`, so token
+    /// `(1 << 32) | t` was appended as `t`: eight of them sealed a block, and
+    /// that block shared the plaque of any sequence that wrote `t`. A token
+    /// past `u32` is EINVAL and is not absorbed: the same eight tokens in range
+    /// afterwards seal exactly one block, on the eighth.
+    fn test_kv_append_refuses_a_token_past_u32() -> TestResult {
+        let id = dispatch(SYS_KV_SEQ_CREATE, 1, 0, 0).code;
+        test_assert!(id >= 0, "the cache must open a sequence");
+        let id = id as u64;
+        for j in 0..8u64 {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, (1 << 32) | (910_000 + j), 0).code,
+                -22
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_APPEND, id, u64::MAX, 0).code, -22);
+        for j in 0..8u64 {
+            test_assert_eq!(
+                dispatch(SYS_KV_SEQ_APPEND, id, 910_000 + j, 0).code,
+                ((j + 1) / 8) as i64
+            );
+        }
+        test_assert_eq!(dispatch(SYS_KV_SEQ_RELEASE, id, 0, 0).code, 1);
+        TestResult::Pass
+    }
+
+    /// RED: SYS_SETTING_SET read an unreadable key pointer as "" and stored a
+    /// setting under the empty key, answering 0. An empty key is EINVAL, as
+    /// SYS_CHART_PRUNE answers an empty name, and nothing is stored.
+    fn test_setting_set_refuses_an_empty_key() -> TestResult {
+        test_assert_eq!(dispatch_as(0, SYS_SETTING_SET, 0, 0, 0).code, -22);
+        test_assert!(
+            crate::apps::settings::GLOBAL_SETTINGS
+                .lock()
+                .get("")
+                .is_none(),
+            "a refused setting was stored"
+        );
+        TestResult::Pass
+    }
+
     pub fn register_all() {
+        crate::testing::register_test(
+            "syscall::fit_calibrate_refuses_a_field_past_u32",
+            test_fit_calibrate_refuses_a_field_past_u32,
+        );
+        crate::testing::register_test(
+            "syscall::kv_append_refuses_a_token_past_u32",
+            test_kv_append_refuses_a_token_past_u32,
+        );
+        crate::testing::register_test(
+            "syscall::setting_set_refuses_an_empty_key",
+            test_setting_set_refuses_an_empty_key,
+        );
         crate::testing::register_test(
             "syscall::unprivileged_pkg_remove_is_eperm",
             test_unprivileged_pkg_remove_is_eperm,
@@ -1426,6 +1493,9 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
             let key_ptr = arg0 as *const u8;
             let val_ptr = arg1 as *const u8;
             let key = unsafe { copy_path_from_user(key_ptr).unwrap_or_default() };
+            if key.is_empty() {
+                return SyscallResult::err(22); // EINVAL
+            }
             let val = unsafe { copy_path_from_user(val_ptr).unwrap_or_default() };
             let mut settings = crate::apps::settings::GLOBAL_SETTINGS.lock();
             settings.set(&key, &val);
@@ -1445,7 +1515,9 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
         // arg0 = sequence id, arg1 = token. Returns blocks sealed so far.
         SYS_KV_SEQ_APPEND => {
             let id = arg0 as usize;
-            let token = arg1 as u32;
+            let Ok(token) = u32::try_from(arg1) else {
+                return SyscallResult::err(22); // EINVAL: tokens are u32
+            };
             match crate::ml_engine::foliation::with_global(|f| f.seq_append(id, task_id, token)) {
                 Ok(blocks) => SyscallResult::ok(i64::from(blocks)),
                 Err(e) => SyscallResult::err(crate::ml_engine::foliation::errno(e)),
@@ -1834,10 +1906,11 @@ fn dispatch_as(euid: u32, num: u64, arg0: u64, arg1: u64, arg2: u64) -> SyscallR
 
         SYS_FIT_CALIBRATE => {
             let value = f64::from_bits(arg2);
-            if crate::ml_engine::stratum::calibrate(arg0, arg1 as u32, value) {
-                SyscallResult::ok(0)
-            } else {
-                SyscallResult::err(22) // EINVAL
+            match u32::try_from(arg1) {
+                Ok(field) if crate::ml_engine::stratum::calibrate(arg0, field, value) => {
+                    SyscallResult::ok(0)
+                }
+                _ => SyscallResult::err(22), // EINVAL
             }
         }
 
