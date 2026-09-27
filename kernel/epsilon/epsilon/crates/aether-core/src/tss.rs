@@ -247,6 +247,31 @@ pub struct SphericalGridStats {
 /// Legacy empty-location sentinel from `SphericalGridHash.locate`.
 pub const EMPTY_LOCATE: isize = -1;
 
+/// Eight cell centroids at the cube vertices `(±1, ±1, ±1)/√3`, in colatitude:
+/// `acos(1/√3)` and `π − acos(1/√3)`, at longitudes `π/4 · {1, 3, 5, 7}`. The
+/// same values as seal-os `tss_boot_centroids`.
+///
+/// Adjacent vertices are `acos(1/3) ≈ 1.231` rad apart, so slot `k` is its
+/// own centroid's nearest cell with a margin no rounding reaches
+/// (`tests/tss_cell_centroids.rs`). The `{0, π/2, π}²` lattice puts slots 0,
+/// 3 and 6 on the north pole and 2 and 5 on the south pole: two cells are
+/// unreachable and one pair is split by `sin(fl(π)) ≠ 0`.
+pub const CUBE_CENTROIDS: [(f64, f64); 8] = {
+    use core::f64::consts::{FRAC_PI_4, PI};
+    let north = 0.955_316_618_124_509_2;
+    let south = PI - north;
+    [
+        (north, FRAC_PI_4),
+        (north, FRAC_PI_4 * 3.0),
+        (north, FRAC_PI_4 * 5.0),
+        (north, FRAC_PI_4 * 7.0),
+        (south, FRAC_PI_4),
+        (south, FRAC_PI_4 * 3.0),
+        (south, FRAC_PI_4 * 5.0),
+        (south, FRAC_PI_4 * 7.0),
+    ]
+};
+
 /// Return the auto-sized spherical grid dimensions for `p` centroids.
 #[inline]
 pub fn auto_sized_dimensions(p: usize) -> (usize, usize) {
