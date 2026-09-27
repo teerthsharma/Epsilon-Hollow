@@ -83,9 +83,12 @@ pub unsafe fn enter_userspace(context: &mut UserContext) -> ! {
 }
 
 /// Trampoline called from the kernel context-switch path to drop into
-/// userspace for the first time.
+/// userspace for the first time. `switch_context` enters it with its
+/// arguments in rdi/rsi/rdx, hence `sysv64`: `extern "C"` is the Microsoft x64
+/// convention on this target and would read them from rcx/rdx/r8.
 #[no_mangle]
-pub extern "C" fn enter_userspace_trampoline(entry: u64, stack: u64, pt: u64) -> ! {
+pub extern "sysv64" fn enter_userspace_trampoline(entry: u64, stack: u64, pt: u64) -> ! {
+    x86_64::instructions::interrupts::disable();
     let mut ctx = UserContext {
         page_table: pt,
         rsp: stack,

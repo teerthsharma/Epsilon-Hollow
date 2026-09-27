@@ -70,6 +70,8 @@ pub fn test_main() -> ! {
     crate::ml_engine::tests::register_all();
     crate::tuner::tests::register_all();
     crate::sandbox::tests::register_all();
+    // Last: it makes the boot thread the current task for every test after it.
+    crate::process::scheduler::tests::register_bootstrap_test();
 
     run_all_tests_and_exit()
 }

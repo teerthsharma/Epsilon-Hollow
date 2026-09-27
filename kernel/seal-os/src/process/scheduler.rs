@@ -8,7 +8,8 @@
 //! performs at most 8 cell probes + 256 priority bucket pops — all
 //! bounded by compile-time constants.
 
-use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -31,6 +32,18 @@ pub const SCHEDULER_SELECT_MAX_CELL_BITMAP_TESTS: usize = SCHEDULER_SELECT_CELL_
 pub const SCHEDULER_SELECT_MAX_PRIORITY_BUCKET_SCAN: usize = SCHEDULER_SELECT_PRIORITY_BUCKET_BOUND;
 
 const VORONOI_CELLS: usize = SCHEDULER_SELECT_CELL_PROBE_BOUND;
+
+/// How many enqueues ahead of the longest-waiting task the T2-predicted cell
+/// may be served; the bound on how long prediction can delay a ready task.
+const PREDICTION_WINDOW: u64 = VORONOI_CELLS as u64;
+
+/// `switch_context` calls made by `schedule()`, all CPUs.
+static CONTEXT_SWITCHES: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Number of real context switches since boot.
+pub fn context_switches() -> u64 {
+    CONTEXT_SWITCHES.load(Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------
 // ThreadPool — T1/T2 driven worker group
@@ -89,8 +102,11 @@ pub struct ProcessNode {
 // TaskSlab — stable-index task storage
 // ---------------------------------------------------------------------------
 
+// Boxed so a task never moves when `slots` grows: `PerCpu::current_task` and
+// the context pointers `schedule()` hands to `switch_context` are raw
+// pointers into it.
 struct TaskSlot {
-    task: Option<Task>,
+    task: Option<Box<Task>>,
 }
 
 struct TaskSlab {
@@ -111,21 +127,23 @@ impl TaskSlab {
     fn alloc(&mut self, task: Task) -> usize {
         self.allocated += 1;
         if let Some(idx) = self.free_list.pop() {
-            self.slots[idx].task = Some(task);
+            self.slots[idx].task = Some(Box::new(task));
             idx
         } else {
             let idx = self.slots.len();
-            self.slots.push(TaskSlot { task: Some(task) });
+            self.slots.push(TaskSlot {
+                task: Some(Box::new(task)),
+            });
             idx
         }
     }
 
     fn get(&self, idx: usize) -> Option<&Task> {
-        self.slots.get(idx)?.task.as_ref()
+        self.slots.get(idx)?.task.as_deref()
     }
 
     fn get_mut(&mut self, idx: usize) -> Option<&mut Task> {
-        self.slots.get_mut(idx)?.task.as_mut()
+        self.slots.get_mut(idx)?.task.as_deref_mut()
     }
 
     fn remove(&mut self, idx: usize) -> Option<Task> {
@@ -133,7 +151,7 @@ impl TaskSlab {
         let task = slot.task.take()?;
         self.allocated -= 1;
         self.free_list.push(idx);
-        Some(task)
+        Some(*task)
     }
 
     fn len(&self) -> usize {
@@ -141,7 +159,7 @@ impl TaskSlab {
     }
 
     fn iter(&self) -> impl Iterator<Item = &Task> {
-        self.slots.iter().filter_map(|s| s.task.as_ref())
+        self.slots.iter().filter_map(|s| s.task.as_deref())
     }
 
     fn find_by_id(&self, id: u64) -> Option<usize> {
@@ -157,8 +175,10 @@ impl TaskSlab {
 // CellQueue — per-Voronoi-cell ready queue
 // ---------------------------------------------------------------------------
 
+// Each bucket is FIFO, and every entry carries its global enqueue order, so
+// tasks of equal priority take turns across cells as well as within one.
 struct CellQueue {
-    buckets: [Vec<usize>; 256],
+    buckets: [VecDeque<(usize, u64)>; 256],
     highest: Option<u8>,
     ready_count: usize,
 }
@@ -168,26 +188,27 @@ impl CellQueue {
         // Use MaybeUninit to safely initialize [Vec<usize>; 256] without
         // requiring Default for large arrays (which is unavailable in some
         // no_std toolchain revisions).
-        let mut buckets: [core::mem::MaybeUninit<Vec<usize>>; 256] =
+        let mut buckets: [core::mem::MaybeUninit<VecDeque<(usize, u64)>>; 256] =
             unsafe { core::mem::MaybeUninit::uninit().assume_init() };
         for b in buckets.iter_mut() {
-            b.write(Vec::new());
+            b.write(VecDeque::new());
         }
         Self {
             // Annotated so the compiler size-checks the MaybeUninit array
             // against the initialised one; every element was written above.
             buckets: unsafe {
-                core::mem::transmute::<[core::mem::MaybeUninit<Vec<usize>>; 256], [Vec<usize>; 256]>(
-                    buckets,
-                )
+                core::mem::transmute::<
+                    [core::mem::MaybeUninit<VecDeque<(usize, u64)>>; 256],
+                    [VecDeque<(usize, u64)>; 256],
+                >(buckets)
             },
             highest: None,
             ready_count: 0,
         }
     }
 
-    fn push(&mut self, idx: usize, priority: u8) {
-        self.buckets[priority as usize].push(idx);
+    fn push(&mut self, idx: usize, priority: u8, seq: u64) {
+        self.buckets[priority as usize].push_back((idx, seq));
         self.ready_count += 1;
         if self.highest.map(|h| priority > h).unwrap_or(true) {
             self.highest = Some(priority);
@@ -197,7 +218,7 @@ impl CellQueue {
     fn pop(&mut self) -> Option<usize> {
         let priority = self.highest?;
         let bucket = &mut self.buckets[priority as usize];
-        let idx = bucket.pop()?;
+        let (idx, _) = bucket.pop_front()?;
         self.ready_count -= 1;
         if bucket.is_empty() {
             // Scan down to find next non-empty priority bucket.
@@ -212,6 +233,14 @@ impl CellQueue {
             self.highest = new_highest;
         }
         Some(idx)
+    }
+
+    /// Highest ready priority in this cell and the enqueue order of the task
+    /// `pop` would return.
+    fn front(&self) -> Option<(u8, u64)> {
+        let priority = self.highest?;
+        let &(_, seq) = self.buckets[priority as usize].front()?;
+        Some((priority, seq))
     }
 }
 
@@ -232,6 +261,8 @@ pub struct ManifoldScheduler {
     timeslice_base: u64,
     ticks_in_slice: u64,
     schedule_count: u64,
+    /// Global enqueue counter; see `enqueue`.
+    enqueue_seq: u64,
 
     // T5: Hyperbolic process tree
     process_tree: BTreeMap<u64, ProcessNode>,
@@ -294,11 +325,20 @@ impl ManifoldScheduler {
             timeslice_base: 10,
             ticks_in_slice: 0,
             schedule_count: 0,
+            enqueue_seq: 0,
             process_tree: BTreeMap::new(),
             thread_pools: BTreeMap::new(),
             jobs: BTreeMap::new(),
             next_job_id: 1,
         }
+    }
+
+    /// Queue `idx` in `cell`, stamped with the global enqueue order that
+    /// `select_next_task` uses to serve equal priorities oldest first.
+    fn enqueue(&mut self, cell: usize, idx: usize, priority: u8) {
+        self.enqueue_seq += 1;
+        self.cell_queues[cell].push(idx, priority, self.enqueue_seq);
+        self.cell_bitmap |= 1 << cell;
     }
 
     /// Project the first three components of an 8-D embedding onto S²
@@ -315,6 +355,23 @@ impl ManifoldScheduler {
         let theta = libm::acos((z / r).clamp(-1.0, 1.0));
         let phi = libm::atan2(y, x);
         voronoi.locate((theta, phi))
+    }
+
+    /// Make the thread that is already running on this CPU a task of its own,
+    /// `Running` and current, and return it. It has no entry point: its
+    /// context is filled in the first time `schedule()` switches away from it.
+    /// Idempotent: a CPU that already has a current task returns that one.
+    fn adopt_running_thread(&mut self, name: &str, priority: u8) -> Option<*mut Task> {
+        if self.current.is_none() {
+            let id = self.next_id;
+            self.next_id += 1;
+            let mut task = Task::new(id, name, priority, || {});
+            task.state = TaskState::Running;
+            task.voronoi_cell = Self::compute_voronoi_cell(&task.manifold_embedding, &self.voronoi);
+            self.current = Some(self.slab.alloc(task));
+        }
+        let task = self.slab.get_mut(self.current?)?;
+        Some(task as *mut Task)
     }
 
     pub fn spawn(&mut self, name: &str, priority: u8, entry: fn()) -> u64 {
@@ -341,8 +398,7 @@ impl ManifoldScheduler {
                 return 0;
             }
         };
-        self.cell_queues[cell].push(idx, priority);
-        self.cell_bitmap |= 1 << cell;
+        self.enqueue(cell, idx, priority);
         id
     }
 
@@ -409,8 +465,7 @@ impl ManifoldScheduler {
                 return Ok(0);
             }
         };
-        self.cell_queues[cell].push(idx, priority);
-        self.cell_bitmap |= 1 << cell;
+        self.enqueue(cell, idx, priority);
         Ok(id)
     }
 
@@ -453,19 +508,10 @@ impl ManifoldScheduler {
         self.schedule_count += 1;
         self.ticks_in_slice = 0;
 
+        // Pick before requeueing the running task, so a yield or an expired
+        // slice hands the CPU to any other ready task, whatever its priority,
+        // and the running task keeps it only when nothing else is ready.
         let old_idx = self.current;
-        if let Some(idx) = old_idx {
-            if let Some(task) = self.slab.get_mut(idx) {
-                if task.state == TaskState::Running {
-                    task.state = TaskState::Ready;
-                    let cell = task.voronoi_cell;
-                    let priority = task.priority;
-                    self.cell_queues[cell].push(idx, priority);
-                    self.cell_bitmap |= 1 << cell;
-                }
-            }
-        }
-
         let mut next = self.select_next_task();
 
         if next.is_none() {
@@ -480,8 +526,7 @@ impl ManifoldScheduler {
                         task_ref.voronoi_cell =
                             Self::compute_voronoi_cell(&task_ref.manifold_embedding, &self.voronoi);
                         let cell = task_ref.voronoi_cell;
-                        self.cell_queues[cell].push(idx, priority);
-                        self.cell_bitmap |= 1 << cell;
+                        self.enqueue(cell, idx, priority);
                     } else {
                         serial_println!(
                             "[scheduler] schedule: stolen task slab index {} invalid",
@@ -492,6 +537,20 @@ impl ManifoldScheduler {
                     break;
                 }
             }
+        }
+
+        if let Some(idx) = old_idx {
+            if let Some(task) = self.slab.get_mut(idx) {
+                if task.state == TaskState::Running {
+                    task.state = TaskState::Ready;
+                    let cell = task.voronoi_cell;
+                    let priority = task.priority;
+                    self.enqueue(cell, idx, priority);
+                }
+            }
+        }
+        if next.is_none() {
+            next = self.select_next_task();
         }
 
         if let Some(next_idx) = next {
@@ -597,6 +656,7 @@ impl ManifoldScheduler {
                     PhysAddr::new(target_cr3),
                 );
                 Cr3::write(frame, Cr3Flags::empty());
+                CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
                 switch_context(old_ctx, next_ctx);
             }
             x86_64::instructions::interrupts::enable();
@@ -612,9 +672,11 @@ impl ManifoldScheduler {
         }
     }
 
-    /// O(1) task selection: predicted Voronoi cell first, then highest-priority
-    /// fallback across all cells.  Work is bounded by compile-time constants
-    /// (8 cells, 256 priorities) and is independent of total task count.
+    /// O(1) task selection: the highest ready priority across all cells,
+    /// oldest first at that priority, with the predicted Voronoi cell allowed
+    /// ahead by at most `PREDICTION_WINDOW` enqueues.  Work is bounded by
+    /// compile-time constants (8 cells, 256 priorities) and is independent of
+    /// total task count.
     fn select_next_task(&mut self) -> Option<usize> {
         // T2: Predict cell from predictor state
         let predicted_cell = self.voronoi.locate((
@@ -622,31 +684,35 @@ impl ManifoldScheduler {
             libm::atan2(self.predict_state[1], self.predict_state[0]),
         ));
 
-        // Try predicted cell first
-        if self.cell_bitmap & (1 << predicted_cell) != 0 {
-            if let Some(idx) = self.cell_queues[predicted_cell].pop() {
-                if self.cell_queues[predicted_cell].ready_count == 0 {
-                    self.cell_bitmap &= !(1 << predicted_cell);
-                }
-                return Some(idx);
-            }
-        }
-
-        // Fallback: find the cell with the highest-priority ready task.
-        // O(VORONOI_CELLS) = O(1) because the cell count is a compile-time constant.
-        let mut best_cell = None;
-        let mut best_priority = 0u8;
+        // The highest ready priority and, at it, the task that has waited
+        // longest, across all cells. O(VORONOI_CELLS) = O(1) because the cell
+        // count is a compile-time constant.
+        let mut best: Option<(usize, u8, u64)> = None;
         for cell in 0..VORONOI_CELLS {
             if self.cell_bitmap & (1 << cell) != 0 {
-                if let Some(p) = self.cell_queues[cell].highest {
-                    if best_cell.is_none() || p > best_priority {
-                        best_cell = Some(cell);
-                        best_priority = p;
+                if let Some((p, seq)) = self.cell_queues[cell].front() {
+                    if best.is_none_or(|(_, bp, bs)| p > bp || (p == bp && seq < bs)) {
+                        best = Some((cell, p, seq));
                     }
                 }
             }
         }
-        if let Some(cell) = best_cell {
+        // The predicted cell goes first only at that same priority and only
+        // while its task is within PREDICTION_WINDOW enqueues of the oldest,
+        // so every ready task runs within a bounded number of selections.
+        // Taking the predicted cell unconditionally let the tasks it kept
+        // predicting run forever while an equal- or higher-priority task in
+        // another cell never did.
+        if let Some((_, bp, bs)) = best {
+            if self.cell_bitmap & (1 << predicted_cell) != 0 {
+                if let Some((p, seq)) = self.cell_queues[predicted_cell].front() {
+                    if p == bp && seq <= bs + PREDICTION_WINDOW {
+                        best = Some((predicted_cell, p, seq));
+                    }
+                }
+            }
+        }
+        if let Some((cell, _, _)) = best {
             if let Some(idx) = self.cell_queues[cell].pop() {
                 if self.cell_queues[cell].ready_count == 0 {
                     self.cell_bitmap &= !(1 << cell);
@@ -680,8 +746,7 @@ impl ManifoldScheduler {
             if let Some(task) = self.slab.get(idx) {
                 selected_priority = task.priority;
                 selected_cell = task.voronoi_cell;
-                self.cell_queues[selected_cell].push(idx, selected_priority);
-                self.cell_bitmap |= 1 << selected_cell;
+                self.enqueue(selected_cell, idx, selected_priority);
                 true
             } else {
                 false
@@ -1053,8 +1118,7 @@ impl ManifoldScheduler {
                 return None;
             }
         };
-        self.cell_queues[cell].push(child_idx, priority);
-        self.cell_bitmap |= 1 << cell;
+        self.enqueue(cell, child_idx, priority);
         Some(new_id)
     }
 
@@ -1201,8 +1265,7 @@ impl ManifoldScheduler {
                 return None;
             }
         };
-        self.cell_queues[cell].push(child_idx, priority);
-        self.cell_bitmap |= 1 << cell;
+        self.enqueue(cell, child_idx, priority);
         Some(new_id)
     }
 
@@ -1351,11 +1414,31 @@ impl Default for ManifoldScheduler {
 // Per-CPU scheduler API
 // ---------------------------------------------------------------------------
 
-/// Initialize the BSP scheduler.
+/// Priority of the thread `init()` adopts: the boot thread that becomes the
+/// desktop loop, level with user processes and above the placeholder kernel
+/// tasks, so it is never starved by them and never starves a user process.
+pub const ADOPTED_THREAD_PRIORITY: u8 = 5;
+
+/// Make the calling thread this CPU's current task.
+///
+/// Every CPU starts on a thread the scheduler never created (the boot thread
+/// on the BSP, `ap_main` on an AP). Until it is a task, `PerCpu::current_task`
+/// is null, `yield_current` and `scheduler_tick` refuse to run, and nothing
+/// spawned is ever switched to. Adopting it gives `schedule()` a context to
+/// save the caller into, so the first switch has somewhere to come back to.
+///
+/// The per-CPU scheduler itself is constructed in `cpu::init_bsp()` /
+/// `cpu::alloc_ap_cpu()`; rebuilding it here would drop the existing one.
 pub fn init() {
-    // The BSP scheduler is constructed in `cpu::init_bsp()` before GS base is
-    // installed. Rebuilding it here would allocate a large scheduler object on
-    // the live kernel stack and drop the existing per-CPU scheduler.
+    // SAFETY: GS base points at this CPU's `PerCpu` from `init_bsp`/`ap_main`
+    // on, and `scheduler_lock` serialises access to its scheduler.
+    unsafe {
+        let cpu = crate::cpu::this_cpu();
+        let _guard = cpu.scheduler_lock.lock();
+        if let Some(task) = cpu.scheduler.adopt_running_thread("boot", ADOPTED_THREAD_PRIORITY) {
+            cpu.current_task = task;
+        }
+    }
 }
 
 /// Spawn a kernel task on the current CPU.
@@ -1392,20 +1475,29 @@ pub fn yield_current() {
     unsafe {
         let cpu = crate::cpu::this_cpu();
         if cpu.current_task.is_null() {
-            // The boot thread is not a regular scheduled task; yielding here
-            // would switch away forever because the scheduler has no way to
-            // switch back to a thread that is not in its queues.
+            // Before `init()` adopts this thread there is no context to save
+            // it into, so a switch away could never come back.
             return;
         }
         cpu.scheduler.schedule();
     }
 }
 
-/// Called by the timer interrupt handler.
-pub fn scheduler_tick() {
+/// Called by the timer interrupt handler; `from_user` is whether the tick
+/// interrupted ring 3.
+///
+/// Only ring 3 is preempted. Kernel code runs until it yields: it takes
+/// `spin::Mutex`es, some with interrupts disabled, and a task switched out
+/// while holding one leaves every other task that wants it spinning. A ring-3
+/// context holds no kernel lock, so switching away from it is always safe.
+///
+/// ponytail: kernel threads are cooperative (no preempt count). Upgrade path:
+/// a per-CPU preempt count raised by every spin lock guard, and preemption of
+/// kernel code whenever it is zero.
+pub fn scheduler_tick(from_user: bool) {
     unsafe {
         let cpu = crate::cpu::this_cpu();
-        if cpu.current_task.is_null() {
+        if cpu.current_task.is_null() || !from_user {
             return;
         }
         cpu.scheduler.tick();
@@ -1495,12 +1587,10 @@ fn report_dropped_identity_write(field: &str, value: u32) {
 
 /// Return the UID of the currently running task (0 if none).
 ///
-/// "None" is the whole of boot. `ManifoldScheduler::current` is only ever
-/// assigned inside `schedule()`, and both entries into `schedule()`
-/// (`yield_current`, `scheduler_tick`) return early while
-/// `PerCpu::current_task` is null — which only that same assignment clears. So
-/// this reports 0, root, and every MAC check made from the boot thread compares
-/// against root and passes.
+/// On the boot thread that is 0 either way: before `init()` there is no
+/// current task, and the task `init()` adopts for the boot thread keeps uid 0
+/// (login runs before `init()`, so its identity write is dropped). Every MAC
+/// check made from the boot thread therefore compares against root and passes.
 ///
 /// `security::passwd::boot_uid()` does hold the identity login established, and
 /// this deliberately does not fall back to it. `manifold_acl::check_access`
@@ -1511,11 +1601,10 @@ fn report_dropped_identity_write(field: &str, value: u32) {
 /// filesystem to a normal user, not just the `/root` the MAC policy names, and
 /// take the boot down with it.
 ///
-/// ponytail: identity is reported as root because there is no task to hold it.
-/// Upgrade path, in order: give `ManifoldFS::stat` real per-node ownership so
-/// `t5_check_distance` stops treating every file as sensitive, then make
-/// `schedule()` reachable so the boot thread has a task at all, then let this
-/// read the login identity.
+/// ponytail: the boot thread's identity is root. Upgrade path, in order: give
+/// `ManifoldFS::stat` real per-node ownership so `t5_check_distance` stops
+/// treating every file as sensitive, then let the boot task carry the login
+/// identity.
 pub fn current_uid() -> u32 {
     unsafe {
         let cpu = crate::cpu::this_cpu();
@@ -1871,6 +1960,34 @@ pub mod tests {
         sched.spawn("task", 5, || {});
         test_assert!(sched.task_count() >= 1, "expected at least one task");
         TestResult::Pass
+    }
+
+    /// RED before the bootstrap: `init()` was empty, so the boot thread was
+    /// never a task, `current_task` stayed null and `schedule()` was never
+    /// entered — every boot logged zero context switches.
+    fn test_init_makes_calling_thread_current() -> TestResult {
+        super::init();
+        // SAFETY: test mode runs after `init_bsp` installed the GS base.
+        let cpu = unsafe { crate::cpu::this_cpu() };
+        test_assert!(
+            !cpu.current_task.is_null(),
+            "PerCpu::current_task is null after scheduler::init()"
+        );
+        test_assert!(
+            super::current_task_id() != 0,
+            "the scheduler has no current task after scheduler::init()"
+        );
+        TestResult::Pass
+    }
+
+    /// Registered after every other test: adopting the boot thread gives this
+    /// CPU a current task, and the identity tests in `syscall::table` assert
+    /// the state before that (no task holds identity yet).
+    pub fn register_bootstrap_test() {
+        crate::testing::register_test(
+            "kernel_foundation::init_makes_calling_thread_current",
+            test_init_makes_calling_thread_current,
+        );
     }
 
     pub fn register_all() {

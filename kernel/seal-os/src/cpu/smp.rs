@@ -47,8 +47,8 @@ pub fn smp_init_bsp() {
 /// Requires, in order: `drivers::acpi::init` (populates the MADT topology this
 /// reads), `drivers::interrupts::init` (the 10 ms INIT-to-STARTUP delay and the
 /// readiness timeouts below spin on `interrupts::ticks`), `drivers::apic::init`
-/// (`send_ipi` targets the local APIC), and `process::scheduler::init` (an AP's
-/// first act after the trampoline is to call `scheduler_tick`).
+/// (`send_ipi` targets the local APIC), and `init_scheduler` (an AP's idle loop
+/// yields to the tasks queued on its own per-CPU scheduler).
 ///
 /// Calling this before ACPI silently reads a zeroed topology and returns having
 /// started nothing, which is what happened until 2026-08-18: the call sat ahead
@@ -154,19 +154,18 @@ pub extern "C" fn ap_main() {
         // Initialize local APIC timer (same frequency as BSP)
         crate::drivers::apic::init_local_apic_timer_for_ap();
 
+        // This thread becomes the AP's idle task, so a yield has a context to
+        // come back to.
+        crate::process::scheduler::init();
+
         AP_READY_FLAG.store(true, Ordering::SeqCst);
 
         // Idle loop
         loop {
-            crate::process::scheduler::scheduler_tick();
             let cpu = crate::cpu::this_cpu();
-            if cpu.pending_reschedule {
-                cpu.pending_reschedule = false;
-                crate::process::scheduler::yield_current();
-            }
-            if cpu.is_idle {
-                x86_64::instructions::hlt();
-            }
+            cpu.pending_reschedule = false;
+            crate::process::scheduler::yield_current();
+            x86_64::instructions::hlt();
         }
     }
 }
