@@ -172,7 +172,16 @@ export default function SampleBay() {
 
       {/* Drop zone */}
       <div
-        className={`mx-2 mb-2 border-2 border-dashed rounded-lg flex flex-col items-center justify-center p-3 transition-all cursor-pointer ${
+        role="button"
+        tabIndex={0}
+        aria-label="Import CSV file"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleImportClick();
+          }
+        }}
+        className={`mx-2 mb-2 border-2 border-dashed rounded-lg flex flex-col items-center justify-center p-3 transition-all cursor-pointer focus-visible:ring-2 focus-visible:ring-gov-accent focus-visible:outline-none ${
           dragOver
             ? "border-gov-accent bg-gov-accent/10 text-gov-accent"
             : "border-gov-border/50 text-gov-dim/50 hover:border-gov-dim hover:text-gov-dim"
