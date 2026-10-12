@@ -2,6 +2,8 @@
 
 <p align="center"><b>A kernel that reads the shape of what it runs, and would rather say "cannot decide" than guess.</b></p>
 
+<p align="center"><a href="https://teerth.blog/epsilon-hollow"><b>Read the essay at teerth.blog/epsilon-hollow</b></a> &nbsp;·&nbsp; the maths, the proofs and live figures</p>
+
 <p align="center">A research operating system for x86_64, written in <code>no_std</code> Rust and booted through UEFI.<br>
 Its state is geometry on a sphere. Its day job is machine learning. Its answers carry a certificate or a refusal.</p>
 
