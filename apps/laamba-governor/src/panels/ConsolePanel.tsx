@@ -1,6 +1,21 @@
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { Terminal, Trash2 } from "lucide-react";
 import { usePick } from "../store";
+
+// ⚡ Bolt: Extract and memoize log entries to achieve O(1) appending and prevent O(N) re-renders of the entire list.
+const LogEntry = React.memo(({ log }: { log: string }) => (
+  <div
+    className={
+      log.includes("failed") || log.includes("error")
+        ? "text-gov-error"
+        : log.includes("complete") || log.includes("winner")
+        ? "text-gov-ok"
+        : "text-gov-accent/80"
+    }
+  >
+    {log}
+  </div>
+));
 
 export default function ConsolePanel() {
   const { logs, clearLogs } = usePick("logs", "clearLogs");
@@ -29,18 +44,7 @@ export default function ConsolePanel() {
       </div>
       <div ref={scrollRef} className="flex-1 overflow-auto p-2 font-mono text-[11px] leading-relaxed">
         {logs.map((log, i) => (
-          <div
-            key={i}
-            className={
-              log.includes("failed") || log.includes("error")
-                ? "text-gov-error"
-                : log.includes("complete") || log.includes("winner")
-                ? "text-gov-ok"
-                : "text-gov-accent/80"
-            }
-          >
-            {log}
-          </div>
+          <LogEntry key={i} log={log} />
         ))}
       </div>
     </div>
