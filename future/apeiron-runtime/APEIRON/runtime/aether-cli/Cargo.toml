@@ -37,9 +37,9 @@ tokio = { version = "1.0", features = ["full"] }
 warp = "0.3"
 futures-util = "0.3"
 aether-link = { path = "../../network" }
-candle-core = { version = "0.8.2" } # Locked: Matches rand version
-candle-transformers = { version = "0.8.2" }
-candle-nn = { version = "0.8.2" }
+candle-core = { version = "0.8.4" } # Locked: Matches rand version
+candle-transformers = { version = "0.8.4" }
+candle-nn = { version = "0.8.4" }
 tokenizers = { version = "0.19.1" }
 sanctuary-dsp = { path = "../../../rust-dsp" }
 bytes = "1.0"
