@@ -9,6 +9,7 @@ no-default-features = false
 # Advisory vulnerability scanning is handled by the dedicated `cargo audit`
 # CI job. We disable DB fetching here because cargo-deny's bundled parser
 # cannot handle CVSS 4.0 entries now present in the RustSec advisory-db.
+db-path = ""
 db-urls = []
 yanked = "deny"
 ignore = [
@@ -43,7 +44,6 @@ exceptions = [
     # wav v1.0.1 (transitive via candle-transformers -> tokenizers -> spm_precompiled)
     # is LGPL-3.0. We do not use it directly; it is pulled in for audio model support
     # in the aether-lang REPL. This exception is scoped to the specific crate.
-    { allow = ["LGPL-3.0"], name = "wav", version = "*" },
 ]
 
 [licenses.private]
