@@ -10,4 +10,8 @@ ignore = [
     "RUSTSEC-2026-0098", # rustls-webpki - transitive via reqwest (optional net feature)
     "RUSTSEC-2026-0099", # rustls-webpki - transitive via reqwest (optional net feature)
     "RUSTSEC-2026-0104", # rustls-webpki - transitive via reqwest (optional net feature)
+    "RUSTSEC-2026-0367", # zip - transitive via candle-core
+    "RUSTSEC-2026-0368", # zip - transitive via candle-core
+    "RUSTSEC-2026-0369", # zip - transitive via candle-core
+    "RUSTSEC-2026-0429", # zip - transitive via candle-core
 ]
